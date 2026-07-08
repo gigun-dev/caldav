@@ -114,11 +114,28 @@ src/
 
 ## 現在地(セッションをまたぐ引き継ぎ用。作業の区切りごとに必ず更新すること)
 
-- 2026-07-08: 初回コミット完了(25a66f7)。SUDO モデリング完了・RFC 原文照合済み。コードは未実装。
-- **次の作業**: iCalendar コンテキストの実装。着手順:
-  1. `src/domain/ical/` に汎用構造(Component / Property / Parameter)
-  2. パーサー(RFC 5545 §3.1: unfold → 行パース。CRLF、75オクテット折り畳み、UTF-8境界に注意)
-  3. シリアライザ + **ロスレス往復テスト**(parse→serialize が意味を保存すること。
-     iOS の X-APPLE-* 付き実データをフィクスチャに。前作 hono-caldav の test/ が実データの宝庫)
-  4. 値オブジェクト(CalDateTime 3形態 / Duration / RecurrenceRule …)と意味論レンズ(VEvent / VTodo)
-- 実装前に docs/modeling/03(不変条件 I1-I10, R1-R7)と 05(細則)を必ず読むこと。
+- 2026-07-08: 初回コミット完了(25a66f7)。SUDO モデリング完了・RFC 原文照合済み。
+- 2026-07-08: iCalendar 構造層と値型コーデックの初期実装を未コミット作業ツリーに追加。
+  - `src/domain/ical/structure/types.ts`: Component / Property / Parameter の汎用構造。
+  - `src/domain/ical/parse/parser.ts`: RFC 5545 §3.1 の unfold、content line、BEGIN/END ネスト。
+  - `src/domain/ical/serialize/serializer.ts`: CRLF 出力、75オクテット折り畳み、パラメータ quote。
+  - `src/domain/ical/values/`: DATE / DATE-TIME / DURATION / PERIOD / RECUR / UTC-OFFSET / TEXT / CAL-ADDRESS。
+  - `test/domain/ical/`: iOS 風 fixture、ロスレス往復、値型不変条件テスト。
+  - 検証: `bun test` は 61 pass / 0 fail、`bunx tsc --noEmit` は green。
+- 2026-07-08: 意味論レンズ層(`src/domain/ical/semantics/`)を実装(未コミット)。
+  - `ICalendarObject` / `VEvent` / `VTodo` / `VTimezone` / `VAlarm` — Component を包む
+    読み取りレンズ(独自構造への変換なし = ロスレス往復を保つ)。書き込みアクセサは
+    PUT ユースケース実装時に追加予定。
+  - `validate(): InvariantViolation[]` — 不変条件 I1〜I10 を「全違反収集」方式で検証
+    (CalDAV precondition 応答で列挙して返すため throw 一発にしない)。
+    I9 の RRULE 時刻 BYxxx は RFC が「無視 MUST」のため違反報告しない(展開側で無視)。
+  - UID 一意性(R3/R4)はこの層では検証しない(CalDAV リソース層の責務)。
+  - 検証: `bun test` 90 pass / 0 fail、`bunx tsc --noEmit` green。
+  - AGENTS.md は CLAUDE.md へのシンボリックリンクに変更(コピー乖離防止)。
+- **次の作業**: iCalendar コンテキストは初期実装完了。次は以下のいずれか:
+  1. CalDAV リソースコンテキスト(RFC 4918/4791)のドメインモデル
+     (Principal / CalendarCollection / CalendarObjectResource / SyncToken / ETag、R1〜R7)
+  2. または RecurrenceExpansion ドメインサービス(calendar-query の time-range まで先送り可、
+     docs/modeling/03 §1-4 参照 — multiget/sync が先なら不要)。
+  推奨は 1(実装順の根拠: docs/modeling/02-usecases.md)。
+  実装前に docs/modeling/03(R1-R7)と 05(CalDAV 細則)を必ず読むこと。
