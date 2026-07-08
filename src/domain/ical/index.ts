@@ -15,9 +15,15 @@
 //   - values/*: RFC 5545 §3.3 の「生値 ↔ 型付き値」コーデック群。
 //     Property.value 自体はロスレス保持のため string のままだが、application/semantics 層が
 //     DTSTART や RRULE を安全に扱うときはここから公開される値オブジェクトを使う。
+//   - semantics/*: RFC 5545 §3.6〜3.8 の意味論レンズ群。ICalendarObject(VCALENDAR 集約ルート)
+//     / VEvent / VTodo / VTimezone / VAlarm と、不変条件違反 InvariantViolation。
+//     いずれも Component を包む「読み取り + validate」のレンズで、独自構造には変換しない
+//     (ロスレス往復を壊さないため。モデル図 §1-1)。application 層(PUT/REPORT ユースケース)は
+//     ここから型付きにカレンダーデータへアクセスし、validate() で precondition 診断を得る。
 // =============================================================================
 
 export type { Component, Parameter, Property } from "./structure/types";
 export { parse, ParseError } from "./parse/parser";
 export { serialize, SerializeError } from "./serialize/serializer";
 export * from "./values";
+export * from "./semantics";
