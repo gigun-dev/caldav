@@ -1,0 +1,15 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Edge//EN
+BEGIN:VEVENT
+UID:EDGE-0001
+DTSTAMP:20260701T000000Z
+SUMMARY:Escapes: line1\nline2\, comma\; semi\\backslash done
+DESCRIPTION:
+ATTENDEE;CN="Doe, John; Jr.";MEMBER="mailto:a@x.com","mailto:b@x.com":mailt
+ o:john@example.com
+X-MULTI;VALS=one,two,three:payload
+X-COLON-IN-QUOTE;X-URI="http://example.com:8080/p?q=1":value
+X-EMPTY:
+END:VEVENT
+END:VCALENDAR
