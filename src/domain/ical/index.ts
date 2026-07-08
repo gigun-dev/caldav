@@ -12,8 +12,12 @@
 //   - parse: ICS 文字列 → Component(通常ルートは VCALENDAR)
 //   - serialize: Component → ICS 文字列(CRLF・75 オクテット折り畳み)
 //   - ParseError / SerializeError: それぞれの失敗を表す例外
+//   - values/*: RFC 5545 §3.3 の「生値 ↔ 型付き値」コーデック群。
+//     Property.value 自体はロスレス保持のため string のままだが、application/semantics 層が
+//     DTSTART や RRULE を安全に扱うときはここから公開される値オブジェクトを使う。
 // =============================================================================
 
 export type { Component, Parameter, Property } from "./structure/types";
 export { parse, ParseError } from "./parse/parser";
 export { serialize, SerializeError } from "./serialize/serializer";
+export * from "./values";
