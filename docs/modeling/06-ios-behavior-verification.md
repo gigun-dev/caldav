@@ -55,6 +55,9 @@ wrangler dev(port 8787)
 | A4 | リマインダー(VTODO)の DUE/DTSTART の値型・形態(DATE か DATE-TIME か、TZID の有無)、X-APPLE-SORT-ORDER の実態 | vtodo.ts の I4/I6 検証、ios-reminder.ics | 期限あり/なし・時刻あり/なしのリマインダーを作成して観測 | ⬜ |
 | A5 | 繰り返しの1回だけ変更すると、同一 UID の VEVENT 複数(マスター + RECURRENCE-ID 付き)が同一リソースに PUT される。RECURRENCE-ID は DTSTART と形態一致 | 03 §1-4、R3、recurrence-override.ics | 繰り返しイベントの1回を変更して PUT を観測 | ⬜ |
 | A6 | iOS の生成する RRULE は FREQ が先頭 | recurrence-rule.ts の format 方針(生成時 FREQ 先頭 MUST) | 各種繰り返し設定で観測 | ⬜ |
+| A7 | iOS はパラメータ値に DQUOTE/改行を含むとき RFC 6868 の ^ エンコード(`^'` `^n` `^^`)を使うか。使うなら現行 serializer の「DQUOTE 表現不可 SerializeError」は 6868 実装で解消すべき | serializer.ts serializeParamValue、docs/rfc/README.md の 6868 注意 | 引用符・改行入りの場所名/参加者名(CN パラメータ等)を iOS で作成して PUT を観測 | ⬜ |
+| A8 | iOS の非グレゴリオ暦(旧暦/中国暦)繰り返しイベントは RFC 7529 の `RSCALE` を送るか。**現行パーサーは RSCALE を未知 rule-part として InvalidValueError → validate 違反 → PUT 拒否になる**(2026-07-09 実測)。送ってくるなら寛容化(最低限「壊さず保持」)が必要 | recurrence-rule.ts の default 節(未知 rule-part 拒否) | iOS 設定で中国暦/和暦系の繰り返し(旧暦の誕生日等)を作成して RRULE を観測 | ⬜ |
+| A9 | iOS リマインダー/アラームの RFC 9074 プロパティ(ACKNOWLEDGED / PROXIMITY 位置アラーム / VALARM 内 UID)の実態。完了操作・位置ベース通知で何が PUT されるか | valarm.ts(9074 プロパティは未知として生値保持)、fixtures の ACKNOWLEDGED | リマインダー完了/位置アラーム設定の PUT を観測 | ⬜ |
 
 ### B. プロトコル挙動の前提(これから実装する CalDAV リソース層)
 
@@ -68,6 +71,7 @@ wrangler dev(port 8787)
 | B6 | sync-token は URI 形式(RFC 6578 MUST)でも iOS がそのまま往復してくれる(不透明値として扱う) | 03 SyncToken の設計(内部整数 + 公開時 URI 化) | sync-collection の往復を観測 | ⬜ |
 | B7 | MKCALENDAR のリクエストボディ(displayname / supported-calendar-component-set / 色)の実態 | CalendarCollection 集約の属性設計 | iOS からカレンダー/リマインダーリストを新規作成して観測 | ⬜ |
 | B8 | サーバー側削除は sync-report の 404(RFC 6578 — 前作の 410 は誤りと原文照合済み)で iOS に伝わる | 05 訂正2 | サーバー側でリソースを消して iOS の同期を観測 | ⬜ |
+| B9 | スケジューリング未対応サーバーへの iOS の挙動: ①attendee 付きイベントを作成すると何を PUT するか(ORGANIZER/ATTENDEE プロパティのみか、METHOD 付きか — **METHOD 付きなら R7 で PUT 拒否になり保存不能**)。②探索時に calendar-user-address-set / schedule-inbox-URL 等(RFC 6638)を PROPFIND し、不在だと何が起きるか(招待 UI の無効化だけか、アカウント機能に影響するか) | R7(put-preconditions)、03 §3 スケジューリングコンテキスト(将来)の輪郭、5546/6638 のフェーズ判断 | attendee 付きイベント作成 + アカウント追加時の PROPFIND ボディを観測 | ⬜ |
 
 ### C. 実行環境の前提
 

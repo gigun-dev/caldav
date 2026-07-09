@@ -26,11 +26,13 @@
 | rfc6868.txt | Parameter Value Encoding | パラメータ値の ^ エスケープ。**現行シリアライザの「DQUOTE 表現不可エラー」に直接関係**(下記注意) |
 | rfc7617.txt | Basic HTTP Authentication | iOS の確定要件である Basic 認証(認証実装フェーズ) |
 | rfc9110.txt | HTTP Semantics | HTTP 現行仕様。**RFC 7232 は 9110 に obsolete された**(7232 は 4791 §5.3.4 が引く歴史的文脈用に残す) |
+| rfc9074.txt | VALARM Extensions | ACKNOWLEDGED / PROXIMITY(位置アラーム)/ VALARM 内 UID。**iOS リマインダーが ACKNOWLEDGED を送ってくる**(fixtures の ios-event.ics 参照)ため候補から昇格(2026-07-09) |
 
-<!-- 2026-07-09 追加5本(codex 指摘): 上記が実装直結の優先組。さらに将来の追加候補として
-     RFC 6047(iMIP — メール輸送までやるとき)/ RFC 7529(RSCALE 非グレゴリオ暦 RRULE —
-     壊さず往復できれば当面可)/ RFC 7809(Time Zones by Reference)/
-     RFC 9074(VALARM 拡張 — VTODO/アラーム相互運用)/ RFC 3986(URI)を認識している。
+<!-- 2026-07-09 追加5本(codex 指摘)+ 9074(iOS リマインダー直結のため昇格)。
+     さらに将来の追加候補として RFC 6047(iMIP — メール輸送までやるとき)/
+     RFC 7529(RSCALE 非グレゴリオ暦 RRULE — 現行パーサーは未知 rule-part として拒否する。
+     iOS が旧暦繰り返しで RSCALE を送るかは docs/modeling/06 A8 で検証)/
+     RFC 7809(Time Zones by Reference)/ RFC 3986(URI)を認識している。
      必要になったフェーズで取得する。 -->
 
 > **RFC 6868 の注意(2026-07-09)**: serializer.ts は「DQUOTE を含むパラメータ値は RFC 5545 の
