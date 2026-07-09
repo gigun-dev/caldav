@@ -63,8 +63,8 @@ wrangler dev(port 8787)
 
 | # | 検証したい前提 | 前提の所在 | 確認方法 | 結果 |
 |---|--------------|-----------|---------|------|
-| B1 | 探索フロー: `.well-known/caldav` へのリダイレクト(301/303/307 いずれも追従)→ current-user-principal → calendar-home-set。認証チャレンジは 401 + WWW-Authenticate(前作の知見: 403 では動かない) | 05「探索」節、前作 docs/phase2-guide.md | アカウント追加操作の全リクエストをキャプチャ | ⬜ |
-| B2 | iOS がコレクションに PROPFIND するプロパティは displayname / calendar-description / getctag / apple:calendar-color / supported-calendar-component-set / resourcetype / current-user-privilege-set(sabre/dav 文書由来 — 実測未確認) | 05「RFC 7986 と Apple 拡張」節 | PROPFIND ボディをキャプチャして一覧化(iOS バージョンも記録) | ⬜ |
+| B1 | 探索フロー: `.well-known/caldav` へのリダイレクト(301/303/307 いずれも追従)→ current-user-principal → calendar-home-set。認証チャレンジは 401 + WWW-Authenticate(前作の知見: 403 では動かない) | 05「探索」節、前作 docs/phase2-guide.md | アカウント追加操作の全リクエストをキャプチャ | 🔶 一部実測(2026-07-10、iOS 26.5 accountsd/1.0): 301 追従・認証再送 OK。探索は 443/8443/8843 の並行プローブ(8843 は Cloudflare edge 非対応で 10s タイムアウト — 致命ではない)。正規チェーン失敗時のフォールバックは `/principals/` → Google 形式 `/calendar/dav/{user}/user/` の順。**下記「アカウント追加を阻む2条件」参照** |
+| B2 | iOS がコレクションに PROPFIND するプロパティは displayname / calendar-description / getctag / apple:calendar-color / supported-calendar-component-set / resourcetype / current-user-privilege-set(sabre/dav 文書由来 — 実測未確認) | 05「RFC 7986 と Apple 拡張」節 | PROPFIND ボディをキャプチャして一覧化(iOS バージョンも記録) | 🔶 探索フェーズのみ実測(2026-07-10): accountsd は Depth:0 で **current-user-principal / principal-URL / resourcetype** の3つを要求(+ `Brief: t` / `Prefer: return=minimal` ヘッダ)。コレクション列挙フェーズ(dataaccessd)は未測 |
 | B3 | プリセット色選択時、`symbolic-color` 属性付きで calendar-color を PROPPATCH してくる(Stalwart #1611) | 05 の「落とし穴」 | カレンダー色をプリセット/カスタムで変更して PROPPATCH を観測 | ⬜ |
 | B4 | 新規 PUT に If-None-Match: * を付ける(SHOULD)。更新 PUT に If-Match を付ける。PUT 応答で ETag を返すと再 GET を省略する(R5 =ロスレス設計の実利) | 05 CalDAV 節「新規作成の作法」、R5 | 作成/編集操作の PUT ヘッダと直後のリクエスト有無を観測 | ⬜ |
 | B5 | iOS は sync-collection REPORT を使う(対応を広告すれば)。使わない場合は getctag ポーリング + calendar-multiget。**calendar-query(time-range)無しでも同期が成立する** — 実装順(multiget/sync を query より先)の根拠 | 02-usecases の実装順、03 §1-4「Phase B は展開不要」 | supported-report-set の広告内容を変えて iOS の REPORT 選択を観測 | ⬜ |
@@ -78,6 +78,24 @@ wrangler dev(port 8787)
 | # | 検証したい前提 | 前提の所在 | 確認方法 | 結果 |
 |---|--------------|-----------|---------|------|
 | C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501(workerd が拒否、アプリに届かない)。PROPFIND / REPORT / PROPPATCH は通る(Hono の 404 = アプリ到達)。→ ローカル開発は前作同様の書き換えプロキシが必要。本番 Workers は未確認(⬜) |
+
+## 実測から得た教訓(本作 presentation 層の要件)
+
+### iOS のアカウント追加を阻む2条件(2026-07-10、前作で実測・修正して確認)
+
+前作サーバーで iOS のアカウント追加が失敗し、Proxyman の復号キャプチャで原因を特定した。
+iOS(accountsd)は正しい current-user-principal を受け取っても以下の不備で**破棄**し、
+ハードコードされたフォールバックパス探索に落ちて失敗する:
+
+1. **要求されたプロパティを黙って落とすと NG**(RFC 4918 §9.1)。accountsd は
+   current-user-principal / principal-URL / resourcetype を要求し、前作は principal-URL を
+   200 にも 404 propstat にも入れず無視していた → iOS が 207 全体を不信扱い。
+   **本作の PROPFIND 実装は「見つからないプロパティは 404 propstat に列挙」を必須要件とする**
+   (RFC 上も MUST。iOS はこれを実際に強制する)。principal-URL は current-user-principal と
+   同値を返すのが安全(Apple クライアントは同義に使う)。
+2. **href のパスセグメントはパーセントエンコードする**。前作は principal href の `@` を
+   生のまま返していた(iOS 自身のフォールバック探索は `%40` を使う = iOS は href を
+   正規化して扱う)。本作の href 生成は encodeURIComponent 相当を通すこと。
 
 ## 結果の還元先
 
