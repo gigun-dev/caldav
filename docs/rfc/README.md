@@ -21,6 +21,24 @@
 | rfc7232.txt | HTTP/1.1 Conditional Requests | ETag / If-Match / If-None-Match |
 | rfc5546.txt | iTIP | スケジューリング(将来フェーズ・輪郭のみ) |
 | rfc6638.txt | CalDAV Scheduling | スケジューリング(将来フェーズ・輪郭のみ) |
+| rfc3744.txt | WebDAV ACL | Principal / current-user-privilege-set の定義元(RFC 4791 も参照) |
+| rfc5689.txt | Extended MKCOL | MKCALENDAR 代替の拡張 MKCOL(02-usecases 参照) |
+| rfc6868.txt | Parameter Value Encoding | パラメータ値の ^ エスケープ。**現行シリアライザの「DQUOTE 表現不可エラー」に直接関係**(下記注意) |
+| rfc7617.txt | Basic HTTP Authentication | iOS の確定要件である Basic 認証(認証実装フェーズ) |
+| rfc9110.txt | HTTP Semantics | HTTP 現行仕様。**RFC 7232 は 9110 に obsolete された**(7232 は 4791 §5.3.4 が引く歴史的文脈用に残す) |
+
+<!-- 2026-07-09 追加5本(codex 指摘): 上記が実装直結の優先組。さらに将来の追加候補として
+     RFC 6047(iMIP — メール輸送までやるとき)/ RFC 7529(RSCALE 非グレゴリオ暦 RRULE —
+     壊さず往復できれば当面可)/ RFC 7809(Time Zones by Reference)/
+     RFC 9074(VALARM 拡張 — VTODO/アラーム相互運用)/ RFC 3986(URI)を認識している。
+     必要になったフェーズで取得する。 -->
+
+> **RFC 6868 の注意(2026-07-09)**: serializer.ts は「DQUOTE を含むパラメータ値は RFC 5545 の
+> 文法上表現不可」として SerializeError にしているが、RFC 6868 は `^'`(DQUOTE)/ `^n`(改行)/
+> `^^`(キャレット)のエンコードを定義しており、これを実装すれば表現可能になる。
+> Apple クライアントも ^ エンコードを送ってくることがある(生値保持なので往復は壊れないが、
+> パラメータ値の解釈時にデコードが必要)。パーサ/シリアライザへの対応可否は実装フェーズで判断し、
+> 結果を 05 に記録すること。
 
 ## 使い方の約束
 
