@@ -197,7 +197,7 @@ classDiagram
 | I1 | VCALENDAR は `VERSION:2.0` と `PRODID` を持つ | RFC 5545 §3.6 |
 | I2 | VEVENT/VTODO は `UID` と `DTSTAMP` を必ず持つ。`DTSTAMP` は UTC 形式 MUST | §3.6.1/§3.6.2/§3.8.7.2 |
 | I3 | VEVENT の `DTEND` と `DURATION` は同時に存在しない。`DTEND` は `DTSTART` より後(同時刻も不可・MUST) | §3.6.1/§3.8.2.2 |
-| I4 | VTODO の `DUE` と `DURATION` は同時に存在しない(`DURATION` には `DTSTART` 必須) | §3.6.2 |
+| I4 | VTODO の `DUE` と `DURATION` は同時に存在しない(`DURATION` には `DTSTART` 必須)。`DUE` は `DTSTART` より後(MUST)<!-- 2026-07-08 追記: §3.8.2.3 "value MUST be later in time than DTSTART"。比較可能形態(両方DATE/同一非zoned形態)でのみ検証、zoneは解決不要で比較できないため対象外 --> | §3.6.2/§3.8.2.3 |
 | I5 | `RRULE` の `UNTIL` と `COUNT` は同時に指定できない。`FREQ` は必須で生成時は先頭に置く | §3.3.10 |
 | I6 | `DTEND`/`DUE`/`RECURRENCE-ID` の値型は `DTSTART` と一致(MUST)。`UNTIL` は `DTSTART` が DATE なら DATE、**DATE-TIME(UTC/TZID 付き)なら UTC 形式**(TZID 付き UNTIL は存在しない) | §3.3.10/§3.8.2/§3.8.4.4 |
 | I7 | `SEQUENCE` は organizer の「重要な改訂(significant revision)」ごとに単調増加、初期値0。繰り返しインスタンスごとに異なる値を持ちうる | §3.8.7.4 |

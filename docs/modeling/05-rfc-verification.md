@@ -25,6 +25,11 @@
    (RFC 5545 §3.3.10)。TZID 付き UNTIL は存在しない。
 5. **DTEND/DUE の値型は DTSTART と一致 MUST(SHOULD ではない)+ DTEND は DTSTART より後 MUST**
    (§3.8.2.2/§3.8.2.3)。同時刻も不可。
+   <!-- 2026-07-08 レビュー時に発見・追記: DUE も DTSTART より後 MUST。§3.8.2.3 は
+        "its value MUST be later in time than the value of the DTSTART property" と明記しており、
+        DTEND(§3.8.2.2)と同じ「後 MUST」要求が DUE にもある。当初この訂正5は DTEND のみ言及していた。
+        なお「値型一致」は VALUE 型(DATE/DATE-TIME)のみ MUST であって形態(floating/utc/zoned+tzid)一致まで
+        縛るのは RECURRENCE-ID だけ(§3.8.4.4・下記75行)。DUE/DTEND は値型一致のみ。 -->
 6. **VTIMEZONE は STANDARD か DAYLIGHT の少なくとも1つ**(両方必須ではない)(§3.6.5)。
 7. **SEQUENCE の増加は「significant revision」ごと**(§3.8.7.4)。全改訂ではない。
    繰り返しインスタンスごとに異なる SEQUENCE を持ちうる。
