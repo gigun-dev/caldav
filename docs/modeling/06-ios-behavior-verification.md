@@ -77,7 +77,7 @@ wrangler dev(port 8787)
 
 | # | 検証したい前提 | 前提の所在 | 確認方法 | 結果 |
 |---|--------------|-----------|---------|------|
-| C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501。PROPFIND / REPORT / PROPPATCH は通る。**さらに 2026-07-10、本番 Workers でも 501 を実測**(前作本番への iOS リマインダー追加時の MKCALENDAR、フロー 7223/7224)— ローカル限定ではなく Cloudflare ランタイム全体で MKCALENDAR 不可。前作の本番でリマインダーのリスト作成/タスク保存が壊れていた原因もこれ(以前は通っていた = ランタイム側の変更で退行したと推定)。**本作は MKCALENDAR に依存しない設計が必須**(Extended MKCOL [RFC 5689] を主経路にする / iOS が MKCALENDAR 501 後に MKCOL へフォールバックするかは要検証) |
+| C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501。PROPFIND / REPORT / PROPPATCH は通る。**さらに 2026-07-10、本番 Workers でも 501 を実測**(前作本番への iOS リマインダー追加時の MKCALENDAR、フロー 7223/7224)— ローカル限定ではなく Cloudflare ランタイム全体で MKCALENDAR は**元から**不可(退行ではない。前作の書き換えプロキシはローカル専用で、本番は最初から MKCALENDAR 非対応だった)。本番でリマインダーのタスクが保存されないのは、remindd が保存先リストを MKCALENDAR で作れないため(→ サーバー側で VTODO コレクションを事前作成しておけば回避可能)。**本作は MKCALENDAR に依存しない設計が必須**(Extended MKCOL [RFC 5689] を主経路にする / iOS が MKCALENDAR 501 後に MKCOL へフォールバックするかは要検証) |
 
 ## 実測から得た教訓(本作 presentation 層の要件)
 
