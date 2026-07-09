@@ -143,10 +143,18 @@ src/
   原文照合で記載)+ **docs/modeling/06-ios-behavior-verification.md 新設**(iOS 実機挙動の
   検証計画 A1〜A6 / B1〜B8 / C1)。C1 は実測済み: workerd は MKCALENDAR を通さない(501)、
   PROPFIND/REPORT/PROPPATCH は通る → ローカルは前作型の書き換えプロキシが必要。
-- **次の作業**(2026-07-09 ユーザーと合意。docs/modeling/06「進め方」参照):
-  1. iOS 実機検証は「前作で観測系キャプチャ → 本作スケルトンで実験系」の順。
-     実機操作・Proxyman はユーザー担当、キャプチャ解析・フィクスチャ化・docs 反映は Claude。
-  2. 並行して CalDAV リソースコンテキストのドメインモデルを実装
-     (Principal / CalendarCollection / CalendarObjectResource / SyncToken / ETag、R1〜R7。
-     HTTP 非依存の純粋ドメイン。docs/modeling/03 §2 と 05 の CalDAV 細則を必読)。
-  3. その後、最小 HTTP スケルトン(presentation)→ 実験系検証(B4〜B6/B8)へ。
+- 2026-07-09: RFC 原文10本を docs/rfc/ に常備(4f507bb)し、docs/modeling を原文で再監査。
+  訂正7件(2456e66): UNTIL の floating ケース欠落(→ parseUntil の実バグとして転写されていた。
+  12edca8 で修正)、PUT precondition は10個(location-ok は COPY/MOVE 専用)、
+  RECURRENCE-ID の明示 MUST は「値型 + floating iff floating」のみ、ほか。
+- 2026-07-09: CalDAV リソースコンテキストのドメインモデル実装(dcf8758)。
+  3集約(Principal / CalendarCollection+SyncChange / CalendarObjectResource)+
+  ETag / SyncToken(URI 形式)/ put-preconditions(R1〜R7)。137 tests / tsc green。
+- **次の作業**:
+  1. iOS 実機検証(docs/modeling/06): 前作で観測系キャプチャ(ユーザーが実機+Proxyman、
+     Claude が解析・フィクスチャ化・docs 反映)→ 本作スケルトンで実験系(B4〜B6/B8)。
+  2. 実装側: application 層のユースケース(PUT / GET / DELETE / multiget / sync-collection。
+     1ユースケース1クラス、DAV 専用にしない — CLAUDE.md 長期ビジョン)と
+     最小 HTTP スケルトン(presentation: .well-known → principal → home の探索チェーン +
+     PROPFIND)。スケルトンが立てば実験系検証が可能になる。
+  3. ローカル開発は MKCALENDAR 書き換えプロキシが必要(C1 実測済み。前作 proxy/dev.ts 参照)。
