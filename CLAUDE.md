@@ -132,6 +132,9 @@ src/
   - UID 一意性(R3/R4)はこの層では検証しない(CalDAV リソース層の責務)。
   - 検証: `bun test` 90 pass / 0 fail、`bunx tsc --noEmit` green。
   - AGENTS.md は CLAUDE.md へのシンボリックリンクに変更(コピー乖離防止)。
+- 2026-07-09: codex レビュー対応(7ed36c7)。VTODO の RRULE 検証追加(I5/I6 を validateRRule に
+  共通化)、DUE 値型判定を VALUE 型一致のみに緩和(形態一致 MUST は RECURRENCE-ID だけ)、
+  DUE > DTSTART(§3.8.2.3)を I4 として追加(docs 05 訂正5にも追記)。95 pass / tsc green。
 - **次の作業**: iCalendar コンテキストは初期実装完了。次は以下のいずれか:
   1. CalDAV リソースコンテキスト(RFC 4918/4791)のドメインモデル
      (Principal / CalendarCollection / CalendarObjectResource / SyncToken / ETag、R1〜R7)
