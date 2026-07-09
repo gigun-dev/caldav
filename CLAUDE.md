@@ -139,8 +139,10 @@ src/
   原文照合で記載)+ **docs/modeling/06-ios-behavior-verification.md 新設**(iOS 実機挙動の
   検証計画 A1〜A6 / B1〜B8 / C1)。C1 は実測済み: workerd は MKCALENDAR を通さない(501)、
   PROPFIND/REPORT/PROPPATCH は通る → ローカルは前作型の書き換えプロキシが必要。
-- **次の作業**: CalDAV リソースコンテキスト実装の前に、docs/modeling/06 の iOS 実機検証
-  (cloudflared + wrangler + Proxyman、前作 hono-caldav の Makefile 資産を流用)。
-  検証の優先度と実装との並行方針はユーザーと相談して決める。
-  その後 CalDAV リソースコンテキスト(Principal / CalendarCollection /
-  CalendarObjectResource、R1〜R7。docs/modeling/03 と 05 の CalDAV 細則を必読)。
+- **次の作業**(2026-07-09 ユーザーと合意。docs/modeling/06「進め方」参照):
+  1. iOS 実機検証は「前作で観測系キャプチャ → 本作スケルトンで実験系」の順。
+     実機操作・Proxyman はユーザー担当、キャプチャ解析・フィクスチャ化・docs 反映は Claude。
+  2. 並行して CalDAV リソースコンテキストのドメインモデルを実装
+     (Principal / CalendarCollection / CalendarObjectResource / SyncToken / ETag、R1〜R7。
+     HTTP 非依存の純粋ドメイン。docs/modeling/03 §2 と 05 の CalDAV 細則を必読)。
+  3. その後、最小 HTTP スケルトン(presentation)→ 実験系検証(B4〜B6/B8)へ。
