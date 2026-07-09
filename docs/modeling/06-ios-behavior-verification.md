@@ -96,6 +96,16 @@ iOS(accountsd)は正しい current-user-principal を受け取っても以下の
 2. **href のパスセグメントはパーセントエンコードする**。前作は principal href の `@` を
    生のまま返していた(iOS 自身のフォールバック探索は `%40` を使う = iOS は href を
    正規化して扱う)。本作の href 生成は encodeURIComponent 相当を通すこと。
+3. **207 の `<d:response>` の href はリクエスト URI と一致させる**(RFC 4918 §8.3)。
+   前作は `PROPFIND /` への応答に `<d:href>/dav/</d:href>` をハードコード返却しており、
+   iOS はこの不一致で応答全体を不信して current-user-principal を破棄した(2026-07-10 特定・
+   修正第2弾)。本作の presentation は「応答 href = 正規化したリクエストパス」を機械的に保証する。
+
+※ accountsd の探索は「要求3プロパティ(current-user-principal / principal-URL /
+resourcetype)への完全な応答」を複数パス(/dav/ と /)で検分し、1つでも不備があると
+正規チェーンを捨ててフォールバック(/principals/ → Google 形式)に落ちる、という
+「全部正しくないと進まない」挙動。デバッグは Proxyman 復号キャプチャがないと事実上不可能
+(サーバーログだけでは 207 の中身の不備が見えない)。
 
 ## 結果の還元先
 
