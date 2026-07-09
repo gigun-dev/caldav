@@ -22,14 +22,17 @@ import {
 import { InvariantViolation } from "./errors";
 import { VAlarm } from "./valarm";
 import {
+	compareDateValue,
 	firstProp,
 	isCalDateTime,
+	isChronologicallyComparable,
 	parseDateOrDateTime,
 	rawValue,
-	sameDateForm,
+	// sameDateForm は P2 修正で VTODO では未使用になった(DUE 判定を値型一致のみに緩和したため)。
+	// helpers.ts の定義自体は VEvent の RECURRENCE-ID 形態一致検証で使われ続けるので残す。
 	subComponents,
 } from "./helpers";
-import { parseInteger, reportDuplicate, safe } from "./vevent";
+import { parseInteger, reportDuplicate, safe, validateRRule } from "./vevent";
 
 export class VTodo {
 	private constructor(private readonly component: Component) {}
@@ -117,7 +120,8 @@ export class VTodo {
 	}
 
 	// ---------------------------------------------------------------------------
-	// validate: I2 / I4 / DUE の値型一致(I6 相当)+ カーディナリティ + 配下 VALARM
+	// validate: I2 / I4(DUE/DURATION 排他 + DUE>DTSTART)/ I5 / I6(DUE・UNTIL の値型一致)
+	//           + カーディナリティ + 配下 VALARM
 	// ---------------------------------------------------------------------------
 	validate(): InvariantViolation[] {
 		const c = this.component;
@@ -158,21 +162,35 @@ export class VTodo {
 			add("I4", "DURATION requires DTSTART in VTODO (§3.6.2)");
 		}
 
-		// --- I6 相当: DUE の値型は DTSTART と一致 MUST(§3.8.2.3)---------------------
+		// --- I6 相当: DUE の値型は DTSTART と一致 MUST + I4: DUE は DTSTART より後 MUST(§3.8.2.3)----
 		const dtstartProp = firstProp(c, "DTSTART");
 		const dueProp = firstProp(c, "DUE");
 		if (dtstartProp !== undefined && dueProp !== undefined) {
 			safe(violations, "I6", "VTODO", () => {
 				const start = parseDateOrDateTime(dtstartProp);
 				const due = parseDateOrDateTime(dueProp);
-				// 値型(DATE/DATE-TIME)+ 形態の一致を見る。DUE は開始より後であるべきだが、
-				// RFC は DTSTART<DUE を明示 MUST とはしていない(§3.8.2.3 は値型一致を要求)ので
-				// 大小はここでは強制しない。値型一致だけを I6 相当として報告する。
-				if (!sameDateForm(start, due)) {
-					add("I6", "DUE value type/form must match DTSTART (§3.8.2.3)");
+
+				// P2(2026-07-08 レビュー指摘): DUE と DTSTART の一致要求は「値型(DATE/DATE-TIME)一致」のみ。
+				// §3.8.2.3 の "The value type ... MUST be the same as the DTSTART" は VALUE 型一致であって、
+				// 形態(floating/utc/zoned+tzid)一致まで MUST なのは RECURRENCE-ID だけ(§3.8.4.4 / docs/05 訂正5・75行)。
+				// 旧実装は sameDateForm で形態一致まで要求し、DTSTART;TZID=Asia/Tokyo:... + DUE:...Z を
+				// I6 誤検知していた。VEvent の DTEND 判定(isCalDateTime の差)と同じ粒度に揃える。
+				if (isCalDateTime(start) !== isCalDateTime(due)) {
+					add("I6", "DUE value type must match DTSTART (DATE vs DATE-TIME) (§3.8.2.3)");
+				} else if (isChronologicallyComparable(start, due) && compareDateValue(due, start) <= 0) {
+					// I4(2026-07-08 レビュー時に §3.8.2.3 の "value MUST be later in time than DTSTART" を発見・追記):
+					// DUE は DTSTART より後 MUST(同時刻も不可)。ただし比較は「解決不要で well-defined な形態」だけ。
+					// zoned は VTIMEZONE 解決が要る(compareDateValue の限界コメント)ので比較しない
+					// = VEvent の DTEND>DTSTART(I3)が同一形態前提で比較するのと同じ扱いに揃えている。
+					add("I4", "DUE must be later in time than DTSTART (§3.8.2.3)");
 				}
 			});
 		}
+
+		// --- I5/I6: RRULE の UNTIL/COUNT 排他・UNTIL 値型一致(§3.3.10)-------------------
+		// 2026-07-08 レビュー指摘: VTODO の RRULE が素通りしていた。VEVENT と同じ共通ロジック
+		// (vevent.ts の validateRRule)で検証する。VTODO も RRULE を持てる(§3.6.2)。
+		validateRRule(violations, "VTODO", c);
 
 		// 配下の VALARM を集約。
 		for (const alarm of this.alarms()) {

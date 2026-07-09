@@ -18,6 +18,11 @@ function violate(ics: string): Set<InvariantId> {
 function expectViolation(ics: string, id: InvariantId): void {
 	expect(violate(ics).has(id)).toBe(true);
 }
+// 「一切違反が無い」アサーション(P2 誤検知の回帰用: 過去は誤って違反を出していた入力が
+// 今はクリーンであることを確かめる)。どの id が混ざっても落ちるよう集合が空であることを見る。
+function expectNoViolations(ics: string): void {
+	expect([...violate(ics)]).toEqual([]);
+}
 
 // 妥当な骨格の部品(ノイズ違反を避けるため、対象以外は正しくしておく)。
 const VALID_STAMP = "DTSTAMP:20260101T000000Z"; // UTC DATE-TIME(I2 を満たす)
@@ -80,12 +85,40 @@ describe("I4: VTODO の DUE/DURATION 排他・DURATION には DTSTART 必須", (
 			"I4",
 		);
 	});
+	// 2026-07-08 レビュー時追記(§3.8.2.3): DUE は DTSTART より後 MUST。同値型・比較可能形態でのみ検証。
+	test("DUE が DTSTART 以前(同 UTC 形態・同時刻)→ I4", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nDUE:20260101T100000Z\nEND:VTODO\nEND:VCALENDAR`,
+			"I4",
+		);
+	});
+});
+
+// P2(2026-07-08 レビュー指摘)の回帰: DTSTART;TZID=... と DUE:...Z は「値型は一致(共に DATE-TIME)、
+// 形態だけ違う」。形態一致まで縛るのは RECURRENCE-ID のみ(§3.8.4.4)なので、これは違反ゼロが正しい。
+// 旧実装は sameDateForm で形態一致まで要求し I6 を誤検知していた。zoned+utc は時系列比較もしない(I4 も出ない)。
+describe("P2 回帰: DTSTART(TZID)+ DUE(UTC)は誤検知しない", () => {
+	// Asia/Tokyo の VTIMEZONE を同梱(TZID 参照整合 I8 を満たすため)。
+	const TOKYO_TZ =
+		"BEGIN:VTIMEZONE\nTZID:Asia/Tokyo\nBEGIN:STANDARD\nDTSTART:19700101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\nEND:VTIMEZONE";
+	test("DTSTART;TZID=Asia/Tokyo + DUE:UTC → 違反ゼロ", () => {
+		expectNoViolations(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\n${TOKYO_TZ}\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART;TZID=Asia/Tokyo:20260101T100000\nDUE:20260102T100000Z\nEND:VTODO\nEND:VCALENDAR`,
+		);
+	});
 });
 
 describe("I5: RRULE の UNTIL/COUNT 排他(values 層の throw を validate が収集)", () => {
 	test("UNTIL と COUNT 同時 → I5", () => {
 		expectViolation(
 			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nRRULE:FREQ=DAILY;COUNT=5;UNTIL=20260201T000000Z\nEND:VEVENT\nEND:VCALENDAR`,
+			"I5",
+		);
+	});
+	// 2026-07-08 レビュー指摘の回帰: 以前 VTODO は RRULE を一切検証せず、UNTIL/COUNT 併存を素通りしていた。
+	test("VTODO でも UNTIL と COUNT 同時 → I5(共通化の回帰)", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nRRULE:FREQ=DAILY;COUNT=5;UNTIL=20260201T000000Z\nEND:VTODO\nEND:VCALENDAR`,
 			"I5",
 		);
 	});
@@ -107,6 +140,20 @@ describe("I6: 値型一致", () => {
 	test("VTODO: DUE の値型が DTSTART と不一致 → I6", () => {
 		expectViolation(
 			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nDUE;VALUE=DATE:20260102\nEND:VTODO\nEND:VCALENDAR`,
+			"I6",
+		);
+	});
+	// P2 の逆パターン: DATE 型 DTSTART + DATE-TIME 型 DUE も値型不一致。
+	test("VTODO: DATE 型 DTSTART + DATE-TIME 型 DUE → I6", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART;VALUE=DATE:20260101\nDUE:20260102T100000Z\nEND:VTODO\nEND:VCALENDAR`,
+			"I6",
+		);
+	});
+	// 2026-07-08 レビュー指摘の回帰: VTODO の RRULE が素通りしていた(共通化で UNTIL 値型一致も効く)。
+	test("VTODO: DATE 型 DTSTART + DATE-TIME 型 UNTIL → I6", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART;VALUE=DATE:20260101\nRRULE:FREQ=DAILY;UNTIL=20260201T000000Z\nEND:VTODO\nEND:VCALENDAR`,
 			"I6",
 		);
 	});

@@ -103,6 +103,29 @@ export function sameDateForm(a: CalDate | CalDateTime, b: CalDate | CalDateTime)
 }
 
 /**
+ * compareDateValue で「VTIMEZONE 解決なしに大小比較して良い」形態かを判定する。
+ * DUE>DTSTART(I4)や将来の時系列検証の前段ガード用。
+ *   - 一方が DATE で他方が DATE-TIME → 比較不能(false)。値型不一致自体は I6 側で別途違反報告される
+ *   - 両方 DATE → 暦日で比較できる(true)
+ *   - 両方 DATE-TIME かつ非 zoned で同一 kind(floating どうし / utc どうし)→ true
+ *   - zoned が絡む or kind 不一致(floating vs utc 等)→ false
+ *     (zoned は VTIMEZONE を解決しないと絶対時刻に落とせず、異形態間のフィールド辞書式比較は
+ *      well-defined ではない。compareDateValue 直下の限界コメント参照)
+ *
+ * 2026-07-08: VTODO の DUE>DTSTART(I4)追加時に新設。P2 のレビュー指摘
+ * (DTSTART;TZID=Asia/Tokyo:... + DUE:...Z のような形態不一致)を「比較不能」として弾き、
+ * zoned+utc を無理に比較して誤検知する事故を防ぐためのガード。
+ */
+export function isChronologicallyComparable(a: CalDate | CalDateTime, b: CalDate | CalDateTime): boolean {
+	const aDt = isCalDateTime(a);
+	const bDt = isCalDateTime(b);
+	if (aDt !== bDt) return false; // DATE vs DATE-TIME(値型不一致は比較しない)
+	if (!aDt || !bDt) return true; // 両方 DATE
+	if (a.kind === "zoned" || b.kind === "zoned") return false; // zoned は解決なしに比較不能
+	return a.kind === b.kind; // floating どうし / utc どうしのみ比較可
+}
+
+/**
  * 日時値のフィールド順比較(a<b→負, a==b→0, a>b→正)。DTEND>DTSTART 判定(I3)用。
  *
  * 【この比較の限界を明記】floating/zoned は本来 VTIMEZONE 抜きに絶対時刻へ解決できず、

@@ -241,30 +241,15 @@ export class VEvent {
 				}
 			}
 
-			// UNTIL の値型一致(§3.3.10 / §05 訂正4): DTSTART が DATE なら UNTIL は DATE、
-			// DATE-TIME なら UNTIL は DATE-TIME(UTC)。UNTIL の UTC 強制自体は values 層が担保済み。
-			const rruleRaw = rawValue(c, "RRULE");
-			if (rruleRaw !== undefined && start !== undefined) {
-				// RRULE 自体のパース失敗(I5 の UNTIL/COUNT 排他違反等)もここで拾う。
-				safe(violations, "I5", "VEVENT", () => {
-					const rule = parseRecurrenceRule(rruleRaw);
-					if (rule.until !== undefined) {
-						const untilIsDate = rule.until.type === "date";
-						const startIsDate = !isCalDateTime(start);
-						if (untilIsDate !== startIsDate) {
-							add("I6", "RRULE UNTIL value type must match DTSTART (DATE vs DATE-TIME) (§3.3.10)");
-						}
-					}
-
-					// --- I9: DATE 型 DTSTART のときの RRULE BYSECOND/BYMINUTE/BYHOUR ------
-					// RFC は「違反時は無視 MUST」(§3.3.10)。つまりデータを弾く筋のものではない。
-					// よって本実装は BYSECOND/BYMINUTE/BYHOUR の存在自体は違反として報告しない
-					// (将来の RecurrenceExpansion がこれらを無視して展開する)。この方針の明示:
-					// I9 のうち「無視 MUST」側はエラーにもワーニングにもしない。
-					// I9 の違反として報告するのは下の DURATION 単位側だけ。
-				});
-			}
+			// UNTIL の値型一致(§3.3.10 / §05 訂正4)の検証は、VEVENT / VTODO で完全に
+			// 共通なので validateRRule に切り出した(下部モジュールヘルパー参照)。
+			// 2026-07-08 レビュー指摘: 以前はこのロジックが VEvent の validate 内にインラインで、
+			// VTodo からは呼ばれておらず VTODO の RRULE が素通りしていた。共通化して両者から呼ぶ。
 		});
+
+		// RRULE(I5 の UNTIL/COUNT 排他 + I6 の UNTIL 値型一致)。上の I6 safe ブロックの外に出したのは、
+		// validateRRule が自前で DTSTART を解釈し直す(start に依存しない)ため。
+		validateRRule(violations, "VEVENT", c);
 
 		// --- I9: DATE 型 DTSTART のとき DURATION は日/週単位のみ(§3.6.1)-------------
 		// DATE(終日)イベントに時分秒の期間は意味論的に不整合。これは「無視 MUST」ではなく
@@ -308,6 +293,50 @@ export function parseInteger(raw: string, name: string): number {
 		throw new InvalidValueError("INTEGER", raw, `${name} must be an integer`);
 	}
 	return Number(raw);
+}
+
+/**
+ * RRULE の値検証を VEVENT / VTODO で共有する(§3.3.10)。
+ *
+ * 検証内容:
+ *   - I5: RRULE 自体のパース失敗(UNTIL/COUNT 排他違反・FREQ 欠落など、values 層の throw)を収集
+ *   - I6: UNTIL の値型が DTSTART と一致(DTSTART が DATE なら UNTIL も DATE、
+ *         DATE-TIME なら UNTIL は DATE-TIME/UTC)。UNTIL の UTC 強制自体は values 層が担保済み
+ *
+ * DTSTART の解釈はこの関数内で自前に行う(呼び出し側の start に依存させない)ので、
+ * VEvent / VTodo どちらも `validateRRule(violations, "VEVENT"|"VTODO", c)` で呼べる。
+ *
+ * 2026-07-08 レビュー指摘: 以前このロジックは VEvent.validate 内にインラインで書かれており、
+ * VTodo.validate は RRULE を一切読まなかった。そのため VTODO に
+ * `RRULE:FREQ=DAILY;COUNT=5;UNTIL=...Z`(I5 の排他違反)を入れても違反ゼロで素通りしていた。
+ * VEVENT と同じ検証を VTODO にも効かせるため共通関数へ切り出した(safe/parseInteger 等と同じ
+ * 「vevent.ts で定義 → vtodo.ts が import」の共有パターンに合わせている)。
+ */
+export function validateRRule(violations: InvariantViolation[], component: string, c: Component): void {
+	const rruleRaw = rawValue(c, "RRULE");
+	if (rruleRaw === undefined) return;
+	const dtstartProp = firstProp(c, "DTSTART");
+	// RRULE 自体のパース失敗(I5)もここで拾う。壊れた RRULE は InvalidValueError を投げ、safe が I5 違反へ変換。
+	safe(violations, "I5", component, () => {
+		const rule = parseRecurrenceRule(rruleRaw);
+		// UNTIL 値型一致には DTSTART の解釈が要る。DTSTART が壊れていればここで throw するが、
+		// その解釈失敗は同じ safe が I5 違反として拾う(DTSTART 単体の別検証は各レンズの他所の責務)。
+		const start = dtstartProp !== undefined ? parseDateOrDateTime(dtstartProp) : undefined;
+		if (rule.until !== undefined && start !== undefined) {
+			const untilIsDate = rule.until.type === "date";
+			const startIsDate = !isCalDateTime(start);
+			if (untilIsDate !== startIsDate) {
+				pushViolation(violations, "I6", component, "RRULE UNTIL value type must match DTSTART (DATE vs DATE-TIME) (§3.3.10)");
+			}
+		}
+
+		// --- I9: DATE 型 DTSTART のときの RRULE BYSECOND/BYMINUTE/BYHOUR ------
+		// RFC は「違反時は無視 MUST」(§3.3.10)。つまりデータを弾く筋のものではない。
+		// よって本実装は BYSECOND/BYMINUTE/BYHOUR の存在自体は違反として報告しない
+		// (将来の RecurrenceExpansion がこれらを無視して展開する)。この方針の明示:
+		// I9 のうち「無視 MUST」側はエラーにもワーニングにもしない。
+		// I9 の違反として報告するのは DURATION 単位側だけ(各レンズの validate 参照)。
+	});
 }
 
 /** violations 配列へ1件積む薄いヘルパー(add クロージャの実体)。 */
