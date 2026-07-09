@@ -77,7 +77,7 @@ wrangler dev(port 8787)
 
 | # | 検証したい前提 | 前提の所在 | 確認方法 | 結果 |
 |---|--------------|-----------|---------|------|
-| C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501(workerd が拒否、アプリに届かない)。PROPFIND / REPORT / PROPPATCH は通る(Hono の 404 = アプリ到達)。→ ローカル開発は前作同様の書き換えプロキシが必要。本番 Workers は未確認(⬜) |
+| C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501。PROPFIND / REPORT / PROPPATCH は通る。**さらに 2026-07-10、本番 Workers でも 501 を実測**(前作本番への iOS リマインダー追加時の MKCALENDAR、フロー 7223/7224)— ローカル限定ではなく Cloudflare ランタイム全体で MKCALENDAR 不可。前作の本番でリマインダーのリスト作成/タスク保存が壊れていた原因もこれ(以前は通っていた = ランタイム側の変更で退行したと推定)。**本作は MKCALENDAR に依存しない設計が必須**(Extended MKCOL [RFC 5689] を主経路にする / iOS が MKCALENDAR 501 後に MKCOL へフォールバックするかは要検証) |
 
 ## 実測から得た教訓(本作 presentation 層の要件)
 
@@ -106,6 +106,28 @@ resourcetype)への完全な応答」を複数パス(/dav/ と /)で検分し、
 正規チェーンを捨ててフォールバック(/principals/ → Google 形式)に落ちる、という
 「全部正しくないと進まない」挙動。デバッグは Proxyman 復号キャプチャがないと事実上不可能
 (サーバーログだけでは 207 の中身の不備が見えない)。
+
+### 成功時の探索・初回同期シーケンス(2026-07-10、前作本番 + iOS 26.5 remindd で実測 — B1/B2 の一次データ)
+
+リマインダーのみ有効でアカウント追加成功時の全シーケンス(User-Agent: remindd/3976):
+
+1. PROPFIND /.well-known/caldav → 301(相対 Location: /dav/)。**最初から Basic 認証を preemptive 送信**(401 チャレンジは一度も発生しない)
+2. PROPFIND /dav/(Depth:0)→ 207: current-user-principal 取得
+3. OPTIONS {principal} → 204(Allow と DAV ヘッダの確認。**iOS は principal に OPTIONS を打つ**)
+4. PROPFIND {principal}(Depth:0)→ 207。**要求14プロパティ**: calendar-home-set /
+   calendar-user-address-set / current-user-principal / displayname / dropbox-home-URL /
+   email-address-set / max-attendees-per-instance / notification-URL / principal-collection-set /
+   principal-URL / resource-id / schedule-inbox-URL / schedule-outbox-URL / supported-report-set
+5. OPTIONS {principal} → 204(再確認)
+6. PROPFIND {calendar-home}(Depth:1)→ 207。**要求38プロパティ**(getctag / sync-token /
+   supported-calendar-component-set / current-user-privilege-set / calendar-color 等。
+   完全リストはキャプチャ参照)
+7. MKCALENDAR {home}/{UUID}/ → **501**(→ C1。iOS はリマインダー用リストを作ろうとして失敗、1回リトライして断念)
+
+重要な行動特性:
+- **iOS は https スキームのときのみ Basic を preemptive 送信する。平文 http では 401 が返っても資格情報を送らず探索を打ち切る**(失敗側キャプチャとの decisive diff)。
+- アカウント追加失敗の主犯と疑った XML 不備(href 等)は、本番(未修正コード)で成功したことから決定打ではなかった。決め手はスキーム(https で正しく到達できること)。
+- 8843/8008/8800 ポートプローブはプロキシ環境だと 10 秒×複数のタイムアウトになり UX を大きく悪化させる(直結なら即 RST)。
 
 ## 結果の還元先
 
