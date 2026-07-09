@@ -53,6 +53,10 @@ iOS のカレンダー / リマインダーアプリをプライマリクライ�
 
 モデリングの一次資料は RFC。実装中に図と RFC の乖離に気づいたら、コードではなく先に図を直す。
 
+**RFC の主張を確認するときは必ず `docs/rfc/` の原文(全文スナップショット)を読むこと。**
+学習済み知識や要約に頼らない(RFC 7986 で「iOS 対応に不要」という過剰な断定が入り込んだ反省。
+2026-07-09 導入、経緯は docs/rfc/README.md)。照合結果は docs/modeling/05 に記録する。
+
 ## 技術スタック
 
 - Runtime: Cloudflare Workers(`bun create hono@latest` の cloudflare-workers テンプレートで初期化)
