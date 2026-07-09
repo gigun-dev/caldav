@@ -117,10 +117,27 @@
 
 ### RFC 7986 と Apple 拡張(iOS 対応の結論)
 
-- **RFC 7986 は iOS 対応に不要**。iOS が使うのは WebDAV プロパティの
-  `{DAV:}displayname` / `{http://apple.com/ns/ical/}calendar-color`(**#RRGGBBAA hex**)/
-  `calendar-order`(macOS)であり、RFC 7986 の COLOR(CSS3 色名の iCalendar プロパティ)や
-  NAME は参照しない。レイヤーも値形式も別物。
+<!-- 2026-07-09 訂正(レビュー指摘・原文照合済み): 初版の「RFC 7986 は iOS 対応に不要」は
+     断定が過剰だった。正確には「iOS のカレンダー一覧の色・名前は WebDAV プロパティ経由であり
+     RFC 7986 の COLOR/NAME を参照しない」が確認済みなだけで、RFC 7986 全体の要否は別問題。 -->
+- **RFC 7986 のスコープ**(§5/§6 原文照合済み): プロパティは11個 —
+  VCALENDAR レベルのメタデータ(NAME / DESCRIPTION / UID / LAST-MODIFIED / URL /
+  CATEGORIES / REFRESH-INTERVAL / SOURCE。後ろ5つは RFC 5545 既存プロパティの適用範囲拡張)+
+  COLOR / IMAGE(VCALENDAR, VEVENT, VTODO, VJOURNAL)+ CONFERENCE(VEVENT, VTODO)。
+  パラメータは4個 — DISPLAY(IMAGE 用: BADGE/GRAPHIC/FULLSIZE/THUMBNAIL)/
+  EMAIL(ORGANIZER・ATTENDEE 用)/ FEATURE(CONFERENCE 用: AUDIO/CHAT/FEED/MODERATOR/
+  PHONE/SCREEN/VIDEO)/ LABEL(CONFERENCE 用)。
+  - 細則: IMAGE・CONFERENCE は複数出現可(全インスタンス往復保持のこと)。
+    VCALENDAR の UID には「ユーザー・ホスト等のプライバシー情報を含めては MUST NOT」の追加制約。
+- **iOS のカレンダー一覧色・名前は RFC 7986 を使わない**(ここは初版どおり)。iOS が使うのは
+  WebDAV プロパティの `{DAV:}displayname` /
+  `{http://apple.com/ns/ical/}calendar-color`(**#RRGGBBAA hex**)/ `calendar-order`(macOS)
+  であり、RFC 7986 の COLOR(CSS3 色名の iCalendar プロパティ)や NAME は参照しない。
+  レイヤーも値形式も別物。
+- **本プロジェクトでの方針**: RFC 7986 プロパティは汎用構造(生値保持)によりすでに
+  ロスレス往復される(専用実装は不要)。semantics 層の型付きアクセサは必要になった時点で追加する。
+  CONFERENCE / IMAGE / EMAIL パラメータは Apple Calendar の体験(会議リンク表示等)にも
+  関わりうるため「iOS 対応に不要」とは断定しない。
 - iOS がコレクションに PROPFIND してくるプロパティ(sabre/dav ドキュメント):
   displayname / calendar-description / getctag / apple:calendar-color /
   supported-calendar-component-set / resourcetype / **current-user-privilege-set**。

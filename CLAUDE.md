@@ -135,10 +135,12 @@ src/
 - 2026-07-09: codex レビュー対応(7ed36c7)。VTODO の RRULE 検証追加(I5/I6 を validateRRule に
   共通化)、DUE 値型判定を VALUE 型一致のみに緩和(形態一致 MUST は RECURRENCE-ID だけ)、
   DUE > DTSTART(§3.8.2.3)を I4 として追加(docs 05 訂正5にも追記)。95 pass / tsc green。
-- **次の作業**: iCalendar コンテキストは初期実装完了。次は以下のいずれか:
-  1. CalDAV リソースコンテキスト(RFC 4918/4791)のドメインモデル
-     (Principal / CalendarCollection / CalendarObjectResource / SyncToken / ETag、R1〜R7)
-  2. または RecurrenceExpansion ドメインサービス(calendar-query の time-range まで先送り可、
-     docs/modeling/03 §1-4 参照 — multiget/sync が先なら不要)。
-  推奨は 1(実装順の根拠: docs/modeling/02-usecases.md)。
-  実装前に docs/modeling/03(R1-R7)と 05(CalDAV 細則)を必ず読むこと。
+- 2026-07-09: RFC 7986 の docs 訂正(「iOS 対応に不要」の断定を撤回、§5/§6 の全スコープを
+  原文照合で記載)+ **docs/modeling/06-ios-behavior-verification.md 新設**(iOS 実機挙動の
+  検証計画 A1〜A6 / B1〜B8 / C1)。C1 は実測済み: workerd は MKCALENDAR を通さない(501)、
+  PROPFIND/REPORT/PROPPATCH は通る → ローカルは前作型の書き換えプロキシが必要。
+- **次の作業**: CalDAV リソースコンテキスト実装の前に、docs/modeling/06 の iOS 実機検証
+  (cloudflared + wrangler + Proxyman、前作 hono-caldav の Makefile 資産を流用)。
+  検証の優先度と実装との並行方針はユーザーと相談して決める。
+  その後 CalDAV リソースコンテキスト(Principal / CalendarCollection /
+  CalendarObjectResource、R1〜R7。docs/modeling/03 と 05 の CalDAV 細則を必読)。
