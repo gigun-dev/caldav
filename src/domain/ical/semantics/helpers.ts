@@ -87,10 +87,17 @@ export function isCalDateTime(v: CalDate | CalDateTime): v is CalDateTime {
 }
 
 /**
- * 同じ「値型・形態」かを判定する(I6 の値型一致 MUST 用)。
+ * 同じ「値型・形態」かを判定する(値型 + kind + tzid の完全一致)。
  *   - 一方が DATE で他方が DATE-TIME → 不一致
  *   - 両方 DATE-TIME → kind(floating/utc/zoned)も一致し、zoned なら tzid も一致
- * RECURRENCE-ID は DTSTART と「形態まで」一致 MUST(§3.8.4.4)なので kind/tzid まで見る。
+ *
+ * 【現在未使用。形態完全一致の検証が必要になったら使う。】
+ * 2026-07-09 原文再照合: 唯一の呼び出し元だった VEvent の RECURRENCE-ID 検証は、§3.8.4.4 の
+ * 明示 MUST が「値型一致 + floating iff floating」の2点のみと判明したため、この完全一致判定を
+ * やめて緩めた(vevent.ts の該当箇所参照)。utc⇔utc / zoned+tzid の完全一致まで縛る MUST は
+ * RFC 上どこにも無いので、この関数は一旦どこからも呼ばれない。定義は消さず残す — 将来
+ * 「値だけでなく形態も完全一致していること」を要求する検証(例: 厳格モードの往復照合)が
+ * 出てきたときに再利用できるため。冗長を理由に消さない(CLAUDE.md コメント方針)。
  */
 export function sameDateForm(a: CalDate | CalDateTime, b: CalDate | CalDateTime): boolean {
 	const aDt = isCalDateTime(a);

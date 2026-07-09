@@ -143,14 +143,23 @@ describe("RecurrenceRule(§3.3.10 RECUR)", () => {
 		expect(formatRecurrenceRule(rule)).toBe("FREQ=DAILY;COUNT=3;INTERVAL=2");
 	});
 
-	test("UNTIL は DATE または UTC DATE-TIME だけを受理する", () => {
+	// 2026-07-09 原文再照合で期待値を修正: §3.3.10 は UNTIL を DTSTART に合わせて3ケース
+	// (① DATE / ② floating DATE-TIME / ③ UTC DATE-TIME)許す。よって values 層は DATE・utc・
+	// floating の3形態を「構文上あり得る」として受理する(どれが正しいかは DTSTART 依存なので
+	// semantics 層の責務)。旧テストは floating(末尾 Z なし DATE-TIME)を expectInvalid にしていたが、
+	// これは docs の誤り(② floating ケース欠落)の転写で、合法な floating UNTIL を拒否していた。
+	test("UNTIL は DATE / UTC DATE-TIME / floating DATE-TIME を受理し往復する", () => {
 		expect(formatRecurrenceRule(parseRecurrenceRule("FREQ=DAILY;UNTIL=20260708"))).toBe(
 			"FREQ=DAILY;UNTIL=20260708",
 		);
+		// ③ UTC(末尾 Z)。非退行。
 		expect(formatRecurrenceRule(parseRecurrenceRule("FREQ=DAILY;UNTIL=20260708T000000Z"))).toBe(
 			"FREQ=DAILY;UNTIL=20260708T000000Z",
 		);
-		expectInvalid(() => parseRecurrenceRule("FREQ=DAILY;UNTIL=20260708T000000"));
+		// ② floating(末尾 Z なし DATE-TIME)。parse→format でロスレスに戻る(Z を付け足さない)。
+		const rule = parseRecurrenceRule("FREQ=DAILY;UNTIL=20260801T000000");
+		expect(rule.until).toMatchObject({ type: "date-time", dateTime: { kind: "floating" } });
+		expect(formatRecurrenceRule(rule)).toBe("FREQ=DAILY;UNTIL=20260801T000000");
 	});
 
 	test("不変条件違反を拒否する", () => {

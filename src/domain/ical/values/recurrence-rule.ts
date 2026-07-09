@@ -19,15 +19,25 @@
 //
 // 【主要な相互作用不変条件】
 //   I5 : UNTIL と COUNT は同時指定不可。
-//   I6 : UNTIL が DATE-TIME なら UTC 形式(末尾 Z)MUST。TZID 付き UNTIL は存在しない
-//        (§05 訂正4)。DATE か DATE-TIME(UTC)のみ。
+//   I6 : UNTIL の値型・形態は DTSTART に従う。§3.3.10 は3ケース:
+//        ① DTSTART が DATE          → UNTIL も DATE
+//        ② DTSTART が floating D-T   → UNTIL も floating DATE-TIME(MUST)
+//        ③ DTSTART が UTC / TZID 付き → UNTIL は UTC 形式
+//        TZID 付き UNTIL は存在しない(RECUR 値の文法上 UNTIL にパラメータは付かない)。
+//        よって DATE-TIME の UNTIL は「utc か floating」の2形態のみ。
+//        【責務分担】どの形態が許されるかは DTSTART に依存するので、①②③の整合検証は
+//        この values 層ではなく semantics 層(validateRRule)の責務。ここは「構文上あり得る
+//        2形態(utc / floating)を受理」に徹し、DTSTART との照合はしない。
+//        2026-07-09 原文再照合で発見: docs の誤り(② floating ケースの欠落)がそのまま
+//        コードに転写され、合法な floating UNTIL(② のケース)を InvalidValueError で
+//        拒否していた。§3.3.10 原文の3箇条に照らして utc 限定をやめ、floating を受理する。
 //   序数付き BYDAY(例 2MO, -1SU)は FREQ=MONTHLY か YEARLY のときのみ有効。さらに
 //        FREQ=YEARLY で BYWEEKNO を併用する場合は序数付き BYDAY 不可(§3.3.10 の注記)。
 // =============================================================================
 
 import { InvalidValueError } from "./errors";
 import { type CalDate, parseCalDate, formatCalDate } from "./cal-date";
-import { type CalDateTimeUtc, parseCalDateTime, formatCalDateTime } from "./cal-date-time";
+import { type CalDateTime, parseCalDateTime, formatCalDateTime } from "./cal-date-time";
 
 // FREQ の取りうる値(§3.3.10)。頻度は下から上へ。
 export const FREQUENCIES = ["SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"] as const;
@@ -47,12 +57,17 @@ export interface WeekdayNum {
 }
 
 /**
- * UNTIL の値。DATE か DATE-TIME(UTC のみ)。I6 のため2形態を明示的にタグ付けする。
- * (CalDate と CalDateTimeUtc を裸で union にすると判別しづらいのでラップ。)
+ * UNTIL の値。DATE か DATE-TIME(utc または floating)。type タグで DATE / DATE-TIME を、
+ * DATE-TIME 側は保持した CalDateTime の kind で utc / floating を判別できる。
+ *
+ * DATE-TIME 側を CalDateTimeUtc 限定にしないのは §3.3.10 の②(floating DTSTART → floating
+ * UNTIL)が合法だから(2026-07-09 原文再照合。冒頭 I6 コメント参照)。zoned は RECUR 値の
+ * 文法上 UNTIL に TZID を付けられないので構文上あり得ず、型からも除外する(utc | floating)。
+ * どちらの形態が正しいか(DTSTART との整合)は semantics 層 validateRRule の責務。
  */
 export type RecurUntil =
 	| { readonly type: "date"; readonly date: CalDate }
-	| { readonly type: "date-time"; readonly dateTime: CalDateTimeUtc };
+	| { readonly type: "date-time"; readonly dateTime: Extract<CalDateTime, { kind: "utc" | "floating" }> };
 
 /**
  * RECUR 値(§3.3.10)。イミュータブル。
@@ -145,20 +160,20 @@ function parseByDay(raw: string, whole: string): WeekdayNum[] {
 	});
 }
 
-// UNTIL をパース。DATE(8桁)か DATE-TIME(UTC, 末尾 Z)のみ許可(I6)。
+// UNTIL をパース。DATE(8桁)か DATE-TIME(utc / floating)を「構文上あり得る形態」として受理する。
+// 2026-07-09 原文再照合で修正: 以前は末尾 Z(UTC)を MUST として floating を throw していたが、
+// §3.3.10 ②(floating DTSTART → floating UNTIL)は合法。utc 限定は誤りだった(冒頭 I6 コメント参照)。
+// どの形態が正しいか(DTSTART との整合)は values 層では判断できない(DTSTART を知らない)ので、
+// ここでは形態を選別せず parseCalDateTime の返す kind をそのまま保持する。整合検証は semantics 層。
 function parseUntil(raw: string, whole: string): RecurUntil {
 	// "T" を含めば DATE-TIME、含まなければ DATE、で振り分ける。
 	if (raw.includes("T")) {
-		// DATE-TIME は UTC 形式 MUST(§3.3.10 / §05 訂正4)。末尾 Z が無ければ違反。
-		if (!raw.endsWith("Z")) {
-			throw new InvalidValueError("RECUR", whole, `UNTIL date-time must be in UTC form (trailing 'Z'): "${raw}"`);
-		}
-		// tzid は渡さない(TZID 付き UNTIL は存在しない)。parseCalDateTime は Z 付きを utc として返す。
+		// tzid は渡さない(RECUR 値の文法上 UNTIL に TZID は付かない)。よって末尾 Z 有無で
+		// utc / floating のどちらかになり、zoned にはならない。
 		const dt = parseCalDateTime(raw);
-		// 型上は CalDateTime だが、Z 付きなので必ず kind:"utc"。念のため絞り込み。
-		if (dt.kind !== "utc") {
-			// 実際にはここには来ない(Z 判定済み)。防御的に。
-			throw new InvalidValueError("RECUR", whole, "UNTIL date-time must be UTC");
+		if (dt.kind === "zoned") {
+			// tzid を渡していない以上ここには到達しない。型を utc|floating に絞るための防御。
+			throw new InvalidValueError("RECUR", whole, "UNTIL date-time must not carry a time zone (no TZID in RECUR)");
 		}
 		return { type: "date-time", dateTime: dt };
 	}
@@ -339,7 +354,9 @@ function formatWeekdayNum(d: WeekdayNum): string {
 	return d.ordinal !== undefined ? `${d.ordinal}${d.weekday}` : d.weekday;
 }
 
-// UNTIL の文字列化(DATE か UTC DATE-TIME)。
+// UNTIL の文字列化(DATE / utc DATE-TIME / floating DATE-TIME)。
+// formatCalDateTime は utc なら末尾 Z を付け、floating なら付けない(②の floating UNTIL を
+// ロスレスに戻すため。2026-07-09 修正でここも floating を出せるようになった)。
 function formatUntil(u: RecurUntil): string {
 	return u.type === "date" ? formatCalDate(u.date) : formatCalDateTime(u.dateTime);
 }

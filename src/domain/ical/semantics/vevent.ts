@@ -36,7 +36,6 @@ import {
 	isCalDateTime,
 	parseDateOrDateTime,
 	rawValue,
-	sameDateForm,
 	subComponents,
 	valueType,
 } from "./helpers";
@@ -232,12 +231,29 @@ export class VEvent {
 				}
 			}
 
-			// RECURRENCE-ID は DTSTART と「値型 + 形態」一致 MUST(§3.8.4.4)。
+			// RECURRENCE-ID の DTSTART との一致 MUST(§3.8.4.4)。
+			// 2026-07-09 原文再照合で緩和: §3.8.4.4 の明示 MUST は次の2点のみ(docs/05 の 2026-07-09 精密化)。
+			//   (1) 値型一致(DATE ⇔ DATE-TIME)
+			//   (2) 「floating であるのは DTSTART が floating のとき、かつそのときに限る」(floating iff floating)
+			// 旧実装は sameDateForm を使い utc⇔utc / zoned+tzid 完全一致まで要求していたが、これは過剰。
+			// 例えば `DTSTART;TZID=Asia/Tokyo:...`(zoned)に対し UTC 形式の RECURRENCE-ID を付ける実装は
+			// 現実に存在し §3.8.4.4 上は合法(どちらも非 floating)。それを sameDateForm が誤検知していた。
+			// よって「値型一致 + floating iff floating」だけを見る判定へ緩める。
 			const ridProp = firstProp(c, "RECURRENCE-ID");
 			if (ridProp !== undefined && start !== undefined) {
 				const rid = parseDateOrDateTime(ridProp);
-				if (!sameDateForm(start, rid)) {
-					add("I6", "RECURRENCE-ID value type/form must match DTSTART (§3.8.4.4)");
+				const startDt = isCalDateTime(start);
+				const ridDt = isCalDateTime(rid);
+				if (startDt !== ridDt) {
+					// (1) 値型不一致。
+					add("I6", "RECURRENCE-ID value type must match DTSTART (DATE vs DATE-TIME) (§3.8.4.4)");
+				} else if (startDt && ridDt) {
+					// (2) 両方 DATE-TIME。floating iff floating を検査(utc/zoned の区別や tzid 一致は問わない)。
+					const startFloating = start.kind === "floating";
+					const ridFloating = rid.kind === "floating";
+					if (startFloating !== ridFloating) {
+						add("I6", "RECURRENCE-ID must be floating (local time) if and only if DTSTART is floating (§3.8.4.4)");
+					}
 				}
 			}
 
@@ -300,8 +316,12 @@ export function parseInteger(raw: string, name: string): number {
  *
  * 検証内容:
  *   - I5: RRULE 自体のパース失敗(UNTIL/COUNT 排他違反・FREQ 欠落など、values 層の throw)を収集
- *   - I6: UNTIL の値型が DTSTART と一致(DTSTART が DATE なら UNTIL も DATE、
- *         DATE-TIME なら UNTIL は DATE-TIME/UTC)。UNTIL の UTC 強制自体は values 層が担保済み
+ *   - I6: UNTIL の値型・形態が DTSTART と整合(§3.3.10 の3ケース)。
+ *         ① DTSTART=DATE       → UNTIL=DATE(値型一致)
+ *         ② DTSTART=floating DT → UNTIL=floating DT
+ *         ③ DTSTART=utc/zoned DT → UNTIL=utc DT
+ *         values 層は「utc / floating の2形態」を構文受理するだけで DTSTART を知らないため、
+ *         ①②③のどれに当たるか(=形態の正しさ)の判断はここ semantics 層でしかできない。
  *
  * DTSTART の解釈はこの関数内で自前に行う(呼び出し側の start に依存させない)ので、
  * VEvent / VTodo どちらも `validateRRule(violations, "VEVENT"|"VTODO", c)` で呼べる。
@@ -323,10 +343,33 @@ export function validateRRule(violations: InvariantViolation[], component: strin
 		// その解釈失敗は同じ safe が I5 違反として拾う(DTSTART 単体の別検証は各レンズの他所の責務)。
 		const start = dtstartProp !== undefined ? parseDateOrDateTime(dtstartProp) : undefined;
 		if (rule.until !== undefined && start !== undefined) {
+			// §3.3.10 の3ケースを正確に判定する。
+			// 2026-07-09 原文再照合で修正: 旧実装は DATE vs DATE-TIME の「値型一致」しか見ておらず、
+			// ② floating DTSTART に utc UNTIL(またはその逆)という形態違反を素通りさせていた。
+			// values 層が floating UNTIL を受理するようになった(合法化した)ことで、この抜けが
+			// 実害になる(floating/utc の取り違えを検出できない)ため3ケースへ正確化する。
 			const untilIsDate = rule.until.type === "date";
 			const startIsDate = !isCalDateTime(start);
 			if (untilIsDate !== startIsDate) {
+				// ① 値型不一致(DATE ⇔ DATE-TIME の食い違い)。
 				pushViolation(violations, "I6", component, "RRULE UNTIL value type must match DTSTART (DATE vs DATE-TIME) (§3.3.10)");
+			} else if (!untilIsDate && !startIsDate && isCalDateTime(start) && rule.until.type === "date-time") {
+				// 両方 DATE-TIME。ここで②③の形態整合を見る。
+				//   ② DTSTART が floating          → UNTIL は floating でなければならない
+				//   ③ DTSTART が utc または zoned   → UNTIL は utc でなければならない
+				// (UNTIL の kind は values 層で utc | floating のみ。zoned は来ない。)
+				const startFloating = start.kind === "floating";
+				const untilFloating = rule.until.dateTime.kind === "floating";
+				if (startFloating !== untilFloating) {
+					pushViolation(
+						violations,
+						"I6",
+						component,
+						startFloating
+							? "RRULE UNTIL must be floating (local time) when DTSTART is floating (§3.3.10)"
+							: "RRULE UNTIL must be in UTC form when DTSTART is UTC or has a TZID (§3.3.10)",
+					);
+				}
 			}
 		}
 

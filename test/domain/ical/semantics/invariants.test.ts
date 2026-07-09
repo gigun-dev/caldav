@@ -159,6 +159,57 @@ describe("I6: 値型一致", () => {
 	});
 });
 
+// 2026-07-09 原文再照合で追加: §3.3.10 の UNTIL 3ケース(DATE/floating/utc)を DTSTART の
+// 形態と突き合わせて検証する。values 層は utc / floating を「構文上あり得る2形態」として
+// 受理するようになった(合法な floating UNTIL の拒否バグを修正)ため、①②③のどれに当たるか
+// (形態の正しさ)を判断する責務が semantics 層(validateRRule)に来た。その3ケースの検証。
+describe("§3.3.10: RRULE UNTIL の形態が DTSTART に整合する(I6)", () => {
+	// ② floating DTSTART + floating UNTIL → 合法(旧実装はそもそも floating UNTIL を values 層で
+	//    拒否していたため、この合法ケースをテストできていなかった)。違反ゼロが正しい。
+	test("floating DTSTART + floating UNTIL → 違反ゼロ", () => {
+		expectNoViolations(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000\nRRULE:FREQ=DAILY;UNTIL=20260801T000000\nEND:VEVENT\nEND:VCALENDAR`,
+		);
+	});
+	// ② の違反: floating DTSTART なのに UNTIL が utc(末尾 Z)→ 形態不一致 I6。
+	test("floating DTSTART + utc UNTIL → I6", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000\nRRULE:FREQ=DAILY;UNTIL=20260801T000000Z\nEND:VEVENT\nEND:VCALENDAR`,
+			"I6",
+		);
+	});
+	// ③ の違反: utc DTSTART なのに UNTIL が floating → 形態不一致 I6。
+	test("utc DTSTART + floating UNTIL → I6", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nRRULE:FREQ=DAILY;UNTIL=20260801T000000\nEND:VEVENT\nEND:VCALENDAR`,
+			"I6",
+		);
+	});
+});
+
+// 2026-07-09 原文再照合で追加/緩和: RECURRENCE-ID の DTSTART 一致 MUST は §3.8.4.4 上
+// 「値型一致 + floating iff floating」の2点のみ。utc⇔utc/zoned+tzid の完全一致は MUST でない。
+// 旧実装(sameDateForm)は zoned DTSTART + utc RECURRENCE-ID を誤検知していた。その緩和の回帰。
+describe("§3.8.4.4: RECURRENCE-ID は DTSTART と値型一致 + floating iff floating(I6)", () => {
+	// Asia/Tokyo VTIMEZONE 同梱(zoned DTSTART の TZID 参照整合 I8 を満たすため)。
+	const TOKYO_TZ =
+		"BEGIN:VTIMEZONE\nTZID:Asia/Tokyo\nBEGIN:STANDARD\nDTSTART:19700101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\nEND:VTIMEZONE";
+	// ④ 緩和の核心: zoned DTSTART(共に非 floating)+ utc RECURRENCE-ID → 違反ゼロが正しい。
+	//    旧 sameDateForm は kind(zoned vs utc)不一致で I6 を誤検知していた。
+	test("zoned DTSTART + utc RECURRENCE-ID → 違反ゼロ", () => {
+		expectNoViolations(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\n${TOKYO_TZ}\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART;TZID=Asia/Tokyo:20260101T100000\nRECURRENCE-ID:20260101T010000Z\nEND:VEVENT\nEND:VCALENDAR`,
+		);
+	});
+	// ⑤ floating DTSTART なのに RECURRENCE-ID が utc(非 floating)→ floating iff floating 違反 I6。
+	test("floating DTSTART + utc RECURRENCE-ID → I6", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000\nRECURRENCE-ID:20260101T100000Z\nEND:VEVENT\nEND:VCALENDAR`,
+			"I6",
+		);
+	});
+});
+
 describe("I7: SEQUENCE は 0 以上の整数", () => {
 	test("SEQUENCE が負 → I7", () => {
 		expectViolation(
