@@ -199,7 +199,7 @@ classDiagram
 | I3 | VEVENT の `DTEND` と `DURATION` は同時に存在しない。`DTEND` は `DTSTART` より後(同時刻も不可・MUST) | §3.6.1/§3.8.2.2 |
 | I4 | VTODO の `DUE` と `DURATION` は同時に存在しない(`DURATION` には `DTSTART` 必須)。`DUE` は `DTSTART` より後(MUST)<!-- 2026-07-08 追記: §3.8.2.3 "value MUST be later in time than DTSTART"。比較可能形態(両方DATE/同一非zoned形態)でのみ検証、zoneは解決不要で比較できないため対象外 --> | §3.6.2/§3.8.2.3 |
 | I5 | `RRULE` の `UNTIL` と `COUNT` は同時に指定できない。`FREQ` は必須で生成時は先頭に置く | §3.3.10 |
-| I6 | `DTEND`/`DUE`/`RECURRENCE-ID` の値型は `DTSTART` と一致(MUST)。`UNTIL` は `DTSTART` が DATE なら DATE、**DATE-TIME(UTC/TZID 付き)なら UTC 形式**(TZID 付き UNTIL は存在しない) | §3.3.10/§3.8.2/§3.8.4.4 |
+| I6 | `DTEND`/`DUE`/`RECURRENCE-ID` の値型は `DTSTART` と一致(MUST。RECURRENCE-ID はさらに floating ⇔ floating の相互一致も MUST)。`UNTIL` は `DTSTART` が ①DATE なら DATE、②**floating DATE-TIME なら floating DATE-TIME**、③UTC/TZID 付きなら UTC 形式(TZID 付き UNTIL は存在しない)<!-- 2026-07-09 原文再照合: ②floating ケースの欠落を訂正(05 訂正4参照) --> | §3.3.10/§3.8.2/§3.8.4.4 |
 | I7 | `SEQUENCE` は organizer の「重要な改訂(significant revision)」ごとに単調増加、初期値0。繰り返しインスタンスごとに異なる値を持ちうる | §3.8.7.4 |
 | I8 | TZID パラメータ付き日時は、参照する VTIMEZONE が同じ VCALENDAR 内に存在する(TZID ごとに MUST)。TZID は UTC 値(Z付き)と DATE 型に付けては MUST NOT | §3.2.19/§3.3.5 ※iOS は必ず VTIMEZONE を同梱してくる |
 | I9 | DATE 型 `DTSTART` のとき RRULE の `BYSECOND`/`BYMINUTE`/`BYHOUR` は不可(違反時は無視 MUST)。DATE 型イベントの `DURATION` は日/週単位のみ | §3.3.10/§3.6.1 |
@@ -282,7 +282,7 @@ classDiagram
     class SyncChange {
         <<entity(CalendarCollection 集約内)>>
         RFC 6578
-        uri + 変化種別(created|modified|deleted)
+        uri + 変化種別(created|modified|deleted)<br/>※RFC 6578 の応答語彙は changed/removed の2値。<br/>created/modified の区別は内部モデルの都合で、<br/>presentation 層で changed に写像する(2026-07-09 注記)
         + その時点の syncToken
     }
     class SyncToken {
@@ -322,11 +322,13 @@ classDiagram
 | R2 | コレクションの `supportedComponents` に合う種別しか置けない(プロパティ不在時は全種別受理 MUST) | §5.2.3 / precondition `supported-calendar-component` |
 | R3 | リソース内の全コンポーネント(VTIMEZONE 除く)は同一 UID | §4.1(recurrence オーバーライドのため) |
 | R4 | 同一コレクション内で UID は重複しない。**既存リソースを別 UID で上書きすることも不可**(= PUT 更新で UID 変更不可)。エラー時は衝突相手の URL を href で返す SHOULD | §4.1/§5.3.2.1 / precondition `no-uid-conflict` → 403/409 |
-| R5 | 全リソースで**強い ETag** を持つ(MUST)。PUT 応答で ETag を返せるのは格納データが送信ボディとオクテット等価な場合のみ(サーバーが書き換えたら返しては MUST NOT)。If-Match 不一致は 412 | §5.3.4 / RFC 7232 ※ロスレス往復設計なら常に返せる — この設計の RFC 上の実利 |
+| R5 | 全リソースで**強い ETag** を持つ(MUST)。PUT 応答での ETag は、格納データが送信ボディとオクテット等価なら返す SHOULD、サーバーが書き換えたら返しては MUST NOT<!-- 2026-07-09 補記: 「等価なら返す」は SHOULD(必須ではない)。旧表現は SHOULD が読み取れなかった -->。If-Match 不一致は 412 | §5.3.4 / RFC 7232 ※ロスレス往復設計なら常に返せる — この設計の RFC 上の実利 |
 | R6 | カレンダーコレクションは**任意の深さで**ネスト不可(直下だけではない)。直下の非コレクションはカレンダーオブジェクトリソースのみ | §4.2 |
 | R7 | リソースは iCalendar の `METHOD` プロパティを含んでは MUST NOT(METHOD 付き = iTIP メッセージは通常コレクションに入らない) | §4.1 / precondition `valid-calendar-object-resource` |
 
-PUT の precondition は全11個ある(max-resource-size / min-date-time / max-instances 等)。
+§5.3.2.1 の precondition は計11個、うち PUT に適用されるのは10個
+(calendar-collection-location-ok は COPY/MOVE 専用 — 2026-07-09 原文再照合で訂正。
+max-resource-size / min-date-time / max-instances 等の上限系を含む)。
 一覧と、calendar-data が WebDAV プロパティではない(REPORT 応答専用)こと、
 multiget が Depth を無視することなどの細則は [05-rfc-verification.md](05-rfc-verification.md) を参照。
 

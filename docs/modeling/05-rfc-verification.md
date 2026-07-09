@@ -20,9 +20,16 @@
    「不透明な文字列なら何でもよい」は誤り。前作 hono-caldav の整数カウンタは厳密には違反。
    内部は整数カウンタでよいが、公開形式は `https://…/ns/sync/{n}` 等の URI にする。
 2. **削除メンバーは 404**(RFC 6578 §3.2 Marshalling)。前作の 410 は誤りと原文で確定。
-3. **初回同期 = 空の DAV:sync-token 要素**(§3.4)。要素の省略は不正(要素自体は必須)。
-4. **UNTIL は DTSTART と同値型 MUST + DTSTART が UTC/TZID 付きなら UNTIL は UTC 形式 MUST**
-   (RFC 5545 §3.3.10)。TZID 付き UNTIL は存在しない。
+3. **初回同期 = 空の DAV:sync-token 要素**(要素自体の必須性は §3.2 Marshalling と §6.1 DTD、
+   空要素時の「全件返す」動作は §3.4)。要素の省略は不正。
+   <!-- 2026-07-09 原文再照合: 当初 §3.4 のみ引用していたが、「省略不可」の根拠は §3.2/§6.1。 -->
+4. **UNTIL は DTSTART と同値型 MUST + 形態も DTSTART に従う**(RFC 5545 §3.3.10):
+   ① DTSTART が DATE なら UNTIL も DATE、② **floating DATE-TIME なら UNTIL も floating
+   DATE-TIME**、③ UTC または TZID 付き DATE-TIME なら UNTIL は UTC 形式。
+   TZID 付き UNTIL は存在しない。
+   <!-- 2026-07-09 原文再照合で発見: 当初②の floating ケースが抜けており、「DATE か UTC のみ」
+        と誤読できる記述だった。この誤りがコード(parseUntil の floating 拒否)に転写されていた
+        実例 — docs/rfc/ 常備の動機。 -->
 5. **DTEND/DUE の値型は DTSTART と一致 MUST(SHOULD ではない)+ DTEND は DTSTART より後 MUST**
    (§3.8.2.2/§3.8.2.3)。同時刻も不可。
    <!-- 2026-07-08 レビュー時に発見・追記: DUE も DTSTART より後 MUST。§3.8.2.3 は
@@ -45,11 +52,17 @@
 - **カレンダーオブジェクトリソースは METHOD プロパティを含んでは MUST NOT**(§4.1)。
   → 不変条件 R7 として図に追加。iTIP メッセージ(METHOD 付き)は通常コレクションに入らない。
 - **no-uid-conflict は「別 UID での上書き」も禁止**(§5.3.2.1)。PUT 更新時に UID 変更不可。
-  エラー時は使用中リソースの URL を DAV:href で返す SHOULD。
-- **PUT の precondition は全11個**(§5.3.2.1): supported-calendar-data / valid-calendar-data /
-  valid-calendar-object-resource / supported-calendar-component / no-uid-conflict /
-  calendar-collection-location-ok / max-resource-size / min-date-time / max-date-time /
+  エラー時は使用中リソースの URL を DAV:href で返す SHOULD
+  (この SHOULD の原文は「同一 UID を既に使っているリソース」の URL を指す。
+  「別 UID での上書き」違反時に何を href で返すかは原文に明言なし — 2026-07-09 再照合で注記)。
+- **§5.3.2.1 の precondition は計11個、うち PUT に適用されるのは10個**: supported-calendar-data /
+  valid-calendar-data / valid-calendar-object-resource / supported-calendar-component /
+  no-uid-conflict / max-resource-size / min-date-time / max-date-time /
   max-instances / max-attendees-per-instance。違反は 403 or 409 + DAV:error 直下に該当要素(§1.3)。
+  <!-- 2026-07-09 原文再照合で訂正: 当初「PUT の precondition は全11個」としていたが、
+       calendar-collection-location-ok は「COPY/MOVE で Request-URI がカレンダーコレクション
+       自体のとき」専用(原文: "In a COPY or MOVE request..." )で PUT には適用されない。
+       §5.3.2.1 の表題が "for PUT, COPY, and MOVE" なので混同した。 -->
 - **ETag**: 全リソースで強い ETag MUST(§5.3.4)。PUT 応答での ETag 返却は「格納データが
   送信ボディとオクテット等価」の場合のみ SHOULD。**サーバーがデータを書き換えたら返しては MUST NOT**。
   → ロスレス往復設計なら常に返せる。書き換えない設計の実利的根拠がここにもある。
@@ -77,8 +90,12 @@
   DTEND/DURATION 無し→1日、DATE-TIME 型で無し→長さ0。
 - **DURATION 値の週(W)は日時分秒と併用不可**。ISO 8601 の年月指定子は非サポート(§3.3.6)。
 - **RDATE は PERIOD 値型も可**(インスタンス個別の期間上書き)。EXDATE が優先。重複は1つに統合。
-- **RECURRENCE-ID は DTSTART と値型・形態(floating/UTC/TZID)一致 MUST**(§3.8.4.4)。
+- **RECURRENCE-ID は DTSTART と値型一致 MUST + floating ⇔ floating の相互一致 MUST**(§3.8.4.4)。
   RANGE の値は THISANDFUTURE のみ(THISANDPRIOR は RFC 5545 で廃止)。
+  <!-- 2026-07-09 原文再照合で精密化: 明示 MUST は「値型一致」と「floating iff floating」の2点のみ。
+       「UTC ⇔ UTC」「TZID ⇔ TZID」の形態一致は明文の MUST ではない(ただし RECURRENCE-ID の値は
+       対象 occurrence の DTSTART 原値なので実務上は形態も一致する)。検証実装は明示 MUST の
+       2点だけを違反として扱い、utc/zoned の混在は許容すること。 -->
 - **TZID パラメータは UTC 値(Z付き)と DATE 型に付けては MUST NOT**(§3.2.19/§3.3.5)。
   UTC オフセット形式(`19980119T230000-0800`)は MUST NOT。
 - **DTSTAMP は UTC 必須**(§3.8.7.2)。METHOD 有無で意味が変わる(iTIP送信時刻 vs 最終改訂時刻)。
@@ -99,13 +116,14 @@
   打ち切り時の sync-token は「部分集合まで」を表す正しい値 MUST(=ページング可能)(§3.6)。
   クライアント指定 limit を守れないなら number-of-matches-within-limits postcondition で失敗 MUST(§3.7)。
 - **同期間隔内に追加→削除されたメンバーは removed として報告 MUST**(§3.5)。
-- コレクション自体が削除された場合、中のメンバーの削除は報告 MUST NOT(§3.5)。
+- コレクション自体が削除された場合、中のメンバーの削除は報告 MUST NOT
+  (**sync-level=infinite のときの規定**。§3.5.2 — 2026-07-09 再照合で条件を補記)。
 - ACL でアクセスを失ったメンバーは removed 扱い MAY(§3.5)。
 - **DAV:sync-token はコレクションのプロパティとしても定義**(§4)。クライアントは PROPFIND で
   ctag 代わりに取得できる。If ヘッダの state token としても使用可(§5)。
 - 無効トークン時の valid-sync-token precondition に HTTP ステータスの明記はない
   (403 + DAV:error は RFC 4918 §16 由来の実装慣行)。トークン無効化は「絶対に必要な時だけ」MUST。
-- supported-report-set への掲載は MUST(§3.1)。
+- supported-report-set への掲載は MUST(§3.2。<!-- 2026-07-09 再照合: 当初 §3.1 と誤引用 -->)。
 
 ### 探索 (RFC 6764 / 5397)
 
