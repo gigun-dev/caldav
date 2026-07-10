@@ -181,6 +181,9 @@ src/
     層境界 import 制約 + deploy)。
   - **M2 マルチユーザー**: 現状は単一ユーザー Basic(secrets 直)。ユーザー管理 +
     App Password(前作踏襲)+ principal 複数化。**スケジューリングの前提**。
+    iOS アカウント追加は**構成プロファイル(.mobileconfig)配布**を正式ルートにする
+    (パスワード手打ち回避。App Password 発行 → ワンタイム URL でプロファイル DL。
+    平文が入るので HTTPS + 使い捨て URL 必須、署名は後回し可)。
   - **M3 スケジューリング(招待)**: RFC 6638/5546。schedule-inbox/outbox、
     calendar-user-address-set、iTIP 処理、auto-schedule。B9 実測どおり、これが無いと
     iOS は招待 UI を出さない。サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。
