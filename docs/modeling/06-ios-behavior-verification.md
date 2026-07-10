@@ -81,6 +81,11 @@ wrangler dev(port 8787)
 
 ### C1の本番回避構成(2026-07-10 実装・実証済み)
 
+**iOS に案内する正式な入口は Cloud Run プロキシ URL(前作と同じ構成)。**
+workers.dev 直結でも MKCALENDAR 以外は動くが、端末から新規リストを作れないのは
+カレンダーサーバーとして論外(2026-07-10 ユーザー判断)なので、直結は検証・デバッグ用途のみ。
+B7(iOS の Extended MKCOL フォールバック)が白と実証されたときに初めてプロキシ撤去を検討する。
+
 - 外部入口: Cloud Run `caldav-proxy`(`caldav-prod-fukuro`, asia-northeast1)。
 - proxyは `MKCALENDAR` のみ `POST + X-Caldav-Method: MKCALENDAR` へ変換し、共有secretを付けて
   Workerへ転送する。それ以外のメソッドとbodyは透過する。
