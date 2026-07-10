@@ -164,9 +164,18 @@ src/
   sync-collection の prop フィルタ厳密照合 / multiget href のコレクション配下検証 /
   207 href の requestHref 一元化)→ 5コミットに分割してコミット(9362b6d〜11ac417)。
   188 tests / tsc green。テスト用に __setRepositoriesFactoryForTest 注入フックあり。
+- 2026-07-10: **iOS 実機検証(第1ラウンド)完了**。wrangler tail + CAPTURE_LOG 方式
+  (e1d1f52。大学 Wi-Fi で MITM 不可のため)で 114 リクエスト捕捉、全 14 操作を実施。
+  結果を 06 に反映(d506b51)、実データ fixtures 6本追加(a1d1b09)、
+  I4 の DUE==DTSTART 許容緩和(f2e50b9 — iOS の日付リマインダー実データによる)。
+  198 tests / tsc green。iOS 接続の正式入口は Cloud Run プロキシ URL。
 - **次の作業**:
-  1. iOS 実機を接続し、探索・初回同期・カレンダー/リマインダー作成を Proxyman +
-     ログで観測。結果を docs/modeling/06 の A1〜A9 / B3〜B9 へ反映する
-     (プロキシ環境では 8843/8008/8800 ポートプローブの 10s タイムアウトに注意 — 06 参照)。
-  2. B7(iOS が MKCALENDAR 501 後に Extended MKCOL へフォールバックするか)が白なら
-     Cloud Run プロキシ自体を撤去できる — 検証優先度高。
+  1. 実機検証の残り: A5(RECURRENCE-ID — 繰り返しの1回を「時間変更」して再測。
+     今回は EXDATE 削除になった)、A8(RSCALE — 非グレゴリオ暦 UI の場所を要調査)、
+     B8(サーバー側削除 → iOS への 404 伝搬)、B7 のフォールバック実験
+     (プロキシを外した wrangler dev 直で MKCALENDAR 501 後の挙動観測)。
+  2. presentation の確認: ETag 不一致を必ず 412 で返すこと(前作は 403 で iOS が
+     回復不能になった — 06 の教訓)。検証完了後は CAPTURE_LOG=0 に戻す。
+  3. 実測で確定した B5(sync-collection のみ使用)により calendar-query /
+     RecurrenceExpansion は当面不要と確定。次の実装候補は iOS 検証の残件消化 →
+     ローカル開発環境の整備(Makefile / seed / dev プロキシ)→ CI。
