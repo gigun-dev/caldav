@@ -188,9 +188,15 @@ src/
   - **M4 他クライアント対応**: calendar-query REPORT + RecurrenceExpansion
     (iOS は sync-collection だけで足りるが Thunderbird / tsdav 系は query を使う)。
   - **M5 共有・委任**: caldav-proxy / calendarserver-sharing(非 RFC の Apple 拡張)。
-    M2 が前提。
+    M2 が前提。**先行準備**: ①draft 原文を docs/specs/ に常備(docs/rfc と同じ思想)
+    ②M2 のスキーマに「コレクション×principal の権限表」を織り込む(current-user-
+    privilege-set を実データ化 — ここを逃すと M5 で手戻り)③read-only privilege 時の
+    iOS 挙動検証は単一ユーザーのままでも可能。
   - **M6 agentic 入口(長期ビジョン本命)**: MCP / REST アダプタ(application 層は
-    DAV 非依存済み)、Web フロント、メール起点のタスク追加。
+    DAV 非依存済み)、Web フロント(tsdav 採用想定 — ブラウザ直 CalDAV なら Worker に
+    CORS + DAV メソッドの preflight 対応が必要)、メール起点のタスク追加。
+    **tsdav は M1 の CI にも使える**: 探索→作成→同期→削除の互換性テストハーネスに
+    すれば iOS 実機なしで回帰検知できる(M4 の先行検証を兼ねる)。
   - **M7 運用**: 上限系 precondition(max-resource-size 等の ServerPolicy 実装)、
     監視、バックアップ、rate limit。
 - **次の作業**: M1 から。順序の推奨は M1 → M2 → (M3 or M6 — 招待を先にするか
