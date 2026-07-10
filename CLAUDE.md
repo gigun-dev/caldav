@@ -187,7 +187,20 @@ src/
   置かずに済む + PR に非本番 version(preview URL)が自動生成される。
   **未完(要ユーザー操作)**: ①Cloudflare ダッシュボードで repo を Workers Builds 連携
   ②main を branch protection で保護し CI check を required status に指定。
-  M1 残タスク: ETag 不一致 412 のテスト担保 / ローカル開発環境(Makefile/seed/dev プロキシ)。
+  M1 残タスク: ローカル開発環境(Makefile/seed/dev プロキシ)。
+- 2026-07-10: **M1 ETag 412 テスト担保 完了(PR #1, d9db9c3)**。app.fetch 経由の
+  end-to-end で PUT/DELETE の If-Match / If-None-Match 不一致が HTTP 412(≠403)に
+  なることを固定(前作の 403 iOS 回復不能退行の検知)。203 pass。初回 CI green + PR に
+  Cloudflare Workers Builds も連携済みと判明(deploy を GHA から外した判断と噛み合った)。
+- 2026-07-10: **M1 ローカル開発環境を実装(実行はこの環境では不可、実装のみ)**。
+  Makefile(dev/proxy/tunnel/seed/migrate-local/reset-local/mobileconfig/check、
+  `make check` は CI と同一の 境界→型→テスト)、scripts/seed-local.ts(SQL 直挿しでなく
+  HTTP PUT でシード = ETag/sync token をドメインに計算させる。要 `make dev` 起動中)、
+  cloudflared/config.example.yml(**named tunnel** 採用。理由: quick tunnel は URL が
+  毎回変わり .mobileconfig 再作成が要る / named なら固定ホスト名で使い回せる)。
+  経路は iOS → cloudflared → 書き換え proxy(:8080)→ wrangler dev(:8787)。
+  config.yml / *.json は .gitignore(tunnel 認証情報をコミットしない)。
+  → **これで M1「足場固め」完了**(CI / deploy / ETag 412 / ローカル環境)。次は M2。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +

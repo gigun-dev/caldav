@@ -1,0 +1,48 @@
+# cloudflared named tunnel 設定テンプレート
+# =============================================================================
+# iOS 実機を「毎回本番デプロイせず」ローカル Worker に繋ぐための固定 URL トンネル。
+#
+# 経路:  iPhone(CalDAV)
+#          → https://<固定ホスト名>  (Cloudflare エッジ)
+#          → cloudflared tunnel
+#          → ローカルの MKCALENDAR 書き換え proxy  (localhost:8080, proxy/server.ts)
+#          → wrangler dev の Worker              (localhost:8787)
+#
+# 【なぜ named tunnel(quick tunnel ではなく)】
+#   iOS は .mobileconfig(scripts/make-mobileconfig.ts)でアカウント追加する。
+#   quick tunnel(trycloudflare.com)は起動ごとに URL が変わり、そのたびに
+#   プロファイル再生成・再インストールが要る。named tunnel は固定ホスト名なので
+#   プロファイルを一度作れば使い回せる(docs/modeling/06 の反復検証で効く)。
+#
+# 【なぜ proxy(:8080)を経由するのか】
+#   workerd/Cloudflare 入口は MKCALENDAR メソッドを通さない(501)。iOS には
+#   Extended MKCOL フォールバックが無い(06 B7 ❌ で実証)ため、書き換え proxy は
+#   本番・ローカル問わず恒久構成。ローカルでもこの経路を再現する。
+#
+# -----------------------------------------------------------------------------
+# 初回セットアップ(一度きり。このリポジトリでは実行しない — 各自の環境で):
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create caldav-dev
+#        → ~/.cloudflared/<TUNNEL_ID>.json(認証情報)が生成される
+#   3. cloudflared tunnel route dns caldav-dev caldav-dev.example.com
+#        → 自分の Cloudflare 管理ドメインに CNAME が張られる
+#   4. この例を cloudflared/config.yml にコピーし、下記プレースホルダを埋める
+#        (config.yml と *.json は .gitignore 済み — 認証情報をコミットしない)
+#   5. make tunnel  (= cloudflared tunnel run caldav-dev)
+#
+# セットアップ後は make dev / make proxy / make tunnel の3プロセスを起動して使う。
+# =============================================================================
+
+# `cloudflared tunnel create` が出力した Tunnel UUID。
+tunnel: REPLACE_WITH_TUNNEL_ID
+
+# 認証情報 JSON のパス。cloudflared tunnel create で ~/.cloudflared/ に生成される。
+credentials-file: /Users/REPLACE_ME/.cloudflared/REPLACE_WITH_TUNNEL_ID.json
+
+ingress:
+  # 固定ホスト名 → ローカルの書き換え proxy(:8080)へ。
+  # proxy が MKCALENDAR を POST + 内部ヘッダに変換して wrangler dev(:8787)へ中継する。
+  - hostname: caldav-dev.example.com
+    service: http://localhost:8080
+  # ingress は最後に catch-all(404)が必須。
+  - service: http_status:404
