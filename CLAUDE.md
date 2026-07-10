@@ -169,13 +169,16 @@ src/
   結果を 06 に反映(d506b51)、実データ fixtures 6本追加(a1d1b09)、
   I4 の DUE==DTSTART 許容緩和(f2e50b9 — iOS の日付リマインダー実データによる)。
   198 tests / tsc green。iOS 接続の正式入口は Cloud Run プロキシ URL。
+- 2026-07-10: **iOS 実機検証(第2ラウンド)完了 — 検証表が実質コンプリート**。
+  A5 ✅(RECURRENCE-ID: 同一リソースに master+override、形態一致 — R3/§3.8.4.4 実証)、
+  A8 クローズ(非グレゴリオ暦 UI は iOS 標準に無し = 非該当)、
+  B8 ✅(サーバー側削除 → sync-report 404 → iPhone から消滅、end-to-end 成立)、
+  B7 ❌(**iOS に Extended MKCOL フォールバックは無い** → Cloud Run 変換プロキシは恒久構成)。
+  CAPTURE_LOG=0 に戻してデプロイ済み(99a638ee)。残る 🔶 は A7(6868 未誘発)のみ。
 - **次の作業**:
-  1. 実機検証の残り: A5(RECURRENCE-ID — 繰り返しの1回を「時間変更」して再測。
-     今回は EXDATE 削除になった)、A8(RSCALE — 非グレゴリオ暦 UI の場所を要調査)、
-     B8(サーバー側削除 → iOS への 404 伝搬)、B7 のフォールバック実験
-     (プロキシを外した wrangler dev 直で MKCALENDAR 501 後の挙動観測)。
-  2. presentation の確認: ETag 不一致を必ず 412 で返すこと(前作は 403 で iOS が
-     回復不能になった — 06 の教訓)。検証完了後は CAPTURE_LOG=0 に戻す。
-  3. 実測で確定した B5(sync-collection のみ使用)により calendar-query /
-     RecurrenceExpansion は当面不要と確定。次の実装候補は iOS 検証の残件消化 →
-     ローカル開発環境の整備(Makefile / seed / dev プロキシ)→ CI。
+  1. presentation の確認: ETag 不一致を必ず 412 で返すこと(前作は 403 で iOS が
+     回復不能になった — 06 の教訓)。テストで担保する。
+  2. ローカル開発環境の整備(Makefile / seed / dev プロキシ / cloudflared)と CI
+     (bun test + tsc + deploy。層境界の import 制約チェックも — CLAUDE.md パッケージ方針)。
+  3. 長期ビジョンの入口: MCP / REST からユースケースを呼ぶ薄いアダプタ
+     (application 層は既に DAV 非依存)。カレンダー委任(caldav-proxy 拡張)は将来候補。

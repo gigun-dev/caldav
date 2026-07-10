@@ -9,7 +9,7 @@
     "CALDAV_USERNAME": "caldav-user",
     // iOS 実機検証用キャプチャログのゲート。"1" で有効(src/index.ts の [CAP] ミドルウェア)。
     // 一時的な検証用途。検証完了後は "0" にして無効化する(コードは残す — 再検証で使う)。
-    "CAPTURE_LOG": "1"
+    "CAPTURE_LOG": "0"
   },
   "d1_databases": [
     {
