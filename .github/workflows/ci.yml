@@ -1,8 +1,13 @@
-# CI — M1「足場固め」の回帰安全網。
+# CI — M1「足場固め」の回帰安全網(checks 専用)。
 #
 # 方針(CLAUDE.md より):
 #   - test + tsc + 層境界 import 制約 を全 push / PR で回す。
-#   - deploy は main への push が check を通ったときだけ実行する。
+#
+# deploy はここでは行わない。Cloudflare Workers Builds(ダッシュボードで repo を Git 連携)が
+#   main への push で deploy する。理由: API トークンを GitHub secret に置かずに済み、
+#   PR には非本番 version(preview URL)が自動生成される。
+#   安全性は「main を branch protection で保護 + この check を required status に指定」で担保する
+#   (checks を通った PR だけが main にマージ → Cloudflare が deploy)。
 #
 # なぜ bun か: PM は Bun。テストランナーも bun test。ローカルと CI の実行系を揃える
 #   (node/npm と二重管理して乖離するのを避ける)。tsc / depcruise は bunx で叩く。
@@ -45,28 +50,3 @@ jobs:
 
       - name: Test
         run: bun test
-
-  deploy:
-    name: deploy to Cloudflare Workers
-    needs: check
-    # main への push のときだけ。PR やフォークからは deploy しない。
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # wrangler deploy には CLOUDFLARE_API_TOKEN が必要。
-      #   Workers Scripts:Edit + D1:Edit 権限のトークンを
-      #   リポジトリ Settings > Secrets > Actions に登録すること。
-      #   account_id は wrangler.jsonc にコミット済みなので secret 不要。
-      - name: Deploy
-        run: bun run deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

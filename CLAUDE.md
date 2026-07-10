@@ -175,14 +175,18 @@ src/
   B8 ✅(サーバー側削除 → sync-report 404 → iPhone から消滅、end-to-end 成立)、
   B7 ❌(**iOS に Extended MKCOL フォールバックは無い** → Cloud Run 変換プロキシは恒久構成)。
   CAPTURE_LOG=0 に戻してデプロイ済み(99a638ee)。残る 🔶 は A7(6868 未誘発)のみ。
-- 2026-07-10: **M1 の CI 部分を実装(bb2f4e1)**。GitHub Actions(.github/workflows/ci.yml)で
-  全 push/PR に対し 層境界(dependency-cruiser)→ tsc → bun test を fail-fast 順に実行、
-  main への push が通れば wrangler deploy。層境界は .dependency-cruiser.cjs で
-  「domain 純粋 / application→外側禁止 / presentation→infrastructure 禁止 / 循環禁止」を
-  error 強制(現状の実態は全ルール適合)。`bun run boundaries` で手元実行可。
-  scripts/make-mobileconfig.ts の TS1375 も export {} で解消し tsc green。
-  **未完(要ユーザー操作)**: リポジトリに `CLOUDFLARE_API_TOKEN` secret 未登録
-  (Workers Scripts:Edit + D1:Edit 権限)→ 登録するまで deploy job は失敗する。
+- 2026-07-10: **M1 の CI 部分を実装(bb2f4e1、checks 専用に修正)**。
+  GitHub Actions(.github/workflows/ci.yml)で全 push/PR に対し
+  層境界(dependency-cruiser)→ tsc → bun test を fail-fast 順に実行。層境界は
+  .dependency-cruiser.cjs で「domain 純粋 / application→外側禁止 /
+  presentation→infrastructure 禁止 / 循環禁止」を error 強制(現状の実態は全ルール適合)。
+  `bun run boundaries` で手元実行可。scripts/make-mobileconfig.ts の TS1375 も
+  export {} で解消し tsc green。
+  **deploy は GHA でやらない方針に決定**: Cloudflare Workers Builds(ダッシュボードで
+  repo を Git 連携)が main への push で deploy する。理由 = API トークンを GitHub secret に
+  置かずに済む + PR に非本番 version(preview URL)が自動生成される。
+  **未完(要ユーザー操作)**: ①Cloudflare ダッシュボードで repo を Workers Builds 連携
+  ②main を branch protection で保護し CI check を required status に指定。
   M1 残タスク: ETag 不一致 412 のテスト担保 / ローカル開発環境(Makefile/seed/dev プロキシ)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
