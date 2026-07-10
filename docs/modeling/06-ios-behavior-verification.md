@@ -99,7 +99,7 @@ B7(iOS の Extended MKCOL フォールバック)が白と実証されたとき�
 
 ## 実測から得た教訓(本作 presentation 層の要件)
 
-### iOS のアカウント追加を阻む2条件(2026-07-10、前作で実測・修正して確認)
+### iOS のアカウント追加を阻む条件(2026-07-10 に1〜3、2026-07-11 に4を実測・修正して確認)
 
 前作サーバーで iOS のアカウント追加が失敗し、Proxyman の復号キャプチャで原因を特定した。
 iOS(accountsd)は正しい current-user-principal を受け取っても以下の不備で**破棄**し、
@@ -118,6 +118,17 @@ iOS(accountsd)は正しい current-user-principal を受け取っても以下の
    前作は `PROPFIND /` への応答に `<d:href>/dav/</d:href>` をハードコード返却しており、
    iOS はこの不一致で応答全体を不信して current-user-principal を破棄した(2026-07-10 特定・
    修正第2弾)。本作の presentation は「応答 href = 正規化したリクエストパス」を機械的に保証する。
+4. **207 応答は Content-Length 付きで返す(chunked だと破棄される)**(2026-07-11、
+   ローカル開発環境の tunnel 経由で実測)。ローカル proxy(proxy/server.ts)が
+   `response.body` ストリームをそのまま返すと Bun が Transfer-Encoding: chunked に
+   再フレーミングし Content-Length が消える。応答ボディは本番とバイト単位で同一・
+   ヘッダの意味的差分は CL の有無だけの状態で、iOS(accountsd/remindd/dataaccessd)は
+   正しい current-user-principal を受け取りながら principal への OPTIONS に進まず、
+   フォールバック探索(/ → /principals/ → /calendar/dav/{user}/user/)をループして
+   「SSLに接続できません」→「アカウントが見つかりません」で失敗した。
+   proxy を「全バッファ + Content-Length 明示」に修正して解消(iOS 成功実績のある
+   Cloud Run 入口は GFE が CL を付けていたため本番では顕在化しなかった)。
+   ユーザー向けエラーが SSL を指すのは誤誘導なので注意(TLS は正常だった)。
 
 ※ accountsd の探索は「要求3プロパティ(current-user-principal / principal-URL /
 resourcetype)への完全な応答」を複数パス(/dav/ と /)で検分し、1つでも不備があると
