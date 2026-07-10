@@ -147,6 +147,95 @@ export function __setRepositoriesFactoryForTest(
 
 const app = new Hono<{ Bindings: CloudflareBindings }>();
 
+// =============================================================================
+// iOS 実機検証用キャプチャログミドルウェア
+// -----------------------------------------------------------------------------
+// 目的: `wrangler tail` で iOS クライアントの全リクエスト(特に PUT の生 ICS と
+//       PROPFIND/REPORT の XML ボディ)を観測する。docs/modeling/06 の検証項目
+//       A1〜A9 / B3〜B9 のデータ源。大学 Wi-Fi では MITM プロキシ(Proxyman)が
+//       使えないため、サーバー側 tail 方式に決定(2026-07-10)。
+//
+// 一時的な検証用途。iOS 検証が完了したら CAPTURE_LOG=0(または var 削除)で
+// 無効化する。コードは削除しない — 将来の再検証で同じ観測系を使い回すため。
+//
+// ゲート: 環境変数 CAPTURE_LOG(var)が "1" のときだけ有効。既定は無効。
+//
+// 【セキュリティ最重要】Authorization ヘッダおよびあらゆる資格情報は
+// 絶対にログへ出さない。下の allowlist に authorization は入れていない。
+// Basic 認証の生パスワードが tail 経由で漏れることを構造的に防ぐ。
+//
+// ボディ読み取り: c.req.raw.clone() で複製してから text() する。Workers の
+// Request も一度 body stream を消費すると二度読めないため、後段のハンドラ
+// (readBody = request.text())を壊さないようクローン側だけを消費する。
+// =============================================================================
+
+// ログに出してよいヘッダの allowlist。authorization / cookie / proxy secret は
+// 意図的に含めない(資格情報漏洩防止)。iOS 挙動の解析に必要なものだけ。
+const CAPTURE_HEADERS = [
+	"user-agent",
+	"depth",
+	"content-type",
+	"if-match",
+	"if-none-match",
+	"brief",
+	"prefer",
+	"x-caldav-method",
+] as const;
+
+// ボディを取得するメソッド。GET/HEAD/OPTIONS/DELETE は基本ボディ無しなので除外し、
+// 折り畳み ICS や XML を持つ書き込み/問い合わせ系だけをキャプチャする。
+const CAPTURE_BODY_METHODS = new Set(["PROPFIND", "REPORT", "PUT", "PROPPATCH", "MKCOL", "POST"]);
+
+app.use("*", async (c, next) => {
+	// ゲート off ならフックを一切通さず素通し(本番のホットパスに負荷を乗せない)。
+	if (c.env.CAPTURE_LOG !== "1") return next();
+
+	const request = c.req.raw;
+	const url = new URL(request.url);
+	const method = request.method.toUpperCase();
+
+	// --- リクエスト ---
+	const reqHeaders: Record<string, string> = {};
+	for (const name of CAPTURE_HEADERS) {
+		const value = request.headers.get(name);
+		if (value !== null) reqHeaders[name] = value;
+	}
+	let reqBody: string | undefined;
+	if (CAPTURE_BODY_METHODS.has(method)) {
+		try {
+			// clone() 必須: 元 Request の body stream を消費すると後段 readBody が壊れる。
+			reqBody = await request.clone().text();
+		} catch {
+			reqBody = "<capture: body read failed>";
+		}
+	}
+	// JSON.stringify で 1 行化。tail は複数行ログを扱いにくく、ICS の CRLF 折り畳みや
+	// XML の改行をそのまま出すと行がバラける。stringify ならエスケープを崩さず 1 行に載る。
+	console.log(`[CAP][req] ${JSON.stringify({ method, path: url.pathname, headers: reqHeaders, body: reqBody })}`);
+
+	await next();
+
+	// --- レスポンス ---
+	// 検証で「何を返したか」を照合するため、ステータスと ETag、207 系はボディも出す。
+	const res = c.res;
+	const resHeaders: Record<string, string> = {};
+	const etag = res.headers.get("etag");
+	if (etag !== null) resHeaders.etag = etag;
+	const resContentType = res.headers.get("content-type");
+	if (resContentType !== null) resHeaders["content-type"] = resContentType;
+	let resBody: string | undefined;
+	if (res.status === 207) {
+		try {
+			// レスポンスも clone() してから読む。元の Response body を消費すると
+			// クライアントへ空ボディが返ってしまう。
+			resBody = await res.clone().text();
+		} catch {
+			resBody = "<capture: body read failed>";
+		}
+	}
+	console.log(`[CAP][res] ${JSON.stringify({ method, path: url.pathname, status: res.status, headers: resHeaders, body: resBody })}`);
+});
+
 app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
 
 // iOS はこの場所を最初に PROPFIND する。認証前でも正規DAV入口へ誘導できるようリダイレクト自体は公開する。
