@@ -21,7 +21,7 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install dev proxy tunnel seed test typecheck boundaries check deploy migrate-local reset-local mobileconfig
+.PHONY: help install up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy migrate-local reset-local mobileconfig typegen
 
 help: ## このヘルプを表示
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -31,8 +31,23 @@ install: ## 依存をインストール(lockfile 固定)
 	bun install --frozen-lockfile
 
 # --- 常駐プロセス(iOS 検証の3点セット)------------------------------------
-dev: ## wrangler dev を起動(Worker + ローカル D1, :8787)
-	bun run dev
+
+# CAPTURE_LOG(iOS デバッグ用の全リクエスト/レスポンスダンプ)は .dev.vars ではなく
+# コマンドで切り替える: `make dev CAP=1` / `make up CAP=1`。
+# 理由: .dev.vars 編集はプロセス再起動が必要な上に「戻し忘れて常時ON」事故が起きる。
+# wrangler の --var は wrangler.jsonc の vars を起動時にだけ上書きするので使い捨てに向く。
+CAP ?= 0
+
+up: ## dev + proxy + tunnel を1ターミナルでまとめて起動(CAP=1 でキャプチャログ)
+	# concurrently のプレフィックス([dev] [proxy] [tunnel])で出力元を判別できる。
+	# 特定プロセスのログだけ見たいときは従来どおり make dev / make proxy / make tunnel を
+	# 個別ターミナルで起動するか、`make up | grep '\[dev\]'` で絞る。
+	# -k(kill-others): どれか1つが死んだら全部止める(片肺で気づかず動き続ける事故防止)。
+	bunx concurrently -k -n dev,proxy,tunnel -c blue,magenta,yellow \
+		"make dev CAP=$(CAP)" "make proxy" "make tunnel"
+
+dev: ## wrangler dev を起動(Worker + ローカル D1, :8787)。CAP=1 でキャプチャログ
+	bun run dev -- --var CAPTURE_LOG:$(CAP)
 
 proxy: ## MKCALENDAR 書き換え proxy を起動(:8080 → :8787)
 	UPSTREAM_URL=http://localhost:8787 \
@@ -69,5 +84,20 @@ boundaries: ## 層境界チェック(dependency-cruiser)
 
 check: boundaries typecheck test ## CI と同じ順(境界→型→テスト)で全チェック
 
+typegen: ## worker-configuration.d.ts を再生成(wrangler.jsonc / .dev.vars 変更後に実行)
+	# 素の `wrangler types` は禁止: インターフェース名が Env になり、Hono テンプレートが
+	# 参照する CloudflareBindings と食い違って tsc が全滅する(2026-07-11 に実際に発生)。
+	bun run cf-typegen
+
 deploy: ## 本番デプロイ(通常は Cloudflare Workers Builds が main push で自動実行)
 	bun run deploy
+
+deploy-proxy: ## MKCALENDAR 変換 proxy を Cloud Run へデプロイ(proxy/ 変更時のみ手動)
+	# proxy はめったに変わらないので CI 化せず手動デプロイ(2026-07-11 判断)。
+	# --source は Cloud Build が proxy/Dockerfile でビルドして新リビジョンを作る。
+	# 環境変数(UPSTREAM_URL / PROXY_SHARED_SECRET=Secret Manager 参照)は既存リビジョン
+	# から引き継がれるため指定不要。project は caldav-prod-fukuro(サービス名とは別物)。
+	gcloud run deploy caldav-proxy \
+		--project caldav-prod-fukuro \
+		--region asia-northeast1 \
+		--source proxy/
