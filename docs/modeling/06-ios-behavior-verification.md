@@ -79,6 +79,19 @@ wrangler dev(port 8787)
 |---|--------------|-----------|---------|------|
 | C1 | workerd(wrangler dev)は MKCALENDAR 等の拡張 HTTP メソッドを通せない(前作はこのために POST 書き換えプロキシを常設した)。**現行 wrangler で再現するか** — しないなら本作はプロキシ不要でアーキテクチャが1段簡単になる | 前作 proxy/dev.ts、本作の presentation 層設計 | 本作の wrangler dev に `curl -X MKCALENDAR`(+ PROPFIND / REPORT)を打って確認。ローカルだけでなく本番 Workers でも確認が必要な点に注意 | ❌ 再現(2026-07-09、wrangler 4.x): MKCALENDAR のみ 501。PROPFIND / REPORT / PROPPATCH は通る。**さらに 2026-07-10、本番 Workers でも 501 を実測**(前作本番への iOS リマインダー追加時の MKCALENDAR、フロー 7223/7224)— ローカル限定ではなく Cloudflare ランタイム全体で MKCALENDAR は**元から**不可(退行ではない。前作の書き換えプロキシはローカル専用で、本番は最初から MKCALENDAR 非対応だった)。本番でリマインダーのタスクが保存されないのは、remindd が保存先リストを MKCALENDAR で作れないため(→ サーバー側で VTODO コレクションを事前作成しておけば回避可能)。**本作は MKCALENDAR に依存しない設計が必須**。2026-07-10 追加実測: workerd は **MKCOL / MOVE / COPY / LOCK / ACL を全て通す**(404 = アプリ到達)。拒否は MKCALENDAR のみ → Extended MKCOL [RFC 5689] は Workers 上でプロキシなしに実装可能。Cloudflare Containers は入口が Worker 経由(workerd が先にパース)なのでプロキシ代替にならない。方針: ①Extended MKCOL を主経路 ②アカウント作成時にデフォルトコレクション(VEVENT+VTODO)を自動プロビジョン ③iOS が MKCALENDAR 501 後に MKCOL へフォールバックするかは B7 で検証。2026-07-10 原因確定(web調査): workerd の HTTP 基盤 KJ の HttpMethod enum(capnproto kj/compat/http.h、25メソッド定義)に MKCALENDAR が無いため。compatibility flag 無し・issue 報告すら無しで解決見込み低。「MKCALENDAR 不可なら Extended MKCOL へ」は ownCloud/vdirsyncer でも定番解 |
 
+### C1の本番回避構成(2026-07-10 実装・実証済み)
+
+- 外部入口: Cloud Run `caldav-proxy`(`caldav-prod-fukuro`, asia-northeast1)。
+- proxyは `MKCALENDAR` のみ `POST + X-Caldav-Method: MKCALENDAR` へ変換し、共有secretを付けて
+  Workerへ転送する。それ以外のメソッドとbodyは透過する。
+- 本番実測: Cloud Runへ `MKCALENDAR` → 201、作成コレクションのDELETE → 204。
+  PROPFIND → 207、PUT → 201、sync-collection REPORT → 207、DELETE → 204も同じ入口で成功。
+- **Cloud Runの落とし穴**: `allUsers`へInvokerを付けるだけではアプリ用
+  `Authorization: Basic` をGoogle ID tokenとして先に検査し、`Bearer invalid_token` 401にする。
+  `--no-invoker-iam-check`(`run.googleapis.com/invoker-iam-disabled=true`)が必須。
+- sync-tokenはproxyが付ける `X-Forwarded-Host/Proto` を基に発行し、Cloud Run URLを保つ。
+  Worker内部URLを漏らすと次回REPORTのtoken baseが一致しないため、この往復を本番smokeで検証した。
+
 ## 実測から得た教訓(本作 presentation 層の要件)
 
 ### iOS のアカウント追加を阻む2条件(2026-07-10、前作で実測・修正して確認)
