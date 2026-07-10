@@ -241,6 +241,12 @@ src/
   唯一の意味的差分。Cloud Run 入口は GFE が CL 付与するため顕在化しなかった)。
   修正: proxy で全バッファ + Content-Length 明示(204/304 は body なし)。
   06 の「阻む条件」に第4項として記録。SSL エラー表示は誤誘導(TLS は正常)。
+- 2026-07-11: **PR #2 マージ(c7dd930)= M1 ローカル開発環境一式が main 入り**。
+  CI green(GHA + Workers Builds)。マージ後の `wrangler secret list` で secret 2つとも
+  健在 = **前回の secret 消失はマージ起因ではないことがほぼ確定**(申し送り解消)。
+  本番 smoke: workers.dev / Cloud Run とも PROPFIND 207。
+  proxy の CL 修正の Cloud Run への反映(`make deploy-proxy`)は未実施
+  (gcloud CLI がこのマシンに無い。本番は GFE が CL を付与するため急ぎではない)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
