@@ -9,7 +9,6 @@
       "ESNext"
     ],
     "types": [
-      "@cloudflare/workers-types",
       "bun"
     ],
     "jsx": "react-jsx",

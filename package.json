@@ -6,13 +6,14 @@
     "deploy": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "proxy:dev": "bun run proxy/server.ts",
+    "smoke": "bun run scripts/smoke-test.ts"
   },
   "dependencies": {
     "hono": "^4.12.27"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260707.1",
     "@types/bun": "^1.3.14",
     "typescript": "^6.0.3",
     "wrangler": "^4.4.0"

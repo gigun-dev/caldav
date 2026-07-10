@@ -2,37 +2,22 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "caldav",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-08"
-  // "compatibility_flags": [
-  //   "nodejs_compat"
-  // ],
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
-  // "ai": {
-  //   "binding": "AI"
-  // },
-  // "observability": {
-  //   "enabled": true,
-  //   "head_sampling_rate": 1
-  // }
+  "account_id": "4b00d8d779cdc4e8fbc1840248d21722",
+  "compatibility_date": "2026-07-10",
+  "vars": {
+    // 公開してよいログイン名。パスワードとプロキシ共有鍵は Wrangler secret に置く。
+    "CALDAV_USERNAME": "caldav-user"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "caldav-production",
+      "database_id": "9b116506-d4dd-4753-b835-5f7dd37d18cf",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
 }

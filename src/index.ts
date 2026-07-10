@@ -1,9 +1,391 @@
-import { Hono } from 'hono'
+// =============================================================================
+// CalDAV Worker entrypoint
+// =============================================================================
 
-const app = new Hono()
+import { Hono } from "hono";
+import {
+	CalDAVPreconditionError,
+	CollectionAlreadyExistsError,
+	CollectionNotFoundError,
+	CreateCollection,
+	DeleteCalendarObject,
+	DeleteETagMismatchError,
+	DeleteTargetNotFoundError,
+	ETagConditionError,
+	GetCalendarObject,
+	InvalidSyncTokenError,
+	ListCollections,
+	MultigetObjects,
+	ProvisionDefaultCollections,
+	PutCalendarObject,
+	ResourceNotFoundError,
+	SyncCollection,
+	UpdateCollectionProperties,
+} from "./application";
+import { Principal, collectionId, principalPath } from "./domain/caldav";
+import type {
+	CalendarCollectionRepository,
+	CalendarObjectResourceRepository,
+	CollectionUnitOfWork,
+	PrincipalRepository,
+} from "./application/ports";
+import { createD1Repositories } from "./infrastructure";
+import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
+import {
+	collectionProps,
+	davError,
+	entryProps,
+	homeProps,
+	multistatus,
+	objectProps,
+	parseCollectionProperties,
+	parseHrefs,
+	parsePropFilter,
+	parseSyncToken,
+	principalProps,
+	responseXml,
+	statusResponseXml,
+} from "./presentation/dav/xml";
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
-})
+const DAV_HEADERS = {
+	DAV: "1, 3, calendar-access, sync-collection, extended-mkcol",
+	Allow: "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+} as const;
+const XML_HEADERS = { ...DAV_HEADERS, "Content-Type": "application/xml; charset=utf-8" };
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
-export default app
+function principalHref(username: string): string {
+	return `/dav/principals/${encodeURIComponent(username)}/`;
+}
+
+function homeHref(username: string): string {
+	return `/dav/calendars/${encodeURIComponent(username)}/`;
+}
+
+function normalizeCollectionHref(username: string, id: string): string {
+	return `${homeHref(username)}${encodeURIComponent(id)}/`;
+}
+
+// 2026-07-10 レビュー P1-4: 207 の <d:href> はすべて「リクエスト URI(実際に受けたパス)」基点で
+// 生成する。docs/modeling/06 の教訓③「response href はリクエスト URI と一致(iOS が実際に強制)」。
+// 以前は entry が requestPath(url) 基点、principal/home が内部 path(= url.pathname)基点で、
+// 値としては両者一致していたが「どこを基点にすべきか」の意図がバラバラだった。この helper に集約し
+// 意図を一本化する。プロキシ経由(x-forwarded-host)でも URL.pathname はホスト名にしか関与しない
+// リバースプロキシでは不変なので、href はリクエストで受けた pathname のままで iOS と一致する
+// (origin を差し替えたいのは sync-token URI だけで、そこは publicOrigin を別途使う)。
+function requestHref(url: URL): string {
+	return url.pathname || "/";
+}
+
+function externalOrigin(request: Request, internalUrl: URL): string {
+	const forwardedHost = request.headers.get("x-forwarded-host");
+	const forwardedProto = request.headers.get("x-forwarded-proto");
+	if (!forwardedHost) return internalUrl.origin;
+	return `${forwardedProto === "http" ? "http" : "https"}://${forwardedHost}`;
+}
+
+async function readBody(request: Request): Promise<string> {
+	const declared = Number(request.headers.get("content-length") ?? "0");
+	if (declared > MAX_BODY_BYTES) throw new RangeError("request body too large");
+	const body = await request.text();
+	if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) throw new RangeError("request body too large");
+	return body;
+}
+
+function rawEtagCondition(request: Request) {
+	const ifNoneMatch = request.headers.get("if-none-match");
+	if (ifNoneMatch === "*") return { kind: "must-not-exist" as const };
+	const ifMatch = request.headers.get("if-match");
+	if (ifMatch) return { kind: "must-match" as const, etag: ifMatch };
+	return { kind: "unconditional" as const };
+}
+
+function xml(body: string, status = 207): Response {
+	return new Response(body, { status, headers: XML_HEADERS });
+}
+
+function errorResponse(error: unknown): Response {
+	if (error instanceof RangeError) return new Response(error.message, { status: 413 });
+	if (error instanceof ResourceNotFoundError || error instanceof DeleteTargetNotFoundError) return new Response("Not Found", { status: 404 });
+	if (error instanceof CollectionNotFoundError) return new Response("Collection not found", { status: 409 });
+	if (error instanceof CollectionAlreadyExistsError) return new Response("Collection already exists", { status: 405, headers: DAV_HEADERS });
+	if (error instanceof ETagConditionError || error instanceof DeleteETagMismatchError) return new Response("Precondition Failed", { status: 412 });
+	if (error instanceof InvalidSyncTokenError) return xml(davError("valid-sync-token"), 403);
+	if (error instanceof CalDAVPreconditionError) {
+		const violation = error.violations[0];
+		const status = violation?.precondition === "no-uid-conflict" ? 409 : 403;
+		return xml(davError(violation?.precondition ?? "valid-calendar-data", violation?.detail), status);
+	}
+	console.error(JSON.stringify({ event: "unhandled_error", message: error instanceof Error ? error.message : String(error) }));
+	return new Response("Internal Server Error", { status: 500 });
+}
+
+// リポジトリ群のポート型(presentation はポートにだけ依存し、D1 の具象クラスは知らない)。
+interface Repositories {
+	principals: PrincipalRepository;
+	collections: CalendarCollectionRepository;
+	resources: CalendarObjectResourceRepository;
+	uow: CollectionUnitOfWork;
+}
+
+// リポジトリ生成を差し替え可能にする hook。既定は D1 実装。
+// テスト(bun test 環境には workerd/D1 が無い)ではインメモリ Fake を注入して
+// app.fetch を丸ごと exercise できるようにするための注入点。本番では触らない。
+let repositoriesFactory: (env: CloudflareBindings) => Repositories =
+	(env) => createD1Repositories(env.DB);
+
+/** テスト専用: リポジトリファクトリを差し替える。返り値で元に戻せる。 */
+export function __setRepositoriesFactoryForTest(
+	factory: (env: CloudflareBindings) => Repositories,
+): () => void {
+	const previous = repositoriesFactory;
+	repositoriesFactory = factory;
+	return () => {
+		repositoriesFactory = previous;
+	};
+}
+
+const app = new Hono<{ Bindings: CloudflareBindings }>();
+
+app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
+
+// iOS はこの場所を最初に PROPFIND する。認証前でも正規DAV入口へ誘導できるようリダイレクト自体は公開する。
+app.all("/.well-known/caldav", (c) => c.redirect("/dav/", 301));
+
+app.all("*", async (c) => {
+	try {
+		const request = c.req.raw;
+		const url = new URL(request.url);
+		let method = request.method.toUpperCase();
+
+		// Cloud Run等の外部プロキシだけが MKCALENDAR をPOSTへ変換できる。共有secretを照合し、
+		// 一般クライアントが任意のPOSTをMKCALENDARとして偽装することを防ぐ。
+		if (method === "POST" && request.headers.get("x-caldav-method")?.toUpperCase() === "MKCALENDAR") {
+			const supplied = request.headers.get("x-caldav-proxy-secret") ?? "";
+			if (!c.env.PROXY_SHARED_SECRET || !await secureStringEqual(supplied, c.env.PROXY_SHARED_SECRET)) {
+				return c.text("Forbidden", 403);
+			}
+			method = "MKCALENDAR";
+		}
+
+		if (method === "OPTIONS") return new Response(null, { status: 204, headers: DAV_HEADERS });
+
+		if (!await authenticateBasic(request.headers.get("authorization") ?? undefined, {
+			username: c.env.CALDAV_USERNAME,
+			password: c.env.CALDAV_PASSWORD,
+		})) {
+			return new Response("Unauthorized", { status: 401, headers: UNAUTHORIZED_HEADERS });
+		}
+
+		const encodedUser = encodeURIComponent(c.env.CALDAV_USERNAME);
+		const principalPathValue = principalPath(principalHref(c.env.CALDAV_USERNAME));
+		const home = homeHref(c.env.CALDAV_USERNAME);
+		const repos = repositoriesFactory(c.env);
+
+		const path = url.pathname;
+		const publicOrigin = externalOrigin(request, url);
+		const entryPaths = new Set(["/", "/dav", "/dav/", "/principals", "/principals/"]);
+		const principalPathsSet = new Set([
+			`/dav/principals/${encodedUser}`,
+			`/dav/principals/${encodedUser}/`,
+		]);
+		const homeNoSlash = home.slice(0, -1);
+
+		// 2026-07-10 レビュー P1-1: 以前は認証済み全リクエストで principals.save + Provision を
+		// 実行しており、GET/PUT/REPORT のホットパスに D1 往復 3〜5 回が毎回乗っていた。
+		// これらの冪等プロビジョニングが本当に必要なのは iOS の「探索フェーズ」— entry / principal /
+		// calendar-home-set への PROPFIND — で、初回に Principal と既定コレクションが見えればよい。
+		// なので discovery な PROPFIND に限定してホットパスから除外する。
+		// (WorkersでMKCALENDARを受信できない制約に対する本番の主回避策なので機能自体は残す。)
+		const isDiscoveryPropfind =
+			method === "PROPFIND" &&
+			(entryPaths.has(path) ||
+				principalPathsSet.has(path) ||
+				path === home ||
+				path === homeNoSlash);
+		if (isDiscoveryPropfind) {
+			await repos.principals.save(Principal.create(principalPathValue, home));
+			await new ProvisionDefaultCollections(repos.collections, repos.principals).execute({ owner: principalPathValue });
+		}
+
+		if (method === "PROPFIND" && entryPaths.has(path)) {
+			const body = await readBody(request);
+			return xml(multistatus(responseXml(requestHref(url), entryProps(principalHref(c.env.CALDAV_USERNAME)), parsePropFilter(body))));
+		}
+
+		if (method === "PROPFIND" && principalPathsSet.has(path)) {
+			const body = await readBody(request);
+			return xml(multistatus(responseXml(requestHref(url), principalProps(c.env.CALDAV_USERNAME, principalHref(c.env.CALDAV_USERNAME), home), parsePropFilter(body))));
+		}
+
+		if (method === "PROPFIND" && (path === home || path === homeNoSlash)) {
+			const body = await readBody(request);
+			const filter = parsePropFilter(body);
+			const depth = request.headers.get("depth") === "1" ? "1" : "0";
+			const result = await new ListCollections(repos.collections).execute({ owner: principalPathValue });
+			let responses = responseXml(requestHref(url), homeProps(c.env.CALDAV_USERNAME), filter);
+			if (depth === "1") {
+				for (const collection of result.collections) {
+					const href = normalizeCollectionHref(c.env.CALDAV_USERNAME, collection.id);
+					responses += responseXml(href, collectionProps(collection, collection.syncToken.toUri(new URL(href, publicOrigin).href)), filter);
+				}
+			}
+			return xml(multistatus(responses));
+		}
+
+		const prefix = `${homeHref(c.env.CALDAV_USERNAME)}`;
+		if (!path.startsWith(prefix)) return new Response("Not Found", { status: 404 });
+		const segments = path.slice(prefix.length).split("/").filter(Boolean).map(decodeURIComponent);
+		const collectionName = segments[0];
+		const resourceName = segments[1];
+
+		if ((method === "MKCOL" || method === "MKCALENDAR") && collectionName && !resourceName) {
+			const body = await readBody(request);
+			const props = parseCollectionProperties(body);
+			const result = await new CreateCollection(repos.collections).execute({
+				owner: principalPathValue,
+				collectionId: collectionName,
+				displayName: props.displayName ?? collectionName,
+				supportedComponents: props.component ? [props.component] : undefined,
+			});
+			return new Response(null, {
+				status: 201,
+				headers: { ...DAV_HEADERS, Location: normalizeCollectionHref(c.env.CALDAV_USERNAME, result.collection.id) },
+			});
+		}
+
+		if (!collectionName) return new Response("Not Found", { status: 404 });
+		const id = collectionId(collectionName);
+		const collection = await repos.collections.findById(principalPathValue, id);
+		if (!collection) return new Response("Not Found", { status: 404 });
+		const collectionHref = normalizeCollectionHref(c.env.CALDAV_USERNAME, collectionName);
+
+		if (method === "PROPFIND" && !resourceName) {
+			const body = await readBody(request);
+			const filter = parsePropFilter(body);
+			let responses = responseXml(requestHref(url), collectionProps(collection, collection.syncToken.toUri(new URL(collectionHref, publicOrigin).href)), filter);
+			if (request.headers.get("depth") === "1") {
+				const resources = await repos.resources.findAllInCollection(principalPathValue, id);
+				responses += resources.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, false), filter)).join("");
+			}
+			return xml(multistatus(responses));
+		}
+
+		if (method === "PROPPATCH" && !resourceName) {
+			const props = parseCollectionProperties(await readBody(request));
+			await new UpdateCollectionProperties(repos.collections).execute({
+				owner: principalPathValue, collectionId: id,
+				displayName: props.displayName, color: props.color, order: props.order,
+			});
+			// PROPPATCH は変更対象プロパティごとの成功 propstat を返す。空の response は
+			// iOSが更新失敗と解釈するため、受理した要素を明示する。
+			const applied: Record<string, string> = {};
+			if (props.displayName !== undefined) applied.displayname = `<d:displayname/>`;
+			if (props.color !== undefined) applied["calendar-color"] = `<ical:calendar-color/>`;
+			if (props.order !== undefined) applied["calendar-order"] = `<ical:calendar-order/>`;
+			return xml(multistatus(responseXml(requestHref(url), applied, new Set(Object.keys(applied)))));
+		}
+
+		if (method === "DELETE" && !resourceName) {
+			// CalendarCollectionRepository の契約どおり、D1の外部キーCASCADEで配下リソースと
+			// syncログも同時に削除する。iOSでリストを削除したとき孤児を残さない。
+			await repos.collections.delete(principalPathValue, id);
+			return new Response(null, { status: 204, headers: DAV_HEADERS });
+		}
+
+		if (method === "REPORT" && !resourceName) {
+			const body = await readBody(request);
+			if (/<(?:[^:>]+:)?sync-collection\b/i.test(body)) {
+				const result = await new SyncCollection(repos.collections, repos.resources).execute({
+					owner: principalPathValue, collectionId: id, syncToken: parseSyncToken(body),
+					syncTokenBase: new URL(collectionHref, publicOrigin).href,
+				});
+				// 2026-07-10 レビュー P1-2: 以前は changed 応答を "allprop" 固定にしていたが、
+				// これはクライアントの <prop> 要求を無視していた。multiget と同様に parsePropFilter で
+				// 要求プロパティを厳密に照合する(iOS は sync-collection では getetag のみ要求する —
+				// docs/modeling/06 教訓「要求プロパティの厳密照合」)。includeData=false なので
+				// calendar-data は返さず、要求されても objectProps に無ければ 404 propstat になる。
+				const filter = parsePropFilter(body);
+				const responses = result.diffs.map((diff) => diff.kind === "changed"
+					? responseXml(`${collectionHref}${encodeURIComponent(diff.resource.uri)}`, objectProps(diff.resource, false), filter)
+					: statusResponseXml(`${collectionHref}${encodeURIComponent(diff.uri)}`, "404 Not Found")).join("");
+				return xml(multistatus(responses, result.newSyncToken.toUri(new URL(collectionHref, publicOrigin).href)));
+			}
+			if (/<(?:[^:>]+:)?calendar-multiget\b/i.test(body)) {
+				// 2026-07-10 レビュー P1-3: 以前は全 href について「最後のパスセグメント」だけを拾って
+				// resourceUri にしていた。これだと (a) コレクション自身の href(末尾 / なので空文字 URI)や
+				// (b) 別コレクション配下の href まで「当コレクション内」として問い合わせてしまう。
+				// RFC 4791 §7.9: 見つからない href には 404 の <response> を返す。よって「href のパスが
+				// 当該コレクションの href 配下(collectionHref + 1セグメント)であること」を検証し、
+				// 外れる href は問い合わせに回さず直接 404 応答にする。
+				const uris: string[] = [];
+				const outOfScopeHrefs: string[] = [];
+				for (const href of parseHrefs(body)) {
+					const hrefPath = new URL(href, url.origin).pathname;
+					// collectionHref 配下かどうか。collectionHref は末尾 / 付き。
+					if (!hrefPath.startsWith(collectionHref)) {
+						outOfScopeHrefs.push(hrefPath);
+						continue;
+					}
+					// collectionHref の下の残りを取り出す。ちょうど 1 セグメント(リソース名)であること。
+					// 空("コレクション自身")や、さらに / を含む(深いパス)は当コレクションのリソースでない。
+					const rest = hrefPath.slice(collectionHref.length).split("/").filter(Boolean);
+					if (rest.length !== 1) {
+						outOfScopeHrefs.push(hrefPath);
+						continue;
+					}
+					uris.push(decodeURIComponent(rest[0]));
+				}
+				const result = await new MultigetObjects(repos.resources).execute({ owner: principalPathValue, collectionId: id, uris });
+				const filter = parsePropFilter(body);
+				const responses = result.found.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")
+					+ result.notFound.map((uri) => statusResponseXml(`${collectionHref}${encodeURIComponent(uri)}`, "404 Not Found")).join("")
+					// スコープ外 href は、クライアントが送ってきたパスをそのまま 404 で返す(§7.9)。
+					+ outOfScopeHrefs.map((hrefPath) => statusResponseXml(hrefPath, "404 Not Found")).join("");
+				return xml(multistatus(responses));
+			}
+			// Phase Bでは展開を行わないためcalendar-queryは現在の全件を返す。
+			const resources = await repos.resources.findAllInCollection(principalPathValue, id);
+			const filter = parsePropFilter(body);
+			return xml(multistatus(resources.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")));
+		}
+
+		if (!resourceName) return new Response("Method Not Allowed", { status: 405, headers: DAV_HEADERS });
+
+		if (method === "GET" || method === "HEAD") {
+			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });
+			if (request.headers.get("if-none-match") === result.resource.etag.toHeader()) return new Response(null, { status: 304 });
+			return new Response(method === "HEAD" ? null : result.resource.rawIcs, {
+				status: 200,
+				headers: { ...DAV_HEADERS, ETag: result.resource.etag.toHeader(), "Content-Type": "text/calendar; charset=utf-8" },
+			});
+		}
+
+		if (method === "PROPFIND") {
+			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });
+			return xml(multistatus(responseXml(requestHref(url), objectProps(result.resource, false), parsePropFilter(await readBody(request)))));
+		}
+
+		if (method === "PUT") {
+			const result = await new PutCalendarObject(repos.collections, repos.resources, repos.uow).execute({
+				owner: principalPathValue, collectionId: id, resourceUri: resourceName,
+				ics: await readBody(request), condition: rawEtagCondition(request),
+			});
+			return new Response(null, { status: result.created ? 201 : 204, headers: { ...DAV_HEADERS, ETag: result.etag.toHeader() } });
+		}
+
+		if (method === "DELETE") {
+			await new DeleteCalendarObject(repos.collections, repos.resources, repos.uow).execute({
+				owner: principalPathValue, collectionId: id, resourceUri: resourceName,
+				ifMatchEtag: request.headers.get("if-match"),
+			});
+			return new Response(null, { status: 204, headers: DAV_HEADERS });
+		}
+
+		return new Response("Method Not Allowed", { status: 405, headers: DAV_HEADERS });
+	} catch (error) {
+		return errorResponse(error);
+	}
+});
+
+export default app;
