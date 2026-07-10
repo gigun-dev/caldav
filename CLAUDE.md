@@ -150,11 +150,24 @@ src/
 - 2026-07-09: CalDAV リソースコンテキストのドメインモデル実装(dcf8758)。
   3集約(Principal / CalendarCollection+SyncChange / CalendarObjectResource)+
   ETag / SyncToken(URI 形式)/ put-preconditions(R1〜R7)。137 tests / tsc green。
+- 2026-07-10: application / infrastructure(D1) / presentation(DAV XML + Basic Auth)を実装し、
+  APAC D1 `caldav-production` と Worker `https://caldav.gigun-dev.workers.dev` へデプロイ。
+  PROPFIND探索、VEVENT/VTODOデフォルトコレクション、PUT/GET/DELETE、calendar-multiget、
+  sync-collection、Extended MKCOL、PROPPATCHを実装。外部用MKCALENDAR書き換えproxyの
+  Dockerイメージもローカル検証済み。184 tests / tsc / 本番smoke green。
+  - Cloudflare Containersは入口のWorkerでMKCALENDARが501になるためproxy配置先には使えない。
+  - Cloud Run用GCP project `caldav-prod-gigun` を新規作成済み。既存billing accountへの
+    `billing.resourceAssociations.create` 権限がCLIログインユーザーに無く、請求先紐付け待ち。
+- 2026-07-10: 上記一式を opus レビュー(P1 4件検出)→ 修正(provision の探索フェーズ限定 /
+  sync-collection の prop フィルタ厳密照合 / multiget href のコレクション配下検証 /
+  207 href の requestHref 一元化)→ 5コミットに分割してコミット(9362b6d〜11ac417)。
+  188 tests / tsc green。テスト用に __setRepositoriesFactoryForTest 注入フックあり。
 - **次の作業**:
-  1. iOS 実機検証(docs/modeling/06): 前作で観測系キャプチャ(ユーザーが実機+Proxyman、
-     Claude が解析・フィクスチャ化・docs 反映)→ 本作スケルトンで実験系(B4〜B6/B8)。
-  2. 実装側: application 層のユースケース(PUT / GET / DELETE / multiget / sync-collection。
-     1ユースケース1クラス、DAV 専用にしない — CLAUDE.md 長期ビジョン)と
-     最小 HTTP スケルトン(presentation: .well-known → principal → home の探索チェーン +
-     PROPFIND)。スケルトンが立てば実験系検証が可能になる。
-  3. ローカル開発は MKCALENDAR 書き換えプロキシが必要(C1 実測済み。前作 proxy/dev.ts 参照)。
+  1. `proxy/` を GCP project `caldav-prod-gigun` の Cloud Run へ公開デプロイ
+     (billing 紐付け待ち)し、Secret Manager から `PROXY_SHARED_SECRET` を注入。
+     本番 MKCALENDAR→Worker POST 変換を実証する。
+  2. iOS 実機を接続し、探索・初回同期・カレンダー/リマインダー作成を Proxyman +
+     ログで観測。結果を docs/modeling/06 の A1〜A9 / B3〜B9 へ反映する
+     (プロキシ環境では 8843/8008/8800 ポートプローブの 10s タイムアウトに注意 — 06 参照)。
+  3. B7(iOS が MKCALENDAR 501 後に Extended MKCOL へフォールバックするか)が白なら
+     Cloud Run プロキシ自体を撤去できる — 検証優先度高。
