@@ -23,7 +23,7 @@ export {}; // top-level await を使うため ES モジュール化(TS1375 回�
 
 const BASE = process.env.CALDAV_BASE ?? "http://localhost:8787";
 const USER = process.env.CALDAV_USER ?? "admin"; // wrangler.jsonc vars.CALDAV_USERNAME
-const PASS = process.env.CALDAV_PASS ?? "local-test-password"; // .dev.vars CALDAV_PASSWORD
+const PASS = process.env.CALDAV_PASS ?? "changeme"; // .dev.vars CALDAV_PASSWORD(2026-07-11 検証アカウントの値に統一)
 
 const auth = `Basic ${btoa(`${USER}:${PASS}`)}`;
 const home = `/dav/calendars/${encodeURIComponent(USER)}/`;

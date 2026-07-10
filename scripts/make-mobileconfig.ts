@@ -38,9 +38,22 @@ const description = process.env.CALDAV_DESC ?? "caldav 検証";
 
 // PayloadUUID / PayloadIdentifier は「このプロファイルの同一性」を表す。
 // 同じ UUID のプロファイルを再インストールすると「置き換え」になる(別 UUID だと併存)。
-// 検証用は固定 UUID にして常に置き換えにする(アカウントが増殖しない)。
-const PROFILE_UUID = "7B2A4C1E-0000-4000-8000-C0FFEE000001";
-const PAYLOAD_UUID = "7B2A4C1E-0000-4000-8000-C0FFEE000002";
+// 2026-07-11 変更: 完全固定 UUID だと本番用とローカル開発用(caldav-dev.097969.xyz)が
+// 相互に置き換え合ってしまい併存できない。かといって毎回ランダムだと同じ接続先の
+// プロファイルが増殖する。→ host+username の SHA-256 から決定的に導出する:
+//   同じ接続先への再生成 = 同じ UUID = 置き換え(増殖しない)
+//   別の接続先          = 別の UUID   = 併存(dev と prod を両方入れられる)
+const idHash = new Bun.CryptoHasher("sha256")
+	.update(`${host}\n${username}`) // 区切りは \n(host に現れない文字なら何でもよい)
+	.digest("hex");
+// hex 32桁を 8-4-4-4-12 に整形して UUID 形式にする(version/variant ビットは
+// iOS は検査しないが、念のため RFC 4122 の v4/variant を立てておく)。
+const toUuid = (hex: string) =>
+	`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`.toUpperCase();
+const PROFILE_UUID = toUuid(idHash.slice(0, 32));
+const PAYLOAD_UUID = toUuid(idHash.slice(32, 64));
+// PayloadIdentifier も同一性判定に使われるため、接続先ごとに変える(先頭8桁で十分)。
+const IDENT_SUFFIX = idHash.slice(0, 8);
 
 // XML 特殊文字のエスケープ(パスワードに & や < が入っても壊れないように)。
 const esc = (s: string) =>
@@ -72,7 +85,7 @@ const profile = `<?xml version="1.0" encoding="UTF-8"?>
 			<key>PayloadDisplayName</key>
 			<string>${esc(description)}</string>
 			<key>PayloadIdentifier</key>
-			<string>dev.gigun.caldav.account</string>
+			<string>dev.gigun.caldav.account.${IDENT_SUFFIX}</string>
 			<key>PayloadType</key>
 			<string>com.apple.caldav.account</string>
 			<key>PayloadUUID</key>
@@ -84,7 +97,7 @@ const profile = `<?xml version="1.0" encoding="UTF-8"?>
 	<key>PayloadDisplayName</key>
 	<string>${esc(description)}</string>
 	<key>PayloadIdentifier</key>
-	<string>dev.gigun.caldav.profile</string>
+	<string>dev.gigun.caldav.profile.${IDENT_SUFFIX}</string>
 	<key>PayloadRemovalDisallowed</key>
 	<false/>
 	<key>PayloadType</key>
