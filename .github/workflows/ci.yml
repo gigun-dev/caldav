@@ -1,0 +1,72 @@
+# CI — M1「足場固め」の回帰安全網。
+#
+# 方針(CLAUDE.md より):
+#   - test + tsc + 層境界 import 制約 を全 push / PR で回す。
+#   - deploy は main への push が check を通ったときだけ実行する。
+#
+# なぜ bun か: PM は Bun。テストランナーも bun test。ローカルと CI の実行系を揃える
+#   (node/npm と二重管理して乖離するのを避ける)。tsc / depcruise は bunx で叩く。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一 ref の古い実行はキャンセルする(PR 連打時の無駄積みを防ぐ)。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: test / typecheck / boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # --frozen-lockfile: lockfile と package.json の乖離を CI で検出する
+      # (ローカルで bun add し忘れコミットを防ぐ)。
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 層境界 → tsc → test の順。境界違反や型エラーは「そもそもビルドが壊れている」
+      # ので、実行に時間のかかる test より先に落とす(fail-fast)。
+      - name: Layer boundaries (dependency-cruiser)
+        run: bun run boundaries
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+  deploy:
+    name: deploy to Cloudflare Workers
+    needs: check
+    # main への push のときだけ。PR やフォークからは deploy しない。
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # wrangler deploy には CLOUDFLARE_API_TOKEN が必要。
+      #   Workers Scripts:Edit + D1:Edit 権限のトークンを
+      #   リポジトリ Settings > Secrets > Actions に登録すること。
+      #   account_id は wrangler.jsonc にコミット済みなので secret 不要。
+      - name: Deploy
+        run: bun run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

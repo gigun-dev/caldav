@@ -97,6 +97,10 @@ const profile = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
+// このファイルを ES モジュール扱いにして top-level await を許可する
+// (import/export が1つも無いと tsc は script 扱いにし、TS1375 で落ちる)。
+export {};
+
 const out = process.argv[2] ?? "caldav-verification.mobileconfig";
 await Bun.write(out, profile);
 console.log(`書き出し完了: ${out}`);
