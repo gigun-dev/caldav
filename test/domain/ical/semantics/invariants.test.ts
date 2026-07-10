@@ -85,10 +85,17 @@ describe("I4: VTODO の DUE/DURATION 排他・DURATION には DTSTART 必須", (
 			"I4",
 		);
 	});
-	// 2026-07-08 レビュー時追記(§3.8.2.3): DUE は DTSTART より後 MUST。同値型・比較可能形態でのみ検証。
-	test("DUE が DTSTART 以前(同 UTC 形態・同時刻)→ I4", () => {
-		expectViolation(
+	// 2026-07-08 レビュー時追記(§3.8.2.3): DUE は DTSTART より後。同値型・比較可能形態でのみ検証。
+	// 2026-07-10 実測修正(iOS 26.5、docs 06 A4): iOS は「期限日付のみ」で DTSTART==DUE(同日)を
+	// 常用する(real-ios/vtodo-completed.ics)。同値は違反にしない(逆転だけ違反)ように緩和した。
+	test("DUE が DTSTART と同時刻(同 UTC 形態)→ 違反なし(iOS が等号を常用)", () => {
+		expectNoViolations(
 			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nDUE:20260101T100000Z\nEND:VTODO\nEND:VCALENDAR`,
+		);
+	});
+	test("DUE が DTSTART より前(逆転、同 UTC 形態)→ I4", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VTODO\nUID:a\n${VALID_STAMP}\nDTSTART:20260101T100000Z\nDUE:20260101T090000Z\nEND:VTODO\nEND:VCALENDAR`,
 			"I4",
 		);
 	});

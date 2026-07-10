@@ -177,12 +177,21 @@ export class VTodo {
 				// I6 誤検知していた。VEvent の DTEND 判定(isCalDateTime の差)と同じ粒度に揃える。
 				if (isCalDateTime(start) !== isCalDateTime(due)) {
 					add("I6", "DUE value type must match DTSTART (DATE vs DATE-TIME) (§3.8.2.3)");
-				} else if (isChronologicallyComparable(start, due) && compareDateValue(due, start) <= 0) {
+				} else if (isChronologicallyComparable(start, due) && compareDateValue(due, start) < 0) {
 					// I4(2026-07-08 レビュー時に §3.8.2.3 の "value MUST be later in time than DTSTART" を発見・追記):
-					// DUE は DTSTART より後 MUST(同時刻も不可)。ただし比較は「解決不要で well-defined な形態」だけ。
+					// DUE は DTSTART より後。比較は「解決不要で well-defined な形態」だけ。
 					// zoned は VTIMEZONE 解決が要る(compareDateValue の限界コメント)ので比較しない
 					// = VEvent の DTEND>DTSTART(I3)が同一形態前提で比較するのと同じ扱いに揃えている。
-					add("I4", "DUE must be later in time than DTSTART (§3.8.2.3)");
+					//
+					// 2026-07-10 実測修正(iOS 26.5 実機キャプチャ、docs 06 A4): iOS の「期限日付のみ」
+					// リマインダーは `DTSTART;VALUE=DATE:20260710` + `DUE;VALUE=DATE:20260710`(=同日)を
+					// 送ってくる(real-ios/vtodo-completed.ics)。旧実装は `<= 0`(同値も違反)でこれを
+					// I4 誤検知し、precondition 層で iOS の日付リマインダーを一律 PUT 拒否してしまう
+					// (= コア価値の iOS 対応を壊す)。§3.8.2.3 の "later in time" は厳密には `>` だが、
+					// 最も気難しいクライアント(iOS)が等号を常用する以上、寛容化して `< 0`(DUE < DTSTART の
+					// 逆転だけを違反)にする。「RFC の MUST より iOS の実挙動を優先」は CLAUDE.md の
+					// コア価値方針どおり(DATE 終日タスクは begin==due が自然で、逆転でなければ実害なし)。
+					add("I4", "DUE must not be earlier than DTSTART (§3.8.2.3; iOS sends equal for all-day, allowed)");
 				}
 			});
 		}
