@@ -216,6 +216,12 @@ src/
   (暗号化・write-only)が正攻法。本質解決は M2 の D1 salt付きハッシュ App Password。
   gcloud の対象は project=caldav-prod-fukuro / service=**caldav-proxy**(サービス名は
   プロジェクト名と別 — services update を project 名で叩くと not found になる)。
+- 2026-07-10: **認証方式の調査完了 → docs/modeling/07-authentication.md 新設**(M2 一次資料)。
+  要点: iOS の汎用 CalDAV に OAuth の受け口は無い(Google は専用統合)/ 業界デファクトは
+  Basic over HTTPS + App Password(iCloud・Fastmail・Nextcloud)/ Digest は 2026 年に
+  選ぶ理由なし / M2 は App Password(32文字級サーバー生成 → Argon2id/bcrypt で D1 保存)
+  + レート制限 / プロキシ内部認証は共有シークレット継続、M2 か OSS 公開時に HMAC 署名へ
+  格上げ / OAuth(Bearer)は M6 の agentic 入口で導入。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
