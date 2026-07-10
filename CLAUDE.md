@@ -175,10 +175,23 @@ src/
   B8 ✅(サーバー側削除 → sync-report 404 → iPhone から消滅、end-to-end 成立)、
   B7 ❌(**iOS に Extended MKCOL フォールバックは無い** → Cloud Run 変換プロキシは恒久構成)。
   CAPTURE_LOG=0 に戻してデプロイ済み(99a638ee)。残る 🔶 は A7(6868 未誘発)のみ。
-- **次の作業**:
-  1. presentation の確認: ETag 不一致を必ず 412 で返すこと(前作は 403 で iOS が
-     回復不能になった — 06 の教訓)。テストで担保する。
-  2. ローカル開発環境の整備(Makefile / seed / dev プロキシ / cloudflared)と CI
-     (bun test + tsc + deploy。層境界の import 制約チェックも — CLAUDE.md パッケージ方針)。
-  3. 長期ビジョンの入口: MCP / REST からユースケースを呼ぶ薄いアダプタ
-     (application 層は既に DAV 非依存)。カレンダー委任(caldav-proxy 拡張)は将来候補。
+- **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
+  - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
+    ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
+    層境界 import 制約 + deploy)。
+  - **M2 マルチユーザー**: 現状は単一ユーザー Basic(secrets 直)。ユーザー管理 +
+    App Password(前作踏襲)+ principal 複数化。**スケジューリングの前提**。
+  - **M3 スケジューリング(招待)**: RFC 6638/5546。schedule-inbox/outbox、
+    calendar-user-address-set、iTIP 処理、auto-schedule。B9 実測どおり、これが無いと
+    iOS は招待 UI を出さない。サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。
+    ドメインの輪郭は 03 §3 に定義済み。
+  - **M4 他クライアント対応**: calendar-query REPORT + RecurrenceExpansion
+    (iOS は sync-collection だけで足りるが Thunderbird / tsdav 系は query を使う)。
+  - **M5 共有・委任**: caldav-proxy / calendarserver-sharing(非 RFC の Apple 拡張)。
+    M2 が前提。
+  - **M6 agentic 入口(長期ビジョン本命)**: MCP / REST アダプタ(application 層は
+    DAV 非依存済み)、Web フロント、メール起点のタスク追加。
+  - **M7 運用**: 上限系 precondition(max-resource-size 等の ServerPolicy 実装)、
+    監視、バックアップ、rate limit。
+- **次の作業**: M1 から。順序の推奨は M1 → M2 → (M3 or M6 — 招待を先にするか
+  agentic を先にするかはユーザー判断)。
