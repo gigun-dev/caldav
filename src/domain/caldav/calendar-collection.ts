@@ -129,6 +129,31 @@ export class CalendarCollection {
 		return this.supportedComponents === undefined || this.supportedComponents.includes(kind);
 	}
 
+	/**
+	 * PROPPATCH で変更可能な表示メタデータを差し替えた新しい集約を返す。
+	 *
+	 * メンバー変更ではないため sync-token / changeLog は進めない。Apple のカレンダー色や
+	 * 表示順を変更しただけで calendar-object の同期差分を捏造しないためである。一方、D1 へ
+	 * 復元可能な完全な集約として返し、application 層が readonly フィールドを破壊的に変更せずに
+	 * 保存できるようにする。
+	 */
+	withMetadata(input: {
+		displayName?: string;
+		color?: AppleColor;
+		order?: number;
+	}): CalendarCollection {
+		return new CalendarCollection({
+			id: this.id,
+			owner: this.owner,
+			displayName: input.displayName ?? this.displayName,
+			supportedComponents: this.supportedComponents,
+			color: input.color ?? this.color,
+			order: input.order ?? this.order,
+			syncCounter: this._syncCounter,
+			changeLog: this._changeLog,
+		});
+	}
+
 	// ---------------------------------------------------------------------------
 	// 状態遷移: メンバー変更の記録
 	// ---------------------------------------------------------------------------
