@@ -69,7 +69,7 @@ wrangler dev(port 8787)
 | B4 | 新規 PUT に If-None-Match: * を付ける(SHOULD)。更新 PUT に If-Match を付ける。PUT 応答で ETag を返すと再 GET を省略する(R5 =ロスレス設計の実利) | 05 CalDAV 節「新規作成の作法」、R5 | 作成/編集操作の PUT ヘッダと直後のリクエスト有無を観測 | ⬜ |
 | B5 | iOS は sync-collection REPORT を使う(対応を広告すれば)。使わない場合は getctag ポーリング + calendar-multiget。**calendar-query(time-range)無しでも同期が成立する** — 実装順(multiget/sync を query より先)の根拠 | 02-usecases の実装順、03 §1-4「Phase B は展開不要」 | supported-report-set の広告内容を変えて iOS の REPORT 選択を観測 | ⬜ |
 | B6 | sync-token は URI 形式(RFC 6578 MUST)でも iOS がそのまま往復してくれる(不透明値として扱う) | 03 SyncToken の設計(内部整数 + 公開時 URI 化) | sync-collection の往復を観測 | ⬜ |
-| B7 | MKCALENDAR のリクエストボディ(displayname / supported-calendar-component-set / 色)の実態 | CalendarCollection 集約の属性設計 | iOS からカレンダー/リマインダーリストを新規作成して観測 | ⬜ |
+| B7 | MKCALENDAR のリクエストボディ(displayname / supported-calendar-component-set / 色)の実態。**+ MKCALENDAR 501 の後に Extended MKCOL へフォールバックするか**(sabre/dav の記録では Apple クライアントは macOS 10.9.1 以前 Extended MKCOL を使用 → 10.9.2 で MKCALENDAR に切替。実装が残っていればフォールバックの望みあり) | CalendarCollection 集約の属性設計、C1(Workers は MKCALENDAR 不可 → 本作の設計方針) | iOS からカレンダー/リマインダーリストを新規作成して観測(dev プロキシ有り/無しの両方で) | ⬜ |
 | B8 | サーバー側削除は sync-report の 404(RFC 6578 — 前作の 410 は誤りと原文照合済み)で iOS に伝わる | 05 訂正2 | サーバー側でリソースを消して iOS の同期を観測 | ⬜ |
 | B9 | スケジューリング未対応サーバーへの iOS の挙動: ①attendee 付きイベントを作成すると何を PUT するか(ORGANIZER/ATTENDEE プロパティのみか、METHOD 付きか — **METHOD 付きなら R7 で PUT 拒否になり保存不能**)。②探索時に calendar-user-address-set / schedule-inbox-URL 等(RFC 6638)を PROPFIND し、不在だと何が起きるか(招待 UI の無効化だけか、アカウント機能に影響するか) | R7(put-preconditions)、03 §3 スケジューリングコンテキスト(将来)の輪郭、5546/6638 のフェーズ判断 | attendee 付きイベント作成 + アカウント追加時の PROPFIND ボディを観測 | ⬜ |
 
