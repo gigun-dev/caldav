@@ -29,6 +29,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# cloudflared named tunnel の実設定と認証情報(config.example.yml だけコミットする)。
+# tunnel 認証情報 JSON をコミットするとトンネルを乗っ取られるため必ず除外。
+cloudflared/config.yml
+cloudflared/*.json
+
 # misc
 .DS_Store
 

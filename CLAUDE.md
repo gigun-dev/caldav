@@ -187,7 +187,60 @@ src/
   置かずに済む + PR に非本番 version(preview URL)が自動生成される。
   **未完(要ユーザー操作)**: ①Cloudflare ダッシュボードで repo を Workers Builds 連携
   ②main を branch protection で保護し CI check を required status に指定。
-  M1 残タスク: ETag 不一致 412 のテスト担保 / ローカル開発環境(Makefile/seed/dev プロキシ)。
+  M1 残タスク: ローカル開発環境(Makefile/seed/dev プロキシ)。
+- 2026-07-10: **M1 ETag 412 テスト担保 完了(PR #1, d9db9c3)**。app.fetch 経由の
+  end-to-end で PUT/DELETE の If-Match / If-None-Match 不一致が HTTP 412(≠403)に
+  なることを固定(前作の 403 iOS 回復不能退行の検知)。203 pass。初回 CI green + PR に
+  Cloudflare Workers Builds も連携済みと判明(deploy を GHA から外した判断と噛み合った)。
+- 2026-07-10: **M1 ローカル開発環境を実装(実行はこの環境では不可、実装のみ)**。
+  Makefile(dev/proxy/tunnel/seed/migrate-local/reset-local/mobileconfig/check、
+  `make check` は CI と同一の 境界→型→テスト)、scripts/seed-local.ts(SQL 直挿しでなく
+  HTTP PUT でシード = ETag/sync token をドメインに計算させる。要 `make dev` 起動中)、
+  cloudflared/config.example.yml(**named tunnel** 採用。理由: quick tunnel は URL が
+  毎回変わり .mobileconfig 再作成が要る / named なら固定ホスト名で使い回せる)。
+  経路は iOS → cloudflared → 書き換え proxy(:8080)→ wrangler dev(:8787)。
+  config.yml / *.json は .gitignore(tunnel 認証情報をコミットしない)。
+  → **これで M1「足場固め」完了**(CI / deploy / ETag 412 / ローカル環境)。次は M2。
+- 2026-07-10: **本番障害と復旧: Worker の secret が全消失し 401**(iOS は「必要な情報が
+  見つからない」表示 = 認証不能でディスカバリ不達)。消失時刻は PR #1 マージ →
+  Workers Builds 自動デプロイの時刻と一致(**因果は未確定**。⚠️ **次のマージ後に必ず
+  `wrangler secret list` で再発確認**。再発するなら Cloudflare ダッシュボードの Build 側に
+  secret を置く等の対策が要る)。復旧手順: `wrangler versions secret put` ×2 →
+  `wrangler versions deploy`(通常の `secret put` は「version not deployed」で失敗した)。
+  PROXY_SHARED_SECRET は旧値を読み出せない(write-only)ため**新しい値を生成して両側に配布**:
+  Worker secret + GCP Secret Manager `caldav-proxy-shared-secret` に version 2 を追加し
+  Cloud Run `caldav-proxy` を新リビジョンで再起動(env は Secret Manager 参照 —
+  文字列 literal への update は「different type」で失敗する)。
+  検証済み: PROPFIND 207 / MKCALENDAR 201 / DELETE 204(プロキシ経由 end-to-end)。
+  パスワード保管のベスプラ整理: 単一開発アカウントの現段階は Wrangler secret
+  (暗号化・write-only)が正攻法。本質解決は M2 の D1 salt付きハッシュ App Password。
+  gcloud の対象は project=caldav-prod-fukuro / service=**caldav-proxy**(サービス名は
+  プロジェクト名と別 — services update を project 名で叩くと not found になる)。
+- 2026-07-10: **認証方式の調査完了 → docs/modeling/07-authentication.md 新設**(M2 一次資料)。
+  要点: iOS の汎用 CalDAV に OAuth の受け口は無い(Google は専用統合)/ 業界デファクトは
+  Basic over HTTPS + App Password(iCloud・Fastmail・Nextcloud)/ Digest は 2026 年に
+  選ぶ理由なし / M2 は App Password(32文字級サーバー生成 → Argon2id/bcrypt で D1 保存)
+  + レート制限 / プロキシ内部認証は共有シークレット継続、M2 か OSS 公開時に HMAC 署名へ
+  格上げ / OAuth(Bearer)は M6 の agentic 入口で導入。
+- 2026-07-11: **ローカル開発環境を初めて実環境で検証・実機接続経路を開通**。
+  make dev / migrate-local / seed / proxy / check 全て green(MKCALENDAR 201 含む
+  end-to-end)。cloudflared named tunnel `caldav-dev`(UUID 0b9e994c-…)を新設し
+  `caldav-dev.097969.xyz` → :8080 proxy → :8787 wrangler dev を公開経路として実証
+  (PROPFIND 207 / MKCALENDAR 201 / DELETE 204)。⚠️ `tunnel route dns` を名前指定で
+  叩くと既存の別 tunnel(dev)に CNAME が張られた — UUID 指定 + --overwrite-dns で
+  張り直した。実機用 `~/Downloads/caldav-dev.mobileconfig` 生成済み
+  (host=caldav-dev.097969.xyz, admin/local-test-password)。プロファイル UUID /
+  PayloadIdentifier は host+username の SHA-256 から決定的に導出する方式に変更
+  (同一接続先の再生成 = 置き換え、別接続先 = 併存 — dev と prod を両方入れられる)。
+  ローカルのパスワードは本番検証アカウントと同じ changeme に統一(.dev.vars / seed デフォルト)。
+- 2026-07-11: **iOS アカウント追加不能バグを特定・修正 → iPhone からローカル環境接続成功**。
+  症状: iOS が「SSLに接続できません」→「アカウントが見つかりません」。CAP ログでは正しい
+  current-user-principal を返しているのに iOS が principal への OPTIONS に進まず
+  フォールバック探索をループ。原因: proxy/server.ts が response.body ストリームを
+  そのまま返すと Bun が chunked に再フレーミングし Content-Length が消える(本番との
+  唯一の意味的差分。Cloud Run 入口は GFE が CL 付与するため顕在化しなかった)。
+  修正: proxy で全バッファ + Content-Length 明示(204/304 は body なし)。
+  06 の「阻む条件」に第4項として記録。SSL エラー表示は誤誘導(TLS は正常)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
