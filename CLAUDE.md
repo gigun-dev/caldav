@@ -201,6 +201,21 @@ src/
   経路は iOS → cloudflared → 書き換え proxy(:8080)→ wrangler dev(:8787)。
   config.yml / *.json は .gitignore(tunnel 認証情報をコミットしない)。
   → **これで M1「足場固め」完了**(CI / deploy / ETag 412 / ローカル環境)。次は M2。
+- 2026-07-10: **本番障害と復旧: Worker の secret が全消失し 401**(iOS は「必要な情報が
+  見つからない」表示 = 認証不能でディスカバリ不達)。消失時刻は PR #1 マージ →
+  Workers Builds 自動デプロイの時刻と一致(**因果は未確定**。⚠️ **次のマージ後に必ず
+  `wrangler secret list` で再発確認**。再発するなら Cloudflare ダッシュボードの Build 側に
+  secret を置く等の対策が要る)。復旧手順: `wrangler versions secret put` ×2 →
+  `wrangler versions deploy`(通常の `secret put` は「version not deployed」で失敗した)。
+  PROXY_SHARED_SECRET は旧値を読み出せない(write-only)ため**新しい値を生成して両側に配布**:
+  Worker secret + GCP Secret Manager `caldav-proxy-shared-secret` に version 2 を追加し
+  Cloud Run `caldav-proxy` を新リビジョンで再起動(env は Secret Manager 参照 —
+  文字列 literal への update は「different type」で失敗する)。
+  検証済み: PROPFIND 207 / MKCALENDAR 201 / DELETE 204(プロキシ経由 end-to-end)。
+  パスワード保管のベスプラ整理: 単一開発アカウントの現段階は Wrangler secret
+  (暗号化・write-only)が正攻法。本質解決は M2 の D1 salt付きハッシュ App Password。
+  gcloud の対象は project=caldav-prod-fukuro / service=**caldav-proxy**(サービス名は
+  プロジェクト名と別 — services update を project 名で叩くと not found になる)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
