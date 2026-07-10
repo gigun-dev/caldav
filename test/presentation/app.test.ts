@@ -169,4 +169,111 @@ describe("Worker app", () => {
 			expect(notFoundCount).toBe(2);
 		});
 	});
+
+	// -------------------------------------------------------------------------
+	// M1: ETag 条件不一致は HTTP 412 で返す(403 では返さない)。
+	// -------------------------------------------------------------------------
+	// 【なぜ HTTP 層で担保するのか】
+	// application 層のテスト(put/delete-calendar-object.test.ts)は
+	// ETagConditionError / DeleteETagMismatchError という「エラー型」までは検証済み。
+	// だが M1 の教訓の核心は "エラー型 → HTTP ステータスへのマッピング" にある:
+	//   前作は ETag 不一致を 403 Forbidden で返していた。iOS は 412 なら
+	//   「サーバーの最新 ETag を取り直して再 PUT」で自動回復するが、403 だと
+	//   恒久的拒否と解釈して同期が固まり、ユーザーが手動でしか復旧できなかった
+	//   (docs/modeling/06 の教訓)。
+	// よって errorResponse(src/index.ts:112)の 412 マッピングが将来 403 等に
+	// 退行しないことを app.fetch 経由の end-to-end で固定する。
+	// 各ケースで status === 412 を確認し、かつ status !== 403 を明示アサートして
+	// 「前作の退行」をピンポイントで検知する。
+	describe("M1 ETag 条件不一致は 412(403 ではない)", () => {
+		beforeEach(() => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+		});
+
+		const RES = `/dav/calendars/${USERNAME}/calendar/e.ics`;
+
+		// 既存リソースを作り、その ETag ヘッダ(引用符付き)を返すヘルパ。
+		async function seedResource(): Promise<string> {
+			const put = await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-e"),
+			});
+			expect(put.status).toBe(201);
+			const etag = put.headers.get("etag");
+			expect(etag).not.toBeNull();
+			return etag as string;
+		}
+
+		it("PUT If-None-Match:* — 既存リソースには 412(403 でない)", async () => {
+			await seedResource();
+			// 同一 URI に If-None-Match:* で再 PUT → 既に存在するので 412。
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-none-match": "*",
+				},
+				body: makeVEventIcs("uid-e"),
+			});
+			expect(res.status).toBe(412);
+			expect(res.status).not.toBe(403);
+		});
+
+		it("PUT If-Match — ETag 不一致は 412(403 でない)", async () => {
+			await seedResource();
+			// 現在の ETag と絶対に一致しないダミー ETag(64桁ゼロ = 引用符付き)。
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-match": `"${"0".repeat(64)}"`,
+				},
+				body: makeVEventIcs("uid-e"),
+			});
+			expect(res.status).toBe(412);
+			expect(res.status).not.toBe(403);
+		});
+
+		it("PUT If-Match — ETag 一致なら 204 で更新できる(回復ルートの成立確認)", async () => {
+			const etag = await seedResource();
+			// 412 を受けたクライアントが最新 ETag を取り直して再 PUT する回復シナリオ。
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-match": etag,
+				},
+				body: makeVEventIcs("uid-e"),
+			});
+			expect(res.status).toBe(204);
+		});
+
+		it("DELETE If-Match — ETag 不一致は 412(403 でない)", async () => {
+			await seedResource();
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: {
+					authorization: authHeader(),
+					"if-match": `"${"0".repeat(64)}"`,
+				},
+			});
+			expect(res.status).toBe(412);
+			expect(res.status).not.toBe(403);
+		});
+
+		it("DELETE If-Match — ETag 一致なら 204 で削除できる", async () => {
+			const etag = await seedResource();
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: { authorization: authHeader(), "if-match": etag },
+			});
+			expect(res.status).toBe(204);
+		});
+	});
 });
