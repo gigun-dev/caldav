@@ -38,22 +38,23 @@ hooks: ## git hooks を有効化(.githooks を core.hooksPath に設定)
 
 # --- 常駐プロセス(iOS 検証の3点セット)------------------------------------
 
-# CAPTURE_LOG(iOS デバッグ用の全リクエスト/レスポンスダンプ)は .dev.vars ではなく
-# コマンドで切り替える: `make dev CAP=1` / `make up CAP=1`。
+# DUMP_DAV_REQUESTS(iOS デバッグ用の全リクエスト/レスポンスダンプ。旧 CAPTURE_LOG、
+# Xandikos の DUMP_DAV_XML に倣い改名)は .dev.vars ではなくコマンドで切り替える:
+# `make dev DUMP=1` / `make up DUMP=1`。
 # 理由: .dev.vars 編集はプロセス再起動が必要な上に「戻し忘れて常時ON」事故が起きる。
 # wrangler の --var は wrangler.jsonc の vars を起動時にだけ上書きするので使い捨てに向く。
-CAP ?= 0
+DUMP ?= 0
 
-up: ## dev + proxy + tunnel を1ターミナルでまとめて起動(CAP=1 でキャプチャログ)
+up: ## dev + proxy + tunnel を1ターミナルでまとめて起動(DUMP=1 でリクエストダンプ)
 	# concurrently のプレフィックス([dev] [proxy] [tunnel])で出力元を判別できる。
 	# 特定プロセスのログだけ見たいときは従来どおり make dev / make proxy / make tunnel を
 	# 個別ターミナルで起動するか、`make up | grep '\[dev\]'` で絞る。
 	# -k(kill-others): どれか1つが死んだら全部止める(片肺で気づかず動き続ける事故防止)。
 	bunx concurrently -k -n dev,proxy,tunnel -c blue,magenta,yellow \
-		"make dev CAP=$(CAP)" "make proxy" "make tunnel"
+		"make dev DUMP=$(DUMP)" "make proxy" "make tunnel"
 
-dev: ## wrangler dev を起動(Worker + ローカル D1, :8787)。CAP=1 でキャプチャログ
-	bun run dev -- --var CAPTURE_LOG:$(CAP)
+dev: ## wrangler dev を起動(Worker + ローカル D1, :8787)。DUMP=1 でリクエストダンプ
+	bun run dev -- --var DUMP_DAV_REQUESTS:$(DUMP)
 
 proxy: ## MKCALENDAR 書き換え proxy を起動(:8080 → :8787)
 	UPSTREAM_URL=http://localhost:8787 \

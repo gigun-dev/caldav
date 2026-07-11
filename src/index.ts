@@ -155,10 +155,13 @@ const app = new Hono<{ Bindings: CloudflareBindings }>();
 //       A1〜A9 / B3〜B9 のデータ源。大学 Wi-Fi では MITM プロキシ(Proxyman)が
 //       使えないため、サーバー側 tail 方式に決定(2026-07-10)。
 //
-// 一時的な検証用途。iOS 検証が完了したら CAPTURE_LOG=0(または var 削除)で
+// 一時的な検証用途。iOS 検証が完了したら DUMP_DAV_REQUESTS=0(または var 削除)で
 // 無効化する。コードは削除しない — 将来の再検証で同じ観測系を使い回すため。
 //
-// ゲート: 環境変数 CAPTURE_LOG(var)が "1" のときだけ有効。既定は無効。
+// ゲート: 環境変数 DUMP_DAV_REQUESTS(var)が "1" のときだけ有効。既定は無効。
+// 命名は Xandikos(--dump-dav-xml / DUMP_DAV_XML)に倣う。この種の「サーバー側で生
+// リクエストをダンプする env ゲート」は Radicale(request_content_on_debug)等でも定番
+// (2026-07-11 調査。旧名 CAPTURE_LOG から改名)。
 //
 // 【セキュリティ最重要】Authorization ヘッダおよびあらゆる資格情報は
 // 絶対にログへ出さない。下の allowlist に authorization は入れていない。
@@ -188,7 +191,7 @@ const CAPTURE_BODY_METHODS = new Set(["PROPFIND", "REPORT", "PUT", "PROPPATCH", 
 
 app.use("*", async (c, next) => {
 	// ゲート off ならフックを一切通さず素通し(本番のホットパスに負荷を乗せない)。
-	if (c.env.CAPTURE_LOG !== "1") return next();
+	if (c.env.DUMP_DAV_REQUESTS !== "1") return next();
 
 	const request = c.req.raw;
 	const url = new URL(request.url);
@@ -211,7 +214,7 @@ app.use("*", async (c, next) => {
 	}
 	// JSON.stringify で 1 行化。tail は複数行ログを扱いにくく、ICS の CRLF 折り畳みや
 	// XML の改行をそのまま出すと行がバラける。stringify ならエスケープを崩さず 1 行に載る。
-	console.log(`[CAP][req] ${JSON.stringify({ method, path: url.pathname, headers: reqHeaders, body: reqBody })}`);
+	console.log(`[DUMP][req] ${JSON.stringify({ method, path: url.pathname, headers: reqHeaders, body: reqBody })}`);
 
 	await next();
 
@@ -233,7 +236,7 @@ app.use("*", async (c, next) => {
 			resBody = "<capture: body read failed>";
 		}
 	}
-	console.log(`[CAP][res] ${JSON.stringify({ method, path: url.pathname, status: res.status, headers: resHeaders, body: resBody })}`);
+	console.log(`[DUMP][res] ${JSON.stringify({ method, path: url.pathname, status: res.status, headers: resHeaders, body: resBody })}`);
 });
 
 app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));

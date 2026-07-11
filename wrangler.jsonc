@@ -7,9 +7,10 @@
   "vars": {
     // 公開してよいログイン名。パスワードとプロキシ共有鍵は Wrangler secret に置く。
     "CALDAV_USERNAME": "admin",
-    // iOS 実機検証用キャプチャログのゲート。"1" で有効(src/index.ts の [CAP] ミドルウェア)。
+    // iOS 実機検証用の DAV リクエストダンプのゲート。"1" で有効(src/index.ts の [DUMP] ミドルウェア)。
+    // 命名は Xandikos の --dump-dav-xml / DUMP_DAV_XML に倣う(2026-07-11、旧名 CAPTURE_LOG)。
     // 一時的な検証用途。検証完了後は "0" にして無効化する(コードは残す — 再検証で使う)。
-    "CAPTURE_LOG": "0"
+    "DUMP_DAV_REQUESTS": "0"
   },
   "d1_databases": [
     {

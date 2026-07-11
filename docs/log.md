@@ -168,3 +168,10 @@
   スマート句読点で ” に自動変換する」ことも確認。キャプチャ生 ICS は geo 伏せ字化の上
   fixtures/real-ios/dquote-location-event.ics に還元(冪等群、roundtrip 26 tests pass)。
   記録: docs/modeling/06 A7 行 / next-directions.md 小粒タスク ✅×2。
+- 2026-07-11: CAPTURE_LOG の設計を先人 OSS と照合(deepwiki で Radicale / Xandikos を調査)。
+  結論: 「env ゲートでサーバー側が生リクエストをダンプ」は Xandikos --dump-dav-xml /
+  DUMP_DAV_XML、Radicale request_content_on_debug と同型の定番装備で、設計変更は不要。
+  命名だけ Xandikos に倣い **CAPTURE_LOG → DUMP_DAV_REQUESTS** に改名(make の CAP= → DUMP=、
+  ログプレフィックス [CAP] → [DUMP])。履歴 docs 内の旧名表記は過去の記録なので残置。
+  proxy 側へ移す案も検討したが独自流になるため不採用。将来 OSS 化時は Radicale 型
+  (LOG_LEVEL=debug + content-on-debug + ログ量制限)への統合を検討。

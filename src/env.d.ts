@@ -5,8 +5,8 @@ interface CloudflareBindings {
 	CALDAV_PASSWORD: string;
 	PROXY_SHARED_SECRET: string;
 	// iOS 実機検証用のキャプチャログを有効化するゲート(var)。"1" で有効。
-	// 一時的な検証用途。検証完了後は CAPTURE_LOG=0(または未設定)で無効化する。
+	// 検証時のみ有効化する。通常は 0(または未設定)。旧名 CAPTURE_LOG(2026-07-11 改名)。
 	// vars なので worker-configuration.d.ts が本来の source of truth だが、
 	// wrangler types 再生成前でも tsc を通すためここに任意 var として足しておく。
-	CAPTURE_LOG?: string;
+	DUMP_DAV_REQUESTS?: string;
 }
