@@ -205,6 +205,40 @@ describe("J-1: VJOURNAL のロスレス往復", () => {
 	});
 });
 
+// =============================================================================
+// J-3: ical-tasks draft / RFC 9253 プロパティのロスレス往復
+// =============================================================================
+// SUBSTATE/REASON(VSTATUS サブコンポーネント配下)・ESTIMATED-DURATION・
+// RELATED-TO(RELTYPE=DEPENDS-ON + GAP)・REFID・RFC 9074 ACKNOWLEDGED を1本の VTODO に
+// 混ぜる(ACKNOWLEDGED は既に生値保持で往復済み・06 A9 — ここでは回帰保証として同居させる、
+// というタスク指示どおり)。J-1 と同じくフィクスチャファイルを増やさず正規形インライン ICS。
+describe("J-3: VTODO(ical-tasks draft / RFC 9253)のロスレス往復", () => {
+	test("SUBSTATE・REASON・ESTIMATED-DURATION・DEPENDS-ON(RELTYPE/GAP)・REFID・ACKNOWLEDGED が parse→serialize でバイト完全一致", () => {
+		const original = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-j3-roundtrip",
+			"DTSTAMP:20260101T000000Z",
+			"STATUS:FAILED",
+			"ACKNOWLEDGED:20260710T005500Z",
+			"ESTIMATED-DURATION:PT1H",
+			"REFID:itinerary-2014-11-17",
+			"RELATED-TO;RELTYPE=DEPENDS-ON;GAP=P1D:paint-the-room",
+			"RELATED-TO;RELTYPE=SIBLING:sibling-uid",
+			"BEGIN:VSTATUS",
+			"STATUS:FAILED",
+			"REASON:https://example.com/reason/no-one-home",
+			"SUBSTATE:ERROR",
+			"END:VSTATUS",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n") + "\r\n";
+		expect(serialize(parse(original))).toBe(original);
+	});
+});
+
 describe("段階1(続き): 折り畳み差異あり実データ", () => {
 	test("japanese-long-event: 116B 日本語行を iOS は折らないが本作は折る", () => {
 		const original = realIos("japanese-long-event.ics");

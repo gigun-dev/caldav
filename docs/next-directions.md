@@ -137,6 +137,14 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   SUBSTATE(OK/ERROR/SUSPENDED)・STATUS:PENDING/FAILED・REASON・ESTIMATED-DURATION・
   DEPENDS-ON・REFID は agent のタスクグラフ実行ランタイムの状態モデルそのもの。
   競合実装ほぼ皆無 = 差別化。ドメイン層(vtodo.ts 系)に先取りで織り込む。
+  - ~~J-3: ical-tasks/9253 の型付きアクセサ先取り(vtodo.ts + VJournal 共通 relatedTo)。~~ ✅
+    > **2026-07-11 更新:** 完了。原文スナップショット(docs/rfc/rfc9253.txt・
+    > docs/specs/draft-ietf-calext-ical-tasks-17.txt)を取得してから照合実装。**原文が設計メモを
+    > 複数訂正**(SUBSTATE/REASON は VSTATUS サブコンポーネント内・REASON は URI・DEPENDS-ON は
+    > RELATED-TO の RELTYPE 値・GAP は RELATED-TO パラメータ・REFID は反復プロパティ。照合結果は 05)。
+    > vtodo.ts に substate/reason/estimatedDuration/dependsOn/refids/relatedTo、helpers に共通
+    > relatedToOf。**全て読み取り専用・検証なし・string 型(union にしない)= draft 追従リスク最小**。
+    > CONCEPT/LINK は生値保持のみ。309 tests green(ACKNOWLEDGED 回帰込み)。**方向性 J 一区切り。**
 - RFC 9074 ACKNOWLEDGED は生値保持で既に充足(06 A9)— 壊さない状態を維持。
 - VAVAILABILITY(7953)は G-4/B のタイミングで、JSCalendar は変換 draft の RFC 化後に
   MCP/REST の JSON 表現として検討(09 §4b)。

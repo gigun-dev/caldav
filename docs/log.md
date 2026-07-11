@@ -332,3 +332,18 @@
   6 tests 追加で 301 pass。既定 calendar/tasks の PROPFIND 出力は不変(explicit supportedComponents なので)
   を回帰テストで保証。実装 = sonnet。iOS 実機での calendar/tasks 非回帰確認のみ J-4 に保留。
   次: RFC 9253 + ical-tasks draft スナップショット取得 → J-3(draft アクセサ先取り)。
+- 2026-07-11: **J-3(ical-tasks/RFC 9253 アクセサ先取り)完了 → 方向性 J 一区切り**。
+  前提として RFC 9253 全文(docs/rfc/rfc9253.txt)と ical-tasks draft-17(docs/specs/ 新設)を
+  取得してコミット(5c3ea61)。**原文照合が Fable 設計メモの想定を複数訂正**した(学習知識で
+  断定しない規律の実効例): ①SUBSTATE/REASON は VTODO 直下でなく VSTATUS サブコンポーネント内
+  ②REASON の値型は URI(TEXT でない)③DEPENDS-ON は独立プロパティでなく RELATED-TO;RELTYPE=
+  DEPENDS-ON ④GAP は RELATED-TO のパラメータ ⑤REFID は反復プロパティ。照合結果は 05 に記録。
+  実装(vtodo.ts): substate/reason(先頭 VSTATUS 読み)・estimatedDuration(DURATION)・
+  dependsOn(RELATED-TO を RELTYPE=DEPENDS-ON でフィルタ + GAP パラメータ)・refids(allProps)・
+  relatedTo。helpers に共通 relatedToOf(VJournal/VTodo 重複解消)。STATUS:PENDING/FAILED は
+  現行 string アクセサで既に受かる(JSDoc 追記のみ)。CONCEPT/LINK は生値保持のみ。
+  **全アクセサ読み取り専用・検証なし・string 型(union にしない)= draft 追従リスク最小化**。
+  8 tests 追加(ACKNOWLEDGED 回帰込み)で 309 pass。実装 = sonnet、原文照合も sonnet が実施。
+  方向性 J(VJOURNAL 基盤 J-1 / 宣言+オプトイン J-2 / draft アクセサ J-3)完了。残る J-4
+  (jtx/DAVx⁵ 実機検証・VJOURNAL time-range query・RFC 化時の格上げ)は後続。
+  次: G-5(MCP 照会ツール = E の先鋒・語彙原型)。着手時に Fable 設計パスを挟む。

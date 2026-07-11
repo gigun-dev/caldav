@@ -37,9 +37,9 @@ import {
 	allProps,
 	firstProp,
 	isCalDateTime,
-	paramFirst,
 	parseDateOrDateTime,
 	rawValue,
+	relatedToOf,
 } from "./helpers";
 import { parseInteger, reportDuplicate, safe, validateRRule } from "./vevent";
 
@@ -116,16 +116,14 @@ export class VJournal {
 	}
 
 	/**
-	 * RELATED-TO(§3.8.4.5)。J の本丸 — VJOURNAL を VTODO/VEVENT や他の VJOURNAL へ
-	 * 紐付けるためのプロパティ。複数可。RELTYPE パラメータ(§3.2.15)は既定 PARENT
-	 * (未指定時のデフォルト値をここで補って返す — 呼び出し側が毎回 "未指定なら PARENT"
-	 * を書かなくて済むように、レンズの責務として解決しておく)。
+	 * RELATED-TO(§3.8.4.5、RFC 9253 §9.1 で拡張)。J の本丸 — VJOURNAL を VTODO/VEVENT や
+	 * 他の VJOURNAL へ紐付けるためのプロパティ。複数可。RELTYPE パラメータ(§3.2.15)は既定
+	 * PARENT(未指定時のデフォルト値をここで補って返す)。
+	 *
+	 * 実装は helpers.ts の relatedToOf() に共通化(J-3。VTodo.relatedTo() と同一ロジック)。
 	 */
 	relatedTo(): { value: string; reltype: string }[] {
-		return allProps(this.component, "RELATED-TO").map((p) => ({
-			value: p.value,
-			reltype: paramFirst(p, "RELTYPE")?.toUpperCase() ?? "PARENT",
-		}));
+		return relatedToOf(this.component);
 	}
 
 	/** CATEGORIES(§3.8.1.2)。複数可(1プロパティ内カンマ区切り、かつプロパティ自体も複数出現しうる)。

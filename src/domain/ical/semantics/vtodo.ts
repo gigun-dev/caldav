@@ -22,12 +22,15 @@ import {
 import { InvariantViolation } from "./errors";
 import { VAlarm } from "./valarm";
 import {
+	allProps,
 	compareDateValue,
 	firstProp,
 	isCalDateTime,
 	isChronologicallyComparable,
+	paramFirst,
 	parseDateOrDateTime,
 	rawValue,
+	relatedToOf,
 	// sameDateForm は P2 修正で VTODO では未使用になった(DUE 判定を値型一致のみに緩和したため)。
 	// helpers.ts の定義自体は VEvent の RECURRENCE-ID 形態一致検証で使われ続けるので残す。
 	subComponents,
@@ -81,9 +84,69 @@ export class VTodo {
 		return rawValue(this.component, "SUMMARY");
 	}
 
-	/** STATUS(§3.8.1.11)。列挙値は case-insensitive → 大文字化して返す。 */
+	/**
+	 * STATUS(§3.8.1.11)。列挙値は case-insensitive → 大文字化して返す。
+	 *
+	 * 【J-3 追記】RFC 5545 の4値(NEEDS-ACTION/COMPLETED/IN-PROCESS/CANCELLED)に加えて、
+	 * draft-ietf-calext-ical-tasks-17 §11.2(2025-12 rev、"Redefined STATUS Property")が
+	 * VTODO の STATUS に PENDING・FAILED の2値を追加している(原文照合済み: §15.3 Status
+	 * Value registry にも両値が登録されている)。この既存アクセサは大文字化した生値をそのまま
+	 * 返すだけなので、追加された2値も検証なしで既に受け取れる — union 型にしていないのは
+	 * 「draft の値名変更・追加でアクセサ表面が壊れない」ことを優先する CLAUDE.md の追従リスク
+	 * 最小化方針どおり(コード変更は不要、この JSDoc 追記のみが J-3 の対応)。
+	 */
 	get status(): string | undefined {
 		return rawValue(this.component, "STATUS")?.toUpperCase();
+	}
+
+	/**
+	 * SUBSTATE(draft-ietf-calext-ical-tasks-17 §10.3、rev-17 / 2025-12)。
+	 *
+	 * 【原文照合で確定した構造(重要: VTODO 直下のプロパティではない)】
+	 * §10.3 の Conformance は「このプロパティは VSTATUS コンポーネントに指定できる」であり、
+	 * VTODO の todoprop には含まれない。SUBSTATE は VTODO 配下の VSTATUS サブコンポーネント
+	 * (§12.1、"This component can be specified multiple times in any calendar component")
+	 * の中のプロパティとして現れる。よってこのアクセサは VTODO 自身のプロパティを見るのではなく、
+	 * 最初の VSTATUS サブコンポーネントを読む(複数 VSTATUS が付きうるが、J-3 は「先頭の
+	 * ステータスが読める」ところまでを先取りのスコープとする — 履歴全件の集約は将来の課題)。
+	 *
+	 * 値型は TEXT。ABNF 上は OK/ERROR/SUSPENDED が例示された iana-token 拡張可能な列挙だが、
+	 * union 型にはしない(draft の値追加で壊れないように。string で大文字化のみ)。
+	 */
+	get substate(): string | undefined {
+		const status = subComponents(this.component, "VSTATUS")[0];
+		if (status === undefined) return undefined;
+		return rawValue(status, "SUBSTATE")?.toUpperCase();
+	}
+
+	/**
+	 * REASON(draft-ietf-calext-ical-tasks-17 §10.2、rev-17 / 2025-12)。
+	 *
+	 * 【原文照合で確定した構造】SUBSTATE と同じく、Conformance は「VSTATUS と PARTICIPANT
+	 * コンポーネントに指定できる」であり、VTODO 直下ではない。ここでは VSTATUS 側(SUBSTATE と
+	 * 同じ最初のサブコンポーネント)を読む。PARTICIPANT(RFC 9073)配下の REASON は対象外
+	 * (J-3 のスコープは VTODO/VJOURNAL のタスク状態モデルであり、参加者ステータスは含まない)。
+	 *
+	 * 値型は URI(§10.2 "Value Type: URI" — TEXT ではない。設計メモ段階では TEXT を仮定して
+	 * いたが原文で訂正)。ただしこのアクセサはロスレスの生文字列をそのまま返すだけで URI
+	 * パースはしない(検証なし方針・CLAUDE.md)。
+	 */
+	get reason(): string | undefined {
+		const status = subComponents(this.component, "VSTATUS")[0];
+		if (status === undefined) return undefined;
+		return rawValue(status, "REASON");
+	}
+
+	/**
+	 * ESTIMATED-DURATION(draft-ietf-calext-ical-tasks-17 §10.1、rev-17 / 2025-12)。
+	 *
+	 * 原文照合: Conformance は「VTODO に指定できる」(VSTATUS ではなく VTODO 直下)。
+	 * Value Type は DURATION(§3.3.6 と同じ構文、正の期間のみを想定)なので、既存の
+	 * parseDurationValue(duration アクセサと同じコーデック)をそのまま使う。
+	 */
+	get estimatedDuration(): DurationValue | undefined {
+		const raw = rawValue(this.component, "ESTIMATED-DURATION");
+		return raw !== undefined ? parseDurationValue(raw) : undefined;
 	}
 
 	/** COMPLETED(§3.8.2.1)。完了時刻。UTC DATE-TIME MUST(検証は将来の必要時に)。 */
@@ -118,6 +181,64 @@ export class VTodo {
 	alarms(): VAlarm[] {
 		return subComponents(this.component, "VALARM").map((c) => VAlarm.fromComponent(c));
 	}
+
+	/**
+	 * RELATED-TO(§3.8.4.5、RFC 9253 §9.1 で拡張)。VJournal.relatedTo()(J-1)と同じ意味論。
+	 * 実装は helpers.ts の relatedToOf() に共通化(J-3。両レンズで重複実装しない)。
+	 */
+	relatedTo(): { value: string; reltype: string }[] {
+		return relatedToOf(this.component);
+	}
+
+	/**
+	 * DEPENDS-ON(RFC 9253 §5・§9.1)。
+	 *
+	 * 【原文照合で確定した最重要点: 独立したプロパティではない】
+	 * "DEPENDS-ON" は RFC 9253 §5 で定義される RELATED-TO の RELTYPE 値の1つであって、
+	 * `DEPENDS-ON:` という別プロパティ名は存在しない(§9.1 の RELATED-TO 再定義 ABNF にも
+	 * DEPENDS-ON という語は出てこない — reltypeparam の値としてのみ現れる)。つまり
+	 * `RELATED-TO;RELTYPE=DEPENDS-ON:<value>` の形。設計メモ段階では独立プロパティを仮定して
+	 * いたが誤りだったので、実装は RELATED-TO 全体から RELTYPE=DEPENDS-ON のものだけを
+	 * 抽出するフィルタにする。
+	 *
+	 * 値の型: §9.1 "Value Type: URI, UID, or TEXT"。既定(VALUE 未指定)は UID
+	 * ("By default ... consists of ... UID")。ここでは値型の解決はせず生文字列を返す
+	 * (検証なし方針)。
+	 *
+	 * GAP パラメータ(§6.2): "This parameter MAY be specified on the RELATED-TO property"
+	 * — DEPENDS-ON 専用ではなく RELATED-TO 全般に付けられるパラメータだが、DEPENDS-ON
+	 * (先行タスクの遅れ/前倒しを表現する用途)で使われることを想定して戻り値に含める。
+	 * 値型は dur-value(RFC 5545 §3.3.6 の DURATION 構文)なので parseDurationValue を使う。
+	 * 符号あり(正=lag、負=lead)。
+	 */
+	dependsOn(): { value: string; gap?: DurationValue }[] {
+		return allProps(this.component, "RELATED-TO")
+			.filter((p) => paramFirst(p, "RELTYPE")?.toUpperCase() === "DEPENDS-ON")
+			.map((p) => {
+				const gapRaw = paramFirst(p, "GAP");
+				return {
+					value: p.value,
+					gap: gapRaw !== undefined ? parseDurationValue(gapRaw) : undefined,
+				};
+			});
+	}
+
+	/**
+	 * REFID(RFC 9253 §8.3)。
+	 *
+	 * 原文照合: Conformance は「任意の iCalendar コンポーネントに 0 回以上指定できる」
+	 * ("can be specified zero or more times")— 1プロパティ内に複数値ではなく、
+	 * プロパティ自体が複数回出現しうる形(REFID:a と REFID:b を別プロパティとして持てる)。
+	 * よって allProps で全件集める(1プロパティ複数値のパース、ではない)。値型は TEXT。
+	 */
+	refids(): string[] {
+		return allProps(this.component, "REFID").map((p) => p.value);
+	}
+
+	// CONCEPT・LINK(RFC 9253 §8.1・§8.2)は J-3 では型付きアクセサを先取りしない
+	// (Fable 設計メモの判断: agent 状態モデルとの結びつきが薄く、使う入口 MCP の要件が
+	// まだ無い)。生値保持による parse→serialize のロスレス往復は既に無条件で保証されて
+	// いるので、"読めない・消える" ことはない。型付きアクセサが要る場面が来たら追加する。
 
 	// ---------------------------------------------------------------------------
 	// validate: I2 / I4(DUE/DURATION 排他 + DUE>DTSTART)/ I5 / I6(DUE・UNTIL の値型一致)

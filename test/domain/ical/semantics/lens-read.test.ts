@@ -112,6 +112,148 @@ describe("ICalendarObject: VJournal レンズ(J-1)", () => {
 	});
 });
 
+describe("ICalendarObject: VTodo レンズ — ical-tasks draft / RFC 9253 先取りアクセサ(J-3)", () => {
+	test("STATUS:PENDING は status で受かる(union 化せず string のまま。draft-ietf-calext-ical-tasks-17 §11.2/§15.3)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-pending",
+			"DTSTAMP:20260101T000000Z",
+			"STATUS:PENDING",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		expect(cal.todos()[0]!.status).toBe("PENDING");
+	});
+
+	test("SUBSTATE/REASON は VSTATUS サブコンポーネント配下から読める(draft §10.2/§10.3。VTODO 直下ではない)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-substate",
+			"DTSTAMP:20260101T000000Z",
+			"STATUS:FAILED",
+			"BEGIN:VSTATUS",
+			"STATUS:FAILED",
+			"REASON:https://example.com/reason/no-one-home",
+			"SUBSTATE:ERROR",
+			"END:VSTATUS",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		const todo = cal.todos()[0]!;
+		expect(todo.substate).toBe("ERROR");
+		expect(todo.reason).toBe("https://example.com/reason/no-one-home");
+	});
+
+	test("SUBSTATE/REASON は VSTATUS が無ければ undefined", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-no-vstatus",
+			"DTSTAMP:20260101T000000Z",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		const todo = cal.todos()[0]!;
+		expect(todo.substate).toBeUndefined();
+		expect(todo.reason).toBeUndefined();
+	});
+
+	test("ESTIMATED-DURATION は DURATION 値として parseDurationValue で読める(draft §10.1)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-estimated",
+			"DTSTAMP:20260101T000000Z",
+			"ESTIMATED-DURATION:PT1H",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		expect(cal.todos()[0]!.estimatedDuration).toEqual({ positive: true, hours: 1 });
+	});
+
+	test("DEPENDS-ON は RELATED-TO;RELTYPE=DEPENDS-ON;GAP=... の形で読める(RFC 9253 §5/§6.2/§9.1)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-depends",
+			"DTSTAMP:20260101T000000Z",
+			"RELATED-TO;RELTYPE=DEPENDS-ON;GAP=P1D:paint-the-room",
+			"RELATED-TO;RELTYPE=DEPENDS-ON:electrical-work",
+			"RELATED-TO:parent-uid",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		const todo = cal.todos()[0]!;
+		expect(todo.dependsOn()).toEqual([
+			{ value: "paint-the-room", gap: { positive: true, days: 1 } },
+			{ value: "electrical-work", gap: undefined },
+		]);
+		// RELTYPE 未指定(既定 PARENT)は relatedTo() 側にだけ現れ、dependsOn() には含まれない。
+		expect(todo.relatedTo()).toEqual([
+			{ value: "paint-the-room", reltype: "DEPENDS-ON" },
+			{ value: "electrical-work", reltype: "DEPENDS-ON" },
+			{ value: "parent-uid", reltype: "PARENT" },
+		]);
+	});
+
+	test("REFID は複数プロパティとして全件読める(RFC 9253 §8.3。1プロパティ複数値ではない)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-refid",
+			"DTSTAMP:20260101T000000Z",
+			"REFID:itinerary-2014-11-17",
+			"REFID:trip-42",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		expect(cal.todos()[0]!.refids()).toEqual(["itinerary-2014-11-17", "trip-42"]);
+	});
+
+	test("VTodo.relatedTo() と VJournal.relatedTo() は同じ共通ヘルパー経由で同じ結果を返す(helpers.relatedToOf の回帰)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:t-shared",
+			"DTSTAMP:20260101T000000Z",
+			"RELATED-TO:shared-uid",
+			"RELATED-TO;RELTYPE=SIBLING:sibling-uid",
+			"END:VTODO",
+			"BEGIN:VJOURNAL",
+			"UID:j-shared",
+			"DTSTAMP:20260101T000000Z",
+			"RELATED-TO:shared-uid",
+			"RELATED-TO;RELTYPE=SIBLING:sibling-uid",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		expect(cal.todos()[0]!.relatedTo()).toEqual(cal.journals()[0]!.relatedTo());
+	});
+});
+
 describe("validate: 実データは妥当(違反ゼロ)", () => {
 	test("ios-event.ics は違反なし", () => {
 		expect(load("ios-event.ics").validate()).toEqual([]);

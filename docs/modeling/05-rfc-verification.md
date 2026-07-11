@@ -163,3 +163,23 @@
   XML 属性付きで calendar-color を PROPPATCH してくる。属性を含めて素朴に別プロパティ扱いすると
   色がリセットされるバグになる(Stalwart #1611 で実例)。値の #RRGGBBAA だけ保存し属性は捨てるか
   そのまま保持して返すこと。
+
+## J-3: ical-tasks draft-17 / RFC 9253 の照合(2026-07-11)
+
+方向性 J のプロパティ先取り(型付き読み取りアクセサ、vtodo.ts)にあたり原文照合。
+**Fable 設計メモの想定を原文が複数訂正した**(学習知識で断定しない規律が効いた例)。詳細は
+各アクセサの JSDoc(コードの近くに配置。CLAUDE.md 方針)、ここは照合結果の索引:
+
+- **SUBSTATE / REASON は VTODO 直下のプロパティではない**(draft-ietf-calext-ical-tasks-17
+  §10.2/§10.3)。**VSTATUS サブコンポーネント**(§12.1、任意コンポーネントに複数指定可)内の
+  プロパティ。実装は先頭 VSTATUS を読むプレビュー(履歴全件集約は将来)。
+- **REASON の値型は URI**(§10.2)。設計メモは TEXT を仮定していたが訂正。生値返しなので挙動は不変。
+- **ESTIMATED-DURATION は VTODO 直下**・値型 DURATION(§10.1)。parseDurationValue 再利用。
+- **SUBSTATE の値型は TEXT**(OK/ERROR/SUSPENDED 例示の iana-token 拡張可。§10.3)。union 化しない。
+- **STATUS の PENDING/FAILED**(§11.2 / §15.3 registry)は現行 string アクセサで既に受かる。
+- **DEPENDS-ON は独立プロパティではない**(RFC 9253 §5/§9.1)。`RELATED-TO;RELTYPE=DEPENDS-ON:<値>`
+  の形。dependsOn() は RELATED-TO を RELTYPE でフィルタ。既定値型は UID。
+- **GAP は RELATED-TO のパラメータ**(§6.2、DEPENDS-ON 専用ではない)。値型 dur-value(符号あり)。
+- **REFID は反復プロパティ**(§8.3、0 回以上)。1プロパティ複数値ではなく allProps で全件。
+- **CONCEPT / LINK**(§8.1/§8.2)は型付きアクセサ未実装(生値保持で往復のみ)。使う入口が決まってから。
+- RELATED-TO の既定 RELTYPE は PARENT(RFC 5545 §3.8.4.5 / RFC 9253 §9.1 踏襲)。

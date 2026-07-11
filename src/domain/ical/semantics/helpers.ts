@@ -157,3 +157,24 @@ function fields(v: CalDate | CalDateTime): number[] {
 	}
 	return [v.year, v.month, v.day, 0, 0, 0];
 }
+
+/**
+ * RELATED-TO(§3.8.4.5、RFC 9253 §9.1 で拡張)を全件読む共通ヘルパー。
+ *
+ * 【J-3 で VJournal から抽出・共通化した理由】
+ * J-1 で VJournal.relatedTo() として実装したが、VTODO にも同じ意味論(RELTYPE 既定 PARENT の
+ * 解決込み)が要る(RFC 9253 §5 の DEPENDS-ON もこのプロパティの RELTYPE 値の一種 — 詳細は
+ * dependsOn() 側のコメント参照)。VJournal/VTodo の2箇所で同じロジックを重複させないよう、
+ * ここに引き上げた。VJournal 側もこの関数を呼ぶだけに置き換える(2026-07-11)。
+ *
+ * RELTYPE 未指定時のデフォルトは PARENT(RFC 5545 §3.8.4.5「デフォルトの関係タイプは PARENT」、
+ * RFC 9253 §9.1 でも "By default, the property value points to ... PARENT relationship" と
+ * 踏襲されている)。列挙 union 化はしない(RFC 9253 が FINISHTOSTART 等の新 RELTYPE 値を
+ * 追加しているのに加え、draft 追従リスクを避ける CLAUDE.md 方針 — 呼び出し側で string 比較)。
+ */
+export function relatedToOf(c: Component): { value: string; reltype: string }[] {
+	return allProps(c, "RELATED-TO").map((p) => ({
+		value: p.value,
+		reltype: paramFirst(p, "RELTYPE")?.toUpperCase() ?? "PARENT",
+	}));
+}
