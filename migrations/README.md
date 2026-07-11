@@ -92,10 +92,15 @@ Workers Builds には「本番ブランチのデプロイ コマンド」とは�
 **将来**: preview を本番から隔離したくなったら「preview 用 D1 を別途用意 +
 `wrangler d1 migrations apply <preview-db> --preview`」という構成になる(別スコープ)。
 
-## 【要ダッシュボード設定】Workers Builds の deploy command を変更する
+## 【ダッシュボード設定】Workers Builds の deploy command を変更する(2026-07-12 設定済み)
+
+**2026-07-12 に本番ブランチのデプロイ コマンドを `bun run deploy` に変更済み**(初回ビルド
+`afecc023` で自動 migrate → deploy が稼働することを実測)。以下は再設定・別環境構築時の手順。
 
 **リポジトリのファイル変更だけでは有効にならない。** Cloudflare ダッシュボードで
-以下の手順が必要(このセッションの subagent には実行できないため、人がやる):
+以下の手順が必要(ダッシュボード or 編集権限付きトークンでの Builds API `PATCH
+/accounts/{account_id}/builds/workers/{script_tag}` で `production_settings.deploy_command`
+を更新。読み取り専用トークンでは 10000 認証エラーになる):
 
 1. Cloudflare ダッシュボード → Workers & Pages → `caldav` Worker → **Settings → Builds**
 2. **Deploy command**(本番ブランチ用)の欄を既定の `npx wrangler deploy` から
@@ -106,18 +111,22 @@ Workers Builds には「本番ブランチのデプロイ コマンド」とは�
    `wrangler d1 migrations apply caldav-production --remote` の出力を確認する
    (次節「認証の注意」参照)。
 
-## 認証の注意(初回ビルドで要実測)
+## 認証(2026-07-12 実測済み: 追加トークン不要)
 
-Workers Builds のビルド環境が **暗黙のトークンでリモート D1 に apply できる権限
-(D1 Edit)を持つかどうかは公式ドキュメントに明記がない**。したがって:
+当初「Workers Builds のビルド環境が暗黙トークンでリモート D1 に apply できる権限を持つか」は
+公式ドキュメントに明記がなく未確定だったが、**deploy command 変更後の初回ビルドで実測して
+解決した**:
 
-1. deploy command を変更した後、最初の自動ビルドのログを必ず確認する。
-2. `wrangler d1 migrations apply` のステップが権限エラー(403 等)で失敗する場合、
-   Workers Builds の **build variables(secret)** に `CLOUDFLARE_API_TOKEN`
-  (D1 Edit + Workers 権限を持つトークン)を追加する。追加後、再度 push するか
-   ビルドを re-run して成功することを確認する。
-3. 成功が確認できるまでは、`make deploy-migrations`(後述)で人が手動適用する
-   フォールバックが使える。
+- ビルド `afecc023`(commit `a6c0e03`, 2026-07-12)のログで
+  `wrangler d1 migrations apply caldav-production --remote` が **認証エラーなしで実行され**、
+  `✅ No migrations to apply!`(0002/0003 は既適用だったため)→ `wrangler deploy --minify` 成功。
+- つまり **Workers Builds の暗黙トークンはそのままリモート D1 に届く。
+  `CLOUDFLARE_API_TOKEN` を build variables に追加する必要は無い。**
+
+もし将来この前提が崩れ(例: Cloudflare 側の権限モデル変更で)`migrations apply` が権限エラー
+(403 等)で失敗するようになったら、そのときは Workers Builds の **build variables(secret)** に
+`CLOUDFLARE_API_TOKEN`(D1 Edit + Workers 権限)を追加する。それまでのフォールバックは
+`make deploy-migrations`(後述)での手動適用。
 
 ## 破壊的変更のときの運用
 
