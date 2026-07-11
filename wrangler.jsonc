@@ -20,6 +20,16 @@
       "migrations_dir": "migrations"
     }
   ],
+  "kv_namespaces": [
+    {
+      // "OAUTH_KV" は @cloudflare/workers-oauth-provider がライブラリ内部でハードコードして
+      // env.OAUTH_KV を読む binding 名(利用側で名前を変えられない)。ここでリネームすると
+      // provider が KV を見つけられず認可コード/トークンの永続化が全滅するので固定必須。
+      // 2026-07-12 OAuth-for-MCP 第1スライス: 土台のみ追加(まだ OAuthProvider は new していない=無挙動変更)。
+      "binding": "OAUTH_KV",
+      "id": "0c627402f5fb4235a096885e1fba2a35"
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
