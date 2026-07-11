@@ -83,6 +83,14 @@ export {
 	type ComputeFreeBusyOutput,
 } from "./compute-free-busy";
 
+// 展開済み occurrence 列挙(G-5: MCP list-events-expanded の共通 UC。09 §2)
+export {
+	ListOccurrences,
+	type ListOccurrencesInput,
+	type ListOccurrencesOutput,
+	type ListOccurrencesEntry,
+} from "./list-occurrences";
+
 // 初期プロビジョニング
 export {
 	ProvisionDefaultCollections,
