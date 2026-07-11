@@ -67,9 +67,13 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 
 ## 小粒の残タスク(方向性に属さない申し送り)
 
-- proxy の Content-Length 修正(2026-07-11、log.md)の Cloud Run 反映 `make deploy-proxy` が未実施
-  (このマシンに gcloud CLI が無い。本番は GFE が CL を付与するため急ぎではない)。
-- iOS 検証 A7(status 6868)が未誘発のまま(docs/modeling/06)。再現したら 06 に記録。
+- ~~proxy の Content-Length 修正(2026-07-11、log.md)の Cloud Run 反映 `make deploy-proxy` が未実施
+  (このマシンに gcloud CLI が無い。本番は GFE が CL を付与するため急ぎではない)。~~ ✅
+  > **2026-07-11 更新:** gcloud CLI 導入により `make deploy-proxy` 実施。リビジョン
+  > `caldav-proxy-00003-dsz` へ切替済み、OPTIONS 疎通確認 OK(DAV ヘッダが Worker まで貫通)。
+- ~~iOS 検証 A7(RFC 6868)が未誘発のまま(docs/modeling/06)。再現したら 06 に記録。~~ ✅
+  > **2026-07-11 更新:** 第3ラウンドで決着(06 の A7 参照)。iOS はパラメータ値の DQUOTE を
+  > **黙って除去**し RFC 6868 `^` エンコードは使わない。6868 実装は不要と確定。
 
 ## 着手順の推奨
 

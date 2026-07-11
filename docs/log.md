@@ -153,3 +153,18 @@
   引き継ぎの正典 → **docs/next-directions.md**(方向性 A〜F ラベル + 打ち消し線✅ +
   `> 日付 更新:` 積層の追記型。マイルストーン M2〜M7 はここに統合、一時作った roadmap.md は廃止)。
   CLAUDE.md は約80行の恒久憲章 + ポインタのみに。
+- 2026-07-11: gcloud CLI がこのマシンに入ったので、保留していた `make deploy-proxy` を実施。
+  Content-Length 修正(同日 log 参照)を含む proxy/ を Cloud Run へデプロイ。
+  リビジョン `caldav-proxy-00003-dsz` が 100% トラフィック。
+  OPTIONS で疎通確認 OK(`dav: 1, 3, calendar-access, sync-collection, extended-mkcol` が
+  Worker から proxy 経由で返る = 貫通確認)。認証は fukuro3no.mori@gmail.com /
+  project caldav-prod-fukuro(既存設定のまま)。
+- 2026-07-11: **iOS 検証 A7(RFC 6868)を第3ラウンドで決着**。Proxyman MCP 経由で
+  caldav-dev.097969.xyz の SSL 復号を有効化(初回は CONNECT のみで中身が見えていなかった)し、
+  スマート句読点オフ + ASCII DQUOTE 入り場所名(構造化ロケーション)の PUT をキャプチャ。
+  結果: プロパティ値(LOCATION)には生 DQUOTE がそのまま入る(RFC 5545 合法)、
+  パラメータ値(X-TITLE)では iOS が DQUOTE を**黙って除去** → RFC 6868 `^` エンコードは
+  使わない = 6868 実装は不要と確定。副産物として初回試行で「iOS キーボードは半角 " を
+  スマート句読点で ” に自動変換する」ことも確認。キャプチャ生 ICS は geo 伏せ字化の上
+  fixtures/real-ios/dquote-location-event.ics に還元(冪等群、roundtrip 26 tests pass)。
+  記録: docs/modeling/06 A7 行 / next-directions.md 小粒タスク ✅×2。

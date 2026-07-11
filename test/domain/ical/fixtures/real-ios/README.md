@@ -45,6 +45,7 @@ iOS は物理行を**文字境界**で折る(マルチバイト UTF-8 を分割�
 | `vtodo-date-only.ics` | ⑩ | 期限日付のみリマインダーの初回 PUT。DUE すら無い最小 VTODO(STATUS:NEEDS-ACTION のみ) | オクテット等価 |
 | `vtodo-completed.ics` | ⑫ | 完了操作。`STATUS:COMPLETED` + `COMPLETED:<UTC>` + `PERCENT-COMPLETE:100`。RFC 9074 の ACKNOWLEDGED は**使われない** | オクテット等価 |
 | `vtodo-proximity-alarm.ics` | ⑬ | 位置情報リマインダー。VALARM に `X-APPLE-PROXIMITY:ARRIVE` + X-APPLE-STRUCTURED-LOCATION(geo)。TRIGGER は過去日時のダミー | 冪等 |
+| `dquote-location-event.ics` | A7 第3ラウンド(2026-07-11) | 場所名に ASCII DQUOTE(スマート句読点オフで入力)。LOCATION 値には**生 DQUOTE がそのまま**、X-TITLE パラメータでは **iOS が DQUOTE を黙って除去**(RFC 6868 `^` は使わない)。キャプチャ経路は本作サーバー(caldav-dev.097969.xyz → wrangler dev) | 冪等 |
 
 ## 伏せ字化(個人情報)
 
@@ -55,6 +56,9 @@ iOS は物理行を**文字境界**で折る(マルチバイト UTF-8 を分割�
   `X-TITLE=福登の自宅` → `X-TITLE=自宅`。
 - メールアドレス(`gu.univ.morita@gmail.com`)は ICS ボディには現れず、CalDAV パスにのみ出るため
   ここでは対象外。
+- `dquote-location-event.ics`(2026-07-11 追加): 末尾の `geo:35.461091,136.732539`(実在店舗の座標)
+  → `geo:0.000000,0.000000`。店舗名・住所テキストは A7 の観測対象(DQUOTE の位置)そのものなので残置。
+  X-APPLE-MAPKIT-HANDLE(base64、住所情報を内包)は前例どおり残置。
 
 ※ 伏せ字により冪等群 2 ファイルはバイト位置が変わったが、往復の検証レベルは元々「冪等」なので
   影響しない(オクテット等価は要求していない)。

@@ -144,6 +144,10 @@ const CANONICAL_REAL_IOS = [
 const FOLDED_REAL_IOS = [
 	"japanese-long-event.ics", // ① 116B 日本語 SUMMARY を iOS は折らない(本作は 75 で折る)
 	"vtodo-proximity-alarm.ics", // ⑬ X-APPLE-PROXIMITY + STRUCTURED-LOCATION(伏せ字済み)
+	// A7 決着(2026-07-11 第3ラウンド): LOCATION 値に生 DQUOTE("折立")、X-TITLE パラメータ
+	// では iOS が DQUOTE を黙って除去(RFC 6868 ^ エンコードは使わない)。geo は伏せ字済み。
+	// iOS は非 ASCII 含み長行を折らない + 伏せ字で折り位置も変わったため冪等群。
+	"dquote-location-event.ics",
 ] as const;
 
 describe("実データ(iOS 26.5): オクテット等価群", () => {
