@@ -92,3 +92,30 @@ application 層で一度設計すれば:
 
 WebUI 自体の設計論点(tsdav 直 CalDAV か REST アダプタ経由か。直なら Worker に
 CORS + DAV メソッドの preflight 対応が必要)は E 着手時に判断する。
+
+## 2026-07-11 grounded 更新(MCP 認証・generative UI 一次調査)
+
+当初 draft を一次情報(MCP spec 2025-11-25 / 各社公式)で検証し、hype と仕様要件を分離。
+
+**認証(段階論。ただし OAuth 対応は近い将来の高優先)**:
+- MCP 認可は仕様上 **OPTIONAL**。単一ユーザー自分用は静的 Bearer で仕様非準拠にならない → **G-5 は静的 Bearer**。
+- **RFC 7591(DCR)は 2025-11-25 版で SHOULD→MAY 降格、CIMD(HTTPS URL を client_id)が第一推奨**。
+  「MCP=OAuth+DCR 必須」は 2025-06 版で止まった理解。サーバー MUST は実質 RFC 9728 + audience 検証(8707)のみ。
+- **OAuth 移行トリガー = ①マルチユーザー(方向性 A)②コネクタ正規登録(方向性 E)**。
+  スケール前提リリース志向なので OAuth 対応は**高優先**(A が直後)。G-5 の認証は「OAuth をすぐ載せられる
+  本気の seam(AuthenticationPort + audience フック)」として作る。
+- キットのリファレンス認証実装は **Cloudflare workers-oauth-provider**(完全セルフホスト・ベンダー中立・
+  DCR/CIMD/PKCE 完備)。**WorkOS 等ホスト型はロックインするので seam 裏の差し替え先の一例**に留める。
+- コネクタ実態: ChatGPT に "No authentication" 実在(読み取りデモ)。静的 Bearer 手入力はコネクタで一級市民でない
+  (m2m 非対応)。Claude コネクタは OAuth 中心・固定トークン可否は未確定。
+
+**generative UI(MCP Apps 一択で賭ける)**:
+- **MCP Apps(ext-apps / SEP-1865)= 最も安定・相互運用性最大**(公式拡張、MCP-UI+Apps SDK 統合、
+  ui:// + sandboxed iframe + postMessage)。「MCP サーバーが UI を返す」本作の構図に一致。
+- **賭けない(ウォッチ)**: WebMCP(W3C CG incubation・破壊的変更中)/ OpenUI(v0.5 実験)/ A2UI・Open-JSON-UI。
+- 上の「三面(MCP サーバー/MCP Apps/WebMCP)」は成熟度が段違い。**MCP サーバー(G-5)→ MCP Apps(E で
+  ext-apps 一次読み)→ WebMCP は WebUI 後の実験**の順で重み付け。今やるのは「ツール応答を UI に載せて
+  破綻しない構造化 JSON」だけ(G-4/G-5 の語彙で達成)。
+
+**未確定(留保)**: 「2026 版 MCP spec」の存在・内容 / SEP-1865 最新ステータス / Claude コネクタ固定トークン可否。
+詳細な出典は log.md 2026-07-11 と、調査を回した経緯を参照。
