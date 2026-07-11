@@ -35,6 +35,33 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   - A-3: App Password 発行フロー + .mobileconfig ワンタイム配布。
   - A-4: プロキシ内部認証を共有シークレット → HMAC 署名へ格上げ(OSS 公開時までに)。
 
+## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)— A と同格以上の新本命
+
+> **2026-07-11 起票**: agentic 入口(E)の中核能力は「イベントの理解」と「free-busy」
+> というユーザー判断により、A と同等かそれ以上のスコープに昇格。
+> 一次資料は **docs/modeling/08**(RFC 義務・競合実態・TZ 流派・コスト試算まで調査済み)。
+
+- **発見**: time-range フィルタの RRULE 展開は RFC 4791 の MUST(calendar-query 自体が
+  REQUIRED、非対応表明は不可)。現状は厳密には RFC 非準拠 = コア価値に照らしいずれ必須だった。
+  一方 CALDAV:expand / free-busy-query は実クライアントがほぼ使わない(Google すら
+  free-busy 未実装)— 「iOS のためでなく RFC 準拠と agentic のために作る」機能。
+- **確定した設計判断**(08 §6): TZ は IANA tzdb を正・VTIMEZONE は保存のみ /
+  RRULE 反復は ical.js をアダプタ内側に採用(rrule.js は不採用)/
+  sabre 式 first/last occurrence 索引を D1 に(PUT 時計算)+ REPORT 時にヒット行のみ展開 /
+  展開済みテーブル・KV/Cache キャッシュ・DO は不採用 / 展開上限を API に組み込む。
+  コストは実質 $5/月の基本料のみ(CPU-ms 課金、詳細試算は 08 §5.5)。
+- **タスク分解**:
+  - G-1: TZ 解決層(IANA 名直引き → Windows 名マップ → VTIMEZONE 推測 → 明示エラー。
+    Workers の Intl/ICU 利用)+ floating/DATE の実効値算出(§9.9 の表)。
+  - G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
+    オーバーライド解決 + 展開上限)。
+  - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と統合するか要判断)+
+    calendar-query の time-range フィルタ(方向性 C の中核が前倒しでここに来る)。
+  - G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
+  - G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
+    E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
+- 単一ユーザーのままで完結する(A に依存しない)。ドッグフーディング優先なら A より先。
+
 ## 方向性 B: M3 スケジューリング(招待)
 
 - RFC 6638/5546。schedule-inbox/outbox、calendar-user-address-set、iTIP 処理、auto-schedule。
@@ -60,6 +87,23 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   ブラウザ直 CalDAV なら Worker に CORS + DAV メソッドの preflight 対応が必要)、メール起点のタスク追加。
 - OAuth(Bearer)はここで導入(docs/modeling/07)。
 - A の後に B と E のどちらを先にするかはユーザー判断(招待 vs agentic)。
+
+## 方向性 H: CardDAV / 連絡先(構想段階)
+
+> **2026-07-11 起票(ユーザー構想)**: マルチユーザー展開では連絡先アクセスが欲しくなる
+> (例: free-busy を出すなら「誰の」を解決する足場、招待相手の解決)。また iOS は
+> vCard の誕生日は自動でカレンダーに拾うが**記念日は拾わない** — CardDAV を解釈できれば
+> 記念日も把握できる、という agentic 的な価値もある。スコープのブレは自覚しつつ方向性として記録。
+
+- 追い風: CardDAV(RFC 6352)は WebDAV 基盤(4918/principal/sync-collection 6578)を
+  CalDAV と共有し、vCard の content-line 文法は iCalendar と同族(BEGIN:VCARD、折り畳み、
+  パラメータ)— **本作の structure 層・presentation の DAV XML はかなり流用できる**見込み。
+  OSS キットの「DAV サーバーキット」への一般化と整合。
+- 論点: iOS の連絡先は Apple 拡張(X-ABDATE + X-ABLabel の記念日表現等)が濃い。
+  誕生日/記念日 → カレンダー化は「vCard を解釈して仮想イベントを生成する」意味計算
+  (方向性 G の親戚)になる。
+- 位置づけ: B/E より後の検討。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
+  iOS 実機の CardDAV 挙動観測)を行う。
 
 ## 方向性 F: M7 運用
 

@@ -175,3 +175,14 @@
   ログプレフィックス [CAP] → [DUMP])。履歴 docs 内の旧名表記は過去の記録なので残置。
   proxy 側へ移す案も検討したが独自流になるため不採用。将来 OSS 化時は Radicale 型
   (LOG_LEVEL=debug + content-on-debug + ログ量制限)への統合を検討。
+- 2026-07-11: **意味計算(RRULE 展開・TZ・free-busy)の一次調査完了 → docs/modeling/08 起草**。
+  発端はユーザー判断「agentic 入口では イベントの理解 + free-busy が中核。A と同格以上」。
+  subagent 4本(RFC 原文法学 / 競合実装 / TZ 流派 + agentic / Workers コスト)で調査。
+  主な発見: ①time-range の RRULE 展開は RFC 4791 の MUST(現状は厳密には非準拠)
+  ②TZ は「IANA tzdb 正・VTIMEZONE は保存のみ」が業界標準(当初の ical.js TimezoneService
+  推し評価を自己修正)③LLM は日時反復演算が壊滅的に苦手 → サーバー側展開が MCP の製品価値
+  ④コストは CPU-ms 課金で実質 $5/月のみ。sabre 式 first/last 索引 + リクエスト時展開の
+  ハイブリッドに決定。next-directions に方向性 G として起票(タスク G-1〜G-5)。
+  ペルソナ確認: ドッグフーディング + 個人開発プロダクトへの採用、agent には
+  「CalDAV client ができることほぼ全部」。方向性 H(CardDAV / 連絡先、記念日の解釈)も
+  構想段階として起票。
