@@ -284,3 +284,18 @@
   18 tests 追加で 256 pass。既存 238 は無影響(put/uow シグネチャ変更に伴い fakes とテスト5本を更新)。
   これで方向性 G の Tier 1(RFC 準拠の time-range)完了 = calendar-query 未実装の非準拠を解消。
   C の tsdav CI ハーネスが前倒し着手可能に。
+- 2026-07-11: **G-4(free-busy 計算 + free-busy-query REPORT)実装完了**。設計 = Opus
+  (RFC 4791 §7.10 の FBTYPE 対応表を原文照合)、実装 = sonnet。①src/domain/ical/freebusy/
+  busy-periods.ts(deriveFreeBusyType: TRANSP=TRANSPARENT/STATUS=CANCELLED→null[FREE]・
+  TENTATIVE→BUSY-TENTATIVE・その他→BUSY / coalesceBusyIntervals: §7.10「同型の連続・重複を
+  マージ、異型は重複可」を type ごと独立マージで実装)②src/application/usecases/
+  compute-free-busy.ts(ComputeFreeBusy UC。出力は構造化 BusyInterval[] = epoch ms・TZ 非依存で
+  DAV/MCP 共用 = 09 §1「応答 TZ 分離」の実証。CalendarQuery と同じ SQL 粗絞り込み+±24h スラック
+  → expandRecurrenceSet → occurrence の component[override 対応] から FBTYPE 導出 → range クリップ
+  → coalesce)③presentation の parseFreeBusyQuery + serializeFreeBusyResponse(既存 serialize()
+  再利用で VFREEBUSY を text/calendar 出力。空でも VFREEBUSY は返す §7.10 MUST を自然に満たす)
+  ④index.ts: free-busy-query 分岐追加(応答は multistatus でなく text/calendar 200、time-range
+  欠落は 400)+ object リソースに対する free-busy-query は 403(§7.10)。24 tests 追加で 280 pass。
+  これで方向性 G の Tier1(RFC 準拠)+ Tier2(free-busy)の DAV 側が揃った。残る G-5(MCP 照会
+  ツール = E の先鋒・語彙原型)は設計判断が重いので着手時に Fable の設計パスを挟む。G-6
+  (supported-calendar-component-set 宣言)は小粒で独立。

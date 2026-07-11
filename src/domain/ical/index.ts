@@ -28,6 +28,8 @@
 //     (RecurrenceExpansion ドメインサービス。モデル図 §1-4)。RRULE 反復だけは port
 //     (RecurrenceIterator)で外部委譲し、domain 自体は ical.js を import しない
 //     (実装は infrastructure/recurrence の ical.js アダプタ。docs/modeling/08 §5)。
+//   - freebusy/*: RFC 4791 §7.10 free-busy-query REPORT のための FBTYPE 導出
+//     (TRANSP/STATUS → BUSY/BUSY-TENTATIVE/FREE)+ 同一 FBTYPE の coalesce(G-4)。
 // =============================================================================
 
 export type { Component, Parameter, Property } from "./structure/types";
@@ -37,3 +39,4 @@ export * from "./values";
 export * from "./semantics";
 export * from "./timezone";
 export * from "./recurrence";
+export * from "./freebusy";

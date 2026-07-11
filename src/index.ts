@@ -8,6 +8,7 @@ import {
 	CalendarQuery,
 	CollectionAlreadyExistsError,
 	CollectionNotFoundError,
+	ComputeFreeBusy,
 	CreateCollection,
 	DeleteCalendarObject,
 	DeleteETagMismatchError,
@@ -41,11 +42,13 @@ import {
 	objectProps,
 	parseCalendarQueryFilter,
 	parseCollectionProperties,
+	parseFreeBusyQuery,
 	parseHrefs,
 	parsePropFilter,
 	parseSyncToken,
 	principalProps,
 	responseXml,
+	serializeFreeBusyResponse,
 	statusResponseXml,
 } from "./presentation/dav/xml";
 
@@ -444,6 +447,31 @@ app.all("*", async (c) => {
 					+ outOfScopeHrefs.map((hrefPath) => statusResponseXml(hrefPath, "404 Not Found")).join("");
 				return xml(multistatus(responses));
 			}
+			if (/<(?:[^:>]+:)?free-busy-query\b/i.test(body)) {
+				// free-busy-query REPORT(RFC 4791 §7.10。G-4)。collection に対してのみ実行可
+				// (object に対する 403 は resourceName ありのブランチ側で先に弾く。下記参照)。
+				// §9.11: free-busy-query は time-range をちょうど1個含む MUST。壊れている/
+				// 無い場合は「解析失敗」として扱う。§7.10 自体には free-busy-query 用の
+				// precondition 名が定義されていないため、calendar-query の
+				// CALDAV:supported-filter のような専用エラー要素は無い。安全側に倒して
+				// 空区間(=常に 0〜OCCURRENCE_INDEX_MAX)にはせず、明確に 400 で拒否する
+				// (「requested-time-range」がクライアントの不備だと分かるよう Bad Request とする)。
+				const range = parseFreeBusyQuery(body);
+				if (range === null) {
+					return new Response("Bad Request: free-busy-query requires exactly one time-range", { status: 400, headers: DAV_HEADERS });
+				}
+				const fbResult = await new ComputeFreeBusy(repos.resources, recurrenceIterator).execute({
+					owner: principalPathValue,
+					collectionId: id,
+					rangeStartMillis: range.startMillis,
+					rangeEndMillis: range.endMillis,
+				});
+				// 応答は multistatus ではなく text/calendar 本文そのもの(§7.10 Marshalling)。
+				return new Response(serializeFreeBusyResponse(fbResult.intervals, range.startMillis, range.endMillis), {
+					status: 200,
+					headers: { ...DAV_HEADERS, "Content-Type": "text/calendar; charset=utf-8" },
+				});
+			}
 			// calendar-query REPORT(RFC 4791 §7.8。G-3 で「全件返す」仮実装から差し替え)。
 			// 未対応の filter 要素(prop-filter 等)を検出したら §7.8 precondition の
 			// CALDAV:supported-filter で 403 を返す(davError の流儀を踏襲)。
@@ -463,6 +491,17 @@ app.all("*", async (c) => {
 		}
 
 		if (!resourceName) return new Response("Method Not Allowed", { status: 405, headers: DAV_HEADERS });
+
+		if (method === "REPORT" && /<(?:[^:>]+:)?free-busy-query\b/i.test(await readBody(request))) {
+			// RFC 4791 §7.10 Marshalling: "The CALDAV:free-busy-query REPORT request can only
+			// be run against a collection ... An attempt to run the report on a calendar object
+			// resource MUST fail and return a 403 (Forbidden) status value." resourceName が
+			// あるここは「オブジェクトリソースに対する REPORT」なので、free-busy-query だけを
+			// 明示的に 403 で弾く(他の REPORT 種別を object に対して送ってきた場合は、
+			// この分岐を素通りして下の最終 405 フォールバックに落ちる — その扱いは元々の
+			// 挙動を変えない、今回のスコープ外の話)。
+			return new Response("Forbidden: free-busy-query REPORT can only be run against a collection", { status: 403, headers: DAV_HEADERS });
+		}
 
 		if (method === "GET" || method === "HEAD") {
 			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });

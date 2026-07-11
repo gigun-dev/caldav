@@ -13,8 +13,9 @@ import type { CalendarCollection, CalendarObjectResource } from "../../domain/ca
 // 既定上限(§9.9: 片側欠落は「無限大」の意)に使う — domain/ical/recurrence の
 // occurrence-bounds.ts と同じ定数を共有することで、PUT 側の索引の last キャップと
 // REPORT 側のデフォルト窓の上限が食い違わないようにする。
-import { parse, ICalendarObject, resolveTimeZoneId } from "../../domain/ical";
+import { parse, ICalendarObject, resolveTimeZoneId, serialize, type Component, type Property } from "../../domain/ical";
 import { OCCURRENCE_INDEX_MAX } from "../../domain/ical/recurrence";
+import type { BusyInterval } from "../../domain/ical/freebusy";
 
 const NS_CALDAV = "urn:ietf:params:xml:ns:caldav";
 const NS_CS = "http://calendarserver.org/ns/";
@@ -313,4 +314,118 @@ export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
 	}
 
 	return result;
+}
+
+// =============================================================================
+// free-busy-query REPORT(RFC 4791 §7.10/§9.11)フィルタの解析 + 応答シリアライズ(G-4)
+// =============================================================================
+
+/**
+ * <C:free-busy-query> ボディから唯一の <C:time-range> を抜き出す(§9.11 の
+ * `<!ELEMENT free-busy-query (time-range)>` = free-busy-query は time-range を
+ * ちょうど1個含む)。属性の解釈(YYYYMMDDTHHMMSSZ、片側省略は 0 / OCCURRENCE_INDEX_MAX)は
+ * parseCalendarQueryFilter の time-range 解析と完全に同じ規約(parseTimeRangeAttr を共有)。
+ *
+ * @returns free-busy-query 要素自体が無ければ null(呼び出し側 index.ts は「REPORT ボディが
+ *   free-busy-query ではない」と判断してよい)。time-range が壊れている場合も安全側に倒して
+ *   null を返す(parseCalendarQueryFilter が壊れた time-range を supported-filter 403 へ
+ *   倒すのと同じ考え方だが、free-busy-query には対応する precondition 名が定義されていない
+ *   ため、呼び出し側が「解析失敗」として扱えるよう null で統一する)。
+ */
+export function parseFreeBusyQuery(body: string): { startMillis: number; endMillis: number } | null {
+	const fbEl = extractBalancedElement(body, "free-busy-query");
+	if (!fbEl) return null; // free-busy-query 要素自体が無い。
+
+	const trMatch = fbEl.inner.match(/<(?:[^:>]+:)?time-range\b([^>]*?)\/?>/i);
+	if (!trMatch) return null; // §9.11 の必須要素が無い(壊れたリクエスト)。
+
+	const attrs = trMatch[1];
+	const startAttr = attrs.match(/\bstart=["']([^"']+)["']/i)?.[1];
+	const endAttr = attrs.match(/\bend=["']([^"']+)["']/i)?.[1];
+	try {
+		return {
+			startMillis: startAttr !== undefined ? parseTimeRangeAttr(startAttr) : 0,
+			endMillis: endAttr !== undefined ? parseTimeRangeAttr(endAttr) : OCCURRENCE_INDEX_MAX,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * UTC エポックミリ秒 → §3.3.5 FORM #2(UTC DATE-TIME)の生値文字列 YYYYMMDDTHHMMSSZ。
+ * domain/ical/values/cal-date-time.ts の formatCalDateTime は CalDateTime 値オブジェクトを
+ * 要求するが、ここは応答シリアライズ専用の小さな変換(epoch → UTC 文字列)だけが要るので、
+ * わざわざ CalDateTime を組み立てず Date の UTC ゲッターから直接組み立てる
+ * (VFREEBUSY の DTSTAMP/DTSTART/DTEND/FREEBUSY はすべて UTC 形式 MUST。§3.6.4/§3.8.2.6)。
+ */
+function epochMillisToUtcIcs(millis: number): string {
+	const d = new Date(millis);
+	const pad2 = (n: number): string => n.toString().padStart(2, "0");
+	const y = d.getUTCFullYear().toString().padStart(4, "0");
+	return `${y}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}${pad2(d.getUTCSeconds())}Z`;
+}
+
+/**
+ * VFREEBUSY 応答本体(text/calendar)を組み立てる(RFC 4791 §7.10)。
+ *
+ * 【VCALENDAR > VFREEBUSY 1個、という契約】
+ * §7.10: "a VFREEBUSY component with no FREEBUSY property MUST be returned" が空でも
+ * VFREEBUSY 自体は必ず返す MUST を示している。よって intervals が空でも VFREEBUSY は作り、
+ * FREEBUSY 行だけを省く(下のループが0回になるだけで自然にこの MUST を満たす)。
+ *
+ * 【DTSTAMP/UID】
+ * DTSTAMP は §3.8.7.2 のとおり現在時刻の UTC(new Date() でよい — Workers ランタイムの
+ * ワークフロー的な決定性制約はアプリコードには課されない)。UID は §3.8.4.7 で必須だが
+ * free-busy-query の応答は「保存されるリソース」ではなく都度生成する使い捨て VFREEBUSY
+ * なので、一意性の強い保証(UUID 等)までは不要と判断し、DTSTAMP と同じ時刻の
+ * エポックミリ秒を使った `freebusy-<epoch>@<固定サフィックス>` で済ませる
+ * (同一ミリ秒に複数リクエストが来ても実害はない = ただの識別子であって永続化キーではない)。
+ *
+ * 【DTSTART/DTEND = range】
+ * §7.10.1 の応答例が DTSTART/DTEND に time-range の範囲をそのまま使っているのでそれに倣う
+ * (VFREEBUSY 自体の「問い合わせ対象期間」を示す情報として自然)。
+ *
+ * 【FREEBUSY 行の PERIOD 形式】
+ * 確定設計メモの指示どおり「開始/終了の explicit 形式」(START/END、DURATION 形式ではない)
+ * で1区間1行にする。§3.8.2.6 のとおり FBTYPE パラメータを付ける。
+ *
+ * 【serialize への委譲】
+ * Component ツリーを組み立てて domain/ical の serialize() にそのまま渡す。これにより
+ * CRLF 終端・75 オクテット折り畳みは serializer.ts の既存実装をそのまま再利用でき、
+ * この関数が独自に改行規則を持つ必要がない(iCalendar は CRLF 必須。CLAUDE.md 方針どおり
+ * 既存の正しい実装を再利用する)。
+ */
+export function serializeFreeBusyResponse(
+	intervals: readonly BusyInterval[],
+	rangeStartMillis: number,
+	rangeEndMillis: number,
+): string {
+	const nowMillis = Date.now();
+	const freebusyProps: Property[] = [
+		{ name: "DTSTAMP", parameters: [], value: epochMillisToUtcIcs(nowMillis) },
+		// UID 生成方針は上のコメントを参照。永続化しない使い捨て応答なので厳密な一意性は求めない。
+		{ name: "UID", parameters: [], value: `freebusy-${nowMillis}@caldav-freebusy-query` },
+		{ name: "DTSTART", parameters: [], value: epochMillisToUtcIcs(rangeStartMillis) },
+		{ name: "DTEND", parameters: [], value: epochMillisToUtcIcs(rangeEndMillis) },
+	];
+	for (const interval of intervals) {
+		freebusyProps.push({
+			name: "FREEBUSY",
+			parameters: [{ name: "FBTYPE", values: [interval.type] }],
+			// PERIOD の explicit 形式(START/END、§3.3.9)。両端 UTC の YYYYMMDDTHHMMSSZ。
+			value: `${epochMillisToUtcIcs(interval.startMillis)}/${epochMillisToUtcIcs(interval.endMillis)}`,
+		});
+	}
+
+	const vfreebusy: Component = { name: "VFREEBUSY", properties: freebusyProps, components: [] };
+	const vcalendar: Component = {
+		name: "VCALENDAR",
+		properties: [
+			{ name: "VERSION", parameters: [], value: "2.0" },
+			{ name: "PRODID", parameters: [], value: "-//gigun-dev//caldav//EN" },
+		],
+		components: [vfreebusy],
+	};
+	return serialize(vcalendar);
 }

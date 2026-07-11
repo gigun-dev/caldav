@@ -76,6 +76,13 @@ export {
 	type CalendarQueryTimeRange,
 } from "./calendar-query";
 
+// free-busy-query REPORT(G-4)
+export {
+	ComputeFreeBusy,
+	type ComputeFreeBusyInput,
+	type ComputeFreeBusyOutput,
+} from "./compute-free-busy";
+
 // 初期プロビジョニング
 export {
 	ProvisionDefaultCollections,

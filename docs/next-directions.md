@@ -90,8 +90,16 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     > §9.9 判定)/ presentation の `parseCalendarQueryFilter`(ネスト対応のバランス走査)。
     > 未対応 filter(prop-filter 等)は黙殺せず **403 supported-filter**。floating は UTC 索引化 +
     > クエリ時スラック補償。**C の tsdav CI ハーネスが前倒し着手可能になった。**
-  - G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
-    MCP 表面の設計は 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。
+  - ~~G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
+    MCP 表面の設計は 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。~~ ✅
+    > **2026-07-11 更新:** 完了。設計 = Opus(RFC 4791 §7.10 の FBTYPE 表を原文照合)、実装 = sonnet。
+    > `src/domain/ical/freebusy/`(deriveFreeBusyType + coalesceBusyIntervals: 同型のみマージ・
+    > 異型は重複可)/ `compute-free-busy.ts`(出力は構造化 BusyInterval[] = epoch ms・TZ 非依存で
+    > G-5 MCP と共用。CalendarQuery と同じ2段フィルタ + range クリップ + coalesce)/
+    > presentation の parseFreeBusyQuery + serializeFreeBusyResponse(既存 serialize() 再利用で
+    > VFREEBUSY を text/calendar 出力、空でも VFREEBUSY は返す §7.10 MUST)。object に対する
+    > free-busy-query は 403。280 tests green。**応答 TZ 分離の実証** = UC は busy 区間だけ返し
+    > iCalendar 化は presentation。G-5 はこの UC をそのまま MCP ツールに露出する。
   - G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
     E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
     **ここで設計するツールの語彙(名前・引数・応答形)は将来 MCP Apps / WebMCP にも
