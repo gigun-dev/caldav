@@ -65,14 +65,43 @@ Workers Builds の **deploy command** を `bun run deploy` に設定する(既�
 
 これにより **push だけで migrate → deploy が自動で回る**。
 
+## 非本番ブランチ(preview)はマイグレーションを当てない【重要・事故防止】
+
+Workers Builds には「本番ブランチのデプロイ コマンド」とは別に
+**「非本番ブランチのデプロイ コマンド」**(既定 `npx wrangler versions upload`)がある。
+こちらには **`wrangler d1 migrations apply` を絶対に足さない**。本番ブランチ側だけに
+マイグレーション適用を閉じ込める。
+
+理由(2026-07-12 判断):
+
+- このプロジェクトは **preview 専用の D1 を分けていない**(`wrangler.jsonc` の
+  `d1_databases` は `caldav-production` 1本のみ)。よって preview 版(`versions upload` で
+  上がる、本番トラフィックを取らないバージョン)も**実行時は本番 D1 を見る**。
+- ここで非本番ブランチのデプロイ コマンドに migrate を足すと、**フィーチャーブランチの
+  未マージ・WIP マイグレーションが本番 D1 に適用されてしまう** — 最も避けたい事故。
+  マイグレーションは main(= 本番ブランチ)にマージされたものだけが本番 D1 に当たるべき。
+- 前方互換(expand/contract)規律を守っている限り、preview 版のコードは「まだ main に
+  マージされていない新マイグレーション」を必要とせず、現行の本番スキーマで動く。
+  (もし preview が未マージのスキーマを必要とするほど乖離しているなら、それは
+  preview を本番 D1 から隔離すべきサイン = 下記「将来」の検討事項。)
+
+まとめ:
+- 本番ブランチのデプロイ コマンド … `bun run deploy`(migrate → deploy)
+- 非本番ブランチのデプロイ コマンド … `npx wrangler versions upload`(**触らない**)
+
+**将来**: preview を本番から隔離したくなったら「preview 用 D1 を別途用意 +
+`wrangler d1 migrations apply <preview-db> --preview`」という構成になる(別スコープ)。
+
 ## 【要ダッシュボード設定】Workers Builds の deploy command を変更する
 
 **リポジトリのファイル変更だけでは有効にならない。** Cloudflare ダッシュボードで
 以下の手順が必要(このセッションの subagent には実行できないため、人がやる):
 
 1. Cloudflare ダッシュボード → Workers & Pages → `caldav` Worker → **Settings → Builds**
-2. **Deploy command** の欄を既定の `npx wrangler deploy` から `bun run deploy` に変更して保存。
-   (`npm run deploy` でも同義。プロジェクトの PM は Bun なので `bun run deploy` を推奨。)
+2. **Deploy command**(本番ブランチ用)の欄を既定の `npx wrangler deploy` から
+   `bun run deploy` に変更して保存。(`npm run deploy` でも同義。PM は Bun なので推奨。)
+   **「非本番ブランチのデプロイ コマンド」は `npx wrangler versions upload` のまま触らない**
+   (上の「非本番ブランチはマイグレーションを当てない」節の理由による)。
 3. 次回 main push で自動ビルドが走ったら、ビルドログで
    `wrangler d1 migrations apply caldav-production --remote` の出力を確認する
    (次節「認証の注意」参照)。
