@@ -11,11 +11,12 @@
 // 不変条件違反(validate の返り値要素)と識別子。
 export { InvariantViolation, type InvariantId } from "./errors";
 
-// 集約ルート(VCALENDAR)。ここから events()/todos()/timezones() で子レンズへ辿る。
+// 集約ルート(VCALENDAR)。ここから events()/todos()/journals()/timezones() で子レンズへ辿る。
 export { ICalendarObject } from "./icalendar-object";
 
 // 各コンポーネントのレンズ。
 export { VEvent } from "./vevent";
 export { VTodo } from "./vtodo";
+export { VJournal } from "./vjournal";
 export { VTimezone } from "./vtimezone";
 export { VAlarm } from "./valarm";

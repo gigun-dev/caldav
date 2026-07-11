@@ -299,3 +299,24 @@
   これで方向性 G の Tier1(RFC 準拠)+ Tier2(free-busy)の DAV 側が揃った。残る G-5(MCP 照会
   ツール = E の先鋒・語彙原型)は設計判断が重いので着手時に Fable の設計パスを挟む。G-6
   (supported-calendar-component-set 宣言)は小粒で独立。
+- 2026-07-11: **方向性 J の設計確定 + J-1(VJOURNAL 基盤)実装完了**。設計は Fable subagent が
+  策定 → Opus 承認 → 手戻りリスクのある製品判断をユーザー確認。設計の背骨は「journal を安定度で
+  3層に分けて疎結合に」: ①VJOURNAL コンポーネント = RFC 5545 確定仕様 → 素直に入れる(J-1)
+  ②agentic 日誌の製品コンセプト(コレクション常設 + RELATED-TO)= 未確定の賭け → **オプトインで
+  除去可能に**(当初 Fable は自動 provision 推奨だったが、ユーザーが「疎結合で後の判断次第で綺麗に
+  除去したい/保守と新機能を両立し他プロジェクトに流用したい」と再考し、自動 provision → オプトイン
+  に倒し直し。2026-07-11 ユーザー判断)③ical-tasks/9253 = draft → 読み取り専用・検証なし・string
+  型で追従リスク最小(J-3)。DDD 担保: VJOURNAL レンズに日誌ビジネスルールを生やさず標準の値検証のみ、
+  agentic 意味づけは application 層以上、provision は config 関心事 → 標準 CalDAV と agentic 日誌つきを
+  同一コードベースで両立でき OSS キットで切れる。
+  J-1 成果: migrations/0003_vjournal.sql(SQLite の CHECK は ALTER 不可のため 12-step テーブル
+  再作成。0001 の列/PK/UNIQUE/FK + 0002 の first/last_occurrence 列・calendar_objects_time_range
+  索引を完全再現し INSERT SELECT でデータ保全)/ COMPONENT_KINDS に VJOURNAL 追加(put-preconditions
+  は single source of truth 設計で自動受理)/ src/domain/ical/semantics/vjournal.ts(§3.6.3 jourprop:
+  UID/DTSTAMP 必須・DTSTART 任意・DTEND/DURATION/DUE/VALARM 無し・DESCRIPTION 複数可[VEVENT/VTODO と
+  非対称]・RELATED-TO[RELTYPE 既定 PARELT]・共有 validateRRule/reportDuplicate 流用)/ journals()
+  アクセサ + validate 連結 / occurrence-bounds に computeVJournalBounds(DTSTART 無しは null/null で
+  SQL 粗絞り込みの過剰包含側)/ comp-filter は VJOURNAL の range 無しのみ許可・time-range 付きは
+  unsupported(J-4 送り)/ docs/modeling/03 に VJournal 節追記。15 tests 追加で 295 pass。実装 = sonnet。
+  次: J-2(宣言フォールバックを COMPONENT_KINDS 化 + journal オプトイン)、その後 RFC 9253/ical-tasks
+  スナップショット取得(経路確認済み: rfc-editor.org)→ J-3。

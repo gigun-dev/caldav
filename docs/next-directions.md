@@ -111,6 +111,20 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 
 - **発端**: 「使われていない RFC を切る」だけでなく「採択途中の RFC で先行者になる」
   逆張り(ユーザー方針)。一次資料は **docs/modeling/09 §4**。
+- **2026-07-11 設計方針(Fable 設計 → Opus 承認 → ユーザー確認)**: 「journal」を安定度で3層に
+  分けて疎結合に扱う。①VJOURNAL コンポーネント = RFC 5545 の確定仕様(素直に格納・検証・往復)
+  ②「agentic 日誌」製品コンセプト(journal コレクション常設 + RELATED-TO 紐付け)= 未確定の賭け
+  → **オプトインにして綺麗に除去可能に保つ**(自動 provision しない。ユーザー判断 2026-07-11)
+  ③ical-tasks/9253 プロパティ = draft → 読み取り専用・検証なし・string 型で追従リスク最小。
+  実装分割: J-1 基盤 ✅ / J-2 宣言是正+journal オプトイン / J-3 draft アクセサ先取り(原文
+  スナップショット後)/ J-4 実機検証・time-range query。詳細は Fable 設計メモ(log.md 参照)。
+  - ~~J-1: VJOURNAL 基盤(component-kind / migration 0003 で CHECK 拡張 / VJournal レンズ /
+    journals() / occurrence-bounds / PUT / comp-filter は range 無しのみ)。~~ ✅
+    > **2026-07-11 更新:** 完了。migrations/0003(12-step テーブル再作成で 0002 の列・索引を
+    > 完全再現)/ vjournal.ts(§3.6.3: DTEND/DURATION/DUE/VALARM 無し、DESCRIPTION 複数可・
+    > RELATED-TO[RELTYPE 既定 PARENT]、共有 validateRRule 流用)/ COMPONENT_KINDS に追加で
+    > put-preconditions は自動受理。VJOURNAL+time-range は unsupported(J-4 送り)。295 tests green。
+    > レンズには日誌ビジネスルールを入れず標準の値検証のみ(除去可能性の担保)。
 - **VJOURNAL**: 実装コストほぼゼロでサーバー側対応の薄さが生態系のボトルネックそのもの。
   「agent の実行ログ・日誌を時系列に置き RELATED-TO でタスクに紐づける」— 長期ビジョン
   「agentic なタスク管理の基盤」の本丸。検証クライアントは jtx Board + DAVx⁵。

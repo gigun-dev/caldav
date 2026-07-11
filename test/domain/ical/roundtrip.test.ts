@@ -175,6 +175,37 @@ describe("実データ(iOS 26.5): 折り畳み差異あり(冪等のみ保証)",
 	// A2 実測の回帰: iOS は 116 オクテットの日本語 SUMMARY を折らずに送るが、本作 serializer は
 	// 75 で折る。この「食い違いが起きること自体」を固定しておく(将来 serializer の折り畳みを
 	// いじったとき、iOS 実データとの関係が変わったら気づけるように)。
+});
+
+// =============================================================================
+// J-1: VJOURNAL のロスレス往復(RELATED-TO・複数 DESCRIPTION・RECURRENCE-ID を含む)
+// =============================================================================
+// フィクスチャファイルを増やさず、正規形(CRLF・折り畳み不要な短い行)のインラインICSで
+// オクテット等価を確かめる(既存 CANONICAL 群と同じ検証基準)。
+describe("J-1: VJOURNAL のロスレス往復", () => {
+	test("RELATED-TO(RELTYPE 付き)・複数 DESCRIPTION・RECURRENCE-ID が parse→serialize でバイト完全一致", () => {
+		const original = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:19970901T130000Z-123405@example.com",
+			"DTSTAMP:19970901T130000Z",
+			"DTSTART;VALUE=DATE:19970317",
+			"RECURRENCE-ID;VALUE=DATE:19970317",
+			"SUMMARY:Staff meeting minutes",
+			"DESCRIPTION:First note.",
+			"DESCRIPTION:Second note.",
+			"RELATED-TO:task-uid-1@example.com",
+			"RELATED-TO;RELTYPE=SIBLING:journal-uid-2@example.com",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n") + "\r\n";
+		expect(serialize(parse(original))).toBe(original);
+	});
+});
+
+describe("段階1(続き): 折り畳み差異あり実データ", () => {
 	test("japanese-long-event: 116B 日本語行を iOS は折らないが本作は折る", () => {
 		const original = realIos("japanese-long-event.ics");
 		// 原本(iOS)は SUMMARY を 1 物理行で送っている(継続行が無い)。

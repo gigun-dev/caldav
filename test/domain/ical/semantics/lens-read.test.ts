@@ -81,6 +81,37 @@ describe("ICalendarObject: VCALENDAR レンズ", () => {
 	});
 });
 
+describe("ICalendarObject: VJournal レンズ(J-1)", () => {
+	test("最小 VJOURNAL のアクセサが読める(UID/DTSTAMP/複数 DESCRIPTION/RELATED-TO)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:j-1",
+			"DTSTAMP:20260101T000000Z",
+			"DTSTART;VALUE=DATE:20260101",
+			"SUMMARY:Daily log",
+			"DESCRIPTION:one",
+			"DESCRIPTION:two",
+			"CATEGORIES:WORK,PERSONAL",
+			"RELATED-TO:vtodo-uid-1",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		expect(cal.journals()).toHaveLength(1);
+		const journal = cal.journals()[0]!;
+		expect(journal.uid).toBe("j-1");
+		expect(journal.summary).toBe("Daily log");
+		expect(journal.descriptions()).toEqual(["one", "two"]);
+		expect(journal.categories()).toEqual(["WORK,PERSONAL"]);
+		expect(journal.relatedTo()).toEqual([{ value: "vtodo-uid-1", reltype: "PARENT" }]);
+		// DTSTART は VALUE=DATE なので CalDate(kind を持たない)。
+		expect("kind" in journal.dtstart!).toBe(false);
+	});
+});
+
 describe("validate: 実データは妥当(違反ゼロ)", () => {
 	test("ios-event.ics は違反なし", () => {
 		expect(load("ios-event.ics").validate()).toEqual([]);

@@ -163,7 +163,13 @@ classDiagram
         ※iOS リマインダーの主戦場
     }
     class VJournal {
-        §3.6.3 ※iOS 非対応・優先度低
+        §3.6.3 jourprop
+        uid / dtstamp 必須
+        dtstart 任意(§3.6.2 と違い duration/due 系プロパティ自体が無い)
+        description は複数可(MAY occur more than once)
+        related-to で VTODO/VEVENT/他VJournal に紐付け
+        ※agentic な日誌の本丸(方向性J・09§4a)。iOS 標準 UI は無いが
+          RELATED-TO によるタスク紐付けが CLAUDE.md 長期ビジョン①の土台
     }
     class VFreeBusy {
         §3.6.4 ※スケジューリング用・将来
@@ -195,7 +201,7 @@ classDiagram
 | # | 不変条件 | 根拠 |
 |---|---------|------|
 | I1 | VCALENDAR は `VERSION:2.0` と `PRODID` を持つ | RFC 5545 §3.6 |
-| I2 | VEVENT/VTODO は `UID` と `DTSTAMP` を必ず持つ。`DTSTAMP` は UTC 形式 MUST | §3.6.1/§3.6.2/§3.8.7.2 |
+| I2 | VEVENT/VTODO/VJOURNAL は `UID` と `DTSTAMP` を必ず持つ。`DTSTAMP` は UTC 形式 MUST<!-- 2026-07-11 J-1: VJOURNAL を対象に追加。VJOURNAL は DTEND/DUE/DURATION が jourprop に無いため I3/I4 相当の検証対象外(vjournal.ts 参照) --> | §3.6.1/§3.6.2/§3.6.3/§3.8.7.2 |
 | I3 | VEVENT の `DTEND` と `DURATION` は同時に存在しない。`DTEND` は `DTSTART` より後(同時刻も不可・MUST) | §3.6.1/§3.8.2.2 |
 | I4 | VTODO の `DUE` と `DURATION` は同時に存在しない(`DURATION` には `DTSTART` 必須)。`DUE` は `DTSTART` より後(MUST)— **ただし検証は「DUE < DTSTART(逆転)のみ違反」とする**<!-- 2026-07-08 追記: §3.8.2.3 "value MUST be later in time than DTSTART"。比較可能形態(両方DATE/同一非zoned形態)でのみ検証、zoneは解決不要で比較できないため対象外 --><!-- 2026-07-10 iOS 実測(06 A4)による緩和: iOS の日付リマインダーは DUE==DTSTART(VALUE=DATE の同日)を常用する。RFC 文言どおり等号まで弾くと iOS の日付タスクが全滅するため、同時刻は許容し逆転だけ違反にする(iOS 対応 = 品質基準の方針) --> | §3.6.2/§3.8.2.3 |
 | I5 | `RRULE` の `UNTIL` と `COUNT` は同時に指定できない。`FREQ` は必須で生成時は先頭に置く | §3.3.10 |
@@ -265,7 +271,7 @@ classDiagram
         id(URL セグメントの元)
         owner: PrincipalRef
         displayName: string
-        supportedComponents: ComponentKind[] ※VEVENT/VTODO
+        supportedComponents: ComponentKind[] ※VEVENT/VTODO/VJOURNAL<!-- 2026-07-11 J-1: ComponentKind に VJOURNAL 追加。ただし journal コレクションの provision(専用コレクション種別の宣言・作成)自体は J-2 のスコープで未実装 -->
         color?: AppleColor ※Apple拡張
         order?: number ※Apple拡張
         ctag: CTag ※CalendarServer拡張
@@ -277,7 +283,7 @@ classDiagram
         uri(コレクション内で一意・例 {uid}.ics)
         etag: ETag
         payload: ICalendarObject ※iCalendar コンテキストの集約
-        componentKind: VEVENT|VTODO
+        componentKind: VEVENT|VTODO|VJOURNAL
     }
     class SyncChange {
         <<entity(CalendarCollection 集約内)>>

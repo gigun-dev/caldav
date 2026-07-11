@@ -300,7 +300,9 @@ export function checkSupportedComponent(
 	for (const name of kinds) {
 		const kind = parseComponentKind(name);
 		if (kind === undefined) {
-			// VJOURNAL 等、本サーバー未サポートの種別。supported の指定に関わらず受けられない。
+			// VFREEBUSY 等、本サーバー未サポートの種別。supported の指定に関わらず受けられない。
+			// (J-1 で VJOURNAL は COMPONENT_KINDS に加わり ComponentKind として受理されるように
+			// なったため、ここには来なくなった — component-kind.ts の COMPONENT_KINDS 参照。)
 			violations.push(
 				new PreconditionViolation("supported-calendar-component", `component ${name} is not supported by this server (§5.2.3)`, "R2"),
 			);

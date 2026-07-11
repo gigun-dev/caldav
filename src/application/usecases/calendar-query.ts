@@ -9,7 +9,10 @@
 // 半分: VTODO の time-range は SQL 索引(first/last occurrence)による粗い絞り込みのみ。
 //       反復 VTODO の展開はしない(G-3 のスコープ外)。非反復 VTODO は索引値が
 //       §9.9 の実効値そのものなので、SQL の絞り込みだけでほぼ正確に判定できる。
-// No: prop-filter / param-filter / text-match / ネスト comp-filter / VJOURNAL /
+//       VJOURNAL(J-1 追加)は comp-filter のみ(range 無し)を許可 — presentation 層
+//       (parseCalendarQueryFilter)が VJOURNAL+time-range を unsupported にする設計なので、
+//       このユースケースの `input.range === undefined` 分岐(下記)しか通らない。
+// No: prop-filter / param-filter / text-match / ネスト comp-filter / VJOURNAL+time-range /
 //     CALDAV:expand / limit-recurrence-set / free-busy-query は presentation 層
 //     (parseCalendarQueryFilter)が検出して unsupported=true を立て、このユースケースを
 //     呼ぶ前に 403 supported-filter で弾く(呼び出し側 index.ts の責務)。
@@ -42,7 +45,7 @@ export interface CalendarQueryInput {
 	owner: PrincipalRef;
 	collectionId: CollectionId;
 	/** comp-filter で指定されたトップレベルコンポーネント名。 */
-	componentKind: "VEVENT" | "VTODO";
+	componentKind: "VEVENT" | "VTODO" | "VJOURNAL";
 	/** time-range 要素が無ければ undefined(comp-filter のみ = 絞り込みなしで全件)。 */
 	range?: CalendarQueryTimeRange;
 	/** CALDAV:timezone で指定された floating の解決ゾーン(IANA 名。presentation 層が

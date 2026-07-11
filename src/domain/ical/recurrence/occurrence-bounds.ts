@@ -32,6 +32,7 @@ import { parsePeriodValue } from "../values/period-value";
 import type { Property } from "../structure/types";
 import type { VEvent } from "../semantics/vevent";
 import type { VTodo } from "../semantics/vtodo";
+import type { VJournal } from "../semantics/vjournal";
 import type { ICalendarObject } from "../semantics/icalendar-object";
 import { firstProp, isCalDateTime, paramFirst, parseDateOrDateTime } from "../semantics/helpers";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis, effectiveEventPeriod } from "../timezone";
@@ -56,10 +57,12 @@ export interface OccurrenceBounds {
 }
 
 /** computeOccurrenceBounds への入力。マスター/オーバーライドは呼び出し側(application 層)が
- *  ICalendarObject.events()/todos() から RECURRENCE-ID の有無で分離して渡す。 */
+ *  ICalendarObject.events()/todos()/journals() から RECURRENCE-ID の有無で分離して渡す。
+ *  J-1: VJOURNAL 追加。ical 層は caldav 層の ComponentKind 型に依存させない(層境界。
+ *  domain/ical は domain/caldav より内側なので、ここではローカルにリテラルユニオンを持つ)。 */
 export interface ComputeOccurrenceBoundsInput {
-	readonly componentKind: "VEVENT" | "VTODO";
-	readonly master: VEvent | VTodo;
+	readonly componentKind: "VEVENT" | "VTODO" | "VJOURNAL";
+	readonly master: VEvent | VTodo | VJournal;
 	readonly overrides: readonly VEvent[];
 }
 
@@ -223,6 +226,48 @@ function computeVTodoBounds(todo: VTodo, opts: ComputeOccurrenceBoundsOptions): 
 }
 
 /**
+ * VJOURNAL の bounds を計算する(J-1)。RFC 4791 §9.9 の VJOURNAL 実効値表は
+ *
+ *   DTSTART あり・DATE-TIME → (start <= DTSTART)     AND (end > DTSTART)
+ *   DTSTART あり・DATE      → (start <  DTSTART+P1D) AND (end > DTSTART)
+ *   DTSTART 無し            → FALSE(常に不一致)
+ *
+ * という「効果的な duration」を定義している(DATE なら +P1D、DATE-TIME なら 0 秒)。
+ *
+ * 【DTSTART 無しを FALSE ではなく null/null にする理由(このタスクの確定設計)】
+ * この索引は「SQL 側の粗い絞り込み」であって最終判定ではない(冒頭コメント参照)。
+ * §9.9 の表どおり DTSTART 無しを「絶対に time-range にマッチしない」として除外する索引を
+ * 書いてしまうと、時間概念を持たない VJOURNAL(§3.6.3: "does not take up time on a calendar"
+ * — そもそも DTSTART が無い運用が普通にありうる)が SQL 側で恒久的に候補から落ちてしまう。
+ * 一方この J-1 タスクは「calendar-query の VJOURNAL+time-range 自体を unsupported として
+ * 403 で弾く」設計(xml.ts の parseCalendarQueryFilter・J-4 送り)なので、この bounds が
+ * 実際に time-range 絞り込みへ使われることは現状無い。だが将来 J-4 で VJOURNAL の
+ * time-range REPORT を実装するときに「索引が間違って恒久除外していた」状態から始めたくない
+ * ため、NULL(常に候補)の安全側に倒しておく — 0002 の NULL の意味(「絞り込めない」は
+ * 「除外しない」の側に倒す)と整合させる判断。
+ *
+ * 【反復 VJOURNAL の扱い】
+ * VTODO と同じ割り切り(computeVTodoBounds のコメント参照)で展開しない。反復の有無に
+ * 関わらず単発の DTSTART のみを見て first/last を出す — RRULE 付き VJOURNAL の展開自体が
+ * J-4 のスコープ外なので、索引を精密化する意味がない(どうせ最終判定で使われない)。
+ */
+function computeVJournalBounds(journal: VJournal, opts: ComputeOccurrenceBoundsOptions): OccurrenceBounds {
+	const dtstart = journal.dtstart;
+	if (dtstart === undefined) {
+		// DTSTART 無し → 冒頭コメントのとおり null/null(常に候補。§9.9 の FALSE とは意図的に不一致)。
+		return { firstMillis: null, lastMillis: null };
+	}
+
+	const first = instantOf(dtstart, opts.zoneOf);
+	if (isCalDateTime(dtstart)) {
+		// DATE-TIME: 効果的 duration は 0 秒 → first と last は同一点。
+		return { firstMillis: first, lastMillis: first };
+	}
+	// DATE: 効果的 duration は +P1D(§9.9 の表どおり)。
+	return { firstMillis: first, lastMillis: first + 24 * 60 * 60 * 1000 };
+}
+
+/**
  * PUT 時に呼ぶ、first/last occurrence 索引値の計算本体。
  *
  * 【失敗時は throw せず null/null(重要)】
@@ -240,6 +285,9 @@ export function computeOccurrenceBounds(
 	try {
 		if (input.componentKind === "VTODO") {
 			return computeVTodoBounds(input.master as VTodo, opts);
+		}
+		if (input.componentKind === "VJOURNAL") {
+			return computeVJournalBounds(input.master as VJournal, opts);
 		}
 		return computeVEventBounds(iterator, input.master as VEvent, input.overrides, opts);
 	} catch {

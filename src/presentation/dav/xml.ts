@@ -163,17 +163,28 @@ export function davError(name: string, detail?: string): string {
 //   - その中の time-range(start/end。§9.9 の UTC 形式 YYYYMMDDTHHMMSSZ。片側欠落は
 //     0 / OCCURRENCE_INDEX_MAX へ正規化)
 //   - トップレベル(filter の外)の CALDAV:timezone(§9.8。VTIMEZONE 1個の PCDATA)
+//   - J-1(2026-07-11 追加): comp-filter name=VJOURNAL 自体は許可する。ただし
+//     **time-range 無しのときのみ**(下記参照)。
 // 【対応しないもの(No。検出したら unsupported=true)】
-//   prop-filter / param-filter / ネスト comp-filter / VJOURNAL / CALDAV:expand /
+//   prop-filter / param-filter / ネスト comp-filter / VJOURNAL への time-range / CALDAV:expand /
 //   limit-recurrence-set。呼び出し側(index.ts)は unsupported=true を
 //   403 CALDAV:supported-filter(§7.8 precondition)へ写像する。
+//
+// 【VJOURNAL + time-range を unsupported にする理由(J-1 のスコープ判断)】
+// RFC 4791 §9.9 は VJOURNAL の time-range 実効値表を定義しており本来は対応可能だが、
+// 反復 VJOURNAL(RRULE 付き)の展開ロジックはこの実装にまだ無い(occurrence-bounds.ts の
+// computeVJournalBounds コメント参照)。VEVENT のように expandRecurrenceSet へ委譲する
+// 精密な最終判定を実装していない状態で time-range だけ受理すると、単発 VJOURNAL は
+// 正しく判定できても反復 VJOURNAL は誤判定になりうる。「格納・検証・往復ができる」ところまでが
+// J-1 のスコープ(反復展開込みの time-range REPORT は J-4)なので、ここでは安全側に倒して
+// VJOURNAL+time-range をまるごと unsupported として 403 に倒す。
 // =============================================================================
 
 export interface CalendarQueryFilter {
 	/** comp-filter で指定されたトップレベルコンポーネント名。unsupported=true のときは
 	 *  判定不能な場合の便宜上の既定値("VEVENT")が入るので、呼び出し側は unsupported を
 	 *  先にチェックしてから使うこと。 */
-	componentName: "VEVENT" | "VTODO";
+	componentName: "VEVENT" | "VTODO" | "VJOURNAL";
 	/** time-range が無ければ undefined(comp-filter のみ = 絞り込み無し)。 */
 	timeRange?: { startMillis: number; endMillis: number };
 	/** CALDAV:timezone で解決された IANA ゾーン名。指定が無い/解決できなければ undefined
@@ -248,7 +259,10 @@ function extractBalancedElement(
 }
 
 export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
-	const unsupported = (componentName: "VEVENT" | "VTODO" = "VEVENT"): CalendarQueryFilter => ({ componentName, unsupported: true });
+	const unsupported = (componentName: "VEVENT" | "VTODO" | "VJOURNAL" = "VEVENT"): CalendarQueryFilter => ({
+		componentName,
+		unsupported: true,
+	});
 
 	// CALDAV:expand / CALDAV:limit-recurrence-set はどこに現れても非対応(§9 の transformation 系)。
 	if (/<(?:[^:>]+:)?(expand|limit-recurrence-set)\b/i.test(body)) return unsupported();
@@ -268,7 +282,7 @@ export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
 	if (extractBalancedElement(vcalBody, "comp-filter", compEl.afterIndex) !== undefined) return unsupported();
 
 	const nameAttr = compEl.attrs.match(/\bname=["']([\w-]+)["']/i)?.[1]?.toUpperCase();
-	if (nameAttr !== "VEVENT" && nameAttr !== "VTODO") return unsupported(); // VJOURNAL 等、対応外。
+	if (nameAttr !== "VEVENT" && nameAttr !== "VTODO" && nameAttr !== "VJOURNAL") return unsupported(); // VFREEBUSY 等、対応外。
 	const componentName = nameAttr;
 	const compBody = compEl.inner;
 
@@ -280,6 +294,8 @@ export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
 	const result: CalendarQueryFilter = { componentName, unsupported: false };
 
 	const trMatch = compBody.match(/<(?:[^:>]+:)?time-range\b([^>]*?)\/?>/i);
+	// J-1: VJOURNAL + time-range は unsupported(冒頭コメントの理由: 反復展開が未実装)。
+	if (trMatch && componentName === "VJOURNAL") return unsupported(componentName);
 	if (trMatch) {
 		const attrs = trMatch[1];
 		const startAttr = attrs.match(/\bstart=["']([^"']+)["']/i)?.[1];

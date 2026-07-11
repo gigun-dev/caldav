@@ -288,8 +288,8 @@ export class PutCalendarObject {
 
 		// --- Step 5b: G-3 occurrence bounds(first/last)を計算 -----------------------
 		// マスター(RECURRENCE-ID 無し)/ オーバーライド(RECURRENCE-ID 有り)を分離して
-		// computeOccurrenceBounds へ渡す。VEVENT はオーバーライドを持ちうるが VTODO は
-		// この設計では持たない(反復 VTODO の展開自体を G-3 のスコープ外にしている)。
+		// computeOccurrenceBounds へ渡す。VEVENT はオーバーライドを持ちうるが VTODO/VJOURNAL は
+		// この設計では持たない(反復 VTODO/VJOURNAL の展開自体を G-3/J-1 のスコープ外にしている)。
 		// zoneOf は resource.payload(この PUT で保存する ICS 自身の VTIMEZONE)から組み立てる
 		// — floating の解決ゾーンは PUT 時点で UTC 固定(確定設計メモ)。
 		const zoneOf = zoneResolverFor(resource.payload);
@@ -306,6 +306,20 @@ export class PutCalendarObject {
 				: computeOccurrenceBounds(
 					this.recurrenceIterator,
 					{ componentKind: "VEVENT", master, overrides },
+					{ zoneOf, maxOccurrences: OCCURRENCE_INDEX_MAX_OCCURRENCES },
+				);
+		} else if (resource.componentKind === "VJOURNAL") {
+			// J-1: VJOURNAL のオーバーライドは events 相当のものが journals() から取れる
+			// (VEVENT と同じ「同一 UID・RECURRENCE-ID の有無でマスター/オーバーライドを分離」の
+			// 形だが、VJOURNAL は展開しないので overrides は bounds 計算には使わない — VTODO と同様
+			// master 単体だけを見る。それでも journals() から拾う理由は「将来 J-4 で反復展開を
+			// 足すときにこの分離ロジックをそのまま使い回せるように」という設計の前振り)。
+			const master = resource.payload.journals().find((j) => j.recurrenceId === undefined);
+			bounds = master === undefined
+				? { firstMillis: null, lastMillis: null }
+				: computeOccurrenceBounds(
+					this.recurrenceIterator,
+					{ componentKind: "VJOURNAL", master, overrides: [] },
 					{ zoneOf, maxOccurrences: OCCURRENCE_INDEX_MAX_OCCURRENCES },
 				);
 		} else {

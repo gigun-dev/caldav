@@ -141,5 +141,39 @@ describe("DAV XML", () => {
 			expect(filter.unsupported).toBe(false);
 			expect(filter.floatingTimeZone).toBe("Asia/Tokyo");
 		});
+
+		// =====================================================================
+		// J-1: VJOURNAL の comp-filter 対応(time-range 無しのみ許可)
+		// =====================================================================
+		it("comp-filter VJOURNAL(time-range 無し)は unsupported=false で通す", () => {
+			const body = [
+				'<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">',
+				"<C:filter>",
+				'<C:comp-filter name="VCALENDAR">',
+				'<C:comp-filter name="VJOURNAL"/>',
+				"</C:comp-filter>",
+				"</C:filter>",
+				"</C:calendar-query>",
+			].join("");
+			const filter = parseCalendarQueryFilter(body);
+			expect(filter.unsupported).toBe(false);
+			expect(filter.componentName).toBe("VJOURNAL");
+			expect(filter.timeRange).toBeUndefined();
+		});
+
+		it("comp-filter VJOURNAL + time-range は unsupported=true(反復展開は J-4 送り)", () => {
+			const body = [
+				'<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">',
+				"<C:filter>",
+				'<C:comp-filter name="VCALENDAR">',
+				'<C:comp-filter name="VJOURNAL">',
+				'<C:time-range start="20260101T000000Z" end="20260201T000000Z"/>',
+				"</C:comp-filter>",
+				"</C:comp-filter>",
+				"</C:filter>",
+				"</C:calendar-query>",
+			].join("");
+			expect(parseCalendarQueryFilter(body).unsupported).toBe(true);
+		});
 	});
 });

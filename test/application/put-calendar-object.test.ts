@@ -12,6 +12,7 @@ import {
 	TEST_RECURRENCE_ITERATOR,
 	makeVEventIcs,
 	makeVTodoIcs,
+	makeVJournalIcs,
 	makeTestCollection,
 } from "./fakes";
 import { resourceUri } from "../../src/domain/caldav";
@@ -223,5 +224,45 @@ describe("PutCalendarObject", () => {
 				ics: makeVEventIcs("uid-x"),
 			})
 		).rejects.toBeInstanceOf(CollectionNotFoundError);
+	});
+
+	// =========================================================================
+	// J-1: VJOURNAL の PUT(precondition 通過 + bounds 計算)
+	// =========================================================================
+	describe("VJOURNAL", () => {
+		it("VJOURNAL の PUT は precondition を通り componentKind=VJOURNAL で保存される", async () => {
+			// TEST_COLLECTION_ID(既定の "calendar")は supportedComponents:["VEVENT"] 限定なので、
+			// VJOURNAL を受理する専用コレクションを別途 seed する(R2 supported-calendar-component)。
+			collectionRepo.seed(makeTestCollection(TEST_OWNER, "journal-cal", { supportedComponents: ["VJOURNAL"] }));
+
+			const result = await usecase.execute({
+				owner: TEST_OWNER,
+				collectionId: "journal-cal" as any,
+				resourceUri: "journal-001.ics",
+				ics: makeVJournalIcs("journal-uid-001"),
+			});
+			expect(result.created).toBe(true);
+
+			const saved = await resourceRepo.findByUri(TEST_OWNER, "journal-cal" as any, resourceUri("journal-001.ics"));
+			expect(saved).not.toBeNull();
+			expect(saved?.componentKind).toBe("VJOURNAL");
+			expect(saved?.uid).toBe("journal-uid-001");
+		});
+
+		it("VJOURNAL(DTSTART 無し)の bounds は null/null で保存される(フェイク UoW で捕捉)", async () => {
+			collectionRepo.seed(makeTestCollection(TEST_OWNER, "journal-cal", { supportedComponents: ["VJOURNAL"] }));
+
+			await usecase.execute({
+				owner: TEST_OWNER,
+				collectionId: "journal-cal" as any,
+				resourceUri: "journal-002.ics",
+				ics: makeVJournalIcs("journal-uid-002"),
+			});
+
+			const bounds = resourceRepo.boundsOf(TEST_OWNER, "journal-cal" as any, resourceUri("journal-002.ics"));
+			// makeVJournalIcs は DTSTART を含めない最小 ICS なので、computeVJournalBounds は
+			// null/null を返す(occurrence-bounds.ts の VJOURNAL 節参照)。
+			expect(bounds).toEqual({ firstMillis: null, lastMillis: null });
+		});
 	});
 });

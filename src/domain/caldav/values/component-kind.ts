@@ -6,21 +6,28 @@
 // supported-calendar-component-set(RFC 4791 §5.2.3)で宣言する。iOS はカレンダー用
 // コレクションに VEVENT、リマインダー用コレクションに VTODO を要求する。
 //
-// 【なぜ VEVENT / VTODO の2種だけか】
-// - VJOURNAL: iOS 非対応(03 §1-3・図の注記)。当面スコープ外。
+// 【なぜこの3種か(VEVENT / VTODO / VJOURNAL)】
+// - VJOURNAL: 2026-07-11 の方向性 J(09 §4a「agentic な日誌」)で追加。iOS 標準アプリは
+//   VJOURNAL の UI を持たないが、RELATED-TO で VTODO/VEVENT へ紐付く「日誌エントリ」として
+//   agentic なタスク管理基盤(CLAUDE.md の長期ビジョン①)の本丸になる。旧コメントは
+//   「iOS 非対応だからスコープ外」としていたが、iOS 対応はコア価値の1つであって唯一の
+//   駆動力ではない(CLAUDE.md: コア価値は「RFC 準拠 + iOS 対応」の両輪)。J-1 でまず
+//   格納・検証・往復ができるところまで実装し(コレクション provision や time-range
+//   フィルタは J-2/J-4 に送る。put-preconditions.ts の checkSupportedComponent と
+//   occurrence-bounds.ts の computeVJournalBounds のコメント参照)。
 // - VFREEBUSY: スケジューリング(将来フェーズ)専用で、コレクションの格納対象ではない。
 // - VTIMEZONE: リソース内の補助コンポーネントであって「リソースの種別」ではない
 //   (R1/R3 で常に除外される。ここには現れない)。
-// よって「コレクションが受け入れる種別 = リソースの主コンポーネント種別」は VEVENT|VTODO。
+// よって「コレクションが受け入れる種別 = リソースの主コンポーネント種別」は VEVENT|VTODO|VJOURNAL。
 //
-// 【拡張可能に】将来 VJOURNAL 等を足すときは COMPONENT_KINDS 配列に1語加えるだけで
+// 【拡張可能に】将来さらに種別を足すときは COMPONENT_KINDS 配列に1語加えるだけで
 // 型・ガード・パーサが追従するよう、配列を single source of truth にしている。
 // =============================================================================
 
 // as const で読み取り専用タプル化し、型を配列から導出する(値と型の二重定義を避ける)。
-export const COMPONENT_KINDS = ["VEVENT", "VTODO"] as const;
+export const COMPONENT_KINDS = ["VEVENT", "VTODO", "VJOURNAL"] as const;
 
-/** "VEVENT" | "VTODO"。配列 COMPONENT_KINDS から導出。 */
+/** "VEVENT" | "VTODO" | "VJOURNAL"。配列 COMPONENT_KINDS から導出。 */
 export type ComponentKind = (typeof COMPONENT_KINDS)[number];
 
 /**
@@ -35,7 +42,7 @@ export function isComponentKind(name: string): name is ComponentKind {
 
 /**
  * 文字列 → ComponentKind(不正なら undefined)。
- * VEVENT/VTODO 以外(VJOURNAL 等 = 現状未サポート)を undefined で返し、
+ * VEVENT/VTODO/VJOURNAL 以外(VFREEBUSY 等 = 現状未サポート)を undefined で返し、
  * 呼び出し側が supported-calendar-component 違反として扱えるようにする。
  */
 export function parseComponentKind(name: string): ComponentKind | undefined {

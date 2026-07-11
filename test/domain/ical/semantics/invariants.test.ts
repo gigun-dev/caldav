@@ -265,6 +265,57 @@ describe("I10: VTIMEZONE の必須要素", () => {
 	});
 });
 
+// =============================================================================
+// J-1: VJOURNAL(§3.6.3)の不変条件テスト
+// =============================================================================
+describe("VJOURNAL: I2(UID/DTSTAMP 必須・DTSTAMP UTC)", () => {
+	test("最小 VJOURNAL(UID/DTSTAMP のみ)→ 違反なし", () => {
+		expectNoViolations(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\nUID:a\n${VALID_STAMP}\nEND:VJOURNAL\nEND:VCALENDAR`,
+		);
+	});
+	test("UID 欠落 → I2", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\n${VALID_STAMP}\nEND:VJOURNAL\nEND:VCALENDAR`,
+			"I2",
+		);
+	});
+	test("DTSTAMP が UTC でない(floating)→ I2", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\nUID:a\nDTSTAMP:20260101T000000\nEND:VJOURNAL\nEND:VCALENDAR`,
+			"I2",
+		);
+	});
+});
+
+describe("VJOURNAL: 複数 DESCRIPTION / RELATED-TO(§3.6.3 jourprop)", () => {
+	test("複数 DESCRIPTION が全件 descriptions() で返る", () => {
+		const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\nUID:a\n${VALID_STAMP}\nDESCRIPTION:first\nDESCRIPTION:second\nEND:VJOURNAL\nEND:VCALENDAR`;
+		const journal = ICalendarObject.fromComponent(parse(ics)).journals()[0]!;
+		expect(journal.descriptions()).toEqual(["first", "second"]);
+		// 複数出現していても VJOURNAL では違反にならない(§3.6.3: MAY occur more than once)。
+		expect(journal.validate()).toEqual([]);
+	});
+
+	test("RELATED-TO が RELTYPE 込みで返る(未指定は既定 PARENT)", () => {
+		const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\nUID:a\n${VALID_STAMP}\nRELATED-TO:task-uid-1\nRELATED-TO;RELTYPE=SIBLING:journal-uid-2\nEND:VJOURNAL\nEND:VCALENDAR`;
+		const journal = ICalendarObject.fromComponent(parse(ics)).journals()[0]!;
+		expect(journal.relatedTo()).toEqual([
+			{ value: "task-uid-1", reltype: "PARENT" },
+			{ value: "journal-uid-2", reltype: "SIBLING" },
+		]);
+	});
+});
+
+describe("VJOURNAL: RRULE の UNTIL/COUNT 排他(I5、VEvent/VTodo と共通ロジック)", () => {
+	test("UNTIL と COUNT 同時 → I5", () => {
+		expectViolation(
+			`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VJOURNAL\nUID:a\n${VALID_STAMP}\nDTSTART;VALUE=DATE:20260101\nRRULE:FREQ=DAILY;COUNT=5;UNTIL=20260201\nEND:VJOURNAL\nEND:VCALENDAR`,
+			"I5",
+		);
+	});
+});
+
 describe("VALARM 細則(番号なし・VALARM タグ)", () => {
 	test("ACTION=DISPLAY で DESCRIPTION 欠落 → VALARM", () => {
 		expectViolation(

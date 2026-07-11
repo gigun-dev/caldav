@@ -20,7 +20,7 @@
 //     VTIMEZONE の逐語評価はしない(IANA tzdb を正とする決着)。将来の RecurrenceExpansion /
 //     time-range フィルタが土台に使う。zoned の TZID 解決関数(zoneOf)は resolver から注入する。
 //   - semantics/*: RFC 5545 §3.6〜3.8 の意味論レンズ群。ICalendarObject(VCALENDAR 集約ルート)
-//     / VEvent / VTodo / VTimezone / VAlarm と、不変条件違反 InvariantViolation。
+//     / VEvent / VTodo / VJournal / VTimezone / VAlarm と、不変条件違反 InvariantViolation。
 //     いずれも Component を包む「読み取り + validate」のレンズで、独自構造には変換しない
 //     (ロスレス往復を壊さないため。モデル図 §1-1)。application 層(PUT/REPORT ユースケース)は
 //     ここから型付きにカレンダーデータへアクセスし、validate() で precondition 診断を得る。

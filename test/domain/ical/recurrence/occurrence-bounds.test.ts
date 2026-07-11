@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { parse } from "../../../../src/domain/ical";
 import { ICalendarObject } from "../../../../src/domain/ical/semantics";
-import type { VEvent, VTodo } from "../../../../src/domain/ical/semantics";
+import type { VEvent, VJournal, VTodo } from "../../../../src/domain/ical/semantics";
 import { computeOccurrenceBounds, OCCURRENCE_INDEX_MAX } from "../../../../src/domain/ical/recurrence";
 import { IcaljsRRuleIterator } from "../../../../src/infrastructure/recurrence/icaljs-rrule-iterator";
 
@@ -32,6 +32,12 @@ function loadVTodo(ics: string): VTodo {
 	const todo = loadCalendar(ics).todos()[0];
 	if (todo === undefined) throw new Error("test fixture has no VTODO");
 	return todo;
+}
+
+function loadVJournal(ics: string): VJournal {
+	const journal = loadCalendar(ics).journals()[0];
+	if (journal === undefined) throw new Error("test fixture has no VJOURNAL");
+	return journal;
 }
 
 describe("computeOccurrenceBounds — VEVENT", () => {
@@ -178,6 +184,61 @@ describe("computeOccurrenceBounds — VTODO", () => {
 		].join("\r\n");
 		const todo = loadVTodo(ics);
 		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBeNull();
+		expect(bounds.lastMillis).toBeNull();
+	});
+});
+
+// =============================================================================
+// J-1: VJOURNAL の bounds(RFC 4791 §9.9 の VJOURNAL 実効値表: 効果的 duration は
+// DATE-TIME→0秒 / DATE→+P1D。DTSTART 無しはこの索引では null/null に倒す
+// — occurrence-bounds.ts の computeVJournalBounds コメント参照)。
+// =============================================================================
+describe("computeOccurrenceBounds — VJOURNAL", () => {
+	test("DTSTART が DATE-TIME: first=last=DTSTART(効果的 duration 0 秒)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:journal-datetime",
+			"DTSTAMP:20260101T000000Z",
+			"DTSTART:20260715T120000Z",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const journal = loadVJournal(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VJOURNAL", master: journal, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBe(Date.UTC(2026, 6, 15, 12, 0, 0));
+		expect(bounds.lastMillis).toBe(Date.UTC(2026, 6, 15, 12, 0, 0));
+	});
+
+	test("DTSTART が DATE: last=first+P1D(効果的 duration 1日)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:journal-date",
+			"DTSTAMP:20260101T000000Z",
+			"DTSTART;VALUE=DATE:20260715",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const journal = loadVJournal(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VJOURNAL", master: journal, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBe(Date.UTC(2026, 6, 15, 0, 0, 0));
+		expect(bounds.lastMillis).toBe(Date.UTC(2026, 6, 16, 0, 0, 0));
+	});
+
+	test("DTSTART 無し → null/null(§9.9 表の FALSE ではなく安全側の「常に候補」に倒す設計)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:journal-no-dtstart",
+			"DTSTAMP:20260101T000000Z",
+			"SUMMARY:何もない",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const journal = loadVJournal(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VJOURNAL", master: journal, overrides: [] }, OPTS);
 		expect(bounds.firstMillis).toBeNull();
 		expect(bounds.lastMillis).toBeNull();
 	});

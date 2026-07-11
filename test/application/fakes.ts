@@ -307,11 +307,27 @@ export function makeVTodoIcs(uid = "test-todo-001", summary = "Test Todo"): stri
 	].join("\r\n");
 }
 
-/** テスト用のデフォルトコレクションを作成して返す。 */
+/** テスト用の最小限 ICS(VJOURNAL 1件)。J-1: 方向性 J のユースケーステスト用。 */
+export function makeVJournalIcs(uid = "test-journal-001", summary = "Test Journal"): string {
+	return [
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Test//Test//EN",
+		"BEGIN:VJOURNAL",
+		`UID:${uid}`,
+		"DTSTAMP:20260101T000000Z",
+		`SUMMARY:${summary}`,
+		"END:VJOURNAL",
+		"END:VCALENDAR",
+	].join("\r\n");
+}
+
+/** テスト用のデフォルトコレクションを作成して返す。J-1: supportedComponents に VJOURNAL も
+ *  指定できるよう ComponentKind 全体を受け付ける(旧シグネチャは VEVENT|VTODO のみだった)。 */
 export function makeTestCollection(
 	owner: PrincipalRef = TEST_OWNER,
 	id: string = "calendar",
-	opts: { supportedComponents?: readonly ("VEVENT" | "VTODO")[]; displayName?: string } = {},
+	opts: { supportedComponents?: readonly ComponentKind[]; displayName?: string } = {},
 ): CalendarCollection {
 	return new CalendarCollection({
 		id: mkCollectionId(id),

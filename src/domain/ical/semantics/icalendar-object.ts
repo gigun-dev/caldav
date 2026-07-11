@@ -18,6 +18,7 @@ import type { Component } from "../structure/types";
 import { InvariantViolation } from "./errors";
 import { VEvent } from "./vevent";
 import { VTodo } from "./vtodo";
+import { VJournal } from "./vjournal";
 import { VTimezone } from "./vtimezone";
 import { firstProp, paramFirst, rawValue, subComponents, valueType } from "./helpers";
 
@@ -68,6 +69,12 @@ export class ICalendarObject {
 		return subComponents(this.component, "VTODO").map((c) => VTodo.fromComponent(c));
 	}
 
+	/** 配下の VJOURNAL をレンズ化(J-1: 方向性 J「agentic な日誌」)。
+	 *  VEVENT/VTODO 同様、同一 UID のマスター+オーバーライドで複数並びうる。 */
+	journals(): VJournal[] {
+		return subComponents(this.component, "VJOURNAL").map((c) => VJournal.fromComponent(c));
+	}
+
 	/** 配下の VTIMEZONE をレンズ化。 */
 	timezones(): VTimezone[] {
 		return subComponents(this.component, "VTIMEZONE").map((c) => VTimezone.fromComponent(c));
@@ -98,6 +105,7 @@ export class ICalendarObject {
 		for (const tz of this.timezones()) violations.push(...tz.validate());
 		for (const ev of this.events()) violations.push(...ev.validate());
 		for (const td of this.todos()) violations.push(...td.validate());
+		for (const jo of this.journals()) violations.push(...jo.validate());
 
 		return violations;
 	}
