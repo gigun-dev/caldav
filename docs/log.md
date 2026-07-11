@@ -347,3 +347,23 @@
   方向性 J(VJOURNAL 基盤 J-1 / 宣言+オプトイン J-2 / draft アクセサ J-3)完了。残る J-4
   (jtx/DAVx⁵ 実機検証・VJOURNAL time-range query・RFC 化時の格上げ)は後続。
   次: G-5(MCP 照会ツール = E の先鋒・語彙原型)。着手時に Fable 設計パスを挟む。
+- 2026-07-11: **G-5(MCP 照会ツール)完了 → E の先鋒・複数入口ビジョン実証**。設計 = Fable
+  (トランスポート3案比較 + 語彙原型 + 層配置)→ Opus 承認 → ユーザーが方式(@hono/mcp マウント)
+  ・認証(静的 Bearer + 差替可能ポート)を確定。実装は opus が依存導入 + AuthenticationPort まで
+  → opus セッション上限(23時リセット)→ sonnet が続行完了。
+  成果: ①依存 @hono/mcp@0.3 + @modelcontextprotocol/sdk@1.29 + zod@4 ②AuthenticationPort
+  (application/ports。authorization + resourceUri[audience 検証の口] → AuthResult。OAuth-ready seam)
+  ③StaticBearerAuth(infrastructure。secureStringEqual 定数時間比較 + 空トークンガード。A で
+  workers-oauth-provider に丸ごと差し替え)④presentation/mcp/(format: epochToIso[offset付ISO8601]/
+  parseIsoToEpoch[floating reject]/formatDateOnly、server: リクエストごとに McpServer+
+  StreamableHTTPTransport を new[Workers のグローバル状態回避]、3ツール)⑤index.ts で /mcp を
+  app.all("*") より前にマウント(Cloud Run プロキシ非経由)。3ツール = get-current-time
+  (currentTime/utc/dayOfWeek)/ list-events-expanded(ListOccurrences 再利用・calendarId 省略で
+  全カレンダー集約・isAllDay/isRecurring・maxEvents 既定250・truncated・内部 maxOccurrences 非露出)/
+  get-freebusy(ComputeFreeBusy をコレクションごと + coalesceBusyIntervals で再マージ)。
+  応答は offset 付き ISO8601 + timeZone 分離 + epoch 非露出(09 §1)。structuredContent 併用。
+  node_modules で実 API 確認(registerTool は raw shape inputSchema・StreamableHTTPTransport は
+  sessionIdGenerator 未指定で stateless・SSE 応答)。27 tests 追加(MCP 統合テスト = initialize/
+  tools-list/tools-call・Bearer 401/200 込み)で 343 pass。**DAV と MCP が同じ application UC を
+  呼ぶ複数入口ビジョンを実証。** 次: G は G-6 まで完了、残タスクは方向性 A(マルチユーザー +
+  OAuth = 高優先)/ E(書き込みツール・MCP Apps)/ C(tsdav CI ハーネス、G-3 完了で着手可)。

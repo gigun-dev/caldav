@@ -31,8 +31,9 @@ import type {
 	CollectionUnitOfWork,
 	PrincipalRepository,
 } from "./application/ports";
-import { createD1Repositories, IcaljsRRuleIterator } from "./infrastructure";
+import { createD1Repositories, IcaljsRRuleIterator, StaticBearerAuth } from "./infrastructure";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
+import { createMcpApp } from "./presentation/mcp/server";
 import {
 	collectionProps,
 	davError,
@@ -254,6 +255,28 @@ app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
 
 // iOS はこの場所を最初に PROPFIND する。認証前でも正規DAV入口へ誘導できるようリダイレクト自体は公開する。
 app.all("/.well-known/caldav", (c) => c.redirect("/dav/", 301));
+
+// =============================================================================
+// G-5: MCP 照会ツール(/mcp)
+// =============================================================================
+// DAV の Basic 認証(authenticateBasic)とは別の認証 seam(StaticBearerAuth。
+// application/ports/authentication.ts の AuthenticationPort)を使う。
+// 【Cloud Run プロキシは /mcp を経由しない】iOS の正式入口(本ファイル冒頭コメント参照)は
+// MKCALENDAR を通すための書き換えプロキシだが、MCP はエージェント/ツール入口であり
+// iOS クライアントの CalDAV トラフィックとは無関係。よってこのパスはプロキシを介さず
+// Workers に直接届く経路(または別途 MCP クライアント用の入口)を想定する。
+app.route(
+	"/mcp",
+	createMcpApp((env) => {
+		const repos = repositoriesFactory(env);
+		return {
+			auth: new StaticBearerAuth({ mcpToken: env.MCP_TOKEN, username: env.CALDAV_USERNAME }),
+			collectionRepo: repos.collections,
+			resourceRepo: repos.resources,
+			iterator: recurrenceIterator,
+		};
+	}),
+);
 
 app.all("*", async (c) => {
 	try {

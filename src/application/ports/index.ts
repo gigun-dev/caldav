@@ -28,6 +28,10 @@ import type {
 	SyncChange,
 } from "../../domain/caldav";
 import type { CollectionId, PrincipalPath, PrincipalRef, ResourceUri } from "../../domain/caldav";
+
+// G-5: MCP 入口の認証ポート(AuthenticationPort / AuthContext / AuthResult)。
+// 契約の詳細は authentication.ts のコメントを参照(このファイルは既存の書式に合わせ re-export のみ)。
+export * from "./authentication";
 import type { ComponentKind } from "../../domain/caldav";
 import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 

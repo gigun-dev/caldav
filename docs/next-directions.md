@@ -100,10 +100,18 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     > VFREEBUSY を text/calendar 出力、空でも VFREEBUSY は返す §7.10 MUST)。object に対する
     > free-busy-query は 403。280 tests green。**応答 TZ 分離の実証** = UC は busy 区間だけ返し
     > iCalendar 化は presentation。G-5 はこの UC をそのまま MCP ツールに露出する。
-  - G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
+  - ~~G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
     E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
     **ここで設計するツールの語彙(名前・引数・応答形)は将来 MCP Apps / WebMCP にも
-    そのまま露出する原型になる(11 §4)。特定の入口に依存しない形で application 層に置く。**
+    そのまま露出する原型になる(11 §4)。特定の入口に依存しない形で application 層に置く。**~~ ✅
+    > **2026-07-11 更新:** 完了。設計 = Fable、実装 = opus 途中(認証ポート)→ opus セッション上限
+    > → sonnet が続行。343 tests green。トランスポート = `@hono/mcp` を `/mcp` にステートレス
+    > マウント(McpAgent/DO は使わない = キットのマウント可能思想)。認証 = 静的 Bearer だが
+    > **OAuth-ready な AuthenticationPort**(audience 検証の口つき、A で workers-oauth-provider に
+    > ミドルウェア差し替え)。3ツールは offset 付き ISO8601・応答 TZ 分離・epoch 非露出・dayOfWeek
+    > 明示・truncated フラグ。ListOccurrences UC を再利用、calendarId 省略で全カレンダー集約。
+    > **DAV と MCP が同じ application UC を呼ぶ複数入口ビジョンの実証完了。** MCP 統合テスト
+    > (initialize/tools-list/tools-call・Bearer 401/200)込み。書き込み・OAuth・MCP Apps は E。
   - ~~G-6: supported-calendar-component-set の明示宣言(宣言しないと「全コンポーネント
     MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。~~ ✅(J-2 に統合)
     > **2026-07-11 更新:** G-6 は J-2 に吸収して完了。collectionProps のフォールバックを
