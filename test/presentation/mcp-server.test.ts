@@ -1,9 +1,16 @@
 // =============================================================================
 // /mcp エンドポイントの統合テスト(G-5)
 // =============================================================================
-// app.fetch を丸ごと exercise する(app.test.ts と同じ流儀)。DAV 側と同じ
-// __setRepositoriesFactoryForTest でインメモリ Fake を注入し、MCP 側もそれを再利用する
-// (src/index.ts の /mcp 配線が同じ repositoriesFactory を使うため)。
+// 【2026-07-12 OAuth-for-MCP 第2スライス: OAuth を経由しない直叩きに付け替えた経緯】
+// 以前は src/index.ts の default export(生 Hono アプリ)に /mcp が同居しており、
+// app.fetch を丸ごと exercise して MCP_TOKEN Bearer 経由でツールを叩いていた。
+// 第2スライスで /mcp は OAuthProvider(@cloudflare/workers-oauth-provider)の apiRoute に
+// 移り、default export は OAuthProvider インスタンスになった(KV バインディング前提)。
+// bun test には workerd/KV が無く OAuth フローそのものを単体テストで再現するのは大掛かり
+// なので、「MCP ツールの振る舞い」と「認証機構(OAuth vs 静的 Bearer)」を分離する:
+// このテストは createMcpApp を直接叩き、認証は元の StaticBearerAuth を注入して行う
+// (OAuthPropsAuth に差し替えても認証が通った後のツール挙動は変わらないため、ツールの
+// 振る舞いテストとしてはこれで十分。OAuth フロー自体の検証は手動/実機で行う想定)。
 //
 // StreamableHTTPTransport はデフォルト(sessionIdGenerator 未指定)で stateless モードに
 // なる(SDK の streamableHttp.d.ts コメント参照。実測でも initialize なしに tools/list や
@@ -16,7 +23,9 @@
 // =============================================================================
 
 import { beforeEach, describe, expect, it } from "bun:test";
-import app, { __setRepositoriesFactoryForTest } from "../../src/index";
+import { Hono } from "hono";
+import { createMcpApp } from "../../src/presentation/mcp/server";
+import { StaticBearerAuth, IcaljsRRuleIterator } from "../../src/infrastructure";
 import { CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,
@@ -61,7 +70,12 @@ let repos: {
 	resources: FakeCalendarObjectResourceRepository;
 	uow: FakeCollectionUnitOfWork;
 };
-let restore: () => void;
+// 反復 port。src/index.ts の recurrenceIterator と同じく状態を持たないので使い回して良い。
+const recurrenceIterator = new IcaljsRRuleIterator();
+// mcpApp: createMcpApp を直接組んだテスト専用サブアプリ。OAuthProvider を経由せず、
+// 認証は元の StaticBearerAuth のまま(このテストの目的はツールの振る舞い検証であって
+// OAuth フローの検証ではない — ファイル冒頭コメント参照)。
+let mcpApp: Hono<{ Bindings: CloudflareBindings }>;
 
 beforeEach(() => {
 	const principals = new FakePrincipalRepository();
@@ -69,11 +83,19 @@ beforeEach(() => {
 	const resources = new FakeCalendarObjectResourceRepository();
 	const uow = new FakeCollectionUnitOfWork(resources, collections);
 	repos = { principals, collections, resources, uow };
-	restore = __setRepositoriesFactoryForTest(() => repos);
+	mcpApp = new Hono<{ Bindings: CloudflareBindings }>().route(
+		"/mcp",
+		createMcpApp(() => ({
+			auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+			collectionRepo: repos.collections,
+			resourceRepo: repos.resources,
+			iterator: recurrenceIterator,
+		})),
+	);
 });
 
 async function fetchMcp(body: unknown): Promise<Response> {
-	return app.fetch(
+	return mcpApp.fetch(
 		new Request("https://example.com/mcp", {
 			method: "POST",
 			headers: {
@@ -102,14 +124,24 @@ async function seedEvent(uid: string, summary: string): Promise<void> {
 }
 
 describe("/mcp", () => {
-	it("Authorization ヘッダ無しは 401 + WWW-Authenticate", async () => {
-		const res = await app.fetch(new Request("https://example.com/mcp", { method: "POST" }), ENV);
+	// 2026-07-12 OAuth-for-MCP 第2スライス SHOULD-2: このテストが叩いているのは
+	// StaticBearerAuth(このファイルが直接組んだ mcpApp)の防御フォールバック 401 であって、
+	// 本番の /mcp 401 の主経路ではない。本番では /mcp は OAuthProvider の apiRoute で
+	// 保護されており、認証していない/不正なリクエストへの 401 は provider 自身が
+	// `WWW-Authenticate: Bearer realm="OAuth", resource_metadata=...` という形で返す
+	// (OAuthPropsAuth まで到達する前に provider 側で弾かれる)。ここでの
+	// `realm="caldav-mcp"` は StaticBearerAuth 実装(infrastructure/auth/static-bearer-auth.ts)
+	// 固有の文字列であり、OAuth 経路の実際のレスポンスとは異なる。このテストの目的は
+	// あくまで「認証機構を差し替えても MCP ツールの振る舞いは変わらない」ことの検証
+	// (ファイル冒頭コメント参照)であって、本番の 401 レスポンス形を保証するものではない。
+	it("Authorization ヘッダ無しは 401 + WWW-Authenticate(StaticBearerAuth 経由。本番の主経路ではない)", async () => {
+		const res = await mcpApp.fetch(new Request("https://example.com/mcp", { method: "POST" }), ENV);
 		expect(res.status).toBe(401);
 		expect(res.headers.get("WWW-Authenticate")).toBe('Bearer realm="caldav-mcp"');
 	});
 
 	it("誤った Bearer トークンは 401", async () => {
-		const res = await app.fetch(
+		const res = await mcpApp.fetch(
 			new Request("https://example.com/mcp", {
 				method: "POST",
 				headers: { authorization: "Bearer wrong-token", "content-type": "application/json" },

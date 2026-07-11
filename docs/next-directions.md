@@ -188,6 +188,14 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   WebMCP(WebUI をブラウザエージェントに開く、Chrome 149 オリジントライアル中 —
   WebUI が立った時点で実験。J と同じ先行投資の思想)。三面とも同じ application 層の
   語彙(G-5 が原型)の別露出面であり、ドメイン・application 層への影響はゼロ。
+- **OAuth-for-MCP**: 第2スライス(@cloudflare/workers-oauth-provider 導入。src/index.ts /
+  src/app.ts の物理分離込み)完了。次は第3スライス(authorize UI = GET/POST /authorize の実装)。
+  > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
+  > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
+  > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が
+  > `ctx.props.username` を読めず principal を解決できず、全 MCP 呼び出しが 401 になる
+  > (第2スライスとの暗黙契約。resolveExternalTokenForMcp が返す props も同じ形に
+  > 合わせてある — src/app.ts 参照)。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 

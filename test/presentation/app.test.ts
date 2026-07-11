@@ -1,6 +1,12 @@
 // =============================================================================
-// Worker エントリポイント(src/index.ts)の統合テスト
+// DAV アプリ本体(src/app.ts)の統合テスト
 // =============================================================================
+// 2026-07-12 OAuth-for-MCP 第2スライス・物理分離: 以前は src/index.ts から
+// honoApp を import していたが、honoApp(および周辺の helper・mcpApiApp・
+// resolveExternalTokenForMcp)は provider 非依存の src/app.ts に切り出した。
+// src/index.ts は OAuthProvider を静的 import して default export するだけの
+// 薄いファイルになったため、DAV の挙動だけを見たいこのテストは src/app.ts を
+// 直接 import する(provider の KV 依存を bun test に持ち込まないため)。
 // app.fetch を丸ごと exercise する。bun test 環境には workerd/D1 が無いため、
 // __setRepositoriesFactoryForTest でインメモリ Fake を注入して DB を差し替える。
 //
@@ -10,7 +16,7 @@
 // =============================================================================
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import app, { __setRepositoriesFactoryForTest } from "../../src/index";
+import { app, __setRepositoriesFactoryForTest } from "../../src/app";
 import { CalendarCollection, collectionId, principalPath } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,

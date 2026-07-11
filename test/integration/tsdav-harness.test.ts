@@ -16,7 +16,7 @@
 // 「workerd が MKCALENDAR という任意メソッドを受け付けられない」という workerd 固有の
 // 制約であって(docs/modeling/07 §4)、アプリのロジック自体が MKCALENDAR を扱えないわけ
 // ではない。このハーネスは Bun.serve(= Node/Bun の HTTP サーバー実装で、任意メソッドを
-// 受け付けられる)で src/index.ts の Hono app をラップして立てるため、MKCALENDAR も含めて
+// 受け付けられる)で src/app.ts の Hono app をラップして立てるため、MKCALENDAR も含めて
 // プロキシ無しで検証できる。つまり:
 //   - workerd の MKCALENDAR 501(トランスポートの癖)→ このハーネスの対象外。
 //     本番プロキシ + scripts/smoke-test.ts の責務。
@@ -40,7 +40,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createDAVClient } from "tsdav";
-import app, { __setRepositoriesFactoryForTest } from "../../src/index";
+// 2026-07-12 OAuth-for-MCP 第2スライス・物理分離: honoApp は src/app.ts に切り出された
+// (provider 非依存。app.test.ts と同じ理由 — src/index.ts は provider の静的 import を
+// 持つので bun test から provider の cloudflare:workers 依存を巻き込まないよう避ける)。
+import { app, __setRepositoriesFactoryForTest } from "../../src/app";
 import {
 	FakeCalendarCollectionRepository,
 	FakeCalendarObjectResourceRepository,

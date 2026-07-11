@@ -21,6 +21,13 @@
 // =============================================================================
 
 import { Hono } from "hono";
+// Hono 独自の ExecutionContext 型(hono/types)を明示 import する。global ambient な
+// ExecutionContext(@cloudflare/workers-types。OAuthProvider の.d.ts が使う方)は `tracing`
+// フィールドを要求するなど形が異なり、c.executionCtx(Hono 側の型)をそのまま代入すると
+// tsc が構造的に弾く。depsFactory の ctx 引数は「Hono が実際に渡してくる値の型」と
+// 一致させるべきなので、意図的に hono 側の型を使う(index.ts の mcpApiApp 配線側で
+// OAuthProvider の ExecutionContext 型との橋渡し=局所キャストを行う)。
+import type { ExecutionContext } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { z } from "zod";
@@ -291,12 +298,38 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
  * モジュールロード時の1回きりの静的 deps ではなく、リクエストごとに c.env から repos/auth を
  * 組み立てる。テスト(__setRepositoriesFactoryForTest 相当)でも同じ理由でファクトリの差し替えが
  * 必要になる。
+ *
+ * 【2026-07-12 OAuth-for-MCP 第2スライス: ctx 引数を追加した理由】
+ * OAuth 経由の認証(OAuthPropsAuth)は「トークン検証済みの props」を必要とするが、props は
+ * Hono の c.env には乗らず ExecutionContext(c.executionCtx)に @cloudflare/workers-oauth-provider
+ * が実行時に注入する(index.ts の mcpApiApp 配線参照)。よって depsFactory に env に加えて
+ * ExecutionContext も渡せるようにする。
+ * 【型の壁】Hono の ExecutionContext 型定義に `props` フィールドは無い(provider が実行時に
+ * 生やす独自拡張のため)。この server.ts では ExecutionContext をそのまま横流しするだけにして、
+ * props を読んで narrow するのは呼び出し側(index.ts)の責務にする — ここで型をこじ開けると
+ * 「MCP サーバー層が OAuthProvider の実装詳細を知っている」ことになり、CLAUDE.md の層分離
+ * (プロトコル知識は presentation に閉じ込めるが、外部ライブラリの実行時拡張はさらに外側=
+ * コンポジションルートに閉じ込めたい)に反するため。
+ * 【後方互換】ctx はオプショナル(`c.executionCtx` は Hono の型上 `ExecutionContext` で必須では
+ * なく存在しうる)。ctx を使わない depsFactory(StaticBearerAuth を使うテスト等)も無変更で動く。
  */
-export function createMcpApp(depsFactory: (env: CloudflareBindings) => McpAppDeps) {
+export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: ExecutionContext) => McpAppDeps) {
 	const app = new Hono<{ Bindings: CloudflareBindings }>();
 
 	app.all("/", async (c) => {
-		const deps = depsFactory(c.env);
+		// c.executionCtx は「呼び出し元が Request と一緒に ExecutionContext も渡したか」で
+		// 中身が決まる getter で、渡されていないと例外を投げる実装(hono/dist/context.js
+		// executionCtx()。bun test の `.fetch(request, env)`(第3引数省略)がまさにこのケース。
+		// depsFactory の ctx はもとから optional(server.ts コメント「後方互換」参照)なので、
+		// 例外を握りつぶして undefined にフォールバックする — StaticBearerAuth はそもそも ctx を
+		// 使わないため、この経路でも認証は問題なく動く。
+		let executionCtx: ExecutionContext | undefined;
+		try {
+			executionCtx = c.executionCtx;
+		} catch {
+			executionCtx = undefined;
+		}
+		const deps = depsFactory(c.env, executionCtx);
 
 		// --- 認証: Authorization ヘッダ + resourceUri を AuthContext に詰めて解決する ---
 		const url = new URL(c.req.url);
