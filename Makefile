@@ -82,7 +82,13 @@ mobileconfig: ## iOS 用 .mobileconfig を生成(CALDAV_HOST 等は env で上�
 test: ## テストを実行
 	bun test
 
-typecheck: ## tsc --noEmit
+# typegen を前段に挟む理由(2026-07-11): 公式推奨は「TS を使うタスクの前に wrangler types」。
+# 手動 typegen は忘れるので typecheck が毎回自動再生成する(数秒・オフラインで完結)。
+# 生成差分は git status に現れたら普通に commit する(生成物もコミットする運用)。
+# CI に組み込まない理由: 型には .dev.vars(gitignore 対象)のキーも含まれるため、
+# .dev.vars が無い CI で再生成/--check すると偽陽性で落ちる。CI は commit 済みの
+# worker-configuration.d.ts をそのまま tsc に使う(bun run typecheck 直呼びで typegen を通らない)。
+typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから)
 	bun run typecheck
 
 boundaries: ## 層境界チェック(dependency-cruiser)
