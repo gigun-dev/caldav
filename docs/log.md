@@ -209,3 +209,27 @@
   ⑤RFC 6047 が docs/rfc/ 未収録と判明(K-1 として起票)。
   なお、この日の subagent は model 未指定で Fable 継承だった → 以後は sonnet/opus を
   明示する運用に(メモリ更新済み)。
+- 2026-07-11: **着手順の戦略的再設計(DDD)+ MCP Apps / WebMCP 調査 → next-directions 改訂**。
+  発端はユーザーの「A〜K の順序を DDD ベスプラで戦略的に判断したい」。松岡 DDD の
+  コアドメイン蒸留で分類: コア = G/J/E(意味計算・採択途中 RFC・agentic 入口)、
+  支援 = B/K/C/H/I、汎用 = A/F。「コアに最初に投資」原則から着手順を
+  **G → J → A → E(+K-4)→ K-1〜3 → B → C(tsdav ハーネスは G-3 後に前倒し)→ D →
+  H(E に吸収)→ I、F は横断関心事**に改訂。B vs E は E 先行で確定(ユーザー判断)。
+  合わせて agentic 入口の周辺標準を Web 調査: ①MCP Apps(ext-apps / SEP-1865)は
+  2026-01-26 安定版の最初の公式 MCP 拡張、Claude/ChatGPT/VS Code ホスト対応済み —
+  E 設計前に一次資料を読む ②WebMCP(navigator.modelContext)は W3C CG Draft +
+  Chrome 149 オリジントライアル(Gemini in Chrome が消費)。当初「ウォッチのみ」と
+  評価したが、ユーザー判断「CalDAV は GUI ありきで WebUI を独立に持つ」により重要度を
+  上方修正 — 既存 WebUI がほぼ追加コストなしでエージェント対応になる(接続設定不要・
+  セッション相乗り)。投資の大半は WebUI + application 層の語彙に落ち、WebMCP 固有は
+  registerTool() の薄い皮だけなので仕様変動リスクは表皮に限定。
+  構造上の結論: **MCP サーバー / MCP Apps / WebMCP は同じ application 層ユースケース
+  (G-5 の語彙が原型)の別露出面** — 長期ビジョン1の入口が3面に増えるだけ。
+- 2026-07-11: **next-directions を棚卸し(第2版)**。着手順の DDD 改訂が「大きな節目」に
+  該当するため、積層した更新ブロックを本文に統合。①節の並びを新着手順(G→J→A→E→K→B→
+  C→D→H→I→F)に合わせて再配置 ②MCP Apps / WebMCP の調査詳細 + DDD 戦略分類の根拠を
+  docs/modeling/11-agentic-surfaces.md に切り出し(next-directions からは参照のみ)
+  ③消化済みの小粒タスク・iOS A7 決着を「完成しているもの」に統合 ④G-6
+  (supported-calendar-component-set 宣言)をタスクとして正式化 ⑤modeling/README の
+  目次に 08〜11 を追記(07 で止まっていた)。積層ルールへの懸念(コンテキスト膨張)は
+  「節目ごとの棚卸しが逃がし弁」という運用で解消— 生の経緯は log.md と git 履歴が持つ。

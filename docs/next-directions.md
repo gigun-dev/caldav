@@ -1,12 +1,13 @@
-# 次セッションの方向性(2026-07-11 時点の棚卸し)
+# 次セッションの方向性(2026-07-11 棚卸し・第2版)
 
 > **位置づけ**: 恒久ドキュメント(セッション引き継ぎの正典)。セッション開始時にまず読む。
 > **更新ルール**: 計画は消さない。完了は打ち消し線 + ✅、状況変化は該当箇所の直下に
 > `> **YYYY-MM-DD 更新:** ...` の引用ブロックを積層する。大きな節目でタイトルの日付を更新し
-> 全体を棚卸しする。時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
+> 全体を棚卸しする(積層を本文に溶かし込む。今回が第2版 = 着手順の DDD 改訂を機に棚卸し)。
+> 時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
 
 M1「足場固め」が完了した時点。検証フェーズは完了しており、プロダクトとしては序盤。
-次のセッションは方向性 A(M2 マルチユーザー)から拾う。
+**次のセッションは方向性 G(G-1 の TZ 解決層)から拾う。**
 
 ## 今日までに完成しているもの(前提)
 
@@ -14,37 +15,43 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 - **CalDAV リソース層**: 3集約(Principal / CalendarCollection+SyncChange / CalendarObjectResource)+ put-preconditions R1〜R7。
 - **フルスタック稼働**: application / infrastructure(D1) / presentation(DAV XML + Basic Auth)。
   本番 = Worker `caldav.gigun-dev.workers.dev` + Cloud Run 書き換えプロキシ(iOS 正式入口・恒久構成)。
-- **iOS 実機検証 2ラウンド完了**(docs/modeling/06)。残 🔶 は A7(6868 未誘発)のみ。
+- **iOS 実機検証 3ラウンド完了**(docs/modeling/06)。A7(RFC 6868)も決着済み — iOS は
+  パラメータ値の DQUOTE を黙って除去し `^` エンコードは使わない。6868 実装は不要と確定。
 - **M1 足場固め**: CI(境界→tsc→test)/ Workers Builds 自動 deploy / ETag 412 テスト /
   ローカル開発環境(Makefile + cloudflared tunnel + iPhone 実機接続実証)/ pre-push hook で main 保護。
 - 203+ tests / tsc green。認証方式の調査済み(docs/modeling/07 が M2 一次資料)。
+- proxy の Content-Length 修正は Cloud Run 反映済み(`caldav-proxy-00003-dsz`、OPTIONS 疎通 OK)。
 
-## 方向性 A: M2 マルチユーザー(次の本命)
+## 着手順(2026-07-11 確定・DDD 戦略設計)
 
-- **発端**: 現状は単一ユーザー Basic(secrets 直)。スケジューリング(方向性 B)の前提。
-  secret 消失障害(2026-07-10、log.md)の本質解決でもある(D1 salt付きハッシュへ移行)。
-- **確定した方針**(docs/modeling/07): Basic over HTTPS + App Password が業界デファクト。
-  32文字級サーバー生成 → Argon2id/bcrypt で D1 保存 + レート制限。OAuth は方向性 E まで持ち越し。
-  iOS アカウント追加は .mobileconfig 配布を正式ルート(App Password 発行 → ワンタイム URL で
-  プロファイル DL。平文が入るので HTTPS + 使い捨て URL 必須、署名は後回し可)。
-- **タスク分解**:
-  - A-1: ユーザー / App Password の D1 スキーマ + principal 複数化。
-    **方向性 D の先行準備を織り込む**: コレクション×principal の権限表
-    (current-user-privilege-set を実データ化 — ここを逃すと D で手戻り)。
-  - A-2: 認証ミドルウェアの差し替え(Argon2id 検証 + レート制限)。
-  - A-3: App Password 発行フロー + .mobileconfig ワンタイム配布。
-  - A-4: プロキシ内部認証を共有シークレット → HMAC 署名へ格上げ(OSS 公開時までに)。
+松岡 DDD のコアドメイン蒸留で A〜K を分類(根拠と分類表は **docs/modeling/11 §1**):
+コアドメイン = **G / J / E**、支援 = B / K / C / H / I、汎用 = **A** / F。
+「コアに最初に投資し、汎用はデファクトをなぞって薄く済ませる」原則から、
+当初案(A 先頭。B vs E はユーザー判断待ち)を改訂して以下に確定:
 
-## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)— A と同格以上の新本命
+1. **G(意味計算)** — RFC MUST 違反の解消 + コアドメイン。A に依存せず単独で完結。
+2. **J(採択途中 RFC)** — G でドメイン層が熱いうちに。ical-tasks の RFC 化前に。
+3. **A(M2 マルチユーザー)** — 汎用だが B/D/E 実運用の前提となるボトルネック。
+4. **E(agentic 入口)** — B より先と確定(ユーザー判断)。K-4 はこの文脈で。
+5. **K-1〜K-3 → B(招待)** — K-1 は B 着手前必須。K-2/K-3 は B と E の共有カーネル。
+6. **C → D → H → I** — ただし C の tsdav CI ハーネスだけ **G-3 完了時点に前倒し**。
+   H は E の設計に吸収。I は最後(着手前に一次調査)。
 
-> **2026-07-11 起票**: agentic 入口(E)の中核能力は「イベントの理解」と「free-busy」
-> というユーザー判断により、A と同等かそれ以上のスコープに昇格。
-> 一次資料は **docs/modeling/08**(RFC 義務・競合実態・TZ 流派・コスト試算まで調査済み)。
+**F(運用)はフェーズではなく横断関心事** — 各マイルストーンの Definition of Done に
+「rate limit / 上限 precondition の該当分」を含める。
 
+## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)— 現在の本命
+
+- **発端**: agentic 入口(E)の中核能力は「イベントの理解」と「free-busy」という
+  ユーザー判断。一次資料は **docs/modeling/08**(RFC 義務・競合実態・TZ 流派・コスト試算)、
+  優先度の補正は **09**。
 - **発見**: time-range フィルタの RRULE 展開は RFC 4791 の MUST(calendar-query 自体が
   REQUIRED、非対応表明は不可)。現状は厳密には RFC 非準拠 = コア価値に照らしいずれ必須だった。
-  一方 CALDAV:expand / free-busy-query は実クライアントがほぼ使わない(Google すら
-  free-busy 未実装)— 「iOS のためでなく RFC 準拠と agentic のために作る」機能。
+  一方、09 の調査による粒度補正: ①CALDAV:expand は実は REQUIRED でない(calendar-data の
+  子要素)+ iOS はクライアント展開する → 優先度低 ②free-busy-query は REQUIRED だが
+  実クライアントは叩かない(Google すら未実装)→ 「iOS のためでなく RFC 準拠と agentic の
+  ために作る」機能 ③展開・availability はモダン API(Google/Graph/JMAP)の第一級機能で、
+  Nextcloud/Cal.com も本気の計算はアプリ層でやっている。
 - **確定した設計判断**(08 §6): TZ は IANA tzdb を正・VTIMEZONE は保存のみ /
   RRULE 反復は ical.js をアダプタ内側に採用(rrule.js は不採用)/
   sabre 式 first/last occurrence 索引を D1 に(PUT 時計算)+ REPORT 時にヒット行のみ展開 /
@@ -55,27 +62,22 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     Workers の Intl/ICU 利用)+ floating/DATE の実効値算出(§9.9 の表)。
   - G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
     オーバーライド解決 + 展開上限)。
-  - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と統合するか要判断)+
-    calendar-query の time-range フィルタ(方向性 C の中核が前倒しでここに来る)。
+  - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る
+    前提で設計、結合はしない)+ calendar-query の time-range フィルタ
+    (方向性 C の中核が前倒しでここに来る)。**完了時点で C の tsdav CI ハーネスを前倒し着手可**。
   - G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
+    MCP 表面の設計は 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。
   - G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
     E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
-- 単一ユーザーのままで完結する(A に依存しない)。ドッグフーディング優先なら A より先。
-
-> **2026-07-11 更新(docs/modeling/09 起草)**: 標準戦略の調査により優先度を補正 —
-> ①CALDAV:expand は実は REQUIRED でない(calendar-data の子要素)+ iOS はクライアント
-> 展開する → 優先度低。②free-busy-query は REQUIRED だが実クライアントは叩かない →
-> 後回し可。③「展開・availability」はモダン API(Google/Graph/JMAP)の第一級機能で、
-> Nextcloud/Cal.com も本気の計算はアプリ層でやっている → G-5(MCP 表面)の設計は
-> 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。
-> ④supported-calendar-component-set の明示宣言を G のタスクに追加(宣言しないと
-> 「全コンポーネント MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。
+    **ここで設計するツールの語彙(名前・引数・応答形)は将来 MCP Apps / WebMCP にも
+    そのまま露出する原型になる(11 §4)。特定の入口に依存しない形で application 層に置く。**
+  - G-6: supported-calendar-component-set の明示宣言(宣言しないと「全コンポーネント
+    MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。
 
 ## 方向性 J: 採択途中 RFC への先行投資(agentic タスク管理の本丸)
 
-> **2026-07-11 起票**: 「使われていない RFC を切る」だけでなく「採択途中の RFC で
-> 先行者になる」逆張り(ユーザー方針)。一次資料は **docs/modeling/09 §4**。
-
+- **発端**: 「使われていない RFC を切る」だけでなく「採択途中の RFC で先行者になる」
+  逆張り(ユーザー方針)。一次資料は **docs/modeling/09 §4**。
 - **VJOURNAL**: 実装コストほぼゼロでサーバー側対応の薄さが生態系のボトルネックそのもの。
   「agent の実行ログ・日誌を時系列に置き RELATED-TO でタスクに紐づける」— 長期ビジョン
   「agentic なタスク管理の基盤」の本丸。検証クライアントは jtx Board + DAVx⁵。
@@ -87,86 +89,43 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 - VAVAILABILITY(7953)は G-4/B のタイミングで、JSCalendar は変換 draft の RFC 化後に
   MCP/REST の JSON 表現として検討(09 §4b)。
 
-## 方向性 B: M3 スケジューリング(招待)
+## 方向性 A: M2 マルチユーザー
 
-- RFC 6638/5546。schedule-inbox/outbox、calendar-user-address-set、iTIP 処理、auto-schedule。
-  B9 実測どおり、これが無いと iOS は招待 UI を出さない。方向性 A が前提。
-- サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。ドメインの輪郭は docs/modeling/03 §3 に定義済み。
-
-## 方向性 C: M4 他クライアント対応
-
-- calendar-query REPORT + RecurrenceExpansion(iOS は sync-collection だけで足りるが
-  Thunderbird / tsdav 系は query を使う)。
-- **tsdav は CI にも使える**: 探索→作成→同期→削除の互換性テストハーネスにすれば
-  iOS 実機なしで回帰検知できる(方向性 E の Web フロント採用予定とも噛み合う)。
-
-## 方向性 D: M5 共有・委任
-
-- caldav-proxy / calendarserver-sharing(非 RFC の Apple 拡張)。方向性 A が前提。
-- 先行準備: ①draft 原文を docs/specs/ に常備(docs/rfc と同じ思想)
-  ②権限表スキーマは A-1 に織り込み済み ③read-only privilege 時の iOS 挙動検証は単一ユーザーのままでも可能。
+- **発端**: 現状は単一ユーザー Basic(secrets 直)。スケジューリング(方向性 B)の前提。
+  secret 消失障害(2026-07-10、log.md)の本質解決でもある(D1 salt付きハッシュへ移行)。
+- **確定した方針**(docs/modeling/07): Basic over HTTPS + App Password が業界デファクト。
+  32文字級サーバー生成 → Argon2id/bcrypt で D1 保存 + レート制限。OAuth は方向性 E まで持ち越し。
+  iOS アカウント追加は .mobileconfig 配布を正式ルート(App Password 発行 → ワンタイム URL で
+  プロファイル DL。平文が入るので HTTPS + 使い捨て URL 必須、署名は後回し可)。
+- **タスク分解**:
+  - A-1: ユーザー / App Password の D1 スキーマ + principal 複数化。
+    **方向性 D の先行準備を織り込む**: コレクション×principal の権限表
+    (current-user-privilege-set を実データ化 — ここを逃すと D で手戻り)。
+    G-3 の occurrence 索引と同じマイグレーション体系に乗せる。
+  - A-2: 認証ミドルウェアの差し替え(Argon2id 検証 + レート制限)。
+  - A-3: App Password 発行フロー + .mobileconfig ワンタイム配布。
+  - A-4: プロキシ内部認証を共有シークレット → HMAC 署名へ格上げ(OSS 公開時までに)。
 
 ## 方向性 E: M6 agentic 入口(長期ビジョン本命)
 
-- MCP / REST アダプタ(application 層は DAV 非依存済み)、Web フロント(tsdav 採用想定 —
-  ブラウザ直 CalDAV なら Worker に CORS + DAV メソッドの preflight 対応が必要)、メール起点のタスク追加。
+- MCP / REST アダプタ(application 層は DAV 非依存済み)、メール起点のタスク追加(K-4)。
 - OAuth(Bearer)はここで導入(docs/modeling/07)。
-- A の後に B と E のどちらを先にするかはユーザー判断(招待 vs agentic)。
-
-## 方向性 H: フルカレンダーアクセス / 外部データ集約(構想段階)
-
-> **2026-07-11 起票(ユーザー構想)**: 本質は「**カレンダーを極める(free-busy を本気で
-> 提供する)なら、ユーザーの現実のカレンダー全体へのアクセスが要る**」という製品上の
-> 現実的制約。本作サーバー上のイベントだけの free-busy は、生活が iCloud/Google にも
-> 分散しているユーザーには**嘘の空き時間**を返す。プロダクトにするなら欲しい視点。
-
-- 選択肢の整理(2026-07-11 時点):
-  - (a) ユーザーの完全移行前提 — ドッグフーディングでは現実的、プロダクトでは高いハードル。
-  - (b) サーバー側集約 — 本作が CalDAV クライアントとして外部(iCloud/Google)を購読し
-    free-busy を合成。calendarserver:source / subscribed(06 B2 で iOS が問い合わせて
-    くるのを実測済み)とも接続しうる。
-  - (c) **agent 側横断** — 「CalDAV client for agent」(ペルソナ確認済み)を任意のサーバーに
-    向けられる汎用クライアントにし、本作 + iCloud + Google を agent が横断して合成。
-    E の設計と最も自然に噛み合う。OS の カレンダー権限(iOS/Android)に依存しない
-    プロトコルレベルのアクセスという利点も。
-    > **2026-07-11 更新(09 §3)**: プラットフォーム調査で (c) の裏付けが取れた。
-    > web/PWA には標準カレンダー API が存在せず(W3C 提案は 2011 年頓挫)、
-    > **iCloud は CalDAV + app-specific password で外部からフルアクセス可**(Apple 公式の
-    > 正規手段)。web/MCP から現実のカレンダー全体に届く汎用経路はプロトコルアクセスのみ。
-> **2026-07-11 更新:** CardDAV は当初ここに同居させたが、別の関心事なので方向性 I に分離
-> (ユーザー指摘)。H は「ユーザーの現実の予定全体を見る」問題、I は「連絡先という別
-> ドメインの解釈」問題。
-
-## 方向性 I: CardDAV / 連絡先(構想段階)
-
-> **2026-07-11 起票(ユーザー構想、H から分離)**
-
-- 動機: ①マルチユーザー/スケジューリングで招待相手の解決に連絡先が欲しくなる
-  ②iOS は vCard の誕生日は自動でカレンダーに拾うが**記念日は拾わない** — CardDAV を
-  解釈できれば記念日も把握できる(vCard 解釈 → 仮想イベント生成は方向性 G の親戚)。
-- 追い風: CardDAV(RFC 6352)は WebDAV 基盤(4918/principal/sync 6578)を CalDAV と共有、
-  vCard は content-line 文法が iCalendar と同族 — structure 層・DAV XML はかなり流用可。
-  OSS キットの「DAV サーバーキット」への一般化と整合。
-- 論点: iOS の連絡先は Apple 拡張(X-ABDATE + X-ABLabel の記念日表現等)が濃い。
-- 位置づけ: B/E より後。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
-  iOS 実機の CardDAV 挙動観測)を行う。
-
-- 追い風: CardDAV(RFC 6352)は WebDAV 基盤(4918/principal/sync-collection 6578)を
-  CalDAV と共有し、vCard の content-line 文法は iCalendar と同族(BEGIN:VCARD、折り畳み、
-  パラメータ)— **本作の structure 層・presentation の DAV XML はかなり流用できる**見込み。
-  OSS キットの「DAV サーバーキット」への一般化と整合。
-- 論点: iOS の連絡先は Apple 拡張(X-ABDATE + X-ABLabel の記念日表現等)が濃い。
-  誕生日/記念日 → カレンダー化は「vCard を解釈して仮想イベントを生成する」意味計算
-  (方向性 G の親戚)になる。
-- 位置づけ: B/E より後の検討。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
-  iOS 実機の CardDAV 挙動観測)を行う。
+- **B より先と確定**(2026-07-11 ユーザー判断。根拠: E はコアドメインで B は支援 /
+  G-5 で先鋒が立つため増分小 / B は A + K-1/K-2 と依存の鎖が長い)。
+- **WebUI は独立した製品要素として持つ**(2026-07-11 ユーザー判断): CalDAV は GUI ありきの
+  プロダクトであり、iOS クライアントだけに依存しない。tsdav 直 CalDAV か REST アダプタ
+  経由かは E 設計時の論点(直なら Worker に CORS + DAV メソッドの preflight 対応が必要)。
+- **露出面は三面**(一次資料は **docs/modeling/11**): MCP サーバー / MCP Apps
+  (チャット内 generative UI、2026-01 安定版の公式拡張 — E 設計前に ext-apps spec を読む)/
+  WebMCP(WebUI をブラウザエージェントに開く、Chrome 149 オリジントライアル中 —
+  WebUI が立った時点で実験。J と同じ先行投資の思想)。三面とも同じ application 層の
+  語彙(G-5 が原型)の別露出面であり、ドメイン・application 層への影響はゼロ。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 
-> **2026-07-11 起票**: 「メール ⇄ カレンダー」は agentic 管理と不可分(ユーザー判断)。
-> 一次資料は **docs/modeling/10**(Cloudflare メール基盤 / iMIP 仕様 / Apple 公式マークアップ)。
-> B(招待の iMIP 送受信)と E(メール起点のタスク追加)の共通基盤にあたる。
-
+- **発端**: 「メール ⇄ カレンダー」は agentic 管理と不可分(ユーザー判断)。
+  一次資料は **docs/modeling/10**(Cloudflare メール基盤 / iMIP 仕様 / Apple 公式マークアップ)。
+  B(招待の iMIP 送受信)と E(メール起点のタスク追加)の共通基盤にあたる。
 - **発見**: Cloudflare は送受信両方が揃った(受信 = Email Workers で ICS 添付まで読める・
   GA 無料 / 送信 = Email Service が 2026-04 public beta、send_email binding、月 3,000 通込み)。
   **sabre/dav ですら iMIP の受信側は外部ゲートウェイ任せ** → 「REPLY 受信 → iTIP 処理」を
@@ -175,29 +134,65 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   ③自然文 = LLM + 提案 inbox 承認制)。
 - **Apple の Siri Event Suggestions Markup は公式に存在するが予約8種限定 + 申請制**。
   汎用の予定通知は iMIP(text/calendar 添付)が登録不要で確実 — こちらが正道。
-- タスクの種(順序は B/E との兼ね合いで):
+- タスクの種:
   - K-1: RFC 6047(iMIP)の原文スナップショットを docs/rfc/ に追加(B 着手前に必須)。
   - K-2: 送信ポート(SendEmail port + Cloudflare/Resend アダプタ。beta リスクのヘッジ)。
   - K-3: Email Worker 受信 → ProcessIMipMessage ユースケース(DAV 非依存、複数入口ビジョン)。
-  - K-4: 抽出 UC(レベル①→②→③の順)+ 提案 inbox。
+  - K-4: 抽出 UC(レベル①→②→③の順)+ 提案 inbox(E の文脈で)。
   - K-5: (将来・加点)Siri マークアップの Allow List 申請(送信ユースケース確立後)。
 
-## 方向性 F: M7 運用
+## 方向性 B: M3 スケジューリング(招待)
+
+- RFC 6638/5546。schedule-inbox/outbox、calendar-user-address-set、iTIP 処理、auto-schedule。
+  B9 実測どおり、これが無いと iOS は招待 UI を出さない。方向性 A + K-1/K-2 が前提。
+- サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。ドメインの輪郭は docs/modeling/03 §3 に定義済み。
+
+## 方向性 C: M4 他クライアント対応
+
+- calendar-query REPORT + RecurrenceExpansion(iOS は sync-collection だけで足りるが
+  Thunderbird / tsdav 系は query を使う)。中核は G-3 に前倒し済み。
+- **tsdav は CI にも使える**: 探索→作成→同期→削除の互換性テストハーネスにすれば
+  iOS 実機なしで回帰検知できる。**G-3 完了時点で前倒し着手**(汎用テスト基盤は早いほど利く)。
+
+## 方向性 D: M5 共有・委任
+
+- caldav-proxy / calendarserver-sharing(非 RFC の Apple 拡張)。方向性 A が前提。
+- 先行準備: ①draft 原文を docs/specs/ に常備(docs/rfc と同じ思想)
+  ②権限表スキーマは A-1 に織り込み済み ③read-only privilege 時の iOS 挙動検証は単一ユーザーのままでも可能。
+
+## 方向性 H: フルカレンダーアクセス / 外部データ集約(構想段階 → E に吸収)
+
+- 本質は「**カレンダーを極める(free-busy を本気で提供する)なら、ユーザーの現実の
+  カレンダー全体へのアクセスが要る**」という製品上の現実的制約。本作サーバー上の
+  イベントだけの free-busy は、生活が iCloud/Google にも分散しているユーザーには
+  **嘘の空き時間**を返す。
+- 選択肢: (a) 完全移行前提(プロダクトでは高ハードル)/ (b) サーバー側集約
+  (calendarserver:source / subscribed — 06 B2 で iOS の問い合わせを実測済み)/
+  (c) **agent 側横断**(採用方向)。
+- (c) の裏付け(09 §3): web/PWA には標準カレンダー API が存在せず(W3C 提案は 2011 年頓挫)、
+  **iCloud は CalDAV + app-specific password で外部からフルアクセス可**(Apple 公式の正規手段)。
+  web/MCP から現実のカレンダー全体に届く汎用経路はプロトコルアクセスのみ。
+  → 「CalDAV client for agent」を任意のサーバーに向けられる汎用クライアントにし、
+  本作 + iCloud + Google を agent が横断して合成。**E の設計に吸収**(独立フェーズにしない)。
+
+## 方向性 I: CardDAV / 連絡先(構想段階)
+
+- 動機: ①マルチユーザー/スケジューリングで招待相手の解決に連絡先が欲しくなる
+  ②iOS は vCard の誕生日は自動でカレンダーに拾うが**記念日は拾わない** — CardDAV を
+  解釈できれば記念日も把握できる(vCard 解釈 → 仮想イベント生成は方向性 G の親戚)。
+- 追い風: CardDAV(RFC 6352)は WebDAV 基盤(4918/principal/sync 6578)を CalDAV と共有、
+  vCard は content-line 文法が iCalendar と同族 — structure 層・DAV XML はかなり流用可。
+  OSS キットの「DAV サーバーキット」への一般化と整合。
+- 論点: iOS の連絡先は Apple 拡張(X-ABDATE + X-ABLabel の記念日表現等)が濃い。
+- 位置づけ: 最後。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
+  iOS 実機の CardDAV 挙動観測)を行う。
+
+## 方向性 F: M7 運用(横断関心事)
 
 - 上限系 precondition(max-resource-size 等の ServerPolicy 実装)、監視、バックアップ、rate limit。
+- 独立フェーズにせず、各マイルストーンの Definition of Done に該当分を含める。
 
 ## 小粒の残タスク(方向性に属さない申し送り)
 
-- ~~proxy の Content-Length 修正(2026-07-11、log.md)の Cloud Run 反映 `make deploy-proxy` が未実施
-  (このマシンに gcloud CLI が無い。本番は GFE が CL を付与するため急ぎではない)。~~ ✅
-  > **2026-07-11 更新:** gcloud CLI 導入により `make deploy-proxy` 実施。リビジョン
-  > `caldav-proxy-00003-dsz` へ切替済み、OPTIONS 疎通確認 OK(DAV ヘッダが Worker まで貫通)。
-- ~~iOS 検証 A7(RFC 6868)が未誘発のまま(docs/modeling/06)。再現したら 06 に記録。~~ ✅
-  > **2026-07-11 更新:** 第3ラウンドで決着(06 の A7 参照)。iOS はパラメータ値の DQUOTE を
-  > **黙って除去**し RFC 6868 `^` エンコードは使わない。6868 実装は不要と確定。
-
-## 着手順の推奨
-
-1. 方向性 A(M2 マルチユーザー)— A-1 のスキーマ設計から。権限表の織り込みを忘れない。
-2. その途中で gcloud が使える環境になったら `make deploy-proxy` を消化。
-3. A 完了後、B(招待)か E(agentic)かをユーザーに確認。
+(2026-07-11 の棚卸しで全消化 — proxy の Content-Length 反映 ✅ / iOS A7 決着 ✅。
+経緯は log.md と冒頭「完成しているもの」参照)

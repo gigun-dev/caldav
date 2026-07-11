@@ -13,6 +13,10 @@
 | RFC 原文照合の記録 | [05-rfc-verification.md](05-rfc-verification.md) | 図の主張は原文で裏取りされているか(+図に書ききれない細則集) |
 | iOS 実機挙動の検証 | [06-ios-behavior-verification.md](06-ios-behavior-verification.md) | 最も気難しいクライアント(iOS)で実際にどう動くか |
 | 認証方式の調査 | [07-authentication.md](07-authentication.md) | iOS/CalDAV で使える認証は何か・App Password 採用の根拠(M2 一次資料) |
+| 意味計算の調査 | [08-recurrence-engine-survey.md](08-recurrence-engine-survey.md) | RRULE 展開・TZ・free-busy をどう実装するか(方向性 G 一次資料) |
+| 標準戦略の調査 | [09-standards-strategy.md](09-standards-strategy.md) | どの RFC に従い・切り・先行投資するか(方向性 J 一次資料 + G の優先度補正) |
+| メール統合の調査 | [10-email-integration.md](10-email-integration.md) | iMIP 送受信・予定抽出をどう実現するか(方向性 K 一次資料) |
+| agentic 露出面の調査 | [11-agentic-surfaces.md](11-agentic-surfaces.md) | MCP Apps / WebMCP をどう位置づけるか + 着手順の DDD 戦略設計(方向性 E 一次資料) |
 
 一次資料の RFC: 5545(iCalendar)/ 7986(拡張プロパティ)/ 4918(WebDAV)/
 4791(CalDAV)/ 6578(sync-collection)/ 6764(探索)/ 5397(current-user-principal)/
