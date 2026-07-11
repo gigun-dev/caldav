@@ -291,6 +291,160 @@ app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
 app.all("/.well-known/caldav", (c) => c.redirect("/dav/", 301));
 
 // =============================================================================
+// OAuth-for-MCP 第3スライス: GET/POST /authorize(同意 UI)
+// =============================================================================
+// 2026-07-12 追加。src/index.ts の OAuthProvider は `authorizeEndpoint: "/authorize"` を
+// discovery metadata(/.well-known/oauth-authorization-server 等)に広告するだけで、
+// このパス自体の実装は defaultHandler(= この app)に一任される(index.ts のコメント参照)。
+// なので同意フォームの表示・パスワード検証・grant 確定はすべてここに書く。
+//
+// 【なぜ app.all("*") より前に置くか】app.all("*") は末尾で必ず authenticateBasic の
+// Basic 認証ガードに落ちる(DAV 用)。/authorize は「MCP クライアントがまだトークンを
+// 持っていない状態」で叩かれる入口であり、Basic 認証を要求してはいけない
+// (iOS の CalDAV Basic 認証とは別の認証コンテキスト — パスワードの照合はこの中で
+// 自前に secureStringEqual を使って行う)。Hono はマッチした最初のルートで確定するため、
+// この2ハンドラを catch-all より前に登録しておかないと Basic 401 に飲まれてしまう。
+//
+// 【単一ユーザー前提】username 入力は無い(env.CALDAV_USERNAME 固定の単一ユーザー運用。
+// CLAUDE.md の「現状は単一ユーザー Basic」を踏襲)。password 入力1個だけの最小フォーム。
+// =============================================================================
+
+/**
+ * HTML への埋め込み用エスケープ。クライアント名(lookupClient の clientName)は
+ * OAuth クライアント登録者が任意の文字列を送れる外部由来データなので、フォーム HTML に
+ * 埋める前に必ず通す(XSS 対策。`<script>` 等を仕込まれても文字列として表示されるだけにする)。
+ */
+function escapeHtml(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
+/**
+ * 同意フォームの HTML を組み立てる。GET(初回表示)と POST 失敗時(パスワード誤り再表示)の
+ * 両方から呼ぶ共通 helper。テンプレートエンジンは使わない(単一フォーム・凝った UI 不要な
+ * ミニマル運用なので、依存を増やすコストに見合わない)。
+ */
+function authorizeFormHtml(input: { query: string; clientName: string; error?: string }): string {
+	const safeClientName = escapeHtml(input.clientName);
+	// action の query 文字列には元の OAuth 認可リクエストパラメータ(client_id/redirect_uri/
+	// state/code_challenge 等)をそのまま持ち回す。hidden input で個別に持つより、
+	// 「provider が生成したクエリ文字列をそのまま POST でも parseAuthRequest にかけられる」
+	// 形が最小で改竄面も小さい(POST 側は body ではなく URL のクエリを見て再構築する)。
+	// query 自体は URL からそのまま取っているので追加エスケープは不要(URL エンコード済み文字列)。
+	const errorHtml = input.error
+		? `<p style="color:#b00020;font-weight:bold;">${escapeHtml(input.error)}</p>`
+		: "";
+	return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>caldav MCP 認可</title>
+<style>
+	body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
+	p { line-height: 1.6; }
+	input[type="password"] { width: 100%; padding: 0.5rem; font-size: 1rem; box-sizing: border-box; margin: 0.5rem 0 1rem; }
+	button { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>caldav MCP への接続を許可しますか?</h1>
+<p>クライアント「<strong>${safeClientName}</strong>」が caldav MCP への接続を要求しています。</p>
+${errorHtml}
+<form method="POST" action="/authorize?${input.query}">
+	<label for="password">パスワード</label>
+	<input type="password" id="password" name="password" autocomplete="current-password" autofocus required>
+	<button type="submit">許可する</button>
+</form>
+</body>
+</html>`;
+}
+
+app.get("/authorize", async (c) => {
+	// parseAuthRequest はクエリパラメータ不正(client_id 欠落等)なら例外を投げる想定
+	// (.d.ts のコメントに明記の失敗時挙動は無いため、防御的に try/catch で 400 に落とす)。
+	let oauthReqInfo: Awaited<ReturnType<typeof c.env.OAUTH_PROVIDER.parseAuthRequest>>;
+	try {
+		oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
+	} catch {
+		return c.text("Bad Request: invalid OAuth authorization request", 400);
+	}
+	// クライアント名はベストエフォート。lookupClient が失敗/null でも認可フロー自体は
+	// 続行できるようにする(「不明なクライアント」表示のまま進める — 致命的にしない)。
+	let clientName = "unknown client";
+	try {
+		const client = await c.env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
+		if (client?.clientName) clientName = client.clientName;
+	} catch {
+		// lookupClient 失敗はログに残す価値はあるが、UI をブロックしてはいけない。
+	}
+	const query = new URL(c.req.url).search.replace(/^\?/, "");
+	return c.html(authorizeFormHtml({ query, clientName }));
+});
+
+app.post("/authorize", async (c) => {
+	// POST でも同じクエリ文字列から parseAuthRequest をもう一度実行する(GET 時と同じ
+	// oauthReqInfo を再構築 — フォームの hidden ではなく URL クエリで運んでいるので、
+	// この POST ハンドラ自身がリクエスト URL のクエリを読む形で足りる)。
+	let oauthReqInfo: Awaited<ReturnType<typeof c.env.OAUTH_PROVIDER.parseAuthRequest>>;
+	try {
+		oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
+	} catch {
+		return c.text("Bad Request: invalid OAuth authorization request", 400);
+	}
+
+	const body = await c.req.parseBody();
+	const password = typeof body.password === "string" ? body.password : "";
+
+	// 【CSRF トークンを別途発行しない判断】通常の CSRF 対策(anti-CSRF token)は
+	// 「攻撃者が被害者のセッション Cookie に便乗して意図しない POST を送らせる」ことを防ぐ
+	// ためのものだが、このフォームには Cookie セッションが存在せず、代わりに
+	// パスワード入力そのものが「本人であることの証明」になっている。攻撃者がこの POST を
+	// 成立させるには CALDAV_PASSWORD を知っている必要があり、知っていれば CSRF を経由せず
+	// 直接 completeAuthorization を叩けてしまうのと変わらない(パスワードが実質的な
+	// CSRF トークンの役割を兼ねる)。単一ユーザー・Basic 相当の認証強度という現段階の
+	// 前提が崩れたら(=マルチユーザー化やパスワード以外の要素を足す等)この判断は要再検討 ——
+	// その時点ではセッション Cookie + SameSite または専用トークンでの CSRF 対策を追加すること。
+	const passwordMatches = await secureStringEqual(password, c.env.CALDAV_PASSWORD);
+	if (!passwordMatches) {
+		let clientName = "unknown client";
+		try {
+			const client = await c.env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
+			if (client?.clientName) clientName = client.clientName;
+		} catch {
+			// GET 側と同じくベストエフォート。
+		}
+		const query = new URL(c.req.url).search.replace(/^\?/, "");
+		return c.html(authorizeFormHtml({ query, clientName, error: "パスワードが違います。もう一度お試しください。" }), 401);
+	}
+
+	// パスワード一致 = 同意成立。grant を確定し、provider が生成する redirect 先
+	// (authorization code 付きの client redirect_uri)へ 302 で返す。
+	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
+		request: oauthReqInfo,
+		// userId は grant の列挙・失効キー(listUserGrants/revokeGrant で使う)。単一ユーザー
+		// 運用なので CALDAV_USERNAME をそのまま使う。
+		userId: c.env.CALDAV_USERNAME,
+		// metadata は any 型(.d.ts 上必須フィールドだが用途は呼び出し側自由)。将来 grant 一覧
+		// UI を作るときに「いつ許可したか」を出せるよう、付与日時だけ最小限に残しておく。
+		// Date は presentation 層での使用実績あり(xml.ts / mcp/server.ts 等)なので問題ない。
+		metadata: { grantedAt: new Date().toISOString() },
+		// スコープは要求どおり許可する(現状は claudedav:read のみを広告しているので
+		// 細分化した同意 UI にする必要はまだ無い。将来 write スコープを足したら要見直し)。
+		scope: oauthReqInfo.scope,
+		// 第2スライスとの契約: OAuthPropsAuth(infrastructure/auth/oauth-props-auth.ts)が
+		// 復号後に読む形は { username } 固定(OAuthPrincipalProps)。ここを外すと
+		// /mcp への全呼び出しが 401 になる(このスライスのタスク仕様に明記の既知の落とし穴)。
+		props: { username: c.env.CALDAV_USERNAME } satisfies OAuthPrincipalProps,
+	});
+	return c.redirect(redirectTo, 302);
+});
+
+// =============================================================================
 // G-5 → OAuth-for-MCP 第2スライス: /mcp は honoApp ではなく OAuthProvider の apiRoute に移した
 // =============================================================================
 // 【なぜ /mcp のマウントをここから削除したか(2026-07-12)】
