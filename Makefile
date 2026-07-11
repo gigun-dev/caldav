@@ -21,14 +21,20 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy migrate-local reset-local mobileconfig typegen
+.PHONY: help install hooks up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy migrate-local reset-local mobileconfig typegen
 
 help: ## このヘルプを表示
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-install: ## 依存をインストール(lockfile 固定)
+install: hooks ## 依存をインストール(lockfile 固定)+ git hooks 配線
 	bun install --frozen-lockfile
+
+hooks: ## git hooks を有効化(.githooks を core.hooksPath に設定)
+	# .git/hooks は git 管理外なので、commit 済みの .githooks を指すよう配線する。
+	# clone 直後や hook 追加時に `make hooks`(または `make install`)で有効化。
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath = .githooks(pre-push で main への push 前に make check)"
 
 # --- 常駐プロセス(iOS 検証の3点セット)------------------------------------
 

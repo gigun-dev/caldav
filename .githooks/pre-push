@@ -1,0 +1,44 @@
+#!/bin/sh
+# =============================================================================
+# pre-push フック — main への push 時だけ CI と同一の `make check` をローカルで実行
+# =============================================================================
+# 【なぜ pre-push か / 何を守るか】
+#   このリポジトリは main への push で Cloudflare Workers Builds が本番へ自動 deploy する。
+#   個人開発なので main の branch protection ruleset は admin(=自分/Claude Code)を
+#   always-bypass しており、直 push が通ってしまう。守りたいのは「悪意」ではなく
+#   「壊れたコードを事故で main に push → 本番が壊れる」なので、サーバー側ではなく
+#   ローカルの pre-push で境界→型→テストを止めるのが最も実効的(2026-07-11 導入)。
+#   Claude Code もローカル git で push するため、このフックは同様に発火する。
+#
+# 【スコープ】main への push のときだけ走らせる(feature ブランチの push は CI に任せ、
+#   手元は軽く保つ)。緊急時は `git push --no-verify` で意図的にスキップ可能
+#   — 回避は「明示的に --no-verify を打ったときだけ」という設計。
+#
+# 【有効化】.git/hooks は git 管理外なので、このディレクトリ(.githooks)を
+#   `git config core.hooksPath .githooks` で指す。`make install` / `make hooks` が配線する。
+# =============================================================================
+
+remote_main=refs/heads/main
+run_check=0
+
+# stdin: "<local ref> <local sha> <remote ref> <remote sha>" が push される ref ごとに来る。
+while read -r local_ref local_sha remote_ref remote_sha; do
+	# ブランチ削除(local_sha が全ゼロ)は検査対象外。
+	case "$local_sha" in
+		*[!0]*) : ;;      # 非ゼロを含む = 通常の push → 判定続行
+		*) continue ;;    # 全ゼロ = 削除 → skip
+	esac
+	if [ "$remote_ref" = "$remote_main" ]; then
+		run_check=1
+	fi
+done
+
+[ "$run_check" -eq 0 ] && exit 0
+
+echo "pre-push: main へ push するため make check(境界→型→テスト)を実行します…"
+if ! make check; then
+	echo ""
+	echo "✗ make check が失敗しました。main への push を中止します。"
+	echo "  どうしても push する場合のみ: git push --no-verify"
+	exit 1
+fi

@@ -256,6 +256,17 @@ src/
   無効(そもそも本リポジトリにローカル hook は無い)。直 push が通るのは admin bypass の効果。
   required check 名は GitHub Actions の job 名 "test / typecheck / boundaries" と一致必須
   (job 名を変えたら ruleset の context も更新すること)。
+- 2026-07-11: **pre-push hook 導入(.githooks/pre-push)= 個人開発の実効的な事故防止**。
+  ruleset は admin(=自分/Claude Code)を always-bypass しており直 push が通る
+  (Claude はユーザーの認証で push するため)ので、サーバー側では「壊れたコードの
+  main 直 push → Workers Builds 自動 deploy」を止められない。→ **ローカル pre-push で
+  main への push 時のみ `make check`(CI と同一)を実行**して止める。Claude の push も
+  ローカル git 経由なので発火する。`--no-verify` で意図的スキップのみ可。
+  `.githooks` を commit + `core.hooksPath`(`make hooks` / `make install` で配線)で
+  version 管理。→ **役割分担: サーバー ruleset = 将来コラボレーター用の建前 + PR の
+  required check / pre-push hook = 個人開発で実際に事故を止める網**。ruleset は
+  admin bypass のため個人運用では実質休眠(必要なら bypass_mode を pull_request に
+  絞れば admin の直 push も禁止できるが、今回は hook 方式を採用)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
