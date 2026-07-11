@@ -247,6 +247,15 @@ src/
   本番 smoke: workers.dev / Cloud Run とも PROPFIND 207。
   proxy の CL 修正の Cloud Run への反映(`make deploy-proxy`)は未実施
   (gcloud CLI がこのマシンに無い。本番は GFE が CL を付与するため急ぎではない)。
+- 2026-07-11: **main の branch protection を ruleset で設定(id 18798162)= ci.yml/現在地の
+  「未完(要ユーザー操作)②」を解消**。enforcement active。ルール: 直 push 禁止
+  (non_fast_forward)/ branch 削除禁止 / PR 必須 / required status check =
+  `test / typecheck / boundaries`(strict = 最新 main 追従を要求)。bypass は
+  RepositoryRole(admin)= always(=オーナー自身は緊急時に直 push 可)。
+  注意: これは**サーバー側**判定。`git push --no-verify` はローカル hook 用で ruleset には
+  無効(そもそも本リポジトリにローカル hook は無い)。直 push が通るのは admin bypass の効果。
+  required check 名は GitHub Actions の job 名 "test / typecheck / boundaries" と一致必須
+  (job 名を変えたら ruleset の context も更新すること)。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
