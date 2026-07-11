@@ -367,3 +367,11 @@
   tools-list/tools-call・Bearer 401/200 込み)で 343 pass。**DAV と MCP が同じ application UC を
   呼ぶ複数入口ビジョンを実証。** 次: G は G-6 まで完了、残タスクは方向性 A(マルチユーザー +
   OAuth = 高優先)/ E(書き込みツール・MCP Apps)/ C(tsdav CI ハーネス、G-3 完了で着手可)。
+- 2026-07-11: **今セッションの成果(G-1〜G-6 / J-1〜J-3 / G-5 MCP / ListOccurrences UC / C tsdav
+  ハーネス)を main に push → Workers Builds 自動デプロイ**(ユーザー承認)。実機検証用に
+  /mcp の MCP_TOKEN を wrangler secret で設定する運用開始(値はユーザーが `wrangler secret put
+  MCP_TOKEN` で投入。未設定なら /mcp は空トークンガードで全拒否 = 公開しても安全)。
+  実機検証の割り当て(ユーザーが実施): ①Claude iOS → https://caldav.gigun-dev.workers.dev/mcp
+  で3ツール検証(ただし Claude コネクタは OAuth 中心で静的 Bearer 追加可否は未確定 = 追加不可なら
+  「Claude コネクタ利用は OAuth[方向性 A]がゲート」という学び)②iOS ネイティブで calendar/tasks の
+  非回帰(J-2)③VJOURNAL は DAVx⁵+jtx[Android]、journal コレクションはオプトインなので要手動作成。
