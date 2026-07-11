@@ -42,6 +42,10 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 **F(運用)はフェーズではなく横断関心事** — 各マイルストーンの Definition of Done に
 「rate limit / 上限 precondition の該当分」を含める。
 
+<!-- session-head-end: ここまでが SessionStart フックで自動注入される「頭」(orient 用の
+     現在地・完成物・着手順)。以降の方向性カタログはオンデマンド参照(着手する方向性の節だけ
+     agent がそのとき読む)。棚卸し時はこのマーカーより上を最新の現在地に保つこと。 -->
+
 ## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)— 現在の本命
 
 - **発端**: agentic 入口(E)の中核能力は「イベントの理解」と「free-busy」という
@@ -207,10 +211,12 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > Workers Builds の deploy command で migrate→deploy を自動化する方式を採用
   > (package.json `deploy` script = `wrangler d1 migrations apply --remote && wrangler deploy`、
   > Makefile に手動用 `deploy-migrations` 追加、規律の明文化は migrations/README.md 新設)。
-  > 残タスク: (1) ダッシュボード(Worker → Settings → Builds)で deploy command を
-  > `bun run deploy` に設定 ← 人が行う必要あり。(2) 設定後の初回ビルドで、Workers Builds の
-  > ビルド環境が暗黙トークンでリモート D1 に apply できるか(D1 Edit 権限の有無)を実測。
-  > 権限不足なら CLOUDFLARE_API_TOKEN を build 変数(secret)に追加。
+  > 2026-07-12 完了 ✅: (1) 本番ブランチの deploy command を `bun run deploy` に設定済み
+  > (非本番ブランチは `wrangler versions upload` のまま=未マージ migration を本番 D1 に
+  > 当てない。migrations/README.md 参照)。(2) 初回ビルド `afecc023` で
+  > `wrangler d1 migrations apply --remote` が**認証エラーなく実行**され自動 migrate→deploy が
+  > 稼働することを実測(暗黙トークンでリモート D1 に届く=CLOUDFLARE_API_TOKEN 追加は不要)。
+  > → 運用ギャップは恒久対応完了。
   > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
   > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
   > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が

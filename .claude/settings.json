@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== docs/next-directions.md(セッション引き継ぎの正典。作業の区切りごとに必ず更新: 完了は打ち消し線+✅、変化は「> 日付 更新:」を積層。計画は消さない)==='; cat docs/next-directions.md"
+            "command": "echo '=== docs/next-directions.md の頭(現在地・着手順)。方向性 G〜K の詳細はこのファイルの該当節をそのとき読む。更新は「> 日付 更新:」を積層・計画は消さない ==='; awk '/session-head-end:/{exit} {print}' docs/next-directions.md"
           }
         ]
       }
