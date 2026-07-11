@@ -161,6 +161,27 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 - 位置づけ: B/E より後の検討。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
   iOS 実機の CardDAV 挙動観測)を行う。
 
+## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
+
+> **2026-07-11 起票**: 「メール ⇄ カレンダー」は agentic 管理と不可分(ユーザー判断)。
+> 一次資料は **docs/modeling/10**(Cloudflare メール基盤 / iMIP 仕様 / Apple 公式マークアップ)。
+> B(招待の iMIP 送受信)と E(メール起点のタスク追加)の共通基盤にあたる。
+
+- **発見**: Cloudflare は送受信両方が揃った(受信 = Email Workers で ICS 添付まで読める・
+  GA 無料 / 送信 = Email Service が 2026-04 public beta、send_email binding、月 3,000 通込み)。
+  **sabre/dav ですら iMIP の受信側は外部ゲートウェイ任せ** → 「REPLY 受信 → iTIP 処理」を
+  キット内で完結できるのは OSS としての差別化点。
+- 予定抽出は3レベル(①ICS 添付 = `@caldav/ical` で決定的 ②schema.org HTML = 決定的
+  ③自然文 = LLM + 提案 inbox 承認制)。
+- **Apple の Siri Event Suggestions Markup は公式に存在するが予約8種限定 + 申請制**。
+  汎用の予定通知は iMIP(text/calendar 添付)が登録不要で確実 — こちらが正道。
+- タスクの種(順序は B/E との兼ね合いで):
+  - K-1: RFC 6047(iMIP)の原文スナップショットを docs/rfc/ に追加(B 着手前に必須)。
+  - K-2: 送信ポート(SendEmail port + Cloudflare/Resend アダプタ。beta リスクのヘッジ)。
+  - K-3: Email Worker 受信 → ProcessIMipMessage ユースケース(DAV 非依存、複数入口ビジョン)。
+  - K-4: 抽出 UC(レベル①→②→③の順)+ 提案 inbox。
+  - K-5: (将来・加点)Siri マークアップの Allow List 申請(送信ユースケース確立後)。
+
 ## 方向性 F: M7 運用
 
 - 上限系 precondition(max-resource-size 等の ServerPolicy 実装)、監視、バックアップ、rate limit。

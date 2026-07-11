@@ -200,3 +200,12 @@
   → next-directions: G に優先度補正の更新、方向性 J(採択途中 RFC への先行投資)起票、
   H に裏付け追記。「RFC 準拠」の再定義 =「実装した範囲は原文どおり正確に + capability を
   正直に宣言」(09 §2)。
+- 2026-07-11: **メール統合の調査 → docs/modeling/10 起草、方向性 K 起票**。subagent 2本
+  (Cloudflare メール基盤 + iMIP / Apple 公式マークアップ)。発見: ①Cloudflare は
+  受信(Email Workers、ICS 添付可読、GA 無料)+ 送信(Email Service、2026-04 public beta、
+  send_email binding)が揃った ②sabre/dav ですら iMIP 受信は外部任せ → 受信までキットで
+  完結が差別化 ③Apple の Siri Event Suggestions Markup は公式存在だが予約8種限定+申請制
+  (DKIM 必須)— 汎用予定は iMIP が正道 ④予定抽出は3レベル(ICS 添付/schema.org/自然文LLM)
+  ⑤RFC 6047 が docs/rfc/ 未収録と判明(K-1 として起票)。
+  なお、この日の subagent は model 未指定で Fable 継承だった → 以後は sonnet/opus を
+  明示する運用に(メモリ更新済み)。
