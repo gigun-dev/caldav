@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 import {
 	CalDAVPreconditionError,
+	CalendarQuery,
 	CollectionAlreadyExistsError,
 	CollectionNotFoundError,
 	CreateCollection,
@@ -29,7 +30,7 @@ import type {
 	CollectionUnitOfWork,
 	PrincipalRepository,
 } from "./application/ports";
-import { createD1Repositories } from "./infrastructure";
+import { createD1Repositories, IcaljsRRuleIterator } from "./infrastructure";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import {
 	collectionProps,
@@ -38,6 +39,7 @@ import {
 	homeProps,
 	multistatus,
 	objectProps,
+	parseCalendarQueryFilter,
 	parseCollectionProperties,
 	parseHrefs,
 	parsePropFilter,
@@ -46,6 +48,12 @@ import {
 	responseXml,
 	statusResponseXml,
 } from "./presentation/dav/xml";
+
+// G-3: RRULE 反復 port の実装。PutCalendarObject(occurrence bounds 計算)と
+// CalendarQuery(REPORT 時の展開)の両方から共有する。ical.js アダプタは内部状態を
+// 持たない(iterate() のたびに新しい ICAL.RecurIterator を作る)ので、Workers の
+// リクエスト間で使い回しても安全 — DB 接続のようなリクエストスコープの資源ではない。
+const recurrenceIterator = new IcaljsRRuleIterator();
 
 const DAV_HEADERS = {
 	DAV: "1, 3, calendar-access, sync-collection, extended-mkcol",
@@ -436,10 +444,22 @@ app.all("*", async (c) => {
 					+ outOfScopeHrefs.map((hrefPath) => statusResponseXml(hrefPath, "404 Not Found")).join("");
 				return xml(multistatus(responses));
 			}
-			// Phase Bでは展開を行わないためcalendar-queryは現在の全件を返す。
-			const resources = await repos.resources.findAllInCollection(principalPathValue, id);
+			// calendar-query REPORT(RFC 4791 §7.8。G-3 で「全件返す」仮実装から差し替え)。
+			// 未対応の filter 要素(prop-filter 等)を検出したら §7.8 precondition の
+			// CALDAV:supported-filter で 403 を返す(davError の流儀を踏襲)。
+			const queryFilter = parseCalendarQueryFilter(body);
+			if (queryFilter.unsupported) {
+				return xml(davError("supported-filter"), 403);
+			}
+			const queryResult = await new CalendarQuery(repos.resources, recurrenceIterator).execute({
+				owner: principalPathValue,
+				collectionId: id,
+				componentKind: queryFilter.componentName,
+				range: queryFilter.timeRange,
+				floatingTimeZone: queryFilter.floatingTimeZone,
+			});
 			const filter = parsePropFilter(body);
-			return xml(multistatus(resources.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")));
+			return xml(multistatus(queryResult.resources.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")));
 		}
 
 		if (!resourceName) return new Response("Method Not Allowed", { status: 405, headers: DAV_HEADERS });
@@ -459,7 +479,7 @@ app.all("*", async (c) => {
 		}
 
 		if (method === "PUT") {
-			const result = await new PutCalendarObject(repos.collections, repos.resources, repos.uow).execute({
+			const result = await new PutCalendarObject(repos.collections, repos.resources, repos.uow, recurrenceIterator).execute({
 				owner: principalPathValue, collectionId: id, resourceUri: resourceName,
 				ics: await readBody(request), condition: rawEtagCondition(request),
 			});

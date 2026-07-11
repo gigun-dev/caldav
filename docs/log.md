@@ -264,3 +264,23 @@
   既知の制約: maxOccurrences は dtstart からの列挙総数で消費 → 遠い未来 range × 古い
   dtstart の無限 RRULE で予算切れになりうる。G-3 の first/last 索引が事前絞り込みで解決。
   実装は sonnet 5 subagent、レビューは Opus(メインを Fable→Opus に移譲)。
+- 2026-07-11: **G-3(first/last occurrence 索引 + calendar-query time-range フィルタ)実装完了**。
+  設計判断は Fable subagent が策定(スキーマ・PUT 層間配線・calendar-query 処理の手戻り
+  コストが大きいため)→ Opus がレビュー承認 → sonnet 実装、の3段構成。
+  成果: ①migrations/0002_occurrence_index.sql(calendar_objects に first_occurrence/
+  last_occurrence を列追加・複合索引。NULL=常に候補、別テーブルにしない sabre 式。無限反復は
+  OCCURRENCE_INDEX_MAX=2100 でキャップ)②occurrence-bounds.ts(computeOccurrenceBounds:
+  PUT 時に expandRecurrenceSet を再利用し first/last を算出。無限反復のみ展開回避で先頭のみ計算。
+  VTODO は §9.9 の実効値表から直接、反復展開しない。計算失敗は throw せず null/null)
+  ③calendar-query.ts(CalendarQuery UC: findInCollectionByTimeRange で SQL 粗絞り込み +
+  ±24h TZ スラック → VEVENT はヒット行を展開して §9.9「いずれか1回一致」判定、VTODO は
+  SQL のみ)④presentation の parseCalendarQueryFilter(comp-filter の同名ネストを
+  バランス走査で正しく切り出す簡易パーサ。素朴な非貪欲正規表現が内側の閉じタグに誤マッチする
+  罠をテストで発見し修正)。未対応 filter(prop-filter/param-filter/ネスト comp-filter/
+  VJOURNAL/expand/limit-recurrence-set)は黙殺せず 403 CALDAV:supported-filter で明示的に断る。
+  floating は PUT 時 UTC 固定で索引化 → クエリ時に ±24h スラックで別ゾーン差を吸収(過剰包含は
+  展開の最終判定が落とす)。層間配線: PutCalendarObject と CalendarQuery に RecurrenceIterator
+  を注入、UoW.saveResource に bounds 引数追加(集約には持たせない=導出インデックス)。
+  18 tests 追加で 256 pass。既存 238 は無影響(put/uow シグネチャ変更に伴い fakes とテスト5本を更新)。
+  これで方向性 G の Tier 1(RFC 準拠の time-range)完了 = calendar-query 未実装の非準拠を解消。
+  C の tsdav CI ハーネスが前倒し着手可能に。

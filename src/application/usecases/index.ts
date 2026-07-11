@@ -68,6 +68,14 @@ export {
 	type SyncDiff,
 } from "./sync-collection";
 
+// calendar-query REPORT(G-3)
+export {
+	CalendarQuery,
+	type CalendarQueryInput,
+	type CalendarQueryOutput,
+	type CalendarQueryTimeRange,
+} from "./calendar-query";
+
 // 初期プロビジョニング
 export {
 	ProvisionDefaultCollections,

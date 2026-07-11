@@ -1,0 +1,248 @@
+// =============================================================================
+// OccurrenceBounds — PUT 時に計算する first/last occurrence 索引値(G-3)
+// =============================================================================
+//
+// 【この索引の目的】
+// RFC 4791 §9.9 の time-range フィルタは「全 recurrence instance の実効期間を推論して」
+// 判定する MUST だが、REPORT のたびに全リソースを展開すると D1 上のコレクションが
+// 大きくなるほど遅くなる。sabre/dav 等の先例(docs/modeling/09)にならい、PUT 時点で
+// 「このリソースが取りうる最初/最後の実効開始・終了(UTC エポックミリ秒)」を1回だけ
+// 計算して calendar_objects に持たせ、REPORT はまず SQL の範囲比較で候補を絞ってから
+// 展開する(絞り込みが粗くても、最終判定は expandRecurrenceSet に委ねるので正しさは
+// 損なわれない — これは「索引」であって「正」ではない)。
+//
+// 【NULL の意味(migrations/0002 のコメントと対になる)】
+// 計算できない/意味を持たない場合は null を返す。呼び出し側(D1 リポジトリ)は
+// NULL を「常に候補に含める」向きに扱う(§9.9 の VTODO 表で全プロパティ欠落の行が
+// 常に TRUE になるのと同じ考え方 — 「絞り込めない」は「除外しない」の側に倒す)。
+//
+// 【無限反復の扱い(last=OCCURRENCE_INDEX_MAX で展開回避)】
+// COUNT も UNTIL も無い RRULE は理論上無限に occurrence を生成する。真の last は
+// 存在しないので、キャップ値 OCCURRENCE_INDEX_MAX を last とすることで「無限の先まで
+// 候補でありうる」ことを表現しつつ、PUT のたびに 2100 年まで全展開する高コストな計算を
+// 避ける(first だけは実際に求める必要がある — RDATE や detached override が
+// DTSTART より前に来るケースがあるため、単純に DTSTART を答えにはできない)。
+// =============================================================================
+
+import type { CalDate } from "../values/cal-date";
+import { parseCalDate } from "../values/cal-date";
+import type { CalDateTime } from "../values/cal-date-time";
+import { parseCalDateTime } from "../values/cal-date-time";
+import { parsePeriodValue } from "../values/period-value";
+import type { Property } from "../structure/types";
+import type { VEvent } from "../semantics/vevent";
+import type { VTodo } from "../semantics/vtodo";
+import type { ICalendarObject } from "../semantics/icalendar-object";
+import { firstProp, isCalDateTime, paramFirst, parseDateOrDateTime } from "../semantics/helpers";
+import { calDateStartEpochMillis, calDateTimeToEpochMillis, effectiveEventPeriod } from "../timezone";
+import { resolveTimeZoneId } from "../timezone/resolver";
+import { expandRecurrenceSet } from "./expansion";
+import type { RecurrenceIterator } from "./iterator-port";
+
+/**
+ * 無限反復(COUNT も UNTIL も無い RRULE)の last occurrence 索引値としてのキャップ。
+ * sabre/dav は 2038 年(32bit epoch の伝統的上限)をキャップに使うが、本リポジトリは
+ * JS の number epoch にそのような制約が無い。かといって索引の意味(「この先ずっと
+ * 候補でありうる」)を表すには実予定と衝突しないくらい先の値であればよく、2038 年は
+ * すでに現実の長期予定(住宅ローン返済スケジュール等)と衝突しうる近さなので、
+ * 2100 年を採用する(現行実装の想定運用期間を大きく超える、キリの良い値)。
+ */
+export const OCCURRENCE_INDEX_MAX = Date.UTC(2100, 0, 1);
+
+/** computeOccurrenceBounds の結果。NULL 可(冒頭コメント参照)。 */
+export interface OccurrenceBounds {
+	readonly firstMillis: number | null;
+	readonly lastMillis: number | null;
+}
+
+/** computeOccurrenceBounds への入力。マスター/オーバーライドは呼び出し側(application 層)が
+ *  ICalendarObject.events()/todos() から RECURRENCE-ID の有無で分離して渡す。 */
+export interface ComputeOccurrenceBoundsInput {
+	readonly componentKind: "VEVENT" | "VTODO";
+	readonly master: VEvent | VTodo;
+	readonly overrides: readonly VEvent[];
+}
+
+export interface ComputeOccurrenceBoundsOptions {
+	/** zoned の TZID → IANA 名(resolver 経由を注入)。zoneResolverFor で組み立てるのが典型。 */
+	readonly zoneOf: (tzid: string) => string;
+	/** 有限反復(COUNT/UNTIL あり)を展開する際の occurrence 数上限。expandRecurrenceSet へそのまま渡す。 */
+	readonly maxOccurrences: number;
+}
+
+/** PUT 時に注入する zoneOf の作り方を1箇所に集約(occurrence-bounds / calendar-query の両方で使う)。
+ *  ICalendarObject 内の VTIMEZONE 群から TZID を引いて resolveTimeZoneId の4段チェーンへ渡す。
+ *  対応する VTIMEZONE が無くても resolveTimeZoneId 自身の①②④段(IANA直引き/Windows/エラー)は
+ *  機能するので、undefined のまま渡してよい。 */
+export function zoneResolverFor(obj: ICalendarObject): (tzid: string) => string {
+	const timezones = obj.timezones();
+	return (tzid: string): string => {
+		const vtimezone = timezones.find((tz) => tz.tzid === tzid);
+		return resolveTimeZoneId(tzid, vtimezone).ianaId;
+	};
+}
+
+// floating の解釈ゾーンは PUT 時点では常に UTC 固定(確定設計メモ)。クエリ時のゾーン差は
+// application 層のスラック(TIME_RANGE_TZ_SLACK_MS)で吸収する。
+const INSTANT_OPTS_BASE = { floatingTimeZone: "UTC" as const };
+
+/** CalDate | CalDateTime → UTC エポックミリ秒。floatingTimeZone は UTC 固定(この索引専用)。 */
+function instantOf(v: CalDate | CalDateTime, zoneOf: (tzid: string) => string): number {
+	if (isCalDateTime(v)) {
+		return calDateTimeToEpochMillis(v, { zoneOf, ...INSTANT_OPTS_BASE });
+	}
+	return calDateStartEpochMillis(v, INSTANT_OPTS_BASE.floatingTimeZone);
+}
+
+/** RDATE 1プロパティ(カンマ区切り複数値、§3.8.5.2)の各値の「開始」エポックミリ秒列。
+ *  PERIOD 形態は start のみ使う(索引は開始点だけ知れば十分。end は expandRecurrenceSet 側の
+ *  責務で、ここでは「first の下限候補を集める」ことにしか使わない)。 */
+function rdateStartMillisList(p: Property, zoneOf: (tzid: string) => string): number[] {
+	const valueType = paramFirst(p, "VALUE")?.toUpperCase();
+	const tzid = paramFirst(p, "TZID");
+	const out: number[] = [];
+	for (const item of p.value.split(",")) {
+		if (valueType === "PERIOD") {
+			const period = parsePeriodValue(item, tzid);
+			out.push(instantOf(period.start, zoneOf));
+		} else if (valueType === "DATE") {
+			out.push(instantOf(parseCalDate(item), zoneOf));
+		} else {
+			out.push(instantOf(parseCalDateTime(item, tzid), zoneOf));
+		}
+	}
+	return out;
+}
+
+/**
+ * VEVENT の bounds を計算する。
+ *
+ * - 無限反復(RRULE かつ COUNT/UNTIL 無し): 展開を避け、「RRULE 自身の先頭(=DTSTART)」
+ *   「RDATE の各開始」「detached になりうる override の実際の開始」の最小値を first とし、
+ *   last=OCCURRENCE_INDEX_MAX とする。EXDATE がこの最小値をちょうど除外していた場合、
+ *   計算結果は真の first よりわずかに早くなりうるが、索引としては安全側(絞り込みが甘く
+ *   なるだけで、真の occurrence を取りこぼす方向には振れない)。
+ * - それ以外(単発 / RDATE のみ / COUNT・UNTIL 付き RRULE): 08/G-2 の expandRecurrenceSet に
+ *   丸ごと委譲し、[0, OCCURRENCE_INDEX_MAX) で展開した occurrences の start/end の最小/最大を取る。
+ *   limitHit(maxOccurrences 到達)なら last は不完全 = 安全側で OCCURRENCE_INDEX_MAX にする。
+ */
+function computeVEventBounds(
+	iterator: RecurrenceIterator,
+	master: VEvent,
+	overrides: readonly VEvent[],
+	opts: ComputeOccurrenceBoundsOptions,
+): OccurrenceBounds {
+	const dtstart = master.dtstart;
+	if (dtstart === undefined) {
+		// DTSTART 欠落は本来 I2 で validate 済みのはずだが、precondition 検証前にここへ
+		// 来る呼び出しがあっても壊れないよう防御的に null/null(冒頭コメントの契約どおり)。
+		return { firstMillis: null, lastMillis: null };
+	}
+
+	const rrule = master.rrule;
+	const isInfinite = rrule !== undefined && rrule.count === undefined && rrule.until === undefined;
+
+	if (isInfinite) {
+		const candidates: number[] = [instantOf(dtstart, opts.zoneOf)];
+		for (const p of master.rdate) {
+			candidates.push(...rdateStartMillisList(p, opts.zoneOf));
+		}
+		for (const ov of overrides) {
+			if (ov.dtstart !== undefined) candidates.push(instantOf(ov.dtstart, opts.zoneOf));
+		}
+		return { firstMillis: Math.min(...candidates), lastMillis: OCCURRENCE_INDEX_MAX };
+	}
+
+	// 有限(単発 / RDATE のみ / COUNT・UNTIL 付き)。expandRecurrenceSet に委譲する。
+	const result = expandRecurrenceSet(
+		iterator,
+		{ master, overrides, range: { startMillis: 0, endMillis: OCCURRENCE_INDEX_MAX } },
+		{ zoneOf: opts.zoneOf, floatingTimeZone: "UTC", maxOccurrences: opts.maxOccurrences },
+	);
+	if (result.occurrences.length === 0) {
+		return { firstMillis: null, lastMillis: null };
+	}
+	let first = Number.POSITIVE_INFINITY;
+	let last = Number.NEGATIVE_INFINITY;
+	for (const o of result.occurrences) {
+		if (o.startMillis < first) first = o.startMillis;
+		if (o.endMillis > last) last = o.endMillis;
+	}
+	// limitHit(=展開を打ち切った)なら実際の last はもっと先にあるかもしれない。
+	// 過剰包含側(index が甘くなる)に倒して安全性を保つ(冒頭コメントの方針)。
+	return { firstMillis: first, lastMillis: result.limitHit ? OCCURRENCE_INDEX_MAX : last };
+}
+
+/**
+ * VTODO の bounds を計算する。RFC 4791 §9.9 の VTODO 実効値表に従い、反復展開はしない
+ * (VTODO の RRULE 展開は G-3 のスコープ外。反復 VTODO は索引が粗くなるが、SQL 絞り込みの
+ * 段階でのみ使われ最終判定はしない = 正しさは損なわれない、という確定設計メモの割り切り)。
+ *
+ * first = DTSTART/DUE/COMPLETED/CREATED のうち存在するものの最小値。
+ * last  = DTSTART+DURATION(両方あるとき)/DUE/COMPLETED/CREATED のうち存在するものの最大値。
+ *         DTSTART だけがあって DUE も DURATION も無い場合、last 候補が空になってしまうので
+ *         その場合は first(=DTSTART)を last としてフォールバックする(退化した「瞬間」区間)。
+ * 全プロパティ欠落 → null/null(§9.9 VTODO 表の最終行「すべて欠落 → TRUE」と一致させる。
+ * 「常に候補に含める」は NULL の意味そのもの)。
+ */
+function computeVTodoBounds(todo: VTodo, opts: ComputeOccurrenceBoundsOptions): OccurrenceBounds {
+	const dtstart = todo.dtstart;
+	const due = todo.due;
+	const duration = todo.duration;
+	const completed = todo.completed;
+	// CREATED(§3.8.7.1)は VTodo レンズにアクセサが無い(このタスク以前は使われていなかった)。
+	// ロスレス保持の原則どおり raw から直接読む(レンズに専用アクセサを追加するほどでもない
+	// 1回きりの参照。他の I 系検証等が CREATED を使うようになったらレンズへ格上げする)。
+	const createdProp = firstProp(todo.raw, "CREATED");
+	const created = createdProp !== undefined ? parseDateOrDateTime(createdProp) : undefined;
+
+	const firstCandidates: number[] = [];
+	const push = (v: CalDate | CalDateTime | undefined): void => {
+		if (v !== undefined) firstCandidates.push(instantOf(v, opts.zoneOf));
+	};
+	push(dtstart);
+	push(due);
+	push(completed);
+	push(created);
+
+	if (firstCandidates.length === 0) {
+		return { firstMillis: null, lastMillis: null };
+	}
+	const first = Math.min(...firstCandidates);
+
+	const lastCandidates: number[] = [];
+	if (due !== undefined) lastCandidates.push(instantOf(due, opts.zoneOf));
+	if (dtstart !== undefined && duration !== undefined) {
+		lastCandidates.push(effectiveEventPeriod({ dtstart, duration }, { zoneOf: opts.zoneOf, floatingTimeZone: "UTC" }).endMillis);
+	}
+	if (completed !== undefined) lastCandidates.push(instantOf(completed, opts.zoneOf));
+	if (created !== undefined) lastCandidates.push(instantOf(created, opts.zoneOf));
+
+	const last = lastCandidates.length > 0 ? Math.max(...lastCandidates) : first;
+	return { firstMillis: first, lastMillis: last };
+}
+
+/**
+ * PUT 時に呼ぶ、first/last occurrence 索引値の計算本体。
+ *
+ * 【失敗時は throw せず null/null(重要)】
+ * 壊れた RRULE・TZ 解決不能(TimezoneResolutionError)など、計算中に何が起きても
+ * この関数は例外を外へ投げない。索引はキャッシュであって「正」ではなく、索引が
+ * 埋まらなくても time-range フィルタの正しさは NULL の扱い(常に候補に含める)で
+ * 保たれる。一方 PUT 自体は(precondition を満たす限り)必ず成功させたい —
+ * 索引計算の失敗で PUT が 500 になるような設計は避ける。
+ */
+export function computeOccurrenceBounds(
+	iterator: RecurrenceIterator,
+	input: ComputeOccurrenceBoundsInput,
+	opts: ComputeOccurrenceBoundsOptions,
+): OccurrenceBounds {
+	try {
+		if (input.componentKind === "VTODO") {
+			return computeVTodoBounds(input.master as VTodo, opts);
+		}
+		return computeVEventBounds(iterator, input.master as VEvent, input.overrides, opts);
+	} catch {
+		return { firstMillis: null, lastMillis: null };
+	}
+}

@@ -9,6 +9,7 @@ import {
 	FakeCollectionUnitOfWork,
 	TEST_OWNER,
 	TEST_COLLECTION_ID,
+	TEST_RECURRENCE_ITERATOR,
 	makeVEventIcs,
 	makeVTodoIcs,
 	makeTestCollection,
@@ -25,7 +26,7 @@ describe("PutCalendarObject", () => {
 		collectionRepo = new FakeCalendarCollectionRepository();
 		resourceRepo = new FakeCalendarObjectResourceRepository();
 		uow = new FakeCollectionUnitOfWork(resourceRepo, collectionRepo);
-		usecase = new PutCalendarObject(collectionRepo, resourceRepo, uow);
+		usecase = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
 
 		// テスト用コレクションを事前に作成しておく。
 		collectionRepo.seed(makeTestCollection(TEST_OWNER, "calendar", { supportedComponents: ["VEVENT"] }));

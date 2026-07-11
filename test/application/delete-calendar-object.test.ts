@@ -17,6 +17,7 @@ import {
 	TEST_COLLECTION_ID,
 	makeVEventIcs,
 	makeTestCollection,
+	TEST_RECURRENCE_ITERATOR,
 } from "./fakes";
 import { collectionId } from "../../src/domain/caldav";
 
@@ -31,7 +32,7 @@ describe("DeleteCalendarObject", () => {
 		collectionRepo = new FakeCalendarCollectionRepository();
 		resourceRepo = new FakeCalendarObjectResourceRepository();
 		uow = new FakeCollectionUnitOfWork(resourceRepo, collectionRepo);
-		put = new PutCalendarObject(collectionRepo, resourceRepo, uow);
+		put = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
 		del = new DeleteCalendarObject(collectionRepo, resourceRepo, uow);
 		collectionRepo.seed(makeTestCollection());
 	});

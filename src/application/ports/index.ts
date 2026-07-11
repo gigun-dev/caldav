@@ -28,6 +28,8 @@ import type {
 	SyncChange,
 } from "../../domain/caldav";
 import type { CollectionId, PrincipalPath, PrincipalRef, ResourceUri } from "../../domain/caldav";
+import type { ComponentKind } from "../../domain/caldav";
+import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 
 // =============================================================================
 // PrincipalRepository — プリンシパル(ユーザー)の永続化ポート
@@ -147,6 +149,30 @@ export interface CalendarObjectResourceRepository {
 	 * PUT precondition の「UID 変更禁止」(R4b: 更新時に UID が変わっていないか)で使う。
 	 */
 	getUidAtUri(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): Promise<string | null>;
+
+	/**
+	 * G-3: calendar-query REPORT の time-range フィルタ向け。first_occurrence/last_occurrence
+	 * 索引列(migrations/0002)を使って粗く絞り込んだ候補を返す。
+	 *
+	 * 【SQL の絞り込みは「粗い」ことを許容する契約】
+	 * 呼び出し側(CalendarQuery ユースケース)は、この結果に対してさらに expandRecurrenceSet で
+	 * 精密なオーバーラップ判定を行う。よってこのメソッドは「範囲窓 [rangeStartMillis,
+	 * rangeEndMillis) と重なりうる候補を過不足なく含む(取りこぼしはしないが多少多く返してよい)」
+	 * ことだけを保証すればよい。TZ 知識(floating のスラック等)はここに持ち込まない —
+	 * 呼び出し側が窓を広げてから渡す(repository は「言われた窓で引くだけ」)。
+	 * NULL の first/last(未索引 or 期間概念なし)は常に候補に含める(migrations/0002 のコメント)。
+	 *
+	 * @param componentKind VEVENT/VTODO どちらの comp-filter か。
+	 * @param rangeStartMillis 窓の開始(半開区間の下限)。
+	 * @param rangeEndMillis 窓の終了(半開区間の上限、非包含)。
+	 */
+	findInCollectionByTimeRange(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+	): Promise<CalendarObjectResource[]>;
 }
 
 // =============================================================================
@@ -181,13 +207,18 @@ export interface CollectionUnitOfWork {
 	 * @param resource - 保存する CalendarObjectResource
 	 * @param collection - 変更ログを更新したい CalendarCollection
 	 *   (recordChange を呼んだ後の状態を渡す。UoW 実装はこの状態を DB に書く)
-	 * @param changeKind - "created" か "modified" か(変更ログのエントリ種別)
+	 * @param bounds - G-3: PUT 時に計算した first/last occurrence 索引値(occurrence-bounds.ts)。
+	 *   CalendarObjectResource 集約自体には持たせない(bounds は導出インデックスであって
+	 *   集約の状態ではない — 確定設計メモの判断)。D1 実装は calendar_objects の
+	 *   first_occurrence/last_occurrence 列へ書く。null は「未索引/期間概念なし」として
+	 *   NULL を書く(migrations/0002 のコメント参照)。
 	 */
 	saveResource(
 		owner: PrincipalRef,
 		collectionId: CollectionId,
 		resource: CalendarObjectResource,
 		collection: CalendarCollection,
+		bounds: OccurrenceBounds,
 	): Promise<void>;
 
 	/**

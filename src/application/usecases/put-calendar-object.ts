@@ -35,6 +35,21 @@ import type {
 	CalendarObjectResourceRepository,
 	CollectionUnitOfWork,
 } from "../ports";
+// G-3: PUT 時に first/last occurrence 索引(bounds)を計算する。RecurrenceIterator は
+// RRULE 反復だけを domain の外へ委譲する port(実装は infrastructure/recurrence の
+// ical.js アダプタ)なので、application 層はここでも port 型にしか依存しない。
+import {
+	computeOccurrenceBounds,
+	zoneResolverFor,
+	type OccurrenceBounds,
+	type RecurrenceIterator,
+} from "../../domain/ical/recurrence";
+
+// 有限反復(COUNT/UNTIL 付き RRULE)の展開を PUT のたびに行う際の occurrence 数上限。
+// Radicale の rrule 展開上限(実運用で問題にならない値として先例がある)に倣った暫定値。
+// 将来「サーバーポリシーとして可変にする」なら ServerPolicy(put-preconditions.ts)へ
+// 昇格させる。今はリテラルのまま置く(YAGNI — 可変にする実需がまだ無い)。
+const OCCURRENCE_INDEX_MAX_OCCURRENCES = 3000;
 
 // =============================================================================
 // 入力 DTO
@@ -166,6 +181,8 @@ export class PutCalendarObject {
 		private readonly collectionRepo: CalendarCollectionRepository,
 		private readonly resourceRepo: CalendarObjectResourceRepository,
 		private readonly uow: CollectionUnitOfWork,
+		// G-3: occurrence bounds 計算用の RRULE 反復 port。DI で注入する(テストはフェイクを渡す)。
+		private readonly recurrenceIterator: RecurrenceIterator,
 	) {}
 
 	async execute(input: PutCalendarObjectInput): Promise<PutCalendarObjectOutput> {
@@ -269,11 +286,44 @@ export class PutCalendarObject {
 		// で妥当性を保証済みなので InvalidResourceError は発生しないはず。念のため伝播させる)。
 		const resource = await CalendarObjectResource.fromIcs(uri, input.ics);
 
+		// --- Step 5b: G-3 occurrence bounds(first/last)を計算 -----------------------
+		// マスター(RECURRENCE-ID 無し)/ オーバーライド(RECURRENCE-ID 有り)を分離して
+		// computeOccurrenceBounds へ渡す。VEVENT はオーバーライドを持ちうるが VTODO は
+		// この設計では持たない(反復 VTODO の展開自体を G-3 のスコープ外にしている)。
+		// zoneOf は resource.payload(この PUT で保存する ICS 自身の VTIMEZONE)から組み立てる
+		// — floating の解決ゾーンは PUT 時点で UTC 固定(確定設計メモ)。
+		const zoneOf = zoneResolverFor(resource.payload);
+		let bounds: OccurrenceBounds;
+		if (resource.componentKind === "VEVENT") {
+			const events = resource.payload.events();
+			const master = events.find((e) => e.recurrenceId === undefined);
+			const overrides = events.filter((e) => e.recurrenceId !== undefined);
+			// master が無い(=検証をすり抜けた壊れたデータ)場合は索引を諦めて null/null。
+			// computeOccurrenceBounds 自体も内部失敗を null/null で吸収するが、
+			// master 不在はその入力を構築できない時点の話なのでここで先に弾く。
+			bounds = master === undefined
+				? { firstMillis: null, lastMillis: null }
+				: computeOccurrenceBounds(
+					this.recurrenceIterator,
+					{ componentKind: "VEVENT", master, overrides },
+					{ zoneOf, maxOccurrences: OCCURRENCE_INDEX_MAX_OCCURRENCES },
+				);
+		} else {
+			const master = resource.payload.todos()[0];
+			bounds = master === undefined
+				? { firstMillis: null, lastMillis: null }
+				: computeOccurrenceBounds(
+					this.recurrenceIterator,
+					{ componentKind: "VTODO", master, overrides: [] },
+					{ zoneOf, maxOccurrences: OCCURRENCE_INDEX_MAX_OCCURRENCES },
+				);
+		}
+
 		// --- Step 6: コレクションの変更ログ更新 + 原子的保存(UoW) ---
 		// recordChange でコレクションの状態を進め、その状態を UoW に渡して原子的に書く。
 		const changeKind = existing === null ? "created" : "modified";
 		collection.recordChange(uri, changeKind);
-		await this.uow.saveResource(input.owner, input.collectionId, resource, collection);
+		await this.uow.saveResource(input.owner, input.collectionId, resource, collection, bounds);
 
 		return {
 			etag: resource.etag,

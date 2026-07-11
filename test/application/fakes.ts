@@ -35,6 +35,9 @@ import type {
 	CalendarObjectResourceRepository,
 	CollectionUnitOfWork,
 } from "../../src/application/ports";
+import type { ComponentKind } from "../../src/domain/caldav";
+import { IcaljsRRuleIterator } from "../../src/infrastructure/recurrence/icaljs-rrule-iterator";
+import type { OccurrenceBounds } from "../../src/domain/ical/recurrence";
 
 // =============================================================================
 // FakePrincipalRepository
@@ -108,6 +111,10 @@ function resourceKey(owner: PrincipalRef, collectionId: CollectionId, uri: Resou
 
 export class FakeCalendarObjectResourceRepository implements CalendarObjectResourceRepository {
 	private readonly store = new Map<string, CalendarObjectResource>();
+	// G-3: PUT 経由(FakeCollectionUnitOfWork.saveResource)で計算された bounds を、D1 の
+	// first_occurrence/last_occurrence 列の代わりにインメモリで保持する。
+	// findInCollectionByTimeRange のテスト用フェイク実装が参照する。
+	private readonly boundsStore = new Map<string, OccurrenceBounds>();
 
 	async findAllInCollection(
 		owner: PrincipalRef,
@@ -159,9 +166,45 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		return this.store.get(resourceKey(owner, collectionId, uri))?.uid ?? null;
 	}
 
-	/** テストセットアップ用: リソースを直接挿入する。 */
-	seed(owner: PrincipalRef, collectionId: CollectionId, resource: CalendarObjectResource): void {
-		this.store.set(resourceKey(owner, collectionId, resource.uri), resource);
+	/** テストセットアップ用: リソースを直接挿入する。bounds を省略すると null/null(未索引)。 */
+	seed(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		resource: CalendarObjectResource,
+		bounds: OccurrenceBounds = { firstMillis: null, lastMillis: null },
+	): void {
+		const key = resourceKey(owner, collectionId, resource.uri);
+		this.store.set(key, resource);
+		this.boundsStore.set(key, bounds);
+	}
+
+	/**
+	 * G-3: calendar-query REPORT ユースケースのテスト用フェイク実装。
+	 * D1 実装の WHERE 句(NULL は常に候補に含める)と同じ判定をインメモリで再現する。
+	 */
+	async findInCollectionByTimeRange(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+	): Promise<CalendarObjectResource[]> {
+		const prefix = `${owner}::${collectionId}::`;
+		const result: CalendarObjectResource[] = [];
+		for (const [k, r] of this.store) {
+			if (!k.startsWith(prefix)) continue;
+			if (r.componentKind !== componentKind) continue;
+			const bounds = this.boundsStore.get(k) ?? { firstMillis: null, lastMillis: null };
+			const lastOk = bounds.lastMillis === null || bounds.lastMillis > rangeStartMillis;
+			const firstOk = bounds.firstMillis === null || bounds.firstMillis < rangeEndMillis;
+			if (lastOk && firstOk) result.push(r);
+		}
+		return result;
+	}
+
+	/** テスト検証用: 保存されている bounds を直接読む。 */
+	boundsOf(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): OccurrenceBounds | undefined {
+		return this.boundsStore.get(resourceKey(owner, collectionId, uri));
 	}
 
 	/** 指定キーのリソースを削除する(UoW 実装から呼ばれる)。 */
@@ -195,9 +238,10 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		collectionId: CollectionId,
 		resource: CalendarObjectResource,
 		collection: CalendarCollection,
+		bounds: OccurrenceBounds,
 	): Promise<void> {
-		// リソースを保存。
-		this.resourceRepo.seed(owner, collectionId, resource);
+		// リソースを保存(bounds も一緒に。D1 実装が同一行へ書くのと同じ扱い)。
+		this.resourceRepo.seed(owner, collectionId, resource, bounds);
 		// コレクション(syncCounter / changeLog 更新済みのはず)を保存。
 		this.collectionRepo.seed(collection);
 	}
@@ -218,6 +262,11 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 // =============================================================================
 // テストフィクスチャ生成ヘルパー
 // =============================================================================
+
+// G-3: PutCalendarObject / CalendarQuery が RRULE 展開に使う RecurrenceIterator port の
+// 実装。ここでも本物の ical.js アダプタを使う(port 自体はテスト対象外で、フェイクにする
+// 意味が薄い — expansion.test.ts と同じ判断)。
+export const TEST_RECURRENCE_ITERATOR = new IcaljsRRuleIterator();
 
 /** テスト用のデフォルトオーナー。 */
 export const TEST_OWNER = principalPath("/principals/users/test/") as PrincipalRef;

@@ -79,9 +79,17 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     > **既知の制約**: maxOccurrences は dtstart からの列挙総数で消費するため、range が
     > 遠い未来 × 古い dtstart の無限 RRULE では range 到達前に予算切れになりうる →
     > **G-3 の sabre 式 first/last 索引による事前絞り込みが解決する**(そのための索引)。
-  - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る
+  - ~~G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る
     前提で設計、結合はしない)+ calendar-query の time-range フィルタ
-    (方向性 C の中核が前倒しでここに来る)。**完了時点で C の tsdav CI ハーネスを前倒し着手可**。
+    (方向性 C の中核が前倒しでここに来る)。**完了時点で C の tsdav CI ハーネスを前倒し着手可**。~~ ✅
+    > **2026-07-11 更新:** 完了。設計は Fable subagent が策定 → Opus 承認(手戻りコストの
+    > 大きいスキーマ/PUT 配線判断のため)。実装 = sonnet。256 tests green。
+    > 成果: `migrations/0002_occurrence_index.sql`(first/last 列 + 複合索引、NULL=常に候補、
+    > 無限反復は 2100 キャップ)/ `occurrence-bounds.ts`(PUT 時に expandRecurrenceSet 再利用、
+    > 無限反復のみ展開回避)/ `calendar-query.ts`(SQL 粗絞り込み + ±24h スラック → 展開して
+    > §9.9 判定)/ presentation の `parseCalendarQueryFilter`(ネスト対応のバランス走査)。
+    > 未対応 filter(prop-filter 等)は黙殺せず **403 supported-filter**。floating は UTC 索引化 +
+    > クエリ時スラック補償。**C の tsdav CI ハーネスが前倒し着手可能になった。**
   - G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
     MCP 表面の設計は 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。
   - G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—

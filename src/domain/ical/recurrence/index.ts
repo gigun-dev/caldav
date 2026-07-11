@@ -11,6 +11,8 @@
 //     実装(adapter)は infrastructure/recurrence/icaljs-rrule-iterator.ts。
 //   - occurrence: Occurrence 値オブジェクト(展開結果1件分)。
 //   - expansion: expandRecurrenceSet(展開の本体)+ 入出力型。
+//   - occurrence-bounds: computeOccurrenceBounds(G-3: PUT 時の first/last occurrence 索引計算)+
+//     OCCURRENCE_INDEX_MAX(無限反復の last キャップ)+ zoneResolverFor(zoneOf 組み立て共通ヘルパー)。
 // =============================================================================
 
 export type { RecurrenceIterator, RecurrenceWallClockFields } from "./iterator-port";
@@ -21,3 +23,11 @@ export {
 	type RecurrenceExpansionOptions,
 	type RecurrenceExpansionResult,
 } from "./expansion";
+export {
+	computeOccurrenceBounds,
+	zoneResolverFor,
+	OCCURRENCE_INDEX_MAX,
+	type OccurrenceBounds,
+	type ComputeOccurrenceBoundsInput,
+	type ComputeOccurrenceBoundsOptions,
+} from "./occurrence-bounds";

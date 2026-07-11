@@ -20,6 +20,7 @@ import {
 	type PrincipalRef,
 	type ResourceUri,
 } from "../../domain/caldav";
+import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 import type {
 	CalendarCollectionRepository,
 	CalendarObjectResourceRepository,
@@ -189,22 +190,55 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 		).bind(owner, id, uri).first<{ uid: string }>();
 		return row?.uid ?? null;
 	}
+
+	/**
+	 * G-3: time-range フィルタ向けの粗い絞り込み。migrations/0002 の索引列を使う。
+	 * NULL(未索引/期間概念なし)は常に候補に含める(=絞り込まれない)。ポートの契約どおり
+	 * 「取りこぼしはしないが多少多く返してよい」ので、ここでは正確なオーバーラップまでは
+	 * 見ない(呼び出し側 CalendarQuery が expandRecurrenceSet で最終判定する)。
+	 */
+	async findInCollectionByTimeRange(
+		owner: PrincipalRef,
+		id: CollectionId,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+	): Promise<CalendarObjectResource[]> {
+		const rows = await this.db.prepare(
+			`SELECT uri, ics FROM calendar_objects
+			 WHERE owner = ? AND collection_id = ? AND component_kind = ?
+			 AND (last_occurrence IS NULL OR last_occurrence > ?)
+			 AND (first_occurrence IS NULL OR first_occurrence < ?)
+			 ORDER BY uri`,
+		).bind(owner, id, componentKind, rangeStartMillis, rangeEndMillis).all<ResourceRow>();
+		return Promise.all(rows.results.map(hydrateResource));
+	}
 }
 
 export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 	constructor(private readonly db: D1Database) {}
 
-	async saveResource(owner: PrincipalRef, id: CollectionId, resource: CalendarObjectResource, collection: CalendarCollection): Promise<void> {
+	async saveResource(
+		owner: PrincipalRef,
+		id: CollectionId,
+		resource: CalendarObjectResource,
+		collection: CalendarCollection,
+		bounds: OccurrenceBounds,
+	): Promise<void> {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("saveResource requires a recorded collection change");
 		await this.db.batch([
 			this.db.prepare(
-				`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(owner, collection_id, uri) DO UPDATE SET
 				 etag=excluded.etag, ics=excluded.ics, component_kind=excluded.component_kind,
-				 uid=excluded.uid, updated_at=excluded.updated_at`,
-			).bind(owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now()),
+				 uid=excluded.uid, updated_at=excluded.updated_at,
+				 first_occurrence=excluded.first_occurrence, last_occurrence=excluded.last_occurrence`,
+			).bind(
+				owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
+				bounds.firstMillis, bounds.lastMillis,
+			),
 			this.db.prepare(
 				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ?",
 			).bind(collection.syncToken.counter, owner, id),
