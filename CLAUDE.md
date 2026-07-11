@@ -247,26 +247,22 @@ src/
   本番 smoke: workers.dev / Cloud Run とも PROPFIND 207。
   proxy の CL 修正の Cloud Run への反映(`make deploy-proxy`)は未実施
   (gcloud CLI がこのマシンに無い。本番は GFE が CL を付与するため急ぎではない)。
-- 2026-07-11: **main の branch protection を ruleset で設定(id 18798162)= ci.yml/現在地の
-  「未完(要ユーザー操作)②」を解消**。enforcement active。ルール: 直 push 禁止
-  (non_fast_forward)/ branch 削除禁止 / PR 必須 / required status check =
-  `test / typecheck / boundaries`(strict = 最新 main 追従を要求)。bypass は
-  RepositoryRole(admin)= always(=オーナー自身は緊急時に直 push 可)。
-  注意: これは**サーバー側**判定。`git push --no-verify` はローカル hook 用で ruleset には
-  無効(そもそも本リポジトリにローカル hook は無い)。直 push が通るのは admin bypass の効果。
-  required check 名は GitHub Actions の job 名 "test / typecheck / boundaries" と一致必須
-  (job 名を変えたら ruleset の context も更新すること)。
-- 2026-07-11: **pre-push hook 導入(.githooks/pre-push)= 個人開発の実効的な事故防止**。
-  ruleset は admin(=自分/Claude Code)を always-bypass しており直 push が通る
-  (Claude はユーザーの認証で push するため)ので、サーバー側では「壊れたコードの
-  main 直 push → Workers Builds 自動 deploy」を止められない。→ **ローカル pre-push で
-  main への push 時のみ `make check`(CI と同一)を実行**して止める。Claude の push も
-  ローカル git 経由なので発火する。`--no-verify` で意図的スキップのみ可。
-  `.githooks` を commit + `core.hooksPath`(`make hooks` / `make install` で配線)で
-  version 管理。→ **役割分担: サーバー ruleset = 将来コラボレーター用の建前 + PR の
-  required check / pre-push hook = 個人開発で実際に事故を止める網**。ruleset は
-  admin bypass のため個人運用では実質休眠(必要なら bypass_mode を pull_request に
-  絞れば admin の直 push も禁止できるが、今回は hook 方式を採用)。
+- 2026-07-11: **main 保護は「pre-push hook 一本」に決着(branch protection ruleset は
+  作ってから削除した)**。経緯: 一旦 ruleset(id 18798162)で PR 必須 + required check を
+  設定したが、**個人開発では admin(=自分/Claude Code)が always-bypass するため直 push が
+  素通り**する(Claude はユーザーの gh/git 認証で push する = admin push)。push 時に
+  remote が `Bypassed rule violations`(PR 必須 / required check を bypass)を返すのを
+  実測して「見かけの保護と実態の乖離」を確認 → ruleset を削除。
+  守りたいのは悪意ではなく「壊れたコードを事故で main に直 push → Workers Builds が
+  自動 deploy → 本番が壊れる」(secret 消失で疑った経路)。→ **`.githooks/pre-push` が
+  main への push 時のみ `make check`(CI と同一の 境界→型→テスト)をローカル実行して
+  止める**。Claude の push もローカル git 経由なので発火する(= AI の事故 push も止まる)。
+  `--no-verify` で意図的スキップのみ可(ローカル hook なので。ruleset は元々サーバー側で
+  --no-verify 無関係だった)。`.git/hooks` は git 管理外なので `.githooks` を commit +
+  `core.hooksPath`(`make hooks` / `make install` で配線)で version 管理。
+  **将来コラボレーターが増えたら** サーバー ruleset を再導入(そのときは bypass_mode を
+  pull_request に絞れば admin の直 push も禁止でき、hook と二重の網になる)。
+  → ci.yml/現在地の「未完(要ユーザー操作)②」は「ruleset ではなく hook で解決」に置換。
 - **残マイルストーン全体像**(2026-07-10 整理。検証フェーズ完了 = プロダクトとしては序盤):
   - **M1 足場固め**: ETag 不一致 412 のテスト担保(前作は 403 で iOS 回復不能 — 06 の教訓)、
     ローカル開発環境(Makefile / seed / dev プロキシ / cloudflared)、CI(test + tsc +
