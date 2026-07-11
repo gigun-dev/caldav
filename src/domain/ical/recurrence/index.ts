@@ -1,0 +1,23 @@
+// =============================================================================
+// recurrence/ 層の公開 API 集約(re-export)
+// =============================================================================
+//
+// RRULE/RDATE/EXDATE/RECURRENCE-ID オーバーライドの総合展開(docs/modeling/03 §1-4、
+// 08 §5-6)を1箇所から取り出せるようにする。上位(application 層の REPORT/expand-property
+// ユースケース、あるいは ical/index.ts 経由)はここからのみ import する想定。
+//
+// 公開するもの:
+//   - iterator-port: RecurrenceIterator(RRULE 反復だけを domain の外へ委譲する port)。
+//     実装(adapter)は infrastructure/recurrence/icaljs-rrule-iterator.ts。
+//   - occurrence: Occurrence 値オブジェクト(展開結果1件分)。
+//   - expansion: expandRecurrenceSet(展開の本体)+ 入出力型。
+// =============================================================================
+
+export type { RecurrenceIterator, RecurrenceWallClockFields } from "./iterator-port";
+export type { Occurrence } from "./occurrence";
+export {
+	expandRecurrenceSet,
+	type RecurrenceExpansionInput,
+	type RecurrenceExpansionOptions,
+	type RecurrenceExpansionResult,
+} from "./expansion";

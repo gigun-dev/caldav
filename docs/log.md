@@ -246,3 +246,21 @@
   最初の出現)は実装依存挙動としてテストで絶対値固定(ICU/tzdb 更新の検知線)。
   実装は opus subagent へ委譲し Fable がレビュー(このセッションから実装=subagent、
   設計判断・レビュー=Fable の役割分担を運用開始)。
+- 2026-07-11: **G-2(RecurrenceExpansion ドメインサービス)実装完了**。
+  `src/domain/ical/recurrence/`(①iterator-port: RRULE 反復だけを外へ委譲する port
+  interface、壁時計フィールドの列挙器でTZ概念なし ②occurrence: recurrenceId=master 時刻・
+  start/end=実効時刻を分離保持する値オブジェクト ③expansion: RRULE/RDATE/EXDATE/
+  RECURRENCE-ID オーバーライドを総合し §9.9 実効期間 + range フィルタ)+
+  `src/infrastructure/recurrence/icaljs-rrule-iterator.ts`(ical.js v2.2.1 の ICAL.Recur +
+  floating ICAL.Time だけ使用、TimezoneService/ICAL.Event は不使用 = 08 §5 の「TZ 解決には
+  使わない」決着どおり)。`bun add ical.js`。テスト 11 件で 238 pass。
+  実装判断: UNTIL は iterator に渡さず epoch 厳密で inclusive 判定 / 展開はローカル壁時計
+  列挙 → occurrence ごとに G-1 で UTC 化(先に UTC 化しない DST 順序鉄則)/ I9 の
+  「無視 MUST」は展開層が実装(values/semantics 層は BYxxx を違反報告しない方針)/
+  各回の実効期間は master の DURATION=addDuration・DATE-TIME DTEND=exact ms 差・
+  DATE DTEND=nominal 日数差で継承 / detached オーバーライドも含める(iOS 実データ耐性)。
+  層境界の注記: dependency-cruiser は npm パッケージ依存を検査しない(src の層間 import のみ)
+  ので domain→ical.js は構造的保証(domain では import しない)+ コメントで担保。
+  既知の制約: maxOccurrences は dtstart からの列挙総数で消費 → 遠い未来 range × 古い
+  dtstart の無限 RRULE で予算切れになりうる。G-3 の first/last 索引が事前絞り込みで解決。
+  実装は sonnet 5 subagent、レビューは Opus(メインを Fable→Opus に移譲)。

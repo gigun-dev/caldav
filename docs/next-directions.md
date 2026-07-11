@@ -67,8 +67,18 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     > 実装メモ: floating の既定ゾーンは **UTC を明示**(§7.3 の MAY を暗黙にしない)/
     > DURATION 加算は weeks・days=壁時計 nominal・h/m/s=exact / DST の穴・重なりの
     > 解決値はテストで絶対 epoch 値に固定(ICU/tzdb 更新の検知線)。詳細は各ファイル冒頭コメント。
-  - G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
-    オーバーライド解決 + 展開上限)。
+  - ~~G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
+    オーバーライド解決 + 展開上限)。~~ ✅
+    > **2026-07-11 更新:** 完了。`src/domain/ical/recurrence/`(iterator-port /
+    > occurrence / expansion)+ `src/infrastructure/recurrence/icaljs-rrule-iterator.ts`
+    > (ical.js v2.2.1 を RRULE 反復だけに使用・port&adapter で隔離、domain は ical.js 非依存)。
+    > テスト 11 件、238 pass。実装メモ: UNTIL は iterator に渡さず epoch 厳密で inclusive 判定 /
+    > 展開はローカル壁時計列挙 → occurrence ごとに G-1 で UTC 化 / I9(DATE dtstart の
+    > BYHOUR 等)は展開層で「無視」を実装 / 各回の実効期間は master の DURATION・DTEND を
+    > nominal/exact 使い分けで継承 / detached オーバーライドも結果に含める(iOS 実データ耐性)。
+    > **既知の制約**: maxOccurrences は dtstart からの列挙総数で消費するため、range が
+    > 遠い未来 × 古い dtstart の無限 RRULE では range 到達前に予算切れになりうる →
+    > **G-3 の sabre 式 first/last 索引による事前絞り込みが解決する**(そのための索引)。
   - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る
     前提で設計、結合はしない)+ calendar-query の time-range フィルタ
     (方向性 C の中核が前倒しでここに来る)。**完了時点で C の tsdav CI ハーネスを前倒し着手可**。

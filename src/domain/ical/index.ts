@@ -24,6 +24,10 @@
 //     いずれも Component を包む「読み取り + validate」のレンズで、独自構造には変換しない
 //     (ロスレス往復を壊さないため。モデル図 §1-1)。application 層(PUT/REPORT ユースケース)は
 //     ここから型付きにカレンダーデータへアクセスし、validate() で precondition 診断を得る。
+//   - recurrence/*: RRULE/RDATE/EXDATE/RECURRENCE-ID オーバーライドの総合展開
+//     (RecurrenceExpansion ドメインサービス。モデル図 §1-4)。RRULE 反復だけは port
+//     (RecurrenceIterator)で外部委譲し、domain 自体は ical.js を import しない
+//     (実装は infrastructure/recurrence の ical.js アダプタ。docs/modeling/08 §5)。
 // =============================================================================
 
 export type { Component, Parameter, Property } from "./structure/types";
@@ -32,3 +36,4 @@ export { serialize, SerializeError } from "./serialize/serializer";
 export * from "./values";
 export * from "./semantics";
 export * from "./timezone";
+export * from "./recurrence";
