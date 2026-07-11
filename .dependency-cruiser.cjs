@@ -52,6 +52,40 @@ module.exports = {
       },
     },
     {
+      // 2026-07-12 OAuth-for-MCP 第2スライス SHOULD-3: src/app.ts が
+      // @cloudflare/workers-oauth-provider の**値**を import してしまうと、provider の
+      // 実体(dist/oauth-provider.js)が先頭で引く `cloudflare:workers`(workerd 専用の
+      // 仮想モジュール)が src/app.ts 経由で bun test に巻き込まれ、今回の物理分離
+      // (app.ts=provider 非依存の Hono アプリ / index.ts=provider を静的 import する
+      // コンポジションルート)が無意味になる。この事故を人手のレビュー任せにせず
+      // dependency-cruiser で機械的に禁止する。
+      //
+      // dependencyTypes に 'type-only' があるか確認した(dependency-cruiser 18 系の
+      // 型定義 `PartialRuleSet.forbidden[].from/to` に `dependencyTypes` フィールドがあり、
+      // 値の一つとして `'type-only'` が定義されている — TypeScript の
+      // `import type { ... } from "..."` を静的解析で区別できる)。よって
+      // `dependencyTypes: ['type-only']` を `to.pathNot` 相当ではなく明示的に許可対象から
+      // 除外する形(`to.dependencyTypesNot: ['type-only']`)でルールを書き、
+      // 「値 import だけ禁止・型 import は許可」を機械的に区別する。
+      // src/app.ts の冒頭コメントが宣言している「import type すら基本的に不要」という
+      // 運用ルールより一段緩い(型 import は許容)が、これは「型 import が紛れ込んでも
+      // 実行時に cloudflare:workers を引かない」という技術的事実に基づく——コメント側の
+      // 「型 import も避ける」はスタイル上の徹底であって、このルールの強制対象ではない。
+      name: 'app-ts-no-oauth-provider-value-import',
+      comment:
+        'src/app.ts(および presentation/application/domain 配下)から ' +
+        '@cloudflare/workers-oauth-provider への値 import を禁止する(import type は許可)。' +
+        'provider の実体は cloudflare:workers(workerd 専用仮想モジュール)を静的 import して' +
+        'おり、値として import すると bun test 全体がそれを巻き込んで壊れる。provider の' +
+        'new は src/index.ts(コンポジションルート)だけが行ってよい。',
+      severity: 'error',
+      from: { path: '^src/(app\\.ts|presentation|application|domain)' },
+      to: {
+        path: '^node_modules/@cloudflare/workers-oauth-provider',
+        dependencyTypesNot: ['type-only'],
+      },
+    },
+    {
       name: 'no-circular',
       comment: '循環依存は設計の崩れの兆候。層をまたがなくても禁止する。',
       severity: 'error',

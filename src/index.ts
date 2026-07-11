@@ -45,14 +45,14 @@ export default new OAuthProvider<CloudflareBindings>({
 	// DAV 側の認証(authenticateBasic)は app(src/app.ts)内部で従来どおり自前でかける。
 	defaultHandler: { fetch: (request, env, ctx) => app.fetch(request, env, ctx) },
 
-	// --- authorize エンドポイント(実装は第3スライス) ---
+	// --- authorize エンドポイント ---
 	// ここでは OAuth discovery metadata(/.well-known/oauth-authorization-server 等)に
-	// 広告するだけ。GET /authorize は provider がハンドルせず(authorizeEndpoint は
-	// 「metadata に載せる URL」であって「provider がこのパスを実装する」という意味ではない
-	// — authorizeEndpoint の実体は defaultHandler = 上の app(src/app.ts の app.all("*", ...))
-	// 任せになる。現状 app 側にも /authorize のハンドラは無いので、そのまま app.all("*") の
-	// authenticateBasic ガードに落ちて 401 Basic チャレンジになる。UI 実装(第3スライス)まで
-	// この挙動のままでよい(意図的な未実装。TODO ではなく「今回のスコープ外」の記録)。
+	// この URL を広告するだけ。authorizeEndpoint は「metadata に載せる URL」であって
+	// 「provider がこのパスを実装する」という意味ではない — 実体は defaultHandler(= 上の app)
+	// に一任される。2026-07-12 第3スライスで src/app.ts に GET/POST /authorize(単一ユーザーの
+	// password 同意フォーム。parseAuthRequest → completeAuthorization)を実装済み。
+	// app.all("*") の Basic 認証 catch-all より前に登録してあるので、未トークンのクライアントが
+	// Basic 401 に飲まれず同意フォームに到達できる(詳細は src/app.ts の /authorize コメント)。
 	authorizeEndpoint: "/authorize",
 	// トークン発行・更新・失効は provider がフルで実装する(RFC 6749 §3.2 相当)。
 	tokenEndpoint: "/oauth/token",

@@ -188,14 +188,25 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   WebMCP(WebUI をブラウザエージェントに開く、Chrome 149 オリジントライアル中 —
   WebUI が立った時点で実験。J と同じ先行投資の思想)。三面とも同じ application 層の
   語彙(G-5 が原型)の別露出面であり、ドメイン・application 層への影響はゼロ。
-- **OAuth-for-MCP**: 第2スライス(@cloudflare/workers-oauth-provider 導入。src/index.ts /
-  src/app.ts の物理分離込み)完了。次は第3スライス(authorize UI = GET/POST /authorize の実装)。
+- **OAuth-for-MCP**: ~~第2スライス(@cloudflare/workers-oauth-provider 導入。src/index.ts /
+  src/app.ts の物理分離込み)~~ ✅ ~~第3スライス(authorize UI = GET/POST /authorize の実装)~~ ✅
+  完了。次は OAuth フロー全体(DCR → authorize → token)の実機/統合検証。
   > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
   > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
   > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が
   > `ctx.props.username` を読めず principal を解決できず、全 MCP 呼び出しが 401 になる
   > (第2スライスとの暗黙契約。resolveExternalTokenForMcp が返す props も同じ形に
   > 合わせてある — src/app.ts 参照)。
+  > 2026-07-12 追記(第2スライス SHOULD-3 対応時に起票)【別タスク・OAuth 完了後】
+  > **vitest-pool-workers をハイブリッド導入**する: bun test は純ドメイン/application に
+  > 残したまま、workerd 上には D1 実 SQL・KV・OAuth E2E(DCR → authorize → token の
+  > フロー全体。cloudflare:workers を静的 import する OAuthProvider は bun test に
+  > 乗らないため、これは workerd 実行でしか検証できない)だけを新設する。全面移行は
+  > しない(bun test の速さを application/domain 層で失いたくない)。詳細設計は着手時に
+  > 一次確認する: ① `applyD1Migrations` の API(wrangler の内部 helper か、vitest-pool-workers
+  > 側に相当品があるか)② `export default new OAuthProvider(...)`(src/index.ts の
+  > exports.default.fetch)が vitest-pool-workers の worker 実行環境でそのまま動くか
+  > ③ GitHub Actions 上で workerd 実行(miniflare 経由)が問題なく走るか(メモリ/時間制約)。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 
