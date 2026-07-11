@@ -62,6 +62,31 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
 - 単一ユーザーのままで完結する(A に依存しない)。ドッグフーディング優先なら A より先。
 
+> **2026-07-11 更新(docs/modeling/09 起草)**: 標準戦略の調査により優先度を補正 —
+> ①CALDAV:expand は実は REQUIRED でない(calendar-data の子要素)+ iOS はクライアント
+> 展開する → 優先度低。②free-busy-query は REQUIRED だが実クライアントは叩かない →
+> 後回し可。③「展開・availability」はモダン API(Google/Graph/JMAP)の第一級機能で、
+> Nextcloud/Cal.com も本気の計算はアプリ層でやっている → G-5(MCP 表面)の設計は
+> 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。
+> ④supported-calendar-component-set の明示宣言を G のタスクに追加(宣言しないと
+> 「全コンポーネント MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。
+
+## 方向性 J: 採択途中 RFC への先行投資(agentic タスク管理の本丸)
+
+> **2026-07-11 起票**: 「使われていない RFC を切る」だけでなく「採択途中の RFC で
+> 先行者になる」逆張り(ユーザー方針)。一次資料は **docs/modeling/09 §4**。
+
+- **VJOURNAL**: 実装コストほぼゼロでサーバー側対応の薄さが生態系のボトルネックそのもの。
+  「agent の実行ログ・日誌を時系列に置き RELATED-TO でタスクに紐づける」— 長期ビジョン
+  「agentic なタスク管理の基盤」の本丸。検証クライアントは jtx Board + DAVx⁵。
+- **ical-tasks draft(RFC Editor Queue 入り、数ヶ月で RFC 化)+ RFC 9253**:
+  SUBSTATE(OK/ERROR/SUSPENDED)・STATUS:PENDING/FAILED・REASON・ESTIMATED-DURATION・
+  DEPENDS-ON・REFID は agent のタスクグラフ実行ランタイムの状態モデルそのもの。
+  競合実装ほぼ皆無 = 差別化。ドメイン層(vtodo.ts 系)に先取りで織り込む。
+- RFC 9074 ACKNOWLEDGED は生値保持で既に充足(06 A9)— 壊さない状態を維持。
+- VAVAILABILITY(7953)は G-4/B のタイミングで、JSCalendar は変換 draft の RFC 化後に
+  MCP/REST の JSON 表現として検討(09 §4b)。
+
 ## 方向性 B: M3 スケジューリング(招待)
 
 - RFC 6638/5546。schedule-inbox/outbox、calendar-user-address-set、iTIP 処理、auto-schedule。
@@ -104,6 +129,10 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     向けられる汎用クライアントにし、本作 + iCloud + Google を agent が横断して合成。
     E の設計と最も自然に噛み合う。OS の カレンダー権限(iOS/Android)に依存しない
     プロトコルレベルのアクセスという利点も。
+    > **2026-07-11 更新(09 §3)**: プラットフォーム調査で (c) の裏付けが取れた。
+    > web/PWA には標準カレンダー API が存在せず(W3C 提案は 2011 年頓挫)、
+    > **iCloud は CalDAV + app-specific password で外部からフルアクセス可**(Apple 公式の
+    > 正規手段)。web/MCP から現実のカレンダー全体に届く汎用経路はプロトコルアクセスのみ。
 > **2026-07-11 更新:** CardDAV は当初ここに同居させたが、別の関心事なので方向性 I に分離
 > (ユーザー指摘)。H は「ユーザーの現実の予定全体を見る」問題、I は「連絡先という別
 > ドメインの解釈」問題。

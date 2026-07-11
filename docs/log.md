@@ -186,3 +186,17 @@
   ペルソナ確認: ドッグフーディング + 個人開発プロダクトへの採用、agent には
   「CalDAV client ができることほぼ全部」。方向性 H(CardDAV / 連絡先、記念日の解釈)も
   構想段階として起票。
+- 2026-07-11: **標準戦略の調査(3本目まで)→ docs/modeling/09 起草**。発端はユーザーの
+  「RFC に盲目に従うだけが価値ではない。expand/free-busy の同等機能を OSS がどう実現して
+  いるか、採択途中の RFC の可能性も戦略的に見たい」。subagent 3本(モダン API 表面 /
+  プラットフォーム能力 / 採択途中 RFC)。主要な発見: ①展開・availability は
+  Google/Graph/JMAP の第一級機能で、Nextcloud/Cal.com は本気の計算をアプリ層でやる
+  (本作の application 層方針の実例)②CALDAV:expand は実は REQUIRED でない(08 の粒度を
+  補正)③supported-calendar-component-set が RFC 公認のオプトアウト機構(iCloud は
+  VEVENT のみ宣言)④web/PWA に標準カレンダー API は存在せず、iCloud は CalDAV +
+  app-specific password でフルアクセス可 = H(c) の裏付け ⑤ical-tasks draft が
+  RFC Editor Queue 入りで SUBSTATE/REASON 等は agent のタスク実行状態モデルそのもの。
+  VJOURNAL はサーバー側対応の薄さがボトルネックで先行価値あり。
+  → next-directions: G に優先度補正の更新、方向性 J(採択途中 RFC への先行投資)起票、
+  H に裏付け追記。「RFC 準拠」の再定義 =「実装した範囲は原文どおり正確に + capability を
+  正直に宣言」(09 §2)。
