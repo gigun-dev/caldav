@@ -264,3 +264,15 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 
 (2026-07-11 の棚卸しで全消化 — proxy の Content-Length 反映 ✅ / iOS A7 決着 ✅。
 経緯は log.md と冒頭「完成しているもの」参照)
+
+## 方向性 C: tsdav CI ハーネス着手(2026-07-11)
+
+> **2026-07-11 更新:** C の中核(tsdav 互換性ハーネス)を G-3 完了で前倒し着手・完了 ✅。
+> `test/integration/tsdav-harness.test.ts`(tsdav@2.3.1 を devDep 追加)。**Bun.serve で
+> app.fetch をラップ + fake repo 注入**で bun test 内に本物の tsdav クライアントを走らせる
+> (workerd の MKCALENDAR 制約は Bun.serve が任意メソッドを受けるので回避 = ロジック回帰専用、
+> workerd トランスポートの癖は対象外でプロキシ/smoke の責務)。検証フロー: 探索 → VEVENT 作成 +
+> ETag → **RRULE + calendar-query time-range が窓内の回にヒット・窓外はミス(G-3 展開の回帰保証)**
+> → sync-collection 差分 → 削除 → free-busy-query VFREEBUSY(raw fetch)。プロダクションコード
+> 変更ゼロ(既存応答で tsdav を満たせた)。346 tests green。残る C の広げ方(Thunderbird 等の
+> 追加クライアント・より広いプロパティ照合)は必要時に。
