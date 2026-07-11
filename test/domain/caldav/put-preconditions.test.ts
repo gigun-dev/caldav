@@ -88,6 +88,15 @@ describe("supported-calendar-component(R2)", () => {
 	test("VTODO 受理コレクションに VTODO を置くのは OK", () => {
 		expect(names(input({ ics: vtodoIcs("u1"), supportedComponents: ["VTODO"] })).has("supported-calendar-component")).toBe(false);
 	});
+
+	// J-2: MKCALENDAR で <C:comp name="VJOURNAL"/> を送って作った journal オプトインコレクション
+	// が「宣言どおりに」VJOURNAL だけ受理し、VEVENT を弾くことの UC レベル回帰保証
+	// (app.test.ts に MKCALENDAR の E2E テストが無いため、ここで supportedComponents=["VJOURNAL"]
+	// を put-preconditions に直接与えて確認する)。
+	test("supportedComponents=[VJOURNAL] のコレクションに VEVENT を PUT すると違反", () => {
+		const v = checkPutPreconditions(input({ ics: veventIcs("u1"), supportedComponents: ["VJOURNAL"] }));
+		expect(v.some((x) => x.precondition === "supported-calendar-component" && x.rule === "R2")).toBe(true);
+	});
 });
 
 describe("no-uid-conflict(R4)", () => {

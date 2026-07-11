@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { CalendarCollection, collectionId, principalPath } from "../../src/domain/caldav";
 import {
+	collectionProps,
 	multistatus,
 	parseCalendarQueryFilter,
 	parseCollectionProperties,
@@ -25,7 +27,58 @@ describe("DAV XML", () => {
 
 	it("Extended MKCOLの表示名・種別・Apple属性を読む", () => {
 		const props = parseCollectionProperties(`<d:mkcol xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:i="http://apple.com/ns/ical/"><d:set><d:prop><d:displayname>仕事 &amp; 私用</d:displayname><c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set><i:calendar-color symbolic-color="blue">#112233FF</i:calendar-color><i:calendar-order>4</i:calendar-order></d:prop></d:set></d:mkcol>`);
-		expect(props).toEqual({ displayName: "仕事 & 私用", component: "VTODO", color: "#112233FF", order: 4 });
+		expect(props).toEqual({ displayName: "仕事 & 私用", components: ["VTODO"], color: "#112233FF", order: 4 });
+	});
+
+	// J-2: supported-calendar-component-set は複数 comp を並べられる(§5.2.3)。VJOURNAL 対応 +
+	// 複数 comp 対応の回帰テスト。
+	it("VJOURNAL の comp name を拾う", () => {
+		const props = parseCollectionProperties(
+			`<d:mkcol xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><c:supported-calendar-component-set><c:comp name="VJOURNAL"/></c:supported-calendar-component-set></d:prop></d:set></d:mkcol>`,
+		);
+		expect(props.components).toEqual(["VJOURNAL"]);
+	});
+
+	it("複数 comp(VEVENT+VTODO)を配列で返す", () => {
+		const props = parseCollectionProperties(
+			`<d:mkcol xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><c:supported-calendar-component-set><c:comp name="VEVENT"/><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop></d:set></d:mkcol>`,
+		);
+		expect(props.components).toEqual(["VEVENT", "VTODO"]);
+	});
+
+	it("comp が無ければ components は undefined", () => {
+		const props = parseCollectionProperties(
+			`<d:mkcol xmlns:d="DAV:"><d:set><d:prop><d:displayname>foo</d:displayname></d:prop></d:set></d:mkcol>`,
+		);
+		expect(props.components).toBeUndefined();
+	});
+
+	// J-2: collectionProps の supported-calendar-component-set 宣言。
+	describe("collectionProps: supported-calendar-component-set", () => {
+		it("supportedComponents=undefined のコレクションは VEVENT/VTODO/VJOURNAL 全部を宣言する(§5.2.3: プロパティ不在=全受理 MUST と実際の受理を一致させる)", () => {
+			const col = new CalendarCollection({
+				id: collectionId("misc"),
+				owner: principalPath("/principals/users/alice/"),
+				displayName: "Misc",
+			});
+			const props = collectionProps(col, "https://example.com/sync/1");
+			const decl = props["supported-calendar-component-set"];
+			expect(decl).toContain('<c:comp name="VEVENT"/>');
+			expect(decl).toContain('<c:comp name="VTODO"/>');
+			expect(decl).toContain('<c:comp name="VJOURNAL"/>');
+		});
+
+		it("supportedComponents=[VEVENT] の既定 calendar コレクションは VEVENT だけ宣言する(VJOURNAL を宣言しないことの回帰保証)", () => {
+			const col = new CalendarCollection({
+				id: collectionId("calendar"),
+				owner: principalPath("/principals/users/alice/"),
+				displayName: "Calendar",
+				supportedComponents: ["VEVENT"],
+			});
+			const props = collectionProps(col, "https://example.com/sync/1");
+			const decl = props["supported-calendar-component-set"];
+			expect(decl).toBe('<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>');
+		});
 	});
 
 	// =========================================================================

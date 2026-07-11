@@ -5,6 +5,10 @@
 // 名前空間 prefix 非依存で抽出し、出力側は要求された property ごとに 200/404 propstat を返す。
 
 import type { CalendarCollection, CalendarObjectResource } from "../../domain/caldav";
+// J-2: supported-calendar-component-set の宣言フォールバック / parseCollectionProperties の
+// comp 名解析を domain/caldav の COMPONENT_KINDS / parseComponentKind と単一ソース化するための import。
+// presentation → domain は層順方向(内側依存)なので問題ない。
+import { COMPONENT_KINDS, parseComponentKind, type ComponentKind } from "../../domain/caldav/values/component-kind";
 // G-3: calendar-query REPORT の <C:timezone> 要素(§9.8)は VTIMEZONE を丸ごと1個埋め込む
 // PCDATA。parse/ICalendarObject/resolveTimeZoneId を使って TZID → IANA 名へ解決する
 // ここだけが presentation 層で domain/ical の parse を直接呼ぶ箇所(XML 内に埋め込まれた
@@ -98,7 +102,15 @@ export function homeProps(displayName: string): Record<string, string> {
 }
 
 export function collectionProps(collection: CalendarCollection, syncTokenUri: string): Record<string, string> {
-	const components = (collection.supportedComponents ?? ["VEVENT", "VTODO"])
+	// J-2: supportedComponents が undefined のコレクションは RFC 4791 §5.2.3 により
+	// 「supported-calendar-component-set プロパティ不在 = 全コンポーネント accept」MUST であり、
+	// put-preconditions.ts の checkSupportedComponent も実際に undefined を「全受理」として扱っている。
+	// 旧実装はここを ["VEVENT", "VTODO"] にハードコードしており、「宣言は VEVENT/VTODO だけなのに
+	// 実際は VJOURNAL も PUT できる」という宣言と実装の乖離があった(2026-07-11 是正)。
+	// COMPONENT_KINDS(domain 側の single source of truth)をそのまま宣言することで
+	// 「宣言 = 実際の受理」を一致させる。ハードコードしないのは、将来コンポーネント種別が
+	// 増えたときに宣言側の追従漏れを構造的に防ぐため。
+	const components = (collection.supportedComponents ?? COMPONENT_KINDS)
 		.map((name) => `<c:comp name="${name}"/>`).join("");
 	const props: Record<string, string> = {
 		displayname: `<d:displayname>${escapeXml(collection.displayName)}</d:displayname>`,
@@ -133,14 +145,24 @@ function textElement(body: string, localName: string): string | undefined {
 	return unescapeXml(body.match(new RegExp(`<(?:[^:>]+:)?${localName}\\b[^>]*>([\\s\\S]*?)<\\/(?:[^:>]+:)?${localName}>`, "i"))?.[1]?.trim() ?? "") || undefined;
 }
 
+// J-2: supported-calendar-component-set は <C:comp name="..."/> を複数並べられる(§5.2.3)。
+// 旧実装は単一 comp(VEVENT|VTODO 決め打ち)しか拾えず、MKCALENDAR で VJOURNAL コレクションを
+// オプトイン作成する経路が無かった。ここで全 comp 名を拾って ComponentKind[] を返すよう拡張し、
+// journal(agentic 日誌)は自動 provision せず「欲しい人だけ MKCALENDAR で作る」を実現する
+// (2026-07-11 判断。除去可能性を優先する journal の設計方針は provision-default-collections.ts 参照)。
 export function parseCollectionProperties(body: string): {
-	displayName?: string; component?: "VEVENT" | "VTODO"; color?: string; order?: number;
+	displayName?: string; components?: ComponentKind[]; color?: string; order?: number;
 } {
-	const componentRaw = body.match(/<(?:[^:>]+:)?comp\b[^>]*\bname=["'](VEVENT|VTODO)["']/i)?.[1]?.toUpperCase();
+	// global マッチで全 comp name="..." を拾う → parseComponentKind で正規化(不正名は捨てる)。
+	// parseComponentKind は COMPONENT_KINDS(VEVENT/VTODO/VJOURNAL)を single source にしているので、
+	// ここに手を加えなくても将来コンポーネント種別が増えれば自動で通るようになる。
+	const components = [...body.matchAll(/<(?:[^:>]+:)?comp\b[^>]*\bname=["']([\w-]+)["']/gi)]
+		.map((m) => parseComponentKind(m[1]))
+		.filter((c): c is ComponentKind => c !== undefined);
 	const orderRaw = textElement(body, "calendar-order");
 	return {
 		displayName: textElement(body, "displayname"),
-		component: componentRaw === "VEVENT" || componentRaw === "VTODO" ? componentRaw : undefined,
+		components: components.length > 0 ? components : undefined,
 		color: textElement(body, "calendar-color"),
 		order: orderRaw === undefined ? undefined : Number(orderRaw),
 	};

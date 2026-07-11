@@ -320,3 +320,15 @@
   unsupported(J-4 送り)/ docs/modeling/03 に VJournal 節追記。15 tests 追加で 295 pass。実装 = sonnet。
   次: J-2(宣言フォールバックを COMPONENT_KINDS 化 + journal オプトイン)、その後 RFC 9253/ical-tasks
   スナップショット取得(経路確認済み: rfc-editor.org)→ J-3。
+- 2026-07-11: **J-2(supported-calendar-component-set 宣言是正 + journal オプトイン)完了**。
+  G-6 を J-2 に吸収。①collectionProps のフォールバックを ["VEVENT","VTODO"] ハードコードから
+  COMPONENT_KINDS(VEVENT/VTODO/VJOURNAL)へ = supportedComponents undefined のコレクションの
+  「宣言」を「実際の受理(put-preconditions は undefined を全受理)」と一致させる。RFC 4791
+  §5.2.3「プロパティ不在 = 全コンポーネント accept MUST」準拠。②parseCollectionProperties を
+  単一 comp(VEVENT|VTODO 決め打ち)から全 comp を parseComponentKind で拾う ComponentKind[] へ
+  拡張(複数 comp + VJOURNAL 対応)。③index.ts の MKCALENDAR 配線を props.components 直渡しに。
+  → **journal コレクションは MKCALENDAR で <C:comp name="VJOURNAL"/> を送ればオプトイン作成できる**。
+  provision-default-collections は変更せず(自動 provision しない = 除去可能性優先)、意図をコメント化。
+  6 tests 追加で 301 pass。既定 calendar/tasks の PROPFIND 出力は不変(explicit supportedComponents なので)
+  を回帰テストで保証。実装 = sonnet。iOS 実機での calendar/tasks 非回帰確認のみ J-4 に保留。
+  次: RFC 9253 + ical-tasks draft スナップショット取得 → J-3(draft アクセサ先取り)。

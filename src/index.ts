@@ -345,11 +345,16 @@ app.all("*", async (c) => {
 		if ((method === "MKCOL" || method === "MKCALENDAR") && collectionName && !resourceName) {
 			const body = await readBody(request);
 			const props = parseCollectionProperties(body);
+			// J-2: journal(agentic 日誌)コレクションは自動 provision しない(除去可能性優先の
+			// 設計。2026-07-11 判断)。「欲しい人だけ」ここで MKCALENDAR に
+			// <C:comp name="VJOURNAL"/> を含めて明示リクエストすればオプトインで作れる。
+			// props.components は parseCollectionProperties が既に ComponentKind[] | undefined を
+			// 返すのでそのまま渡すだけでよい(未指定 = RFC 4791 §5.2.3 の「全コンポーネント accept」)。
 			const result = await new CreateCollection(repos.collections).execute({
 				owner: principalPathValue,
 				collectionId: collectionName,
 				displayName: props.displayName ?? collectionName,
-				supportedComponents: props.component ? [props.component] : undefined,
+				supportedComponents: props.components,
 			});
 			return new Response(null, {
 				status: 201,

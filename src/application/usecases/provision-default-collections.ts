@@ -61,6 +61,9 @@ export const DEFAULT_COLLECTION_SPECS: readonly DefaultCollectionSpec[] = [
 		// VTODO のみ受け入れる。iOS リマインダーアプリが使う。
 		supportedComponents: ["VTODO"],
 	},
+	// J-2(2026-07-11): journal(VJOURNAL、agentic 日誌)は自動 provision しない — 「未確定の賭け」
+	// なので除去可能性を優先する設計判断。欲しい人だけ MKCALENDAR(<C:comp name="VJOURNAL"/>)で
+	// オプトイン作成する(index.ts の MKCALENDAR 配線を参照)。
 ];
 
 // --- 入力 DTO ---

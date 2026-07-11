@@ -104,8 +104,13 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
     E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
     **ここで設計するツールの語彙(名前・引数・応答形)は将来 MCP Apps / WebMCP にも
     そのまま露出する原型になる(11 §4)。特定の入口に依存しない形で application 層に置く。**
-  - G-6: supported-calendar-component-set の明示宣言(宣言しないと「全コンポーネント
-    MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。
+  - ~~G-6: supported-calendar-component-set の明示宣言(宣言しないと「全コンポーネント
+    MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。~~ ✅(J-2 に統合)
+    > **2026-07-11 更新:** G-6 は J-2 に吸収して完了。collectionProps のフォールバックを
+    > COMPONENT_KINDS 化(宣言=受理を一致、§5.2.3)/ parseCollectionProperties を複数 comp +
+    > VJOURNAL 対応 / MKCALENDAR で VJOURNAL コレクションをオプトイン作成可能に。
+    > journal は自動 provision しない(除去可能性優先)。301 tests green。
+    > iOS 実機での calendar/tasks 非回帰確認だけ保留(J-4)。
 
 ## 方向性 J: 採択途中 RFC への先行投資(agentic タスク管理の本丸)
 
