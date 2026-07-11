@@ -190,7 +190,19 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   語彙(G-5 が原型)の別露出面であり、ドメイン・application 層への影響はゼロ。
 - **OAuth-for-MCP**: ~~第2スライス(@cloudflare/workers-oauth-provider 導入。src/index.ts /
   src/app.ts の物理分離込み)~~ ✅ ~~第3スライス(authorize UI = GET/POST /authorize の実装)~~ ✅
-  完了。次は OAuth フロー全体(DCR → authorize → token)の実機/統合検証。
+  ~~完了。次は OAuth フロー全体(DCR → authorize → token)の実機/統合検証。~~ ✅
+  > 2026-07-12 更新: **本番実機受け入れ成功**。`68cb67b` を deploy、Claude カスタムコネクタで
+  > OAuth(DCR→authorize でパスワード同意→token)接続 → 3ツール動作 → list-events-expanded が
+  > RRULE 展開5件を返却。スモーク(well-known・401 discovery・静的 Bearer 経路)も全て green。
+  > 経緯は docs/log.md 2026-07-12 / メモリ mcp-auth-and-generative-ui-strategy。
+  > 2026-07-12 起票【運用ギャップ・要対応】**deploy と D1 マイグレーションの乖離**:
+  > 「main push で worker は Workers Builds 自動 deploy だが D1 マイグレーションは手動 apply」。
+  > 今回 0002/0003 未適用のまま deploy し、list/freebusy が `last_occurrence` カラム無しで
+  > 落ちた(get-current-time は DB 非依存で動いた)。手動 `wrangler d1 migrations apply --remote`
+  > で解消したが、次スキーマ変更で再発する。対応案: (a) Makefile に `deploy-migrations` ターゲット
+  > 明文化 + deploy チェックリスト化 / (b) Workers Builds のビルドコマンドに組み込む
+  > (本番 DB 変更を自動化してよいかは方針判断 — 手動承認を残す派もある)。vitest-pool-workers
+  > 導入より先に軽く片付ける候補。
   > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
   > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
   > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が

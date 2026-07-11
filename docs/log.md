@@ -375,3 +375,21 @@
   で3ツール検証(ただし Claude コネクタは OAuth 中心で静的 Bearer 追加可否は未確定 = 追加不可なら
   「Claude コネクタ利用は OAuth[方向性 A]がゲート」という学び)②iOS ネイティブで calendar/tasks の
   非回帰(J-2)③VJOURNAL は DAVx⁵+jtx[Android]、journal コレクションはオプトインなので要手動作成。
+- 2026-07-12: **OAuth-for-MCP を3スライスで実装 → 本番実機受け入れ完走**。
+  - 経緯: Claude カスタムコネクタは OAuth 一択(静的 Bearer 欄なし)と確定 → `/mcp` を
+    `@cloudflare/workers-oauth-provider@0.8.1` で OAuth 保護。第1(`f3ff904` KV 土台)/
+    第2(`2d866da` canonical 物理分離: src/app.ts=マウント可能 Hono / src/index.ts=薄い
+    `export default new OAuthProvider`。認証 seam 不変で StaticBearerAuth→OAuthPropsAuth、
+    MCP_TOKEN は resolveExternalToken で共存)/ 第3(`d29fdff` authorize 同意 UI 単一ユーザー)/
+    後片付け(`68cb67b` dependency-cruiser で app.ts への provider 値 import 禁止・vitest 起票)。
+  - 検証: Fable 節目レビュー(BLOCKER なし・本番 esbuild が dynamic import を静的巻き上げと実証)
+    + OSS ベスプラ調査(canonical は直接 export default = bespoke lazy import は物理分離で撤去)。
+    361 tests green。
+  - 本番実機: deploy 後スモーク(well-known 2種・401 discovery チャレンジ・静的 Bearer で
+    tools/list 200)全 green。**Claude カスタムコネクタで OAuth 接続成功**(DCR→authorize で
+    CALDAV_PASSWORD 同意→token)→ 3ツール動作。テストデータ(単発+週次 RRULE)投入後、
+    list-events-expanded が Asia/Tokyo 解決の展開5件、get-freebusy が5 BUSY 区間を返却。
+  - 運用ギャップ発覚: D1 マイグレーション(0002/0003)は main push の自動 deploy に含まれず
+    手動 apply が必要 → 未適用で list/freebusy が落ちていた。手動適用で解消。next-directions に
+    「deploy 手順への migrations 組み込み」を起票。
+  - MCP_TOKEN は本番 secret + .dev.vars 同値(gitignore なのでローカル/本番を分けない方針)。
