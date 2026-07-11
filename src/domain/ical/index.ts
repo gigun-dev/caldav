@@ -15,6 +15,10 @@
 //   - values/*: RFC 5545 §3.3 の「生値 ↔ 型付き値」コーデック群。
 //     Property.value 自体はロスレス保持のため string のままだが、application/semantics 層が
 //     DTSTART や RRULE を安全に扱うときはここから公開される値オブジェクトを使う。
+//   - timezone/*: TZ 解決層(docs/modeling/08 §6)。TZID(生文字列)→ IANA 名の解決チェーンと、
+//     Intl/ICU による壁時計 ⇄ UTC エポック変換、RFC 4791 §9.9 の実効 [start, end) 算出。
+//     VTIMEZONE の逐語評価はしない(IANA tzdb を正とする決着)。将来の RecurrenceExpansion /
+//     time-range フィルタが土台に使う。zoned の TZID 解決関数(zoneOf)は resolver から注入する。
 //   - semantics/*: RFC 5545 §3.6〜3.8 の意味論レンズ群。ICalendarObject(VCALENDAR 集約ルート)
 //     / VEvent / VTodo / VTimezone / VAlarm と、不変条件違反 InvariantViolation。
 //     いずれも Component を包む「読み取り + validate」のレンズで、独自構造には変換しない
@@ -27,3 +31,4 @@ export { parse, ParseError } from "./parse/parser";
 export { serialize, SerializeError } from "./serialize/serializer";
 export * from "./values";
 export * from "./semantics";
+export * from "./timezone";

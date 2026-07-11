@@ -9,6 +9,8 @@
 M1「足場固め」が完了した時点。検証フェーズは完了しており、プロダクトとしては序盤。
 **次のセッションは方向性 G(G-1 の TZ 解決層)から拾う。**
 
+> **2026-07-11 更新:** G-1 完了 ✅。次は **G-2(RecurrenceExpansion ドメインサービス)** から。
+
 ## 今日までに完成しているもの(前提)
 
 - **iCalendar ドメイン層**(RFC 5545): 構造層 + 値型コーデック + 意味論レンズ + 不変条件 I1〜I10。ロスレス往復。
@@ -58,8 +60,13 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   展開済みテーブル・KV/Cache キャッシュ・DO は不採用 / 展開上限を API に組み込む。
   コストは実質 $5/月の基本料のみ(CPU-ms 課金、詳細試算は 08 §5.5)。
 - **タスク分解**:
-  - G-1: TZ 解決層(IANA 名直引き → Windows 名マップ → VTIMEZONE 推測 → 明示エラー。
-    Workers の Intl/ICU 利用)+ floating/DATE の実効値算出(§9.9 の表)。
+  - ~~G-1: TZ 解決層(IANA 名直引き → Windows 名マップ → VTIMEZONE 推測 → 明示エラー。
+    Workers の Intl/ICU 利用)+ floating/DATE の実効値算出(§9.9 の表)。~~ ✅
+    > **2026-07-11 更新:** 完了。`src/domain/ical/timezone/`(errors / windows-zones /
+    > resolver / instant / effective-period)+ テスト 23 件、227 tests green。
+    > 実装メモ: floating の既定ゾーンは **UTC を明示**(§7.3 の MAY を暗黙にしない)/
+    > DURATION 加算は weeks・days=壁時計 nominal・h/m/s=exact / DST の穴・重なりの
+    > 解決値はテストで絶対 epoch 値に固定(ICU/tzdb 更新の検知線)。詳細は各ファイル冒頭コメント。
   - G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
     オーバーライド解決 + 展開上限)。
   - G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る

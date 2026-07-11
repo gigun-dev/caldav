@@ -233,3 +233,16 @@
   (supported-calendar-component-set 宣言)をタスクとして正式化 ⑤modeling/README の
   目次に 08〜11 を追記(07 で止まっていた)。積層ルールへの懸念(コンテキスト膨張)は
   「節目ごとの棚卸しが逃がし弁」という運用で解消— 生の経緯は log.md と git 履歴が持つ。
+- 2026-07-11: **G-1(TZ 解決層)実装完了**。`src/domain/ical/timezone/` を新設 —
+  ①errors(TimezoneResolutionError。暗黙フォールバック禁止の明示エラー)
+  ②windows-zones(CLDR windowsZones 001 の写経。Windows 名→IANA 名、大文字小文字無視)
+  ③resolver(IANA 直引き→先頭 "/" 剥がし→Windows 名→X-LIC-LOCATION→TZID 末尾 suffix→
+  明示エラー、の4段チェーン。via で解決経路を返す)④instant(Intl/ICU の formatToParts +
+  hourCycle:"h23" でオフセット算出、壁時計→UTC は2パス方式。floating の既定ゾーンは
+  **UTC を明示** — RFC 4791 §7.3 の MAY を暗黙にしない)⑤effective-period(§9.9 の実効
+  [start, end) 算出。DURATION は weeks/days=壁時計 nominal・h/m/s=exact の分離加算、
+  DTEND/DURATION 省略時は DATE-TIME→0秒・DATE→+P1D)。テスト 23 件追加で 227 pass。
+  DST の穴(NY 2026-03-08 02:30 → 06:30Z=EST 側)・重なり(2026-11-01 01:30 → 05:30Z=
+  最初の出現)は実装依存挙動としてテストで絶対値固定(ICU/tzdb 更新の検知線)。
+  実装は opus subagent へ委譲し Fable がレビュー(このセッションから実装=subagent、
+  設計判断・レビュー=Fable の役割分担を運用開始)。
