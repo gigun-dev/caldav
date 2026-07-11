@@ -26,6 +26,7 @@
 | rfc6868.txt | Parameter Value Encoding | パラメータ値の ^ エスケープ。**現行シリアライザの「DQUOTE 表現不可エラー」に直接関係**(下記注意) |
 | rfc7617.txt | Basic HTTP Authentication | iOS の確定要件である Basic 認証(認証実装フェーズ) |
 | rfc9110.txt | HTTP Semantics | HTTP 現行仕様。**RFC 7232 は 9110 に obsolete された**(7232 は 4791 §5.3.4 が引く歴史的文脈用に残す) |
+| rfc9253.txt | iCalendar Relationships | DEPENDS-ON / GAP / REFID / CONCEPT / LINK / RELTYPE 拡張。**方向性 J(ical-tasks 先行投資)の一次資料**(2026-07-11 取得、BOM 除去済み) |
 | rfc9074.txt | VALARM Extensions | ACKNOWLEDGED / PROXIMITY(位置アラーム)/ VALARM 内 UID。**iOS リマインダーが ACKNOWLEDGED を送ってくる**(fixtures の ios-event.ics 参照)ため候補から昇格(2026-07-09) |
 
 <!-- 2026-07-09 追加5本(codex 指摘)+ 9074(iOS リマインダー直結のため昇格)。
@@ -41,6 +42,18 @@
 > Apple クライアントも ^ エンコードを送ってくることがある(生値保持なので往復は壊れないが、
 > パラメータ値の解釈時にデコードが必要)。パーサ/シリアライザへの対応可否は実装フェーズで判断し、
 > 結果を 05 に記録すること。
+
+## docs/specs/(採択途中 draft のスナップショット、2026-07-11 新設)
+
+- **確定 RFC はここ(docs/rfc/)、まだ RFC 化されていない I-D(Internet-Draft)は
+  `docs/specs/` に置く**。draft は改訂されるので **リビジョン番号をファイル名に固定**して
+  スナップショットとして扱う(例 `draft-ietf-calext-ical-tasks-17.txt`)。
+- 現在置いてあるもの: `draft-ietf-calext-ical-tasks-17.txt`(ical-tasks。RFC Editor Queue 入り。
+  方向性 J の一次資料。SUBSTATE / STATUS:PENDING,FAILED / REASON / ESTIMATED-DURATION 等。
+  2026-07-11 取得 = rev 17)。RFC 化されたら docs/rfc/ へ移し、05 に照合を記録して
+  この draft は「どの RFC になったか」を注記して残す。
+- draft 実装時の原則: **生値保持を土台にし、型付き解釈は薄く**(draft 変更で壊れる表面を最小化。
+  詳細は方向性 J の設計方針、log.md 2026-07-11)。
 
 ## 使い方の約束
 
