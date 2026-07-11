@@ -21,7 +21,7 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install hooks up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy migrate-local reset-local mobileconfig typegen
+.PHONY: help install hooks up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy deploy-migrations migrate-local reset-local mobileconfig typegen
 
 help: ## このヘルプを表示
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -102,8 +102,23 @@ typegen: ## worker-configuration.d.ts を再生成(wrangler.jsonc / .dev.vars �
 	# 参照する CloudflareBindings と食い違って tsc が全滅する(2026-07-11 に実際に発生)。
 	bun run cf-typegen
 
-deploy: ## 本番デプロイ(通常は Cloudflare Workers Builds が main push で自動実行)
+deploy: ## 本番デプロイ(通常は Cloudflare Workers Builds が main push で自動実行。migrate→deploy を含む。詳細 migrations/README.md)
 	bun run deploy
+
+# deploy-migrations: D1 マイグレーションだけをローカルから手動で本番適用するためのターゲット。
+# 通常は `bun run deploy`(package.json の deploy script)が Workers Builds 経由で自動適用するので
+# 出番はない。使うのは「破壊的変更(expand/contract の contract フェーズ)を人がレビューしながら
+# 手で当てたい」ときや、Workers Builds 側の権限不足でビルドが落ちたときの応急対応など
+# (migrations/README.md「破壊的変更のときの運用」参照)。
+#
+# なぜ CLOUDFLARE_ACCOUNT_ID を明示するか(2026-07-12 実測): ローカル環境には複数の
+# Cloudflare アカウントが紐づいており、wrangler.jsonc の account_id を書いていても
+# `wrangler d1 migrations apply --remote` はそれを拾わず「どのアカウントか」を対話確認
+# しようとする(または誤ったアカウントに向く)ことが実測された。環境変数で明示すれば確実に
+# 一意に決まる。id は wrangler.jsonc の account_id と同じ値(gigun-dev アカウント)。
+deploy-migrations: ## D1 マイグレーションを本番へ手動適用(通常は deploy 経由の自動適用を使う。手動は例外運用)
+	CLOUDFLARE_ACCOUNT_ID=4b00d8d779cdc4e8fbc1840248d21722 \
+		bunx wrangler d1 migrations apply caldav-production --remote
 
 deploy-proxy: ## MKCALENDAR 変換 proxy を Cloud Run へデプロイ(proxy/ 変更時のみ手動)
 	# proxy はめったに変わらないので CI 化せず手動デプロイ(2026-07-11 判断)。

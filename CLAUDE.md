@@ -37,6 +37,7 @@ ical パースの API 安定 or 他プロジェクトでの実需(2026-07-08 決
   cloudflared named tunnel → 書き換え proxy(:8080)→ wrangler dev(:8787)。
 - 本番: Workers Builds が main push で自動 deploy。iOS の正式入口は Cloud Run 書き換え
   プロキシ(workerd/Workers は MKCALENDAR を通せないため恒久構成)。
+  D1 マイグレーションは deploy command に組み込んで自動適用する(前方互換規律必須。詳細 migrations/README.md)。
 
 ## アーキテクチャ方針(松岡 DDD)
 

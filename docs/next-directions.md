@@ -203,6 +203,14 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > 明文化 + deploy チェックリスト化 / (b) Workers Builds のビルドコマンドに組み込む
   > (本番 DB 変更を自動化してよいかは方針判断 — 手動承認を残す派もある)。vitest-pool-workers
   > 導入より先に軽く片付ける候補。
+  > 2026-07-12 更新: **方針確定・実装済み**。前方互換(expand/contract)規律 +
+  > Workers Builds の deploy command で migrate→deploy を自動化する方式を採用
+  > (package.json `deploy` script = `wrangler d1 migrations apply --remote && wrangler deploy`、
+  > Makefile に手動用 `deploy-migrations` 追加、規律の明文化は migrations/README.md 新設)。
+  > 残タスク: (1) ダッシュボード(Worker → Settings → Builds)で deploy command を
+  > `bun run deploy` に設定 ← 人が行う必要あり。(2) 設定後の初回ビルドで、Workers Builds の
+  > ビルド環境が暗黙トークンでリモート D1 に apply できるか(D1 Edit 権限の有無)を実測。
+  > 権限不足なら CLOUDFLARE_API_TOKEN を build 変数(secret)に追加。
   > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
   > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
   > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が
