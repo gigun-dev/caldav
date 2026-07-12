@@ -370,6 +370,44 @@ D8 で「我々の最小出力(UID/DTSTAMP/SUMMARY/DESCRIPTION/DTSTART/DUE/PRIOR
 実装は `src/domain/ical/semantics/vtodo-stamp.ts`(`stampCreate`/`stampUpdate`)に一本化し、
 生成プロパティの「何を・いつ触るか」の判断がユースケースごとに分散しないようにする。
 
+### D10. サーバー発の反復 VTODO 生成方針(確定・タスク③)
+
+D4(反復 VTODO の完了 = マスター前進 + 完了スナップショット分離)はこれまで「iOS 実機が
+送ってきた反復マスター」に対してのみ動いていた(complete-todo.test.ts は real-ios フィクスチャ
+経由)。タスク③では chat から「毎日/毎週〜」のようにゼロから反復リマインダーを作れるように
+`create-todo` に `recurrence` 入力を追加した。この節はその生成方針を記録する。
+
+- **until は DATE 型で出す(DTSTART と値型を揃える)**。根拠は RFC 5545 原文
+  `docs/rfc/rfc5545.txt` §3.3.10(2255〜2266行付近):
+  > The value of the UNTIL rule part MUST have the same value type as the "DTSTART"
+  > property. ... if the "DTSTART" property is specified as a date with local time,
+  > then the UNTIL rule part MUST also be specified as a date with local time. ...
+  > the UNTIL rule part MUST be specified as a date with UTC time.
+  我々の `buildVTodoCalendar` は due 指定時に DTSTART を常に `VALUE=DATE` で立てる
+  (D9 以前からの iOS 実機キャプチャ準拠の方針)。よって RRULE の UNTIL も DATE 型に固定する
+  ことで値型不一致(update-todo.ts で先に踏んだ同種の罠 = values/recurrence-rule.ts の I6 の
+  不変条件)を最初から作らない設計にした(MCP 入力の `until` は "YYYY-MM-DD" のみを受け付け、
+  DATE-TIME 版の UNTIL を選べる余地自体を無くしてある)。
+- **VALARM はサーバー発では生成しない**。反復であっても単発の CreateTodo と同じ方針
+  (D9 のスコープどおり。サーバー発アラームの実機挙動は未検証のため踏み込まない)。
+- **weekdays(BYDAY 序数無し)は weekly 主用途に限定**。RFC 上 monthly/yearly も BYDAY を
+  持てるが、序数付き BYDAY(2MO 等)としての用法であり、序数無し BYDAY を monthly/yearly に
+  付けたときの意味は仕様上曖昧(recurrence-rule.ts の I 系検証も序数付き BYDAY だけを
+  monthly/yearly 限定にしている=序数無し BYDAY は素通りする)。chat からのゼロ知識入力で
+  この曖昧さを黙って解釈するより安全側(誤反復パターンを黙って作るより失敗させる)を選び、
+  weekly 以外に weekdays を指定したら `RecurrenceWeekdaysRequireWeeklyError` で明示的に拒否する
+  (application/usecases/create-todo.ts)。monthly/yearly の曜日指定が必要になったら、そのとき
+  専用の入力語彙(序数付き)を別途設計する。
+- **recurrence は due 必須**。RRULE は DTSTART をアンカーにする(§3.8.5.3)。我々の実装は
+  due がそのまま DTSTART/DUE の値になるため、due 無しに RRULE だけを立てることができない。
+  `RecurrenceRequiresDueError` で application 層が本線として弾き、
+  `buildVTodoCalendar`(domain 層)側にも同じ契約の防御的 throw を置いた(呼び出し側のバグを
+  捕まえる最終防衛線。二重防御の設計判断は他の防御的 throw と同じ扱い)。
+- **反復完了は「我々が作ったマスター」でも成立する**ことを e2e 的に確認した
+  (test/application/create-todo.test.ts「反復付き create → complete-todo」)。D4 の実装
+  (recurring-completion.ts)は元データが iOS 発か我々発かを区別せず RRULE の有無だけで
+  分岐するため、当然の帰結ではあるが回帰確認として明示的にテストしておく。
+
 ## 結果の還元先
 
 - **フィクスチャ**: A1〜A5 のキャプチャ ICS を `test/domain/ical/fixtures/` に実データとして

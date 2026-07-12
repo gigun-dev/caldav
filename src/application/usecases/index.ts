@@ -113,9 +113,13 @@ export { taskFromVTodo, type Task } from "./task-dto";
 export {
 	CreateTodo,
 	InvalidDueError,
+	RecurrenceRequiresDueError,
+	RecurrenceCountUntilConflictError,
+	RecurrenceWeekdaysRequireWeeklyError,
 	type CreateTodoInput,
 	type CreateTodoOutput,
 	type CreateTodoError,
+	type CreateTodoRecurrenceInput,
 } from "./create-todo";
 
 // MCP list-todos(方向性 E-1 スライス①)

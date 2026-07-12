@@ -46,6 +46,9 @@ import {
 	ListOccurrences,
 	ListTodos,
 	PutCalendarObject,
+	RecurrenceCountUntilConflictError,
+	RecurrenceRequiresDueError,
+	RecurrenceWeekdaysRequireWeeklyError,
 	TodoNotFoundError,
 	UpdateTodo,
 } from "../../application/usecases";
@@ -95,16 +98,45 @@ const getFreeBusyInputShape = {
 
 // --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
 
+// recurrence(タスク③: 反復付き create-todo)。iOS リマインダーの繰り返し UI に語彙を合わせる。
+// z.object にしたのは createTodoInputShape 直下に平坦展開せず「反復指定」というまとまりを
+// スキーマ上も保つため(due 等と混ざらず MCP クライアント側の入力補完でも塊として見える)。
+const createTodoRecurrenceInputShape = z
+	.object({
+		frequency: z.enum(["daily", "weekly", "monthly", "yearly"]).describe("反復頻度。RRULE の FREQ に対応。"),
+		interval: z.number().int().min(1).optional().describe(
+			"間隔(例: 2 なら「2日/2週間ごと」)。省略時は RRULE に INTERVAL を出さない(既定 1 と等価)。",
+		),
+		weekdays: z
+			.array(z.enum(["SU", "MO", "TU", "WE", "TH", "FR", "SA"]))
+			.optional()
+			.describe(
+				'曜日指定(BYDAY、序数無し)。frequency:"weekly" のときのみ有効 — それ以外に指定するとエラーになる' +
+					"(monthly/yearly の曜日指定は序数付き BYDAY が必要で意味が異なるため、このスライスでは未対応)。",
+			),
+		count: z.number().int().min(1).optional().describe("回数指定(COUNT)。until と排他。"),
+		until: z.string().optional().describe('終了日("YYYY-MM-DD")。UNTIL に対応。count と排他。'),
+	})
+	.describe(
+		'反復指定。指定する場合 due が必須(RRULE は DTSTART をアンカーにするため)。' +
+			"count と until は同時指定不可(RFC 5545 の UNTIL/COUNT 排他規則)。",
+	);
+
 const createTodoInputShape = {
 	title: z.string().describe("SUMMARY(タイトル)。"),
 	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
 	due: z.string().optional().describe(
-		'期日。"YYYY-MM-DD"(終日)のみサポート。時刻付き due(VTIMEZONE 合成が必要)はこのスライスでは未対応 — 指定すると invalid_input エラーになる。',
+		'期日。"YYYY-MM-DD"(終日)のみサポート。時刻付き due(VTIMEZONE 合成が必要)はこのスライスでは未対応 — 指定すると invalid_input エラーになる。' +
+			"recurrence を指定する場合は due が必須(RRULE の DTSTART アンカー)。",
 	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
 	),
 	calendarId: z.string().optional().describe('保存先コレクション ID。省略時は "tasks"。'),
+	recurrence: createTodoRecurrenceInputShape.optional().describe(
+		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
+			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
+	),
 };
 
 // --- update-todo / complete-todo / delete-todo(方向性 E-1 スライス②-b)-------------
@@ -361,7 +393,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。due は \"YYYY-MM-DD\"(終日)のみ対応 — 時刻付き期日は未対応。",
 			inputSchema: createTodoInputShape,
 		},
-		async ({ title, notes, due, priority, calendarId }) => {
+		async ({ title, notes, due, priority, calendarId, recurrence }) => {
 			try {
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
@@ -374,6 +406,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					due,
 					priority,
 					calendarId,
+					recurrence,
 				});
 				const result = { task };
 				return {
@@ -386,7 +419,17 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				// 誤り)いずれも「入力起因のエラー」としてメッセージをそのまま返す(toolError は
 				// isError:true にするだけで HTTP ステータスの区別は持たない — MCP のエラー表現に
 				// HTTP 相当のコード分類は無いため、既存3ツールと同じ扱いに揃える)。
-				if (error instanceof InvalidDueError) return toolError(error.message);
+				// InvalidDueError と同様、recurrence 関連の3エラー(due 不在/count・until 排他/
+				// weekdays は weekly 限定)もメッセージが自己説明的なのでそのまま返す
+				// (タスク③で追加。create-todo.ts のクラス定義コメント参照)。
+				if (
+					error instanceof InvalidDueError ||
+					error instanceof RecurrenceRequiresDueError ||
+					error instanceof RecurrenceCountUntilConflictError ||
+					error instanceof RecurrenceWeekdaysRequireWeeklyError
+				) {
+					return toolError(error.message);
+				}
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

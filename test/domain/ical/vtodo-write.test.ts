@@ -8,6 +8,8 @@ import { buildVTodoCalendar } from "../../../src/domain/ical/semantics/vtodo-wri
 import { ICalendarObject, VTodo } from "../../../src/domain/ical/semantics";
 import { serialize } from "../../../src/domain/ical/serialize/serializer";
 import { parse } from "../../../src/domain/ical/parse/parser";
+import { recurrenceRule } from "../../../src/domain/ical/values/recurrence-rule";
+import { parseCalDate } from "../../../src/domain/ical/values/cal-date";
 
 // テスト全体で使う固定 NowStamp(vtodo-stamp.test.ts と同じ実測ペア。決定的な期待値にするため)。
 const NOW = { utcRaw: "20260712T114830Z", unixSeconds: 1783856910 };
@@ -106,5 +108,89 @@ describe("buildVTodoCalendar", () => {
 				dueValueType: "DATE-TIME",
 			}),
 		).toThrow();
+	});
+
+	// --- recurrence(タスク③: 反復付き create-todo。RRULE 生成)-----------------------
+
+	describe("recurrence", () => {
+		test("daily + count で FREQ=DAILY;COUNT=5 の RRULE が立ち、DTSTART/DUE は VALUE=DATE のまま", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-rec-1",
+				now: NOW,
+				summary: "毎日のタスク",
+				due: "20260715",
+				dueValueType: "DATE",
+				recurrence: recurrenceRule({ freq: "DAILY", count: 5 }),
+			});
+			const ics = serialize(component);
+			const reparsed = ICalendarObject.fromComponent(parse(ics));
+			expect(reparsed.validate()).toEqual([]);
+
+			const vtodo = reparsed.todos()[0]!;
+			expect(vtodo.dtstart).toEqual({ year: 2026, month: 7, day: 15 });
+			expect(vtodo.due).toEqual({ year: 2026, month: 7, day: 15 });
+			const rruleProp = vtodo.raw.properties.find((p) => p.name === "RRULE")!;
+			expect(rruleProp.value).toBe("FREQ=DAILY;COUNT=5");
+		});
+
+		test("weekly + weekdays で FREQ=WEEKLY;BYDAY=SU,SA の RRULE が立つ", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-rec-2",
+				now: NOW,
+				summary: "週末のタスク",
+				due: "20260718", // 2026-07-18 は土曜(BYDAY の並びは呼び出し側の指定順をそのまま出す)。
+				dueValueType: "DATE",
+				recurrence: recurrenceRule({ freq: "WEEKLY", byDay: [{ weekday: "SU" }, { weekday: "SA" }] }),
+			});
+			const vtodo = ICalendarObject.fromComponent(parse(serialize(component))).todos()[0]!;
+			const rruleProp = vtodo.raw.properties.find((p) => p.name === "RRULE")!;
+			expect(rruleProp.value).toBe("FREQ=WEEKLY;BYDAY=SU,SA");
+		});
+
+		test("interval で FREQ=DAILY;INTERVAL=2 の RRULE が立つ", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-rec-3",
+				now: NOW,
+				summary: "2日おきのタスク",
+				due: "20260715",
+				dueValueType: "DATE",
+				recurrence: recurrenceRule({ freq: "DAILY", interval: 2 }),
+			});
+			const vtodo = ICalendarObject.fromComponent(parse(serialize(component))).todos()[0]!;
+			const rruleProp = vtodo.raw.properties.find((p) => p.name === "RRULE")!;
+			expect(rruleProp.value).toBe("FREQ=DAILY;INTERVAL=2");
+		});
+
+		test("until(DATE 型)で FREQ=DAILY;UNTIL=20260731 の RRULE が立ち、DTSTART と値型が揃う", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-rec-4",
+				now: NOW,
+				summary: "月末までの毎日タスク",
+				due: "20260715",
+				dueValueType: "DATE",
+				recurrence: recurrenceRule({ freq: "DAILY", until: { type: "date", date: parseCalDate("20260731") } }),
+			});
+			const ics = serialize(component);
+			const reparsed = ICalendarObject.fromComponent(parse(ics));
+			// DTSTART が DATE、UNTIL も DATE(RFC 5545 §3.3.10「UNTIL は DTSTART と同じ値型」)。
+			// 値型不一致なら validate() が何か違反を返すはずなので、ここでゼロ件であることも
+			// 合わせて確認する(update-todo.ts で判明した I6 の罠を作っていないことの回帰確認)。
+			expect(reparsed.validate()).toEqual([]);
+
+			const vtodo = reparsed.todos()[0]!;
+			const rruleProp = vtodo.raw.properties.find((p) => p.name === "RRULE")!;
+			expect(rruleProp.value).toBe("FREQ=DAILY;UNTIL=20260731");
+		});
+
+		test("recurrence 指定時は due 無しだと throw する(RRULE は DTSTART アンカーが必須)", () => {
+			expect(() =>
+				buildVTodoCalendar({
+					uid: "uid-rec-5",
+					now: NOW,
+					summary: "due 無しの反復(不正)",
+					recurrence: recurrenceRule({ freq: "DAILY" }),
+				}),
+			).toThrow();
+		});
 	});
 });

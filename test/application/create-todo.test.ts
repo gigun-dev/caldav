@@ -2,7 +2,16 @@
 // CreateTodo ユースケース テスト(E-1 スライス①)
 // =============================================================================
 import { describe, it, expect, beforeEach } from "bun:test";
-import { CreateTodo, PutCalendarObject, InvalidDueError } from "../../src/application/usecases";
+import {
+	CreateTodo,
+	PutCalendarObject,
+	InvalidDueError,
+	RecurrenceRequiresDueError,
+	RecurrenceCountUntilConflictError,
+	RecurrenceWeekdaysRequireWeeklyError,
+	ListTodos,
+	CompleteTodo,
+} from "../../src/application/usecases";
 import {
 	FakeCalendarCollectionRepository,
 	FakeCalendarObjectResourceRepository,
@@ -88,5 +97,86 @@ describe("CreateTodo", () => {
 		await usecase.execute({ owner: TEST_OWNER, title: "別コレクション", calendarId: "other-tasks" });
 		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("other-tasks"));
 		expect(stored).toHaveLength(1);
+	});
+
+	// --- recurrence(タスク③: 反復付き create-todo。RRULE 生成)-----------------------
+
+	describe("recurrence", () => {
+		it("recurrence + due で反復 VTODO ができ、list-todos が master 1件として返す(展開しない)", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "毎日の薬",
+				due: "2026-07-15",
+				recurrence: { frequency: "daily" },
+			});
+			expect(task.due).toBe("2026-07-15");
+
+			// PutCalendarObject 経由で保存された生 ICS に RRULE が含まれること(RRULE 自体の
+			// 詳細な組み立ては vtodo-write.test.ts が担うので、ここでは「反復付きで保存され、
+			// list-todos が展開せず master 1件として返す」という UC 間の結線だけを確認する。
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			expect(stored).toHaveLength(1);
+			expect(stored[0]!.payload.raw).toBeDefined();
+
+			const listTodos = new ListTodos(resourceRepo);
+			const { tasks } = await listTodos.execute({ owner: TEST_OWNER });
+			expect(tasks).toHaveLength(1);
+			expect(tasks[0]!.id).toBe(task.id);
+		});
+
+		it("recurrence 指定だが due が無いと RecurrenceRequiresDueError を投げる", async () => {
+			await expect(
+				usecase.execute({ owner: TEST_OWNER, title: "due 無し反復(不正)", recurrence: { frequency: "weekly" } }),
+			).rejects.toThrow(RecurrenceRequiresDueError);
+		});
+
+		it("count と until を両方指定すると RecurrenceCountUntilConflictError を投げる", async () => {
+			await expect(
+				usecase.execute({
+					owner: TEST_OWNER,
+					title: "排他違反",
+					due: "2026-07-15",
+					recurrence: { frequency: "daily", count: 3, until: "2026-08-01" },
+				}),
+			).rejects.toThrow(RecurrenceCountUntilConflictError);
+		});
+
+		it("weekly 以外に weekdays を指定すると RecurrenceWeekdaysRequireWeeklyError を投げる", async () => {
+			await expect(
+				usecase.execute({
+					owner: TEST_OWNER,
+					title: "monthly + weekdays(不正)",
+					due: "2026-07-15",
+					recurrence: { frequency: "monthly", weekdays: ["MO"] },
+				}),
+			).rejects.toThrow(RecurrenceWeekdaysRequireWeeklyError);
+		});
+
+		it("反復付き create → 生成された UID を complete-todo に渡すと D4 経路(スナップショット+前進)が動く", async () => {
+			// ②-c の D4 モデル(反復完了)は「iOS 発マスター」だけでなく「我々が作ったマスター」でも
+			// 成立するはず、という確認(complete-todo.test.ts は real-ios フィクスチャを使うが、
+			// ここでは CreateTodo が組み立てたマスターをそのまま使う)。
+			const { task: created } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "毎週の水やり",
+				due: "2026-07-15",
+				recurrence: { frequency: "weekly", weekdays: ["SU"] },
+			});
+
+			const putCalendarObject = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
+			const completeTodo = new CompleteTodo(putCalendarObject, resourceRepo, TEST_RECURRENCE_ITERATOR);
+			const { task: completedSnapshot } = await completeTodo.execute({ owner: TEST_OWNER, todoId: created.id });
+
+			// D4: 完了操作は「新 UID の完了スナップショット」を返す(マスター自身の UID とは別)。
+			expect(completedSnapshot.id).not.toBe(created.id);
+			expect(completedSnapshot.completed).toBe(true);
+
+			// マスター(元の UID)は次回 occurrence へ前進しており、コレクション中に
+			// マスター + 完了スナップショットの計2件が存在する。
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			expect(stored).toHaveLength(2);
+			const master = stored.find((r) => r.uid === created.id);
+			expect(master).toBeDefined();
+		});
 	});
 });

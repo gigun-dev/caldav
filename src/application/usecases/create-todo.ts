@@ -29,7 +29,17 @@
 // そのとき一括で導入する)。
 // =============================================================================
 
-import { buildVTodoCalendar, ICalendarObject, serialize, type VTodoFields } from "../../domain/ical";
+import {
+	buildVTodoCalendar,
+	ICalendarObject,
+	parseCalDate,
+	recurrenceRule,
+	serialize,
+	type Frequency,
+	type RecurrenceRule,
+	type VTodoFields,
+	type Weekday,
+} from "../../domain/ical";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
 import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import type { Task } from "./task-dto";
@@ -55,6 +65,26 @@ export interface CreateTodoInput {
 	priority?: number;
 	/** 保存先コレクション ID。省略時は "tasks"(provision-default-collections.ts の既定 VTODO コレクション)。 */
 	calendarId?: string;
+	/**
+	 * 反復指定(タスク③)。MCP `create-todo` の chat 語彙(iOS リマインダーの繰り返し UI に
+	 * 合わせた素朴な形)をそのまま受け取り、この UC 内でドメインの RecurrenceRule に変換する
+	 * (変換・不変条件検証をこの UC に集約する設計判断。下の buildRecurrenceRule 参照)。
+	 * 指定時は due が必須(RRULE は DTSTART をアンカーにするため — RecurrenceRequiresDueError)。
+	 */
+	recurrence?: CreateTodoRecurrenceInput;
+}
+
+/** MCP `create-todo` の recurrence 入力(zod 前段は presentation 層が担う。ここは素朴な形のまま)。 */
+export interface CreateTodoRecurrenceInput {
+	frequency: "daily" | "weekly" | "monthly" | "yearly";
+	/** INTERVAL(§3.3.10)。省略時は RRULE に INTERVAL を出さない(既定 1 を補完しない。ロスレス方針)。 */
+	interval?: number;
+	/** BYDAY(序数無し)。weekly でのみ有効(下記バリデーション参照)。 */
+	weekdays?: readonly Weekday[];
+	/** COUNT(§3.3.10)。until と排他。 */
+	count?: number;
+	/** UNTIL を "YYYY-MM-DD" で指定。count と排他。DATE 型で RRULE に出す(下記コメント参照)。 */
+	until?: string;
 }
 
 // --- 出力 DTO ---
@@ -80,11 +110,105 @@ export class InvalidDueError extends Error {
 	}
 }
 
-export type CreateTodoError = InvalidDueError | PutCalendarObjectError;
+/**
+ * recurrence を指定したのに due が無いときのエラー。
+ * 【設計判断】RRULE は DTSTART をアンカーにする(§3.8.5.3)ので、我々の実装(due が
+ * DTSTART/DUE の値そのもの)では due 無しに RRULE だけ立てることができない。zod では
+ * 「他のフィールドの有無」を跨いだ相関チェックが冗長になりがちなので、application 層で
+ * 明示的にエラーにする(InvalidDueError と型を分けたのは、原因が「due の形式」ではなく
+ * 「due の不在」であることをメッセージ・catch 分岐の両方で区別できるようにするため)。
+ */
+export class RecurrenceRequiresDueError extends Error {
+	readonly kind = "RecurrenceRequiresDueError" as const;
+	constructor() {
+		super("recurrence requires due (RRULE needs a DTSTART anchor); specify due together with recurrence");
+		this.name = "RecurrenceRequiresDueError";
+	}
+}
+
+/**
+ * count と until を両方指定したときのエラー。
+ * 【RFC 根拠】§3.3.10 recur ABNF のコメント「The UNTIL or COUNT rule parts are OPTIONAL,
+ * but they MUST NOT occur in the same 'recur'.」(I5)。recurrence-rule.ts の recurrenceRule()
+ * も同じ不変条件を検証するが、ここで早期に弾いて MCP ツール利用者にわかりやすいメッセージを
+ * 返す(recurrenceRule() 側のメッセージは values 層向けの汎用文言のため)。
+ */
+export class RecurrenceCountUntilConflictError extends Error {
+	readonly kind = "RecurrenceCountUntilConflictError" as const;
+	constructor() {
+		super("recurrence.count and recurrence.until must not both be specified (RFC 5545 I5)");
+		this.name = "RecurrenceCountUntilConflictError";
+	}
+}
+
+/**
+ * weekly 以外の frequency に weekdays を指定したときのエラー。
+ * 【設計判断(安全側を選ぶ)】RFC 5545 §3.3.10 は BYDAY を monthly/yearly でも許容するが、
+ * それは「序数付き BYDAY」(例 2MO, -1SU)としての用法であり、序数無し BYDAY(例 "MO"だけ)を
+ * monthly/yearly に付けたときの意味は曖昧(「毎月の月曜すべて」等、複数 occurrence/期間に
+ * 展開されうる)。一方 weekly の序数無し BYDAY は「その週の指定曜日」という一義的な意味を持つ
+ * (recurrence-rule.ts の I 系検証も序数付き BYDAY を monthly/yearly 限定にしているだけで、
+ * 序数無し BYDAY を weekly 限定とはしていない=values 層は通してしまう)。chat からの
+ * ゼロ知識入力でこの曖昧さを黙って解釈するより、weekly 限定に絞って明示的にエラーにする方が
+ * 安全側(誤った反復パターンを黙って作ってしまうより、失敗して再入力を促す方がまし)と判断した。
+ * monthly/yearly の曜日指定(序数付き BYDAY)が必要になったら、そのとき専用の入力語彙を
+ * 別途設計する(YAGNI)。
+ */
+export class RecurrenceWeekdaysRequireWeeklyError extends Error {
+	readonly kind = "RecurrenceWeekdaysRequireWeeklyError" as const;
+	constructor(readonly frequency: string) {
+		super(`recurrence.weekdays is only valid when frequency is "weekly", got "${frequency}"`);
+		this.name = "RecurrenceWeekdaysRequireWeeklyError";
+	}
+}
+
+export type CreateTodoError =
+	| InvalidDueError
+	| RecurrenceRequiresDueError
+	| RecurrenceCountUntilConflictError
+	| RecurrenceWeekdaysRequireWeeklyError
+	| PutCalendarObjectError;
 
 // YYYY-MM-DD の厳密マッチ(値の実在性チェックは domain の calDate ファクトリに委ねる —
 // ここでは「時刻付きではないこと」の形式だけを見る)。
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// chat 語彙の frequency ("daily"等) → ドメインの Frequency("DAILY"等)。
+const FREQUENCY_MAP: Record<CreateTodoRecurrenceInput["frequency"], Frequency> = {
+	daily: "DAILY",
+	weekly: "WEEKLY",
+	monthly: "MONTHLY",
+	yearly: "YEARLY",
+};
+
+/**
+ * CreateTodoRecurrenceInput(chat 語彙) → RecurrenceRule(ドメイン型)への変換 + 不変条件検証。
+ * 【until を DATE 型で出す理由】buildVTodoCalendar は due(→ DTSTART)を常に VALUE=DATE で
+ * 立てる(vtodo-write.ts 冒頭コメント)。RFC 5545 §3.3.10 の UNTIL 規則「The value of the
+ * UNTIL rule part MUST have the same value type as the "DTSTART" property」に従い、
+ * DTSTART が DATE である以上 UNTIL も DATE でなければ値型不一致になる(update-todo.ts で
+ * 判明した同種の罠 — I6 不変条件)。よってここでは常に RecurUntil{type:"date"} を組み立てる
+ * (DATE-TIME 版の UNTIL を選べる入力にはしない = 値型不一致を作れない設計)。
+ */
+function buildRecurrenceRule(input: CreateTodoRecurrenceInput): RecurrenceRule {
+	if (input.count !== undefined && input.until !== undefined) {
+		throw new RecurrenceCountUntilConflictError();
+	}
+	if (input.weekdays !== undefined && input.weekdays.length > 0 && input.frequency !== "weekly") {
+		throw new RecurrenceWeekdaysRequireWeeklyError(input.frequency);
+	}
+
+	return recurrenceRule({
+		freq: FREQUENCY_MAP[input.frequency],
+		interval: input.interval,
+		count: input.count,
+		until: input.until !== undefined ? { type: "date", date: parseCalDate(input.until.replace(/-/g, "")) } : undefined,
+		byDay:
+			input.frequency === "weekly" && input.weekdays !== undefined
+				? input.weekdays.map((weekday) => ({ weekday }))
+				: undefined,
+	});
+}
 
 export class CreateTodo {
 	constructor(private readonly putCalendarObject: PutCalendarObject) {}
@@ -98,6 +222,16 @@ export class CreateTodo {
 			// buildVTodoCalendar は VALUE=DATE の生値(YYYYMMDD、区切りなし)を要求する
 			// (values/cal-date.ts の DATE 構文 §3.3.4)。"YYYY-MM-DD" から区切りを剥がすだけ。
 			due = input.due.replace(/-/g, "");
+		}
+
+		let recurrence: RecurrenceRule | undefined;
+		if (input.recurrence !== undefined) {
+			// RRULE は DTSTART をアンカーにするため due 必須(vtodo-write.ts の防御的 throw と
+			// 対称。ここが本線で、あちらは呼び出し側のバグを捕まえる最終防衛線)。
+			if (due === undefined) {
+				throw new RecurrenceRequiresDueError();
+			}
+			recurrence = buildRecurrenceRule(input.recurrence);
 		}
 
 		const uid = crypto.randomUUID();
@@ -118,6 +252,7 @@ export class CreateTodo {
 			due,
 			dueValueType: due !== undefined ? "DATE" : undefined,
 			priority: input.priority,
+			recurrence,
 		};
 		const component = buildVTodoCalendar(fields);
 		const ics = serialize(component);

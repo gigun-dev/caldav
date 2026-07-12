@@ -38,6 +38,7 @@
 import type { Component, Parameter } from "../structure/types";
 import { upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
+import { formatRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { stampCreate, type NowStamp } from "./vtodo-stamp";
 
 /**
@@ -74,6 +75,16 @@ export interface VTodoFields {
 	dueValueType?: "DATE";
 	/** PRIORITY(§3.8.1.9)。0-9。0(既定=未設定)を渡すとプロパティ自体を省略する。 */
 	priority?: number;
+	/**
+	 * RRULE(§3.3.10 RECUR / §3.8.5.3 プロパティ)。タスク③(反復付き create-todo)で追加。
+	 * 【DTSTART が前提】RRULE は DTSTART を反復のアンカーにする(§3.8.5.3 の記載どおり
+	 * DTSTART が反復の起点)。よって recurrence を指定するなら due(→ DTSTART/DUE)も
+	 * 必須という契約にする(下の防御的 throw、および application 層 create-todo.ts の
+	 * 本線チェック)。ドメイン型 RecurrenceRule をそのまま受け取る(MCP 由来の素朴な
+	 * 語彙からの変換は application 層の責務 — values 層の recurrenceRule() を経由済みの
+	 * 検証済み値がここに来る)。
+	 */
+	recurrence?: RecurrenceRule;
 }
 
 // VALUE=DATE パラメータ。DTSTART/DUE を終日として立てるときに共通で使う。
@@ -94,6 +105,12 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 		// 「表現できない入力を黙って壊さない」方針(CLAUDE.md ロスレス優先)で防御する。
 		throw new Error("buildVTodoCalendar: due requires dueValueType 'DATE' (DATE-TIME is not yet supported)");
 	}
+	if (fields.recurrence !== undefined && fields.due === undefined) {
+		// RRULE は DTSTART をアンカーにする(§3.8.5.3)。application 層(create-todo.ts)が
+		// 本線として先に弾く契約だが、ここでも防御的に throw する(vtodo-write.ts 冒頭コメントの
+		// 「表現できない入力を黙って壊さない」方針どおり — 上の due/dueValueType チェックと対称)。
+		throw new Error("buildVTodoCalendar: recurrence requires due (RRULE needs a DTSTART anchor)");
+	}
 
 	let vtodo: Component = { name: "VTODO", properties: [], components: [] };
 	vtodo = upsertProperty(vtodo, "UID", fields.uid);
@@ -105,6 +122,12 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 		// iOS 実機キャプチャどおり DTSTART と DUE を同値・同値型で両方立てる。
 		vtodo = upsertProperty(vtodo, "DTSTART", fields.due, VALUE_DATE_PARAMS);
 		vtodo = upsertProperty(vtodo, "DUE", fields.due, VALUE_DATE_PARAMS);
+	}
+	if (fields.recurrence !== undefined) {
+		// DTSTART/DUE のすぐ後に RRULE を置く(実機フィクスチャ real-ios/vtodo-recurring-master.ics
+		// の並び DTSTART, DUE, ..., RRULE に寄せる。upsertProperty の追加順で決まるだけで
+		// RFC 上は順序に意味は無いが、決定的な出力にして diff/テストを安定させる狙い)。
+		vtodo = upsertProperty(vtodo, "RRULE", formatRecurrenceRule(fields.recurrence));
 	}
 	if (fields.priority !== undefined && fields.priority !== 0) {
 		// PRIORITY:0 は「未設定」と等価(§3.8.1.9)なのでプロパティ自体を省略する
