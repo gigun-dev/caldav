@@ -217,6 +217,42 @@ describe("advanceMasterToNextOccurrence", () => {
 		expect(vtodo.raw.properties.find((p) => p.name === "DUE")?.value).toBe("20260104");
 	});
 
+	// 2026-07-13 本番 D1 実測(カスタム RRULE)由来のレグレッション。
+	// INTERVAL=3;BYDAY=SU,WE,TH という「複数曜日 × 3週間隔」の RRULE でも、前進先が
+	// 「固定 +1日」でも「固定 +21日(3週間)」でもなく、iterator が FREQ/INTERVAL/BYDAY を
+	// 正しく解釈した実 occurrence(DTSTART 07-13 月曜の次に該当する BYDAY は 07-15 水曜)へ
+	// 前進することを iOS 実機出力(本番 D1 のマスター最終形)と突き合わせて固定する。
+	// また UNTIL=20260714(07-14)を 07-15 が越えるため seriesEnded=true になることも実測どおり。
+	test("INTERVAL=3;BYDAY=SU,WE,TH の複雑な RRULE でも実 occurrence(07-13→07-15)へ前進し UNTIL 越えで seriesEnded=true(本番 D1 実測)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:interval-byday-test",
+			"DTSTAMP:20260101T000000Z",
+			"DTSTART;VALUE=DATE:20260713",
+			"DUE;VALUE=DATE:20260713",
+			"RRULE:FREQ=WEEKLY;INTERVAL=3;UNTIL=20260714;BYDAY=SU,WE,TH",
+			"STATUS:NEEDS-ACTION",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const cal = ICalendarObject.fromComponent(parse(ics));
+		const master = cal.todos()[0]!.raw;
+		const rruleBefore = rruleRaw(master);
+
+		const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+		if (result.kind !== "advanced") throw new Error("expected advanced");
+		// 固定+1日(07-14)でも固定+21日(3週間後の07-13系)でもなく、iterator の実 occurrence。
+		expect(due(result.vtodo)).toBe("20260715");
+		expect(
+			VTodo.fromComponent(result.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value,
+		).toBe("20260715");
+		expect(result.seriesEnded).toBe(true); // 前進先 07-15 が UNTIL=20260714 を越える。
+		expect(rruleRaw(result.vtodo)).toBe(rruleBefore); // RRULE(UNTIL 込み)は前進しても不変。
+	});
+
 	test("DUE≠DTSTART の差分保持・DUE 無しは DTSTART のみ前進する", () => {
 		const withDue = masterVTodoComponent();
 		const r = advanceMasterToNextOccurrence(withDue, iterator, zoneOf);
