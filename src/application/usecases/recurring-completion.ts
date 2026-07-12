@@ -1,0 +1,171 @@
+// =============================================================================
+// completeRecurringTodo — 反復 VTODO の完了オーケストレーション(D4 モデル。E-1 スライス②-c)
+// =============================================================================
+//
+// 【この関数の位置づけ・なぜクラスではなく関数か】
+// domain/ical/semantics/vtodo-recurrence.ts の buildCompletionSnapshot /
+// advanceMasterToNextOccurrence(純関数、Component → Component)を実際の PUT 2回に
+// 配線する薄いオーケストレーション層。CompleteTodo/UpdateTodo という2つの呼び出し元
+// (complete-todo.ts / update-todo.ts)から同じロジックを呼ぶために抽出したが、状態を
+// 持たない・constructor injection で束ねる価値のある複数メソッドも無いため、
+// PutCalendarObject/CreateTodo のような class ではなく素朴な async 関数にする
+// (既存コードの中では stampCreate/applyCompletion 等の純関数と同じ「小さく完結した処理は
+// 関数のままにする」慣習に揃えた判断 — CLAUDE.md にクラス化の強制はない)。
+//
+// 【非原子 2 PUT の失敗モードと安全性(snapshot-first の理由)】
+// このオーケストレーションは1つの UoW にまたがらない「at-least-once」な操作である
+// (PutCalendarObject.execute を2回、それぞれ別のリクエストとして呼ぶ。中間で失敗しても
+// ロールバックは無い)。順序を snapshot-first((a) スナップショット作成 → (b) マスター前進)に
+// 固定する理由:
+//   - (a) が失敗(ネットワーク断・precondition 違反等) → 何も変わっていないので、
+//     呼び出し側がそのまま再実行すれば良い(冪等ではないが実質無害な再試行になる)。
+//   - (a) 成功 → (b) が失敗(典型は楽観ロック — must-match の ETag が別プロセスの更新で
+//     ズレていた) → 完了スナップショットが1件「余剰」に残るだけ(良性・可逆: ユーザーが
+//     見れば「あ、これは重複か」と分かる形で残り、二度と occurrence が失われることはない)。
+// これを逆(master-first: 先にマスターを前進させてから完了スナップショットを作る)にすると、
+// (b) 相当の失敗で「マスターは次回へ進んだのに完了記録(スナップショット)が無い」= 今回
+// 完了させた occurrence の記録が消え、かつ次回の occurrence へ進んでしまっている(スキップ扱い)
+// という非可逆な事故になる。よって snapshot-first を必ず守る((a)→(b) の順序を変えない)。
+//
+// 【exhausted(最終 occurrence)のときは 1 PUT のみ】
+// advanceMasterToNextOccurrence が exhausted を返したら「これ以上の occurrence が無い」ので、
+// スナップショットは作らずマスター自身に applyCompletion する(単発完了と同じ処理)。
+// 【未確定事項】この「最終 occurrence 完了時にスナップショットを作らない」という判断は
+// iOS 実機で実測できていない(反復を最後まで完了させて完了リストの件数を数える実機検証が
+// 未実施 — docs/modeling/06 §D4 に追記済み)。実測と食い違うことが分かったら、このファイルと
+// vtodo-recurrence.ts の advanceMasterToNextOccurrence 呼び出し側だけを直せばよい設計にしてある
+// (exhausted の分岐はこの関数の中だけに閉じている)。
+// =============================================================================
+
+import { ICalendarObject, serialize, type Component } from "../../domain/ical";
+import {
+	advanceMasterToNextOccurrence,
+	applyCompletion,
+	buildCompletionSnapshot,
+	stampUpdate,
+	type NowStamp,
+} from "../../domain/ical/semantics";
+import { zoneResolverFor, type RecurrenceIterator } from "../../domain/ical/recurrence";
+import type { CollectionId, PrincipalRef } from "../../domain/caldav";
+import { PutCalendarObject } from "./put-calendar-object";
+import type { LookedUpTodo } from "./todo-lookup";
+import type { Task } from "./task-dto";
+import { taskFromVTodo } from "./task-dto";
+
+export interface CompleteRecurringTodoDeps {
+	readonly putCalendarObject: PutCalendarObject;
+	readonly recurrenceIterator: RecurrenceIterator;
+}
+
+export interface CompleteRecurringTodoArgs {
+	readonly owner: PrincipalRef;
+	readonly collectionId: CollectionId;
+	/** lookupTodo が返した対象一式(resource/resourceUri/etag/vtodo)。 */
+	readonly looked: LookedUpTodo;
+	/**
+	 * 完了操作を適用する対象のマスター VTODO Component。CompleteTodo は looked.vtodo.raw を
+	 * そのまま渡すが、UpdateTodo は「他フィールドの patch を先に適用した後」の Component を
+	 * 渡す想定(update-todo.ts の呼び出し箇所参照 — 「due を伸ばして完了」のような複合操作でも
+	 * フィールド更新が失われないようにするため)。
+	 */
+	readonly masterVtodo: Component;
+	readonly now: NowStamp;
+}
+
+export interface CompleteRecurringTodoResult {
+	readonly task: Task;
+}
+
+/**
+ * 反復 VTODO(RRULE あり)の完了を D4 モデルで実行する。
+ * CompleteTodo.execute / UpdateTodo.execute(status:"COMPLETED" 分岐)から呼ばれる。
+ */
+export async function completeRecurringTodo(
+	deps: CompleteRecurringTodoDeps,
+	args: CompleteRecurringTodoArgs,
+): Promise<CompleteRecurringTodoResult> {
+	const { owner, collectionId, looked, masterVtodo, now } = args;
+	const vcalendar = looked.resource.payload.raw;
+
+	// zoneOf は「この PUT で保存する ICS 自身の VTIMEZONE」から組み立てる(occurrence-bounds.ts /
+	// calendar-query.ts と同じ規約 — PUT 時点の floating 解決は UTC 固定の確定設計)。
+	const zoneOf = zoneResolverFor(looked.resource.payload);
+
+	// advance を先に評価する(exhausted かどうかで 1 PUT/2 PUT を分岐するため)。
+	const advance = advanceMasterToNextOccurrence(masterVtodo, deps.recurrenceIterator, zoneOf);
+
+	if (advance.kind === "exhausted") {
+		// --- 最終 occurrence: マスターへ直接 applyCompletion(単発完了と同じ) -------------
+		let patched: Component = applyCompletion(masterVtodo, now);
+		patched = stampUpdate(patched, now);
+
+		const components = vcalendar.components.map((c) => (c === looked.vtodo.raw ? patched : c));
+		const newVcalendar: Component = { ...vcalendar, components };
+		const ics = serialize(newVcalendar);
+
+		await deps.putCalendarObject.execute({
+			owner,
+			collectionId,
+			resourceUri: looked.resourceUri,
+			ics,
+			condition: { kind: "must-match", etag: looked.etag.hex },
+		});
+
+		const obj = ICalendarObject.fromComponent(newVcalendar);
+		const vtodo = obj.todos().find((t) => t.uid === looked.vtodo.uid) ?? obj.todos()[0];
+		if (vtodo === undefined) {
+			throw new Error("completeRecurringTodo: internal error — patched master VTODO not found after round-trip");
+		}
+		return { task: taskFromVTodo(vtodo) };
+	}
+
+	// --- 次回あり: snapshot-first の 2 PUT(冒頭コメントの失敗モード分析どおり順序厳守) -----
+	const snapshotUid = crypto.randomUUID();
+	const snapshot = buildCompletionSnapshot(
+		masterVtodo,
+		{ uid: snapshotUid, nextAlarmUid: () => crypto.randomUUID() },
+		now,
+	);
+
+	// スナップショット用 VCALENDAR: 元 VCALENDAR.components のうち対象 VTODO だけを snapshot に
+	// 差し替えたもの(VTIMEZONE 等は素通しでコピー — TZID 付き DTSTART の解決に必須。他の
+	// UC と同じ「components 配列を map で差し替える」パターン)。
+	const snapshotComponents = vcalendar.components.map((c) => (c === looked.vtodo.raw ? snapshot : c));
+	const snapshotVcalendar: Component = { ...vcalendar, components: snapshotComponents };
+	const snapshotIcs = serialize(snapshotVcalendar);
+
+	// PUT (a): 新規リソース(must-not-exist)。失敗したらここで例外が伝播し、(b) は実行されない
+	// (=無変更のまま。冒頭コメントの「(a) 失敗 → 無変更で再実行回復」)。
+	await deps.putCalendarObject.execute({
+		owner,
+		collectionId,
+		resourceUri: `${snapshotUid}.ics`,
+		ics: snapshotIcs,
+		condition: { kind: "must-not-exist" },
+	});
+
+	// PUT (b): 既存リソース(マスター)を前進後の内容で更新。ETagConditionError 等はここで
+	// 握りつぶさずそのまま呼び出し側へ伝播させる(冒頭コメント「エラーは握りつぶさない」)。
+	const advancedMaster = stampUpdate(advance.vtodo, now);
+	const masterComponents = vcalendar.components.map((c) => (c === looked.vtodo.raw ? advancedMaster : c));
+	const masterVcalendar: Component = { ...vcalendar, components: masterComponents };
+	const masterIcs = serialize(masterVcalendar);
+
+	await deps.putCalendarObject.execute({
+		owner,
+		collectionId,
+		resourceUri: looked.resourceUri,
+		ics: masterIcs,
+		condition: { kind: "must-match", etag: looked.etag.hex },
+	});
+
+	// 返す Task は「完了させたスナップショット」(呼び出し元は「今回完了させた occurrence」の
+	// 状態を知りたいはずなので、前進後のマスター=NEEDS-ACTION ではなく完了済みスナップショットを
+	// 返す — Fable 確定設計「返す Task=完了マスター/完了スナップショット」のとおり)。
+	const snapshotObj = ICalendarObject.fromComponent(snapshotVcalendar);
+	const snapshotVtodo = snapshotObj.todos().find((t) => t.uid === snapshotUid) ?? snapshotObj.todos()[0];
+	if (snapshotVtodo === undefined) {
+		throw new Error("completeRecurringTodo: internal error — completion snapshot VTODO not found after round-trip");
+	}
+	return { task: taskFromVTodo(snapshotVtodo) };
+}

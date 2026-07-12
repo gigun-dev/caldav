@@ -1,0 +1,360 @@
+// =============================================================================
+// vtodo-recurrence — 反復 VTODO の完了(D4 モデル。E-1 スライス②-c)
+// =============================================================================
+//
+// 【D4 モデルの要旨(docs/modeling/06-ios-behavior-verification.md §D4/§D9 の実機所見)】
+// iOS は反復 VTODO を1回完了させるとき、単純に STATUS:COMPLETED をマスターへ書かない。
+// 代わりに「新しい UID を持つ“完了スナップショット”を1件作り(RRULE を持たない・STATUS:
+// COMPLETED 済みの単発 VTODO)、マスター自身は DTSTART/DUE を次の occurrence へ前進させて
+// STATUS:NEEDS-ACTION のまま残す」という2リソースモデルを取る。このファイルはその2つの
+// 変換をそれぞれ独立した純関数として提供する(オーケストレーション — 2 PUT の実行順序 —は
+// application/usecases/recurring-completion.ts の責務。ここでは Component の変換のみ)。
+//
+// 【なぜ2つの関数を分けるか】
+// buildCompletionSnapshot と advanceMasterToNextOccurrence は「同じ入力(マスター VTODO)から
+// 別々の出力を作る」独立した変換であり、互いの結果に依存しない(advance の結果を snapshot が
+// 必要とすることはなく、その逆もない)。1関数に混ぜると「スナップショットを作る条件」と
+// 「マスターを前進できるか(exhausted 判定)」という異なる関心がテストしにくい形で結合する。
+// recurring-completion.ts が両方を呼んで、advance が exhausted かどうかで
+// snapshot を作るかどうかを分岐する(1 PUT/2 PUT の切り替え)。
+//
+// 【iterator/zoneOf/uid/now をすべて引数注入にする理由】
+// このファイルは domain/ical 層(オニオンの最内層)に置く。RecurrenceIterator は
+// recurrence/iterator-port.ts の port(実装は infrastructure)、zoneOf は VTIMEZONE 解決の
+// 結果を注入する関数(occurrence-bounds.ts の zoneResolverFor と同じ形)、uid/now は
+// crypto.randomUUID()/Date という副作用のある値。この層は一切の外部技術・非決定性を
+// 直接呼ばない(既存の vtodo-stamp.ts/vtodo-patch.ts と同じ「純関数・DI で受け取る」規律)。
+// =============================================================================
+
+import type { Component } from "../structure/types";
+import { removeProperty, upsertProperty } from "../structure/edit";
+import { applyCompletion, applyReopen } from "./vtodo-patch";
+import type { NowStamp } from "./vtodo-stamp";
+import { firstProp, isCalDateTime, parseDateOrDateTime, rawValue } from "./helpers";
+import type { CalDate } from "../values/cal-date";
+import { formatCalDate } from "../values/cal-date";
+import type { CalDateTime } from "../values/cal-date-time";
+import { formatCalDateTime, toEpochMillis } from "../values/cal-date-time";
+import type { RecurrenceRule, RecurUntil } from "../values/recurrence-rule";
+import { formatRecurrenceRule, parseRecurrenceRule } from "../values/recurrence-rule";
+import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../timezone";
+import type { RecurrenceIterator, RecurrenceWallClockFields } from "../recurrence/iterator-port";
+
+// ---------------------------------------------------------------------------
+// buildCompletionSnapshot — 「今回の occurrence を完了した」単発 VTODO を組み立てる
+// ---------------------------------------------------------------------------
+
+/**
+ * buildCompletionSnapshot の識別子入力。呼び出し側(recurring-completion.ts)が
+ * crypto.randomUUID() 等で採番したものを渡す(この層は乱数/UUID 生成を直接呼ばない —
+ * ファイル冒頭コメントの DI 方針)。
+ */
+export interface CompletionSnapshotIds {
+	/** スナップショット VTODO 自身の新 UID。 */
+	readonly uid: string;
+	/**
+	 * VALARM ごとに新しい ID を1つ払い出す。呼び出し側は VALARM の数だけ異なる値を返す関数を
+	 * 渡す(例: `() => crypto.randomUUID()`)。UID と X-WR-ALARMUID には**同じ VALARM 内では
+	 * 同じ値**を書く(iOS 実機の観測どおり。下記ループ内で1回だけ呼んで使い回す)。
+	 */
+	readonly nextAlarmUid: () => string;
+}
+
+/**
+ * マスター VTODO の「現在の occurrence」を完了扱いにしたスナップショット Component を作る。
+ *
+ * 【fixture 突合せで確定した変換内容(test/domain/ical/fixtures/real-ios/ の2本)】
+ * 1. RRULE/RDATE/EXDATE を除去する(スナップショットは単発 VTODO — この UC は VTODO の
+ *    RDATE/EXDATE を書き込む経路を持たないため通常は無いはずだが、ロスレス往復で稀に
+ *    紛れ込んだ場合に備えて明示的に除去する)。
+ * 2. UID をこのスナップショット専用の新 UID に差し替える(マスターの UID とは別物になる —
+ *    D4 モデルの核心。同一 UID のまま STATUS:COMPLETED にすると「反復全体が完了した」
+ *    ように見えてしまう)。
+ * 3. applyCompletion(vtodo-patch.ts)で STATUS:COMPLETED / COMPLETED / PERCENT-COMPLETE:100
+ *    の三点セットを立てる。
+ * 4. CREATED/LAST-MODIFIED/DTSTAMP を now.utcRaw に upsert する。stampCreate(vtodo-stamp.ts)を
+ *    使わない理由: stampCreate は X-APPLE-SORT-ORDER も書くが、fixture(completed-instance.ics)
+ *    にはこのプロパティが無い(iOS 自身が送ってこない)。fixture 忠実を優先し、この4プロパティ
+ *    だけを直接 upsert する。
+ * 5. DTSTART/DUE には触れない — マスターの現在値(=いま完了させる occurrence の時刻)を
+ *    そのままスナップショットへ引き継ぐ(fixture の DTSTART/DUE がマスターと同一なことで確認済み)。
+ * 6. VALARM を再採番する。TRIGGER/ACTION/DESCRIPTION 等 UID 以外のプロパティ・VALARM 以外の
+ *    サブコンポーネントには一切触れない(ロスレス方針)。
+ */
+export function buildCompletionSnapshot(masterVtodo: Component, ids: CompletionSnapshotIds, now: NowStamp): Component {
+	let out = masterVtodo;
+
+	// --- 1: RRULE/RDATE/EXDATE 除去(単発化) --------------------------------------
+	out = removeProperty(out, "RRULE");
+	out = removeProperty(out, "RDATE");
+	out = removeProperty(out, "EXDATE");
+
+	// --- 2: UID 差し替え -----------------------------------------------------------
+	out = upsertProperty(out, "UID", ids.uid);
+
+	// --- 3: 完了三点セット -----------------------------------------------------------
+	out = applyCompletion(out, now);
+
+	// --- 4: CREATED/LAST-MODIFIED/DTSTAMP を完了時刻へ(X-APPLE-SORT-ORDER は書かない。上記コメント参照) ---
+	out = upsertProperty(out, "CREATED", now.utcRaw);
+	out = upsertProperty(out, "LAST-MODIFIED", now.utcRaw);
+	out = upsertProperty(out, "DTSTAMP", now.utcRaw);
+
+	// --- 6: VALARM の UID / X-WR-ALARMUID を再採番 ----------------------------------
+	// 【なぜ「既に UID がある/X-WR-ALARMUID がある」ときだけ upsert するのか】
+	// マスター VALARM に無いプロパティを新設してしまうと「サーバーが勝手に VALARM の形を
+	// 変えた」ことになりロスレス方針(edit.ts の upsertProperty コメント)に反する。iOS 由来の
+	// VALARM は常に両方持つ(fixture 参照)が、将来サーバー生成 VALARM 等に UID しか無い/
+	// どちらも無いケースが来ても壊れないよう、存在確認してから upsert する防御的な書き方にする。
+	const components = out.components.map((c) => {
+		if (c.name !== "VALARM") return c;
+		const id = ids.nextAlarmUid(); // 1 VALARM につき1回だけ呼ぶ(UID と X-WR-ALARMUID で使い回す)。
+		let alarm = c;
+		if (alarm.properties.some((p) => p.name === "UID")) {
+			alarm = upsertProperty(alarm, "UID", id);
+		}
+		if (alarm.properties.some((p) => p.name === "X-WR-ALARMUID")) {
+			alarm = upsertProperty(alarm, "X-WR-ALARMUID", id);
+		}
+		return alarm;
+	});
+	out = { ...out, components };
+
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// advanceMasterToNextOccurrence — マスターの DTSTART/DUE を次の occurrence へ前進させる
+// ---------------------------------------------------------------------------
+
+export type AdvanceResult = { readonly kind: "advanced"; readonly vtodo: Component } | { readonly kind: "exhausted" };
+
+/**
+ * 「次候補を探すために消費する iterate() の壁時計フィールド数」の上限。COUNT も UNTIL も
+ * 現実的な範囲に収まっていれば数件で見つかるはずだが、病的な BYxxx の組み合わせ
+ * (例: BYMONTHDAY=31;FREQ=MONTHLY で該当月がほぼ無い等)が「次の1件」を見つけるまでに
+ * 大量の壁時計を要求してくるケースへの保険。定数名・値そのものに RFC 上の根拠は無い
+ * (Fable 設計メモの「保険」という位置づけそのまま)。
+ */
+const MAX_ADVANCE_SCAN = 1000;
+
+/**
+ * マスター VTODO の DTSTART/DUE を「現在の DTSTART より後の最初の occurrence」へ前進させる。
+ *
+ * 【展開規約は expansion.ts(RecurrenceExpansion)と同一だが、ここでは複製する】
+ * expansion.ts の instantOfDateValue/wallFieldsOf/reconstructCalDateTime/
+ * ruleWithoutUntilForIterator/untilEpochOf は非公開(export されていない)関数で、
+ * G-1/G-2 の完成物(expansion.ts)は変更しない方針(CLAUDE.md 準拠のタスク指示)のため、
+ * このファイル内に同じロジックをそのまま複製する(calendarDaysBetween を独自複製した
+ * expansion.ts 自身の前例と同じ判断)。壁時計のまま列挙し、UTC 化は個別に行う鉄則
+ * (expansion.ts 冒頭コメント)もここで踏襲する。
+ *
+ * @param masterVtodo    前進対象のマスター VTODO(RRULE を持つ前提)。
+ * @param iterator       RRULE 反復 port(DI)。
+ * @param zoneOf         zoned の TZID → IANA 名の解決(zoneResolverFor で組み立てたものを渡す)。
+ * @param floatingTimeZone floating/DATE を解釈するゾーン。既定 "UTC"(PUT 時点の確定設計に揃える)。
+ */
+export function advanceMasterToNextOccurrence(
+	masterVtodo: Component,
+	iterator: RecurrenceIterator,
+	zoneOf: (tzid: string) => string,
+	floatingTimeZone = "UTC",
+): AdvanceResult {
+	const dtstartProp = firstProp(masterVtodo, "DTSTART");
+	if (dtstartProp === undefined) {
+		// DTSTART は VTODO の RRULE 前進に必須(§3.6.2 の RRULE 使用は DTSTART 前提)。
+		// 呼び出し側(recurring-completion.ts)は rrule ありの VTODO でしか呼ばない契約なので、
+		// ここに来るのは壊れたデータ。expansion.ts の同種の throw に倣う。
+		throw new Error("advanceMasterToNextOccurrence: VTODO has no DTSTART");
+	}
+	const dtstart = parseDateOrDateTime(dtstartProp);
+
+	const rruleRaw = rawValue(masterVtodo, "RRULE");
+	if (rruleRaw === undefined) {
+		throw new Error("advanceMasterToNextOccurrence: VTODO has no RRULE");
+	}
+	const rrule = parseRecurrenceRule(rruleRaw);
+
+	const instantOpts = { zoneOf, floatingTimeZone };
+	const currentEpoch = instantOfDateValue(dtstart, instantOpts);
+
+	const isDate = !isCalDateTime(dtstart);
+	const ruleForIterator = ruleWithoutUntilForIterator(rrule, isDate);
+	const untilEpoch = rrule.until !== undefined ? untilEpochOf(rrule.until, instantOpts) : undefined;
+	const dtstartFields = wallFieldsOf(dtstart);
+
+	// --- 次候補の探索(先頭は dtstart 自身。currentEpoch より真に大きい最初の値を採用) -----
+	let nextLocal: CalDate | CalDateTime | undefined;
+	let nextEpoch = 0;
+	let scanned = 0;
+	for (const wf of iterator.iterate(ruleForIterator, dtstartFields, isDate)) {
+		if (scanned >= MAX_ADVANCE_SCAN) break;
+		scanned++;
+		const localValue = isDate ? { year: wf.year, month: wf.month, day: wf.day } : reconstructCalDateTime(dtstart as CalDateTime, wf);
+		const epoch = instantOfDateValue(localValue, instantOpts);
+		if (epoch <= currentEpoch) continue; // dtstart 自身、または同epochの重複は前進候補にならない。
+		nextLocal = localValue;
+		nextEpoch = epoch;
+		break;
+	}
+
+	if (nextLocal === undefined) {
+		// 1000 件走査しても currentEpoch より後が見つからなかった = 事実上ここで打ち切り。
+		return { kind: "exhausted" };
+	}
+
+	// --- UNTIL 判定(inclusive。§3.3.10: occurrence == UNTIL は含む) --------------------
+	if (untilEpoch !== undefined && nextEpoch > untilEpoch) {
+		return { kind: "exhausted" };
+	}
+
+	// --- COUNT 判定 ---------------------------------------------------------------------
+	// 【COUNT を1減らす理由(§3.3.10「DTSTART は常に最初の occurrence」)】
+	// 前進後は「新しい DTSTART」が反復の起点になる。元の COUNT は「元 DTSTART から数えて
+	// 何回」なので、前進した新マスターにとっては「新 DTSTART から数えて (COUNT-1) 回」が
+	// 残りの正しい回数になる。COUNT=1(=今回が最後の occurrence)なら本来ここに来る前に
+	// iterate() が2件目を返さず nextLocal が undefined のまま exhausted になっているはずだが、
+	// 「見つかった」を先に判定してから COUNT を見る設計(Fable 確定設計の記述順)に合わせ、
+	// count===1 を明示的な exhausted としても再チェックする(iterator 実装の実際の挙動に
+	// 依存しすぎない防御的な二重チェック)。
+	if (rrule.count !== undefined && rrule.count <= 1) {
+		return { kind: "exhausted" };
+	}
+
+	let out = masterVtodo;
+
+	if (rrule.count !== undefined) {
+		const newRule: RecurrenceRule = { ...rrule, count: rrule.count - 1 };
+		out = upsertProperty(out, "RRULE", formatRecurrenceRule(newRule));
+	}
+	// UNTIL のときは RRULE を変更しない(fixture 実測どおり — UNTIL は前進しても不変)。
+
+	// --- DTSTART 書き戻し(元の parameters=TZID/VALUE=DATE 等を流用) ---------------------
+	out = upsertProperty(out, "DTSTART", formatDateValue(nextLocal), dtstartProp.parameters);
+
+	// --- DUE 書き戻し(DUE-DTSTART の壁時計差を保持) -------------------------------------
+	const dueProp = firstProp(out, "DUE");
+	if (dueProp !== undefined) {
+		const due = parseDateOrDateTime(dueProp);
+		// 【TZID 相違の限界】DUE と DTSTART が異なる TZID を持つ病的なケースでは、この
+		// 「壁時計フィールドをそのまま Date.UTC の暦カウンタとして差分を取る」計算は
+		// (どちらも「同じゾーンの壁時計」という前提が崩れるため)本来の経過時間とズレうる。
+		// VTodo.validate() の I6 相当検証(DUE の値型は DTSTART と一致 MUST)は形態
+		// (floating/utc/zoned)一致までは強制していないため、この限界は理論上残る。
+		// iOS 実機は DTSTART/DUE を同一 TZID で送るのが通例(fixture もそう)なので、
+		// このスライスでは対応せず限界として明記するに留める(Fable 確定設計どおり)。
+		const diffMs = wallClockMillis(due) - wallClockMillis(dtstart);
+		const newDue = withNewWallClockFields(due, wallClockMillis(nextLocal) + diffMs);
+		out = upsertProperty(out, "DUE", formatDateValue(newDue), dueProp.parameters);
+	}
+	// DUE 無しなら何もしない(spec どおり)。
+
+	// --- STATUS:NEEDS-ACTION + COMPLETED/PERCENT-COMPLETE 除去 ---------------------------
+	out = applyReopen(out);
+
+	// LAST-MODIFIED/DTSTAMP はここでは触らない。呼び出し側(recurring-completion.ts)が
+	// stampUpdate を後から呼ぶ既存規律(vtodo-stamp.ts 冒頭コメント「生成プロパティの単一情報源」)
+	// に合わせ、この純関数はフィールドの前進だけに責務を絞る。
+
+	return { kind: "advanced", vtodo: out };
+}
+
+// ---------------------------------------------------------------------------
+// 内部ヘルパー(expansion.ts の非公開ヘルパーのローカル複製 + このファイル固有のもの)
+// ---------------------------------------------------------------------------
+
+/** CalDate | CalDateTime → UTC エポックミリ秒。expansion.ts の instantOfDateValue の複製。 */
+function instantOfDateValue(v: CalDate | CalDateTime, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
+	if (isCalDateTime(v)) {
+		return calDateTimeToEpochMillis(v, opts);
+	}
+	return calDateStartEpochMillis(v, opts.floatingTimeZone);
+}
+
+/** RecurrenceIterator に渡す壁時計フィールドへ変換する。expansion.ts の wallFieldsOf の複製。 */
+function wallFieldsOf(v: CalDate | CalDateTime): RecurrenceWallClockFields {
+	if (isCalDateTime(v)) {
+		return { year: v.year, month: v.month, day: v.day, hour: v.hour, minute: v.minute, second: v.second === 60 ? 59 : v.second };
+	}
+	return { year: v.year, month: v.month, day: v.day, hour: 0, minute: 0, second: 0 };
+}
+
+/** iterator が返した壁時計を dtstart と同じ kind へ組み戻す。expansion.ts の reconstructCalDateTime の複製。 */
+function reconstructCalDateTime(dtstart: CalDateTime, wf: RecurrenceWallClockFields): CalDateTime {
+	const base = { year: wf.year, month: wf.month, day: wf.day, hour: wf.hour, minute: wf.minute, second: wf.second };
+	switch (dtstart.kind) {
+		case "utc":
+			return { kind: "utc", ...base };
+		case "floating":
+			return { kind: "floating", ...base };
+		case "zoned":
+			return { kind: "zoned", tzid: dtstart.tzid, ...base };
+	}
+}
+
+/** RRULE から UNTIL を除いた(DATE dtstart なら BYSECOND/BYMINUTE/BYHOUR も除いた)コピー。
+ *  expansion.ts の ruleWithoutUntilForIterator の複製。 */
+function ruleWithoutUntilForIterator(rule: RecurrenceRule, isDate: boolean): RecurrenceRule {
+	const { until: _until, bySecond, byMinute, byHour, ...rest } = rule;
+	if (!isDate) {
+		return { ...rest, bySecond, byMinute, byHour };
+	}
+	return { ...rest };
+}
+
+/** RRULE UNTIL の epoch。expansion.ts の untilEpochOf の複製。 */
+function untilEpochOf(until: RecurUntil, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
+	if (until.type === "date") {
+		return calDateStartEpochMillis(until.date, opts.floatingTimeZone);
+	}
+	if (until.dateTime.kind === "utc") {
+		return toEpochMillis(until.dateTime);
+	}
+	return calDateTimeToEpochMillis(until.dateTime, opts);
+}
+
+/** CalDate | CalDateTime → 生の値文字列(DTSTART/DUE 書き戻し用)。 */
+function formatDateValue(v: CalDate | CalDateTime): string {
+	return isCalDateTime(v) ? formatCalDateTime(v) : formatCalDate(v);
+}
+
+/**
+ * 「壁時計フィールドをそのまま暦カウンタとして」ミリ秒化する(DUE-DTSTART の差分計算専用。
+ * expansion.ts/occurrence-bounds.ts の instantOfDateValue とは別物 — あちらは zoneOf を使って
+ * “絶対時刻” に変換するが、ここでは TZ を一切考慮せず「年月日時分秒のフィールドの見た目上の
+ * 差」だけを知りたい。DUE-DTSTART が同じ TZID なら、この壁時計差は前進後もそのまま
+ * 成立する[Fable 確定設計 item7]。calendarDaysBetween(expansion.ts が独自複製した
+ * Date.UTC ベースの「TZ 非依存の暦カウンタ」という考え方)を時刻付きまで拡張したもの)。
+ */
+function wallClockMillis(v: CalDate | CalDateTime): number {
+	if (isCalDateTime(v)) {
+		// うるう秒(60)はカレンダーカウンタ上でも 59 にクランプする(cal-date-time.ts の
+		// 「保持は60・計算時のみ59」方針をここでも踏襲)。
+		return Date.UTC(v.year, v.month - 1, v.day, v.hour, v.minute, v.second === 60 ? 59 : v.second);
+	}
+	return Date.UTC(v.year, v.month - 1, v.day);
+}
+
+/** wallClockMillis の逆変換を「template と同じ kind/tzid」で組み立てる。 */
+function withNewWallClockFields(template: CalDate | CalDateTime, ms: number): CalDate | CalDateTime {
+	const d = new Date(ms);
+	const base = {
+		year: d.getUTCFullYear(),
+		month: d.getUTCMonth() + 1,
+		day: d.getUTCDate(),
+		hour: d.getUTCHours(),
+		minute: d.getUTCMinutes(),
+		second: d.getUTCSeconds(),
+	};
+	if (!isCalDateTime(template)) {
+		return { year: base.year, month: base.month, day: base.day };
+	}
+	switch (template.kind) {
+		case "utc":
+			return { kind: "utc", ...base };
+		case "floating":
+			return { kind: "floating", ...base };
+		case "zoned":
+			return { kind: "zoned", tzid: template.tzid, ...base };
+	}
+}

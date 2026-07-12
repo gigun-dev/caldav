@@ -46,7 +46,6 @@ import {
 	ListOccurrences,
 	ListTodos,
 	PutCalendarObject,
-	RecurringCompletionNotSupportedError,
 	TodoNotFoundError,
 	UpdateTodo,
 } from "../../application/usecases";
@@ -121,7 +120,8 @@ const updateTodoInputShape = {
 	),
 	status: z.enum(["COMPLETED", "NEEDS-ACTION"]).optional().describe(
 		"STATUS の遷移。COMPLETED で完了・NEEDS-ACTION で未完了に戻す。省略時は変更しない。" +
-			"反復 VTODO(RRULE あり)への COMPLETED 指定は complete-todo と異なりガードしない点に注意。",
+			"反復 VTODO(RRULE あり)への COMPLETED 指定は complete-todo と同じ D4 モデル" +
+			"(新 UID の完了スナップショットを作り、マスターを次回 occurrence へ前進させる)で処理する。",
 	),
 };
 
@@ -431,13 +431,13 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 			description:
 				"既存 VTODO(リマインダー)の一部フィールドを更新する。指定したフィールドのみ変更し、他は維持する。" +
 				"status:\"COMPLETED\"/\"NEEDS-ACTION\" でフィールド更新と同時に完了/再開もできる" +
-				"(status:\"COMPLETED\" は complete-todo と同じ理由で定期タスク(RRULE あり)には未対応)。",
+				"(status:\"COMPLETED\" は complete-todo と同じ D4 モデルで定期タスク(RRULE あり)にも対応)。",
 			inputSchema: updateTodoInputShape,
 		},
 		async ({ id, calendarId, title, notes, due, priority, status }) => {
 			try {
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
-				const updateTodo = new UpdateTodo(putCalendarObject, deps.resourceRepo);
+				const updateTodo = new UpdateTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
 				const { task } = await updateTodo.execute({
 					owner: principal,
 					todoId: id,
@@ -469,13 +469,14 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 			title: "Complete todo",
 			description:
 				"VTODO(リマインダー)を完了する(STATUS:COMPLETED + COMPLETED + PERCENT-COMPLETE:100 の三点セット)。" +
-				"定期タスク(RRULE あり)は未対応(②-c で対応予定 — docs/modeling/06 §D4 の新 UID スナップショット方式が必要なため)。",
+				"定期タスク(RRULE あり)は docs/modeling/06 §D4 の D4 モデル(新 UID の完了スナップショットを作り、" +
+				"マスターを次回 occurrence へ前進させる)で処理する。",
 			inputSchema: completeTodoInputShape,
 		},
 		async ({ id, calendarId }) => {
 			try {
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
-				const completeTodo = new CompleteTodo(putCalendarObject, deps.resourceRepo);
+				const completeTodo = new CompleteTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
 				const { task } = await completeTodo.execute({ owner: principal, todoId: id, calendarId });
 				const result = { task };
 				return {
@@ -483,7 +484,6 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					structuredContent: result,
 				};
 			} catch (error) {
-				if (error instanceof RecurringCompletionNotSupportedError) return toolError(error.message);
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}

@@ -38,3 +38,12 @@ export {
 	patchVTodoFields,
 	type VTodoPatchFields,
 } from "./vtodo-patch";
+
+// E-1 スライス②-c: 反復 VTODO の完了(D4 モデル)。CompleteTodo/UpdateTodo が
+// application/usecases/recurring-completion.ts 経由でこの2関数を使う。
+export {
+	buildCompletionSnapshot,
+	advanceMasterToNextOccurrence,
+	type CompletionSnapshotIds,
+	type AdvanceResult,
+} from "./vtodo-recurrence";

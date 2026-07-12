@@ -28,10 +28,11 @@
 import { ICalendarObject, serialize, type Component } from "../../domain/ical";
 import { applyCompletion, applyReopen, patchVTodoFields, stampUpdate } from "../../domain/ical/semantics";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
+import type { RecurrenceIterator } from "../../domain/ical/recurrence";
 import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import { lookupTodo, TodoNotFoundError } from "./todo-lookup";
 import { InvalidDueError } from "./create-todo";
-import { RecurringCompletionNotSupportedError } from "./complete-todo";
+import { completeRecurringTodo } from "./recurring-completion";
 import { nowStampFromDate } from "./now-stamp";
 import type { Task } from "./task-dto";
 import { taskFromVTodo } from "./task-dto";
@@ -66,10 +67,10 @@ export interface UpdateTodoInput {
 	 * CompleteTodo が防いでいる誤動作(反復 VTODO のマスター自体を完了扱いにしてしまい、
 	 * 以降の全 occurrence が消えたように見える — docs/modeling/06 §D4)を素通りさせてしまう
 	 * 抜け道になる。「完了」という意味を持つ操作である以上、入口が CompleteTodo でも
-	 * UpdateTodo.status でも同じ不変条件(反復 VTODO は単純な STATUS:COMPLETED では
-	 * 完了させない)を守るべきと判断し、ここでも RecurringCompletionNotSupportedError を
-	 * 再利用して reject する(execute() 内の分岐参照)。NEEDS-ACTION への reopen は反復性に
-	 * 関係なく安全な操作なのでガードしない。
+	 * UpdateTodo.status でも同じ不変条件を守るべきと判断し、ここでも反復 VTODO なら
+	 * completeRecurringTodo(D4 モデル)へ委譲する(execute() 内の分岐参照。②-c で
+	 * RecurringCompletionNotSupportedError による reject から実装に差し替えた)。
+	 * NEEDS-ACTION への reopen は反復性に関係なく安全な操作なのでガードしない。
 	 */
 	status?: "COMPLETED" | "NEEDS-ACTION";
 }
@@ -80,11 +81,7 @@ export interface UpdateTodoOutput {
 	task: Task;
 }
 
-export type UpdateTodoError =
-	| InvalidDueError
-	| TodoNotFoundError
-	| RecurringCompletionNotSupportedError
-	| PutCalendarObjectError;
+export type UpdateTodoError = InvalidDueError | TodoNotFoundError | PutCalendarObjectError;
 
 export class UpdateTodo {
 	// 【resourceRepo を別途受け取る理由(CreateTodo との違い)】
@@ -96,9 +93,12 @@ export class UpdateTodo {
 	// コンストラクタで受け取る(合成済み完成品への依存 + 素の port 依存が両方ある形。
 	// CreateTodo の「PutCalendarObject だけを知っていればよい」という単純な合成の利点は
 	// 失われるが、lookup を UC 側で行う以上避けられないトレードオフと判断した)。
+	// recurrenceIterator は②-c で追加(status:"COMPLETED" かつ反復 VTODO のとき
+	// completeRecurringTodo に渡す。CompleteTodo と同じ理由)。
 	constructor(
 		private readonly putCalendarObject: PutCalendarObject,
 		private readonly resourceRepo: CalendarObjectResourceRepository,
+		private readonly recurrenceIterator: RecurrenceIterator,
 	) {}
 
 	async execute(input: UpdateTodoInput): Promise<UpdateTodoOutput> {
@@ -130,7 +130,17 @@ export class UpdateTodo {
 			// レンズなので、rrule の有無はここで判定する(patchVTodoFields は RRULE に触れないので
 			// looked.vtodo.rrule の判定結果は patched 後も変わらない)。
 			if (looked.vtodo.rrule !== undefined) {
-				throw new RecurringCompletionNotSupportedError(input.todoId);
+				// D4 モデルへ委譲する(②-c)。patched(他フィールドの patch 済み Component)を
+				// masterVtodo として渡すことで、「due を伸ばして完了」のような複合操作でも
+				// フィールド更新がスナップショット/前進後マスターの両方に反映される
+				// (recurring-completion.ts の入力コメント参照)。completeRecurringTodo が
+				// 自前で PUT・stampUpdate まで完結させるので、以降の共通処理はスキップして
+				// ここで直接 return する。
+				const { task } = await completeRecurringTodo(
+					{ putCalendarObject: this.putCalendarObject, recurrenceIterator: this.recurrenceIterator },
+					{ owner: input.owner, collectionId, looked, masterVtodo: patched, now: nowStampFromDate(new Date()) },
+				);
+				return { task };
 			}
 			patched = applyCompletion(patched, nowStampFromDate(new Date()));
 		} else if (input.status === "NEEDS-ACTION") {

@@ -139,14 +139,21 @@ export {
 	type UpdateTodoError,
 } from "./update-todo";
 
-// MCP complete-todo(方向性 E-1 スライス②-b、単発のみ)
+// MCP complete-todo(方向性 E-1 スライス②-b 単発 → ②-c 反復対応)
 export {
 	CompleteTodo,
-	RecurringCompletionNotSupportedError,
 	type CompleteTodoInput,
 	type CompleteTodoOutput,
 	type CompleteTodoError,
 } from "./complete-todo";
+
+// 反復 VTODO 完了オーケストレーション(D4 モデル。E-1 スライス②-c。CompleteTodo/UpdateTodo 共通)
+export {
+	completeRecurringTodo,
+	type CompleteRecurringTodoDeps,
+	type CompleteRecurringTodoArgs,
+	type CompleteRecurringTodoResult,
+} from "./recurring-completion";
 
 // MCP delete-todo(方向性 E-1 スライス②-b)
 export {

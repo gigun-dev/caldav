@@ -245,6 +245,17 @@ CalDAV 表現は存在しない)。
 反復のとき「新 UID で完了スナップショット作成 + マスターの DTSTART/DUE 前進(無ければ
 COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
 
+> 2026-07-13 更新(②-c 実装時の確定): 上記「最終 occurrence 完了でマスター自身が
+> STATUS:COMPLETED」は iOS 実機キャプチャの記述だが、②-c の実装スコープでは
+> **反復を実際に最後の occurrence まで完了させて完了リストの件数を数える実機検証は
+> 未実施**(サーバー実装が iOS の観測どおりに振る舞うかの再現確認が残っている)。
+> `advanceMasterToNextOccurrence`(domain/ical/semantics/vtodo-recurrence.ts)が
+> exhausted を返したときは、②-c では「スナップショットを作らずマスターへ直接
+> `applyCompletion`(単発完了と同じ)」を採用した — 上記の観測記述と整合する設計だが、
+> 「最終回だけ完了スナップショットが作られない」という非対称さが本当に iOS の期待と
+> 一致するかは、次回の実機検証項目として残す(反復 VTODO を UNTIL/COUNT の最後まで
+> chat から完了させ、iOS 側の完了リストに何件表示されるかを数える)。
+
 ### D5. VALARM(VTODO のアラーム)は保持可(確定)
 
 iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`ACTION:DISPLAY` +

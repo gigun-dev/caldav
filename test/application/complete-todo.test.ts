@@ -1,5 +1,5 @@
 // =============================================================================
-// CompleteTodo ユースケース テスト(E-1 スライス②-b、単発のみ)
+// CompleteTodo ユースケース テスト(E-1 スライス②-b 単発 → ②-c 反復対応)
 // =============================================================================
 import { describe, it, expect, beforeEach } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -8,7 +8,6 @@ import {
 	CompleteTodo,
 	CreateTodo,
 	PutCalendarObject,
-	RecurringCompletionNotSupportedError,
 	TodoNotFoundError,
 } from "../../src/application/usecases";
 import {
@@ -39,7 +38,7 @@ describe("CompleteTodo", () => {
 		uow = new FakeCollectionUnitOfWork(resourceRepo, collectionRepo);
 		const putCalendarObject = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
 		createTodo = new CreateTodo(putCalendarObject);
-		completeTodo = new CompleteTodo(putCalendarObject, resourceRepo);
+		completeTodo = new CompleteTodo(putCalendarObject, resourceRepo, TEST_RECURRENCE_ITERATOR);
 
 		collectionRepo.seed(makeTestCollection(TEST_OWNER, "tasks", { supportedComponents: ["VTODO"] }));
 	});
@@ -59,16 +58,31 @@ describe("CompleteTodo", () => {
 		expect(after[0]!.etag.hex).not.toBe(etagBefore); // 更新が実際に PUT されたことの証跡。
 	});
 
-	it("反復 VTODO(RRULE あり)は RecurringCompletionNotSupportedError を投げる(D4 は②-cへ先送り)", async () => {
+	it("反復 VTODO(RRULE あり)を完了すると D4 モデル(新 UID スナップショット + マスター前進)で処理される", async () => {
 		// vtodo-recurring-master.ics(RRULE:FREQ=WEEKLY;... 実機フィクスチャ)をそのまま
 		// リソースとして seed する(コレクション自体の VTODO サポートも設定済み)。
 		const uri = mkResourceUri("recurring-master.ics");
 		const resource = await CalendarObjectResource.fromIcs(uri, RECURRING_MASTER_ICS);
 		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+		const masterUid = resource.uid;
 
-		await expect(
-			completeTodo.execute({ owner: TEST_OWNER, todoId: resource.uid }),
-		).rejects.toBeInstanceOf(RecurringCompletionNotSupportedError);
+		const { task } = await completeTodo.execute({ owner: TEST_OWNER, todoId: masterUid });
+
+		// 返る Task は「完了スナップショット」(新 UID・COMPLETED)。
+		expect(task.id).not.toBe(masterUid);
+		expect(task.completed).toBe(true);
+		expect(task.status).toBe("COMPLETED");
+		expect(task.percentComplete).toBe(100);
+
+		// マスターは同じ UID のまま NEEDS-ACTION で残り、DUE が次回(7/18)へ前進している。
+		const all = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+		expect(all).toHaveLength(2); // マスター + 完了スナップショット。
+		const masterUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), masterUid);
+		const masterResource = masterUri === null ? null : await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), masterUri);
+		expect(masterResource).not.toBeNull();
+		const masterVtodo = masterResource!.payload.todos()[0]!;
+		expect(masterVtodo.status).toBe("NEEDS-ACTION");
+		expect(masterVtodo.rrule).not.toBeUndefined();
 	});
 
 	it("存在しない todoId は TodoNotFoundError", async () => {

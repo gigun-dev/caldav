@@ -7,7 +7,6 @@ import { join } from "node:path";
 import {
 	CreateTodo,
 	PutCalendarObject,
-	RecurringCompletionNotSupportedError,
 	TodoNotFoundError,
 	UpdateTodo,
 } from "../../src/application/usecases";
@@ -42,7 +41,7 @@ describe("UpdateTodo", () => {
 		uow = new FakeCollectionUnitOfWork(resourceRepo, collectionRepo);
 		const putCalendarObject = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
 		createTodo = new CreateTodo(putCalendarObject);
-		updateTodo = new UpdateTodo(putCalendarObject, resourceRepo);
+		updateTodo = new UpdateTodo(putCalendarObject, resourceRepo, TEST_RECURRENCE_ITERATOR);
 
 		collectionRepo.seed(makeTestCollection(TEST_OWNER, "tasks", { supportedComponents: ["VTODO"] }));
 	});
@@ -94,14 +93,42 @@ describe("UpdateTodo", () => {
 		expect(task.completedAt).toBeNull();
 	});
 
-	it("status:'COMPLETED' は反復 VTODO(RRULE あり)に対して RecurringCompletionNotSupportedError を投げる", async () => {
+	it("status:'COMPLETED' + title 変更(反復 VTODO): スナップショットとマスター両方に新 title が反映される", async () => {
 		const uri = mkResourceUri("recurring-master.ics");
 		const resource = await CalendarObjectResource.fromIcs(uri, RECURRING_MASTER_ICS);
 		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+		const masterUid = resource.uid;
 
-		await expect(
-			updateTodo.execute({ owner: TEST_OWNER, todoId: resource.uid, status: "COMPLETED" }),
-		).rejects.toBeInstanceOf(RecurringCompletionNotSupportedError);
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: masterUid,
+			title: "新タイトル(反復)",
+			status: "COMPLETED",
+		});
+		// 返る Task = 完了スナップショット。
+		expect(task.title).toBe("新タイトル(反復)");
+		expect(task.completed).toBe(true);
+
+		const masterUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), masterUid);
+		const masterResource = masterUri === null ? null : await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), masterUri);
+		const masterVtodo = masterResource!.payload.todos()[0]!;
+		expect(masterVtodo.summary).toBe("新タイトル(反復)");
+		expect(masterVtodo.status).toBe("NEEDS-ACTION"); // マスターは前進するが完了扱いにはならない。
+	});
+
+	it("status:'NEEDS-ACTION'(反復 VTODO): reopen のみ行われる(前進しない)", async () => {
+		const uri = mkResourceUri("recurring-master.ics");
+		const resource = await CalendarObjectResource.fromIcs(uri, RECURRING_MASTER_ICS);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+		const masterUid = resource.uid;
+
+		const { task } = await updateTodo.execute({ owner: TEST_OWNER, todoId: masterUid, status: "NEEDS-ACTION" });
+		expect(task.status).toBe("NEEDS-ACTION");
+		expect(task.completed).toBe(false);
+		// reopen は反復性に関係なくガードしない = completeRecurringTodo を経由しないので
+		// リソース件数は1件のまま(スナップショットは作られない)。
+		const all = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+		expect(all).toHaveLength(1);
 	});
 
 	it("存在しない todoId は TodoNotFoundError", async () => {
