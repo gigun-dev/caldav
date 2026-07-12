@@ -492,3 +492,21 @@
 - **新タスク③(next-directions 方向性 E に起票)**: 反復付き create(RRULE)は未対応 = chat から反復 todo を
   ゼロから作れない(完了=前進は既存の反復マスターに対してのみ)。別スライスで判断。
 - 次: **V3 実機確認**(我々の反復完了が iOS リマインダーに反映されるか)→ 問題なければ E-2(MCP App UI)。
+
+## 2026-07-13(続き)②-c VALARM 前進修正 + V3 合格
+
+- **VALARM 前進の追加修正(`aca8193`)**: V3 実機で「反復完了後もマスターの表示日付が前進しない」症状。
+  切り分けで判明: iOS はリマインダーの表示時刻に VALARM トリガーを使うため、advanceMasterToNextOccurrence が
+  DTSTART/DUE だけ前進させ VALARM 絶対トリガーを据え置く(lossless 保持)と、iOS 上でフリーズして見えた。
+  本番 D1 で iOS ネイティブ完了を実測(CAP-RRULE2・FREQ=DAILY): iOS は前進時に VALARM 絶対トリガーも
+  DTSTART と同じ絶対時間差で前進(20260712T160000Z→20260713T160000Z = +86400s)。
+  → advanceAbsoluteAlarmTriggers を追加(triggerShiftMs=nextEpoch−currentEpoch。TRIGGER;VALUE=DATE-TIME
+  =trigabs UTC だけ前進・相対トリガー[RELATED/DURATION]と位置アラーム[X-APPLE-PROXIMITY]は据え置き。
+  DUE の壁時計差保持とは別ロジック=絶対時間差)。bun 431 + vitest 13 green。
+- **V3 合格(本番実機)**: 修正後、MCP からの反復完了で前進後マスター(DTSTART 07-15・VALARM 20260714T160000Z)が
+  iOS ネイティブ出力と構造完全一致。当初「前進しない」と見えたのは iOS のキャッシュ/同期遅延で、
+  強制再同期(リマインダーアプリ終了 or CalDAV アカウント off/on)で解消。sync_changes に modification が
+  token として正しく積まれ・sync_counter も進むことを D1 実測で確認(サーバー側同期シグナルは健全)。
+  副産物: 本番 D1 に principal が admin(iOS 実機 + MCP の実使用)と旧 caldav-user(counter 8・不使用)の2つ。
+- **E-1 スライス②(a/b/c)完了**。残: V8(最終回スナップショット有無)/ タスク①(update-todo の due 変更時の
+  VALARM 追随・仕組みは②-c で実証済み)/ 新タスク③(反復付き create)。次の本線: E-2(MCP App UI)。

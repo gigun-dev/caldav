@@ -298,7 +298,18 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   snapshot-first 非原子2PUT(a:新 UID must-not-exist → b:マスター前進 must-match、失敗モード明文化)。
   >   最終 occurrence はスナップショット無しでマスター完了(実測未確定=06 §D4 に V8 として起票)。
   >   RRULE 展開は既存 RecurrenceIterator へ委譲。bun 427 + vitest 13 green。
-  >   **残:** V3(反復完了が iOS に反映されるか)実機確認 → 実施予定 / V8(最終回スナップショット有無)。
+  >   **VALARM 前進の追加修正 ✅**(`aca8193`): V3 実機で「マスターの表示日付が前進しない」→ iOS は表示時刻に
+  >   VALARM トリガーを使うため、前進時に絶対トリガーを据え置くとフリーズして見えると判明。本番 D1 で iOS
+  >   ネイティブ完了を実測(CAP-RRULE2: TRIGGER 20260712T160000Z→20260713T160000Z = DTSTART と同じ絶対時間差で
+  >   前進)し、advanceMasterToNextOccurrence に advanceAbsoluteAlarmTriggers を追加(triggerShiftMs=nextEpoch−currentEpoch、
+  >   TRIGGER;VALUE=DATE-TIME だけ前進・相対トリガー/X-APPLE-PROXIMITY は据え置き)。
+  >   **V3 合格 ✅**: 修正後、サーバー駆動の反復完了が iOS に正しく反映(前進後マスター DTSTART/VALARM が iOS
+  >   ネイティブ出力と構造完全一致)。当初「前進しない」と見えたのは iOS のキャッシュ/同期遅延で、強制再同期
+  >   (アプリ終了 or アカウント off/on)で解消。sync_changes・sync_counter は PUT で正しく進む(D1 実測)。
+  >   **残:** V8(最終回スナップショット有無の実測)。
+  >   **新タスク①昇格【VALARM 追随を update-todo にも】**: advanceAbsoluteAlarmTriggers と同じ「絶対トリガーを
+  >   差分で前進」を update-todo の due 変更時にも適用すれば V2 の「取り残されアラーム」も解消(private のまま。
+  >   共有するなら export)。反復完了で仕組みは実証済みなので小さい。
   >   **新タスク③【反復付き create(RRULE)】**: 現状 create-todo は RRULE 非対応 = chat から「毎週〜」の
   >   反復リマインダーを**ゼロから作れない**(完了=前進は既存の反復マスターに対してのみ動く)。iOS 作成の
   >   反復 todo は往復・完了できる。agentic 入口として反復 todo 作成を足すなら別スライス(create-todo に
