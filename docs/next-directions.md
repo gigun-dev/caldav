@@ -287,10 +287,11 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   確定=前者): **今は既知の制限として切り出し、②-c を先に進める**。将来の VALARM 管理スライスで
   >   「旧 due 時刻と一致する絶対トリガーを新 due に移す」精密な追随を設計(V5 サーバー発 VALARM と同じ束)。
   >   ヒューリスティック(due 連動 vs ユーザー設定の早期リマインダーの判別)を含むため独立テーマ。
-  > - **⚠️ 新タスク②【VTODO occurrence bounds・要調査】**: 単発 VTODO(due=12-23、RRULE なし)なのに D1 の
-  >   `first_occurrence` が **CREATED 時刻(07-12)**、`last_occurrence` が due(12-23)と食い違う。VTODO の
-  >   computeOccurrenceBounds の癖の可能性。calendar-query time-range REPORT にしか影響せず MCP フローには
-  >   無関係なのでブロックしないが、G-3 の bounds 計算を後で確認する。
+  > - **新タスク②完了 ✅**(`c7af31b`): VTODO occurrence bounds のバグ修正。computeVTodoBounds が
+  >   DTSTART/DUE/COMPLETED/CREATED の無条件 min/max だったのを RFC 4791 §9.9 表どおり行優先に(CREATED/
+  >   COMPLETED は DTSTART も DUE も無いときのみ)。単発 VTODO で first が CREATED まで巻き戻る取りこぼしリスクを解消。
+  > - **新エッジ(反復 due→DATE の I6)完了 ✅**(`c7af31b`): patchVTodoFields で due を DATE に patch する際
+  >   RRULE UNTIL が DATE-TIME なら日付を保って DATE 化(I6 回避)。iOS 発反復マスターの due 変更を救済。
   > - **スライス②-c 完了 ✅**(`e9e47bc`): 反復完了を拒否せず D4 モデルで実装。vtodo-recurrence.ts の
   >   純関数2つ(buildCompletionSnapshot = 新 UID・RRULE 除去・3点セット・DTSTART/DUE 継承・VALARM を
   >   UID/X-WR-ALARMUID 新採番でコピー / advanceMasterToNextOccurrence = 次 occurrence へ前進・DUE−DTSTART

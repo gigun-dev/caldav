@@ -542,3 +542,18 @@
 - **E-1 スライス②系すべて完了**(②-a/b/c + VALARM 追随 + 反復 create + V2/V3/V8 実機)。agentic todo 入口が
   iOS 忠実に揃った(create/list/update/complete/delete・単発/反復・D4 完全再現・VALARM 前進)。
   次の本線: **E-2(MCP App UI)**。極小 ui:// スパイクで個人コネクタ描画を先に潰す。
+
+## 2026-07-13(続き)小課題掃除 A-1/A-2 + V5 前提機能
+
+- **A-1(`c7af31b`)**: VTODO occurrence bounds のバグ修正。computeVTodoBounds が DTSTART/DUE/COMPLETED/
+  CREATED の無条件 min/max だったのを RFC 4791 §9.9(rfc4791.txt L5103-5137)の time-range 表どおり行優先で
+  決定するよう修正。CREATED/COMPLETED は DTSTART も DUE も無いときのみ。単発終日 VTODO で first が CREATED
+  まで巻き戻る(time-range REPORT 取りこぼしリスク)根本原因を解消。CREATED のみは上限無し=OCCURRENCE_INDEX_MAX。
+- **A-2(`c7af31b`)**: patchVTodoFields で due を DATE に patch する際、RRULE UNTIL が DATE-TIME なら日付を保って
+  DATE 化(I6 回避)。iOS 発反復マスター(DTSTART;TZID + UNTIL=...Z)の due 変更が precondition エラーになる
+  経路を救済。値型変換の domain 責務なので semantics に配置。
+- **V5 前提機能(`8903a9f`)**: create-todo に alarm 入力(offset ISO8601 の絶対通知時刻)。iOS 形式(§D5)の
+  ACTION:DISPLAY / DESCRIPTION:Reminder / TRIGGER;VALUE=DATE-TIME(絶対 UTC)/ UID==X-WR-ALARMUID を生成。
+  絶対 UTC トリガーなので VTIMEZONE 不要。due と独立。これで V5(サーバー発 VALARM が iOS で鳴るか)を実機検証可能に。
+- 残る実機検証: V8 確認(我々の反復完了出力の一致・任意)/ COUNT 最終回の RRULE 実測 / V5 発火(iOS 通知)。
+  据え置き: V6(時刻付き due の VTIMEZONE 生成=大きめ・E-2 後)。
