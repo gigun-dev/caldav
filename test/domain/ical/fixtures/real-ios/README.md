@@ -48,10 +48,20 @@ iOS は物理行を**文字境界**で折る(マルチバイト UTF-8 を分割�
 | `dquote-location-event.ics` | A7 第3ラウンド(2026-07-11) | 場所名に ASCII DQUOTE(スマート句読点オフで入力)。LOCATION 値には**生 DQUOTE がそのまま**、X-TITLE パラメータでは **iOS が DQUOTE を黙って除去**(RFC 6868 `^` は使わない)。キャプチャ経路は本作サーバー(caldav-dev.097969.xyz → wrangler dev) | 冪等 |
 | `vtodo-recurring-master.ics` | D4 第3ラウンド(2026-07-12) | 反復 VTODO のマスター。`RRULE:FREQ=WEEKLY;UNTIL=...;BYDAY=SU,SA` + `DTSTART;TZID=Asia/Tokyo=DUE;TZID` + 時刻 VALARM + VTIMEZONE。反復完了で iOS が DTSTART/DUE を前進させる(06 D4) | 冪等 |
 | `vtodo-recurring-completed-instance.ics` | D4 第3ラウンド(2026-07-12) | 反復 VTODO の完了スナップショット。**新 UID・RRULE 除去**・STATUS:COMPLETED + COMPLETED + PERCENT-COMPLETE:100 + その回の DTSTART/DUE + VALARM コピー。iOS の「マスター前進+スナップショット分離」モデルの片割れ | 冪等 |
+| `vtodo-timed-due.ics` | V6(2026-07-13) | 単発(非反復)の時刻付きリマインダー。`DTSTART;TZID=Asia/Tokyo=DUE;TZID` + VTIMEZONE(Asia/Tokyo、DTSTART:19510909T010000 の JST 制定形)+ VALARM(TRIGGER が due 時刻の絶対 UTC)。`vtodo-write.test.ts`/`create-todo.test.ts` の V6(due への時刻付き統合)構造比較テストが参照する | 冪等 |
 
 **補足(第3ラウンド 2026-07-12)**: `vtodo-recurring-*` の2本は VTODO/リマインダー挙動検証
 (docs/modeling/06 §D)で採取。キャプチャ経路は本作 dev サーバー(caldav-dev.097969.xyz →
 wrangler dev)。位置情報を含まない(時刻アラームのみ)ため伏せ字化は不要。
+
+**補足(V6・2026-07-13)**: `vtodo-timed-due.ics` は本番 D1 由来の実キャプチャからタスク
+指示の一部として渡された断片(VTIMEZONE 全文 + DTSTART/DUE/VALARM の主要行)を基に、
+周辺プロパティ(CREATED/DTSTAMP/UID 等の具体値)を補って再構成したフィクスチャ。
+`vtodo-recurring-master.ics` のような `wrangler tail` 全文ログからの直接コピーではない
+(その全文ログが今回のタスク入力には含まれていなかったため)。**構造(プロパティ集合・
+TZID・DTSTART=DUE・VALARM TRIGGER=due の UTC 瞬間・UID=X-WR-ALARMUID)は指示された実データを
+忠実に再現しているが、UID・DTSTAMP 等の個別の値は実キャプチャのバイト列そのものではない**
+点に注意(位置情報等の個人情報は元から含まれていないため伏せ字化は不要)。
 
 ## 伏せ字化(個人情報)
 

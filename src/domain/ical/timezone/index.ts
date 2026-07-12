@@ -15,9 +15,11 @@
 //   - instant: getZoneOffsetMillis / localFieldsToEpochMillis / calDateTimeToEpochMillis /
 //              calDateStartEpochMillis(Intl/ICU による壁時計 ⇄ UTC)+ LocalFields 型
 //   - effective-period: EffectivePeriod 型 / effectiveEventPeriod(§9.9)
+//   - vtimezone-write: buildVTimezone / zoneHasOffsetTransitions(V6・TZID→VTIMEZONE 生成。
+//     Phase 1 固定オフセットゾーン限定 — DST は UnsupportedTimeZoneError)
 // =============================================================================
 
-export { TimezoneResolutionError } from "./errors";
+export { TimezoneResolutionError, UnsupportedTimeZoneError } from "./errors";
 export { windowsToIana } from "./windows-zones";
 export { type TimezoneResolution, isValidIanaZone, resolveTimeZoneId } from "./resolver";
 export {
@@ -28,3 +30,4 @@ export {
 	calDateStartEpochMillis,
 } from "./instant";
 export { type EffectivePeriod, effectiveEventPeriod } from "./effective-period";
+export { type VTimezoneWindow, buildVTimezone, zoneHasOffsetTransitions } from "./vtimezone-write";

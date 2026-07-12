@@ -486,3 +486,66 @@ domain 制約の知識が application 層に漏れてしまうため。
 - **B2 の実測リスト**: CalDAV リソース層の PROPFIND 実装(presentation のマッピング表)の
   一次資料にする。
 - 各項目の結果はこの表の「結果」列に日付付きで記録する(検証済みの証跡を残す)。
+
+## V5 実機結果(確定・2026-07-13)
+
+D5(サーバー発 VALARM を iOS が実際に鳴らすか)を実機で検証: **iOS はサーバー発 VALARM でも
+通知する(確定)**。MCP `create-todo` の(当時の)独立 `alarm` 入力で作った VTODO
+(`ACTION:DISPLAY` + `TRIGGER;VALUE=DATE-TIME:<絶対 UTC>` + `UID`/`X-WR-ALARMUID` 同値の
+1個の DISPLAY アラーム)が、iOS 側での「所有」操作(タイトル変更等の編集)を挟まずに
+指定時刻へ通知(バナー)を出した。D5 の懸念(「iOS が自作項目のアラームしか鳴らさない」仮説)
+は否定された。
+
+## V6: 時刻付き due の統合(実装・2026-07-13)
+
+V5 の確定を受け、時刻付き due(DATE-TIME;TZID)を独立 alarm フィールドとは別物として
+残さず、**due に統合**した。
+
+- **概念ミスマッチの解消**: V5 以前は「時刻付き due 自体は VTIMEZONE 生成器が無く未対応」
+  だったため、その回避として「due とは独立の alarm 入力(offset ISO8601)」を追加していた
+  (D5 の 2026-07-13 追記部分)。しかし V5 で「サーバー発 VALARM は鳴る」ことが確定した以上、
+  「時刻付き due = その時刻に通知する」という自然な意味を持たせられるようになった。
+  独立 alarm フィールドは概念として本来不要だった回避策であり、V6 で撤去して
+  due(DATE-TIME)に一本化した(`CreateTodoInput.alarm` / `InvalidAlarmError` を削除。
+  MCP `create-todo` の `alarm` 引数も撤去。未リリース内部 API のため後方互換コストはゼロ)。
+- **VTIMEZONE 生成の新設**: `src/domain/ical/timezone/vtimezone-write.ts` に
+  `buildVTimezone(ianaId, window)` を追加。窓内にオフセット遷移(DST)が無いことを
+  `zoneHasOffsetTransitions`(stepDays=10 でのプロービング)で確認し、無ければ RFC 5545
+  §3.6.5 準拠の最小 VTIMEZONE(STANDARD 1本、`DTSTART:19700101T000000` 固定・
+  `TZOFFSETFROM=TZOFFSETTO`)を返す。遷移があれば `UnsupportedTimeZoneError` で拒否する
+  (**Phase 1 は固定オフセットゾーンのみ**。DST ゾーンの STANDARD+DAYLIGHT ペア + RRULE/RDATE
+  による遷移規則生成は Phase 2 でスコープ外 — 中途半端に不正確な VTIMEZONE を黙って出す
+  リスクの方が、機能が無いことより有害と判断した)。
+- **due の判別 union 化**: `VTodoFields.due` を
+  `{type:"DATE", raw} | {type:"DATE-TIME", raw, tzid}` に変更(`src/domain/ical/semantics/vtodo-write.ts`)。
+  旧 `dueValueType?: "DATE"` 限定・DATE-TIME reject throw は撤去した(理由: V6 で対応した以上、
+  未実装ゆえの回避策を残す理由が無い)。DATE-TIME のとき `vtimezone: Component` を必須にし
+  (§3.6.5 違反の防御的 throw)、VCALENDAR の components 先頭(VTODO より前)に置く
+  (iOS 実機キャプチャの並び — `real-ios/vtodo-recurring-master.ics` 実測どおり)。
+- **application 層(`create-todo.ts`)**: due 入力を `DATE_ONLY_RE`(YYYY-MM-DD)/
+  `DATE_TIME_LOCAL_RE`(YYYY-MM-DDTHH:MM:SS、offset 無し壁時計)で判別。offset 付き ISO8601
+  (`Z`/`+09:00` 等)は明示的に拒否する(offset だけでは TZID を一意に逆引きできないため —
+  `InvalidDueError` のコメント参照)。時刻付き due には `timeZone` 引数が必須
+  (暗黙 UTC フォールバック禁止。省略は `DueTimeZoneRequiredError`、不正 IANA 名は
+  `InvalidTimeZoneError`)。VTIMEZONE の窓は `[due − 400日, ホライズン + 400日]`
+  (ホライズンは recurrence の UNTIL があればその瞬間、無ければ due + 3年)。VALARM の
+  TRIGGER は due 時刻の絶対 UTC(§3.8.6.3 trigabs は UTC MUST)を自動生成する(時刻付き due
+  には常に VALARM が付く。任意指定ではない)。
+- **UNTIL 値型の分岐(I6)**: `buildRecurrenceRule` を「due が DATE なら UNTIL も DATE」
+  「due が DATE-TIME なら UNTIL も UTC DATE-TIME(due と同じ壁時計時刻を UNTIL の日付に
+  適用して UTC 化)」に分岐させた(§3.3.10「UNTIL は DTSTART と同じ値型」— update-todo.ts で
+  先に踏んだ同種の罠[D11]と同じ不変条件)。
+- **テスト**: iOS 実機の時刻付きリマインダー ICS(タスク仕様で渡された実データ)を
+  `test/domain/ical/fixtures/real-ios/vtodo-timed-due.ics` に保存し、`buildVTodoCalendar`
+  出力との構造比較テスト(`test/domain/ical/vtodo-write.test.ts`)、`vtimezone-write.ts` の
+  単体テスト(`test/domain/ical/vtimezone-write.test.ts`)、`create-todo.ts` の統合テスト
+  (`test/application/create-todo.test.ts`)を追加。DST ゾーン・分単位オフセットゾーン
+  (Asia/Kathmandu +05:45)・offset 付き ISO8601 拒否・timeZone 欠落/不正・UNTIL 値型分岐を
+  カバーする。
+- **未検証**: 実装後の実機検証(iOS が `DTSTART:19700101T000000` 形の生成 VTIMEZONE を
+  正しく表示・通知・往復できるか)は本タスクのスコープ外(手順案: `create-todo` を
+  `due:"YYYY-MM-DDTHH:MM:SS"` + `timeZone:"Asia/Tokyo"` 等の固定オフセットゾーンで呼び、
+  iOS 実機のリマインダーアプリで①時刻付き期限が正しく表示されるか、②指定時刻に通知が
+  鳴るか、③iOS 側で編集後 PUT が返ってきたときに VTIMEZONE の形が壊れていないか、を確認する)。
+- **Phase 2(DST ゾーンの VTIMEZONE 生成)は未着手**。America/New_York 等は
+  `UnsupportedTimeZoneError` で明示的に拒否される。

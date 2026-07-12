@@ -22,15 +22,18 @@
 // - 期日: iOS は終日 TODO で DTSTART;VALUE=DATE と DUE;VALUE=DATE を**同値**で両方送る
 //   (VTodo.validate() の I4 は「DUE < DTSTART」だけを違反とし同値は許容 — vtodo.ts の
 //   2026-07-10 実測修正コメント参照)。このファイルもそれに倣い、due 指定時は DTSTART も
-//   同じ値で立てる。
-// - 時刻付き due(TZID + VTIMEZONE 同梱)は、この回のスコープでは**未対応**とする。
-//   理由: VTIMEZONE を正しく合成するには IANA タイムゾーンから RFC 5545 の
-//   STANDARD/DAYLIGHT 遷移規則を導出する必要があり、domain/ical/timezone/ 配下には
-//   「TZID → 解決(resolver)」はあっても「TZID → VTIMEZONE 生成」のユーティリティが
-//   まだ無い(2026-07-12 時点で調査済み)。無い機能を急ごしらえで作ると VTIMEZONE の
-//   RFC 準拠(§3.6.5)が疑わしいものになり、iOS 側で誤動作するリスクの方が大きいと判断。
-//   よって dueValueType: "DATE-TIME" はスライス①では zod 側で reject し、
-//   「終日(DATE)を確実に対応する」ことを優先する(黙って落とさず明示的にエラーにする)。
+//   同じ値で立てる。時刻付き due(DATE-TIME;TZID)も同じ規律で DTSTART;TZID=... と
+//   DUE;TZID=... を同値で立てる(下記 V6 コメント参照)。
+// - 【2026-07-13 V6: 時刻付き due(DATE-TIME;TZID)に対応】
+//   スライス①時点(2026-07-12)では「domain/ical/timezone/ に TZID→VTIMEZONE 生成
+//   ユーティリティが無い」ため DATE-TIME を reject していたが、V6 で
+//   timezone/vtimezone-write.ts の buildVTimezone を新設したため解禁する
+//   (旧 dueValueType?: "DATE" 限定・DATE-TIME reject throw は撤去 — 概念自体は正しかったが
+//   単に「まだ実装が無い」だけだったので、実装ができた以上ここに残す理由が無い)。
+//   VTIMEZONE 自体はこのファイルでは生成しない(vtimezone-write.ts の責務)。呼び出し側
+//   (application 層の create-todo.ts)が窓を決めて buildVTimezone を呼び、結果の
+//   Component を vtimezone フィールドで渡す契約にする(このファイルは「もらった
+//   VTIMEZONE を VCALENDAR の先頭に置く」だけ — TZ 計算の知識を持ち込まない)。
 // - CreateTodo では VALARM を設定しない(要件どおり。サーバー発アラームの実機挙動が
 //   未検証のため、スライス①では踏み込まない)。
 //   【2026-07-13 更新】V5 実機検証(サーバー発 VALARM を iOS が鳴らすか)の前提として、
@@ -71,13 +74,22 @@ export interface VTodoFields {
 	/** DESCRIPTION(§3.8.1.5)。省略可。SUMMARY と同じくエスケープ前の意味的文字列。 */
 	description?: string;
 	/**
-	 * DUE(§3.8.2.3)の生値。dueValueType が "DATE" なら YYYYMMDD、省略時は無し。
-	 * 【設計判断】"DATE-TIME" は現状未対応(ファイル冒頭コメント参照)なので、この型は
-	 * 呼び出し側(application 層)が VALUE=DATE のみを渡す契約にする。
+	 * DUE(§3.8.2.3)の判別 union。DTSTART も同値・同値型で立てる(ファイル冒頭コメント)。
+	 * - "DATE": VALUE=DATE の終日。raw は "YYYYMMDD"。
+	 * - "DATE-TIME": TZID 付きの時刻指定(V6)。raw は "YYYYMMDDTHHMMSS"(Z無し・壁時計)。
+	 *   tzid は DTSTART;TZID=.../DUE;TZID=... のパラメータ値(IANA 名を渡す契約 — 呼び出し側
+	 *   の application 層が isValidIanaZone で検証済みのものを渡す)。DATE-TIME を渡すときは
+	 *   vtimezone も必須(下記 buildVTodoCalendar の防御的 throw 参照)。
 	 */
-	due?: string;
-	/** due の値型。"DATE" のみサポート(ファイル冒頭コメント参照)。due 指定時は必須。 */
-	dueValueType?: "DATE";
+	due?: { type: "DATE"; raw: string } | { type: "DATE-TIME"; raw: string; tzid: string };
+	/**
+	 * VTIMEZONE(§3.6.5)。due が DATE-TIME のとき必須。呼び出し側(application 層)が
+	 * timezone/vtimezone-write.ts の buildVTimezone で組み立てたものをそのまま渡す
+	 * (このファイルは TZ 計算をしない — ファイル冒頭 V6 コメント参照)。VCALENDAR の
+	 * components 先頭に置く(iOS 実機キャプチャの並び: VTIMEZONE が VTODO より先 —
+	 * real-ios/vtodo-recurring-master.ics 実測どおり)。
+	 */
+	vtimezone?: Component;
 	/** PRIORITY(§3.8.1.9)。0-9。0(既定=未設定)を渡すとプロパティ自体を省略する。 */
 	priority?: number;
 	/**
@@ -115,10 +127,12 @@ const VALUE_DATE_PARAMS: readonly Parameter[] = [{ name: "VALUE", values: ["DATE
  * (serialize() が担う。edit.ts のファイル冒頭コメントと同じ境界)。
  */
 export function buildVTodoCalendar(fields: VTodoFields): Component {
-	if (fields.due !== undefined && fields.dueValueType !== "DATE") {
-		// 契約違反(呼び出し側のバグ)。zod 側で弾くのが本線だが、domain 層としても
-		// 「表現できない入力を黙って壊さない」方針(CLAUDE.md ロスレス優先)で防御する。
-		throw new Error("buildVTodoCalendar: due requires dueValueType 'DATE' (DATE-TIME is not yet supported)");
+	if (fields.due !== undefined && fields.due.type === "DATE-TIME" && fields.vtimezone === undefined) {
+		// §3.6.5: TZID 付き日時プロパティを使うカレンダーは対応する VTIMEZONE を
+		// 含めなければならない(この契約は application 層 create-todo.ts が本線で満たすが、
+		// ここでも防御的に throw する — vtodo-write.ts 冒頭コメントの
+		// 「表現できない入力を黙って壊さない」方針どおり)。
+		throw new Error("buildVTodoCalendar: due type 'DATE-TIME' requires vtimezone (§3.6.5)");
 	}
 	if (fields.recurrence !== undefined && fields.due === undefined) {
 		// RRULE は DTSTART をアンカーにする(§3.8.5.3)。application 層(create-todo.ts)が
@@ -135,8 +149,17 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 	}
 	if (fields.due !== undefined) {
 		// iOS 実機キャプチャどおり DTSTART と DUE を同値・同値型で両方立てる。
-		vtodo = upsertProperty(vtodo, "DTSTART", fields.due, VALUE_DATE_PARAMS);
-		vtodo = upsertProperty(vtodo, "DUE", fields.due, VALUE_DATE_PARAMS);
+		if (fields.due.type === "DATE") {
+			vtodo = upsertProperty(vtodo, "DTSTART", fields.due.raw, VALUE_DATE_PARAMS);
+			vtodo = upsertProperty(vtodo, "DUE", fields.due.raw, VALUE_DATE_PARAMS);
+		} else {
+			// DATE-TIME;TZID(V6)。VALUE=DATE-TIME は§3.8.2.3の既定値型なので VALUE パラメータは
+			// 省略する(iOS 実機キャプチャ vtodo-recurring-master.ics も DTSTART;TZID=... の形で
+			// VALUE パラメータを送らない — 既定値を明示しない実データに揃える)。
+			const tzidParams: readonly Parameter[] = [{ name: "TZID", values: [fields.due.tzid] }];
+			vtodo = upsertProperty(vtodo, "DTSTART", fields.due.raw, tzidParams);
+			vtodo = upsertProperty(vtodo, "DUE", fields.due.raw, tzidParams);
+		}
 	}
 	if (fields.recurrence !== undefined) {
 		// DTSTART/DUE のすぐ後に RRULE を置く(実機フィクスチャ real-ios/vtodo-recurring-master.ics
@@ -200,7 +223,9 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 			// 積極生成方針(②-a)により明示的に出す。
 			{ name: "CALSCALE", parameters: [], value: "GREGORIAN" },
 		],
-		components: [vtodo],
+		// VTIMEZONE は VTODO より先(iOS 実機キャプチャの並び — ファイル冒頭 VTodoFields.vtimezone
+		// コメント参照)。fields.vtimezone が無ければ従来どおり VTODO 単独。
+		components: fields.vtimezone !== undefined ? [fields.vtimezone, vtodo] : [vtodo],
 	};
 	return vcalendar;
 }

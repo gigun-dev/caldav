@@ -42,8 +42,9 @@ import {
 	DeleteETagMismatchError,
 	DeleteTargetNotFoundError,
 	DeleteTodo,
-	InvalidAlarmError,
+	DueTimeZoneRequiredError,
 	InvalidDueError,
+	InvalidTimeZoneError,
 	ListOccurrences,
 	ListTodos,
 	PutCalendarObject,
@@ -51,6 +52,7 @@ import {
 	RecurrenceRequiresDueError,
 	RecurrenceWeekdaysRequireWeeklyError,
 	TodoNotFoundError,
+	UnsupportedTimeZoneError,
 	UpdateTodo,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
@@ -147,8 +149,17 @@ const createTodoInputShape = {
 	title: z.string().describe("SUMMARY(タイトル)。"),
 	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
 	due: z.string().optional().describe(
-		'期日。"YYYY-MM-DD"(終日)のみサポート。時刻付き due(VTIMEZONE 合成が必要)はこのスライスでは未対応 — 指定すると invalid_input エラーになる。' +
-			"recurrence を指定する場合は due が必須(RRULE の DTSTART アンカー)。",
+		'期日。2形態: "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone と組で指定)。' +
+			"offset 付き ISO8601(例 \"...+09:00\"/\"...Z\")は不可(TZID を一意に導出できないため)。" +
+			"recurrence を指定する場合は due が必須(RRULE の DTSTART アンカー)。" +
+			"【2026-07-13 V6】時刻付き due には常にサーバーが VALARM(due 時刻の絶対 UTC 通知)を" +
+			"生成する(独立 alarm 入力は廃止 — due に統合した。iOS 実機はサーバー発 VALARM でも通知する[V5 実機検証で確定])。",
+	),
+	timeZone: z.string().optional().describe(
+		'due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須' +
+			"(省略時はエラー・暗黙 UTC フォールバックはしない)。DST ゾーン(例 America/New_York)は" +
+			"サーバー側 VTIMEZONE 生成が Phase 1 で未対応のためエラーになる — 固定オフセットゾーンのみ対応。" +
+			"due が終日または省略のときは無視する。",
 	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
@@ -157,13 +168,6 @@ const createTodoInputShape = {
 	recurrence: createTodoRecurrenceInputShape.optional().describe(
 		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
 			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
-	),
-	// 2026-07-13 追加: V5 実機検証(サーバー発 VALARM を iOS が鳴らすか)の前提。
-	alarm: z.string().optional().describe(
-		"通知時刻。offset 付き ISO8601(例 \"2026-07-14T09:00:00+09:00\" または \"...Z\")。" +
-			"絶対 UTC の VALARM(ACTION:DISPLAY・TRIGGER;VALUE=DATE-TIME)として生成する — " +
-			"iOS 実機は相対 TRIGGER でなく絶対時刻を使うため、それに合わせる。due とは独立に指定できる" +
-			"(due が無くてもアラーム単体で設定可)。",
 	),
 };
 
@@ -174,7 +178,11 @@ const updateTodoInputShape = {
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
 	title: z.string().optional().describe("SUMMARY(タイトル)。省略時は変更しない。"),
 	notes: z.string().optional().describe("DESCRIPTION(メモ)。省略時は変更しない。"),
-	due: z.string().optional().describe('期日。"YYYY-MM-DD"(終日)のみサポート。省略時は変更しない。'),
+	due: z.string().optional().describe(
+		'期日。"YYYY-MM-DD"(終日)のみサポート。省略時は変更しない。' +
+			"時刻付き due の変更(create-todo が V6 で対応した \"YYYY-MM-DDTHH:MM:SS\" 形)は" +
+			"未対応(V6 フォローアップ — vtodo-patch.ts が VALUE=DATE 限定のまま)。",
+	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
 	),
@@ -418,10 +426,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		{
 			title: "Create todo",
 			description:
-				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。due は \"YYYY-MM-DD\"(終日)のみ対応 — 時刻付き期日は未対応。",
+				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。" +
+				'due は "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone 必須)。時刻付き due には自動で VALARM(due 時刻の通知)が付く。',
 			inputSchema: createTodoInputShape,
 		},
-		async ({ title, notes, due, priority, calendarId, recurrence, alarm }) => {
+		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
 			try {
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
@@ -432,10 +441,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					title,
 					notes,
 					due,
+					timeZone,
 					priority,
 					calendarId,
 					recurrence,
-					alarm,
 				});
 				const result = { task };
 				return {
@@ -443,22 +452,24 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					structuredContent: result,
 				};
 			} catch (error) {
-				// InvalidDueError(時刻付き due 未対応)/ ETagConditionError(UID 衝突。実質起きない
-				// はずだが防御的に)/ CalDAVPreconditionError / CollectionNotFoundError(calendarId 指定
-				// 誤り)いずれも「入力起因のエラー」としてメッセージをそのまま返す(toolError は
-				// isError:true にするだけで HTTP ステータスの区別は持たない — MCP のエラー表現に
-				// HTTP 相当のコード分類は無いため、既存3ツールと同じ扱いに揃える)。
-				// InvalidDueError と同様、recurrence 関連の3エラー(due 不在/count・until 排他/
-				// weekdays は weekly 限定)もメッセージが自己説明的なのでそのまま返す
-				// (タスク③で追加。create-todo.ts のクラス定義コメント参照)。
-				// InvalidAlarmError(alarm が offset ISO8601 形式でない)も同様に自己説明的
-				// (2026-07-13 alarm 追加時に同じ扱いへ揃えた)。
+				// InvalidDueError(due の形式不正・offset ISO8601 拒否)/ DueTimeZoneRequiredError
+				// (時刻付き due に timeZone 無し)/ InvalidTimeZoneError(不正な IANA 名)/
+				// UnsupportedTimeZoneError(DST ゾーンで VTIMEZONE 生成 Phase 1 対応不可)/
+				// ETagConditionError(UID 衝突。実質起きないはずだが防御的に)/
+				// CalDAVPreconditionError / CollectionNotFoundError(calendarId 指定誤り)いずれも
+				// 「入力起因のエラー」としてメッセージをそのまま返す(toolError は isError:true に
+				// するだけで HTTP ステータスの区別は持たない — MCP のエラー表現に HTTP 相当の
+				// コード分類は無いため、既存3ツールと同じ扱いに揃える)。
+				// recurrence 関連の3エラー(due 不在/count・until 排他/weekdays は weekly 限定)も
+				// メッセージが自己説明的なのでそのまま返す(タスク③で追加)。
 				if (
 					error instanceof InvalidDueError ||
+					error instanceof DueTimeZoneRequiredError ||
+					error instanceof InvalidTimeZoneError ||
+					error instanceof UnsupportedTimeZoneError ||
 					error instanceof RecurrenceRequiresDueError ||
 					error instanceof RecurrenceCountUntilConflictError ||
-					error instanceof RecurrenceWeekdaysRequireWeeklyError ||
-					error instanceof InvalidAlarmError
+					error instanceof RecurrenceWeekdaysRequireWeeklyError
 				) {
 					return toolError(error.message);
 				}

@@ -6,10 +6,12 @@ import {
 	CreateTodo,
 	PutCalendarObject,
 	InvalidDueError,
+	DueTimeZoneRequiredError,
+	InvalidTimeZoneError,
+	UnsupportedTimeZoneError,
 	RecurrenceRequiresDueError,
 	RecurrenceCountUntilConflictError,
 	RecurrenceWeekdaysRequireWeeklyError,
-	InvalidAlarmError,
 	ListTodos,
 	CompleteTodo,
 } from "../../src/application/usecases";
@@ -87,9 +89,15 @@ describe("CreateTodo", () => {
 		expect(task.notes).toBe("カンマ, セミコロン; 改行\nあり");
 	});
 
-	it("due が時刻付き(YYYY-MM-DDTHH:mm:ss)だと InvalidDueError を投げる(スライス①未対応)", async () => {
+	it("due が時刻付きなのに timeZone 省略だと DueTimeZoneRequiredError を投げる(暗黙 UTC フォールバック禁止)", async () => {
 		await expect(
-			usecase.execute({ owner: TEST_OWNER, title: "未対応ケース", due: "2026-07-15T09:00:00" }),
+			usecase.execute({ owner: TEST_OWNER, title: "timeZone 無しケース", due: "2026-07-15T09:00:00" }),
+		).rejects.toThrow(DueTimeZoneRequiredError);
+	});
+
+	it("due が offset 付き ISO8601 だと InvalidDueError を投げる(TZID を一意に導出できないため拒否)", async () => {
+		await expect(
+			usecase.execute({ owner: TEST_OWNER, title: "offset ISO ケース", due: "2026-07-15T09:00:00+09:00", timeZone: "Asia/Tokyo" }),
 		).rejects.toThrow(InvalidDueError);
 	});
 
@@ -100,71 +108,101 @@ describe("CreateTodo", () => {
 		expect(stored).toHaveLength(1);
 	});
 
-	// --- alarm(VALARM。V5 実機検証の前提。2026-07-13 追加)-------------------------------
+	// --- due:DATE-TIME(V6。時刻付き due に統合。旧・独立 alarm フィールドは廃止)---------------
+	//
+	// 【概念ミスマッチの解消(2026-07-13)】旧実装は「due とは独立の alarm 入力」を任意指定で
+	// 受け、VALARM 生成を due と切り離していた。V5 実機検証で「iOS はサーバー発 VALARM でも
+	// 通知する」ことが確定したため、「時刻付き due = その時刻に通知する」という自然な意味に
+	// 統合した(create-todo.ts の UnsupportedTimeZoneError クラス定義コメント・execute() 内
+	// コメント参照)。よってここでは due:DATE-TIME を指定すると常に VALARM が付くことを検証する
+	// (旧テストの「due と alarm を併用できる」「due 無しでもアラーム単体」に相当する組み合わせは
+	// 「due が DATE-TIME か DATE か」という1つの入力に統合されたので、対応するケースが無くなった)。
 
-	describe("alarm", () => {
-		it("offset ISO の alarm を指定すると絶対 UTC 生値の TRIGGER;VALUE=DATE-TIME を持つ VALARM が保存される", async () => {
+	describe("due:DATE-TIME(V6)", () => {
+		it("timeZone 付きで DTSTART;TZID/DUE;TZID が同値で立ち、due 時刻の絶対 UTC で VALARM が自動生成される", async () => {
 			const { task } = await usecase.execute({
 				owner: TEST_OWNER,
 				title: "通知つきタスク",
-				alarm: "2026-07-14T09:00:00+09:00", // JST 09:00 = UTC 00:00
+				due: "2026-07-10T14:00:00",
+				timeZone: "Asia/Tokyo", // JST 14:00 = UTC 05:00
 			});
+			expect(task.isAllDay).toBe(false);
+
 			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
 			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			expect(vtodo.raw.properties.find((p) => p.name === "DTSTART")?.value).toBe("20260710T140000");
+			expect(vtodo.raw.properties.find((p) => p.name === "DTSTART")?.parameters).toContainEqual({
+				name: "TZID",
+				values: ["Asia/Tokyo"],
+			});
+			expect(vtodo.raw.properties.find((p) => p.name === "DUE")?.value).toBe("20260710T140000");
+
+			// VTIMEZONE がサーバー生成され VCALENDAR に含まれる(§3.6.5)。
+			const timezones = stored.find((r) => r.uid === task.id)!.payload.timezones();
+			expect(timezones).toHaveLength(1);
+			expect(timezones[0]!.tzid).toBe("Asia/Tokyo");
+
+			// VALARM の TRIGGER は due 時刻の絶対 UTC("YYYYMMDDTHHMMSSZ")。
 			const valarms = vtodo.raw.components.filter((c) => c.name === "VALARM");
 			expect(valarms).toHaveLength(1);
 			const trigger = valarms[0]!.properties.find((p) => p.name === "TRIGGER")!;
-			expect(trigger.value).toBe("20260714T000000Z");
+			expect(trigger.value).toBe("20260710T050000Z");
 			expect(trigger.parameters).toContainEqual({ name: "VALUE", values: ["DATE-TIME"] });
+			// UID / X-WR-ALARMUID は同値(iOS 実機準拠。vtodo-write.ts の既存規約どおり)。
+			const alarmUid = valarms[0]!.properties.find((p) => p.name === "UID")?.value;
+			expect(alarmUid).toBe(valarms[0]!.properties.find((p) => p.name === "X-WR-ALARMUID")?.value);
 		});
 
-		it("alarm を 'Z' 付きで指定してもそのまま UTC 生値になる", async () => {
-			const { task } = await usecase.execute({
-				owner: TEST_OWNER,
-				title: "UTC 指定タスク",
-				alarm: "2026-07-14T09:00:00Z",
-			});
-			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
-			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
-			const trigger = vtodo.raw.components.find((c) => c.name === "VALARM")!.properties.find((p) => p.name === "TRIGGER")!;
-			expect(trigger.value).toBe("20260714T090000Z");
-		});
-
-		it("due 無しでもアラーム単体を指定できる(due とアラームは独立)", async () => {
-			const { task } = await usecase.execute({
-				owner: TEST_OWNER,
-				title: "due なし通知タスク",
-				alarm: "2026-07-14T09:00:00Z",
-			});
-			expect(task.due).toBeNull(); // Task DTO は due 無しを null で表す(task-dto.ts の既存契約)。
-			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
-			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
-			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(1);
-		});
-
-		it("due と alarm を併用できる", async () => {
-			const { task } = await usecase.execute({
-				owner: TEST_OWNER,
-				title: "due + 通知",
-				due: "2026-07-15",
-				alarm: "2026-07-14T09:00:00Z",
-			});
-			expect(task.due).toBe("2026-07-15");
-			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
-			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
-			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(1);
-		});
-
-		it("alarm が offset ISO8601 形式でないと InvalidAlarmError を投げる", async () => {
+		it("timeZone が IANA タイムゾーン名として無効だと InvalidTimeZoneError を投げる", async () => {
 			await expect(
-				usecase.execute({ owner: TEST_OWNER, title: "不正な alarm", alarm: "not-a-date" }),
-			).rejects.toThrow(InvalidAlarmError);
+				usecase.execute({ owner: TEST_OWNER, title: "不正 timeZone", due: "2026-07-15T09:00:00", timeZone: "Not/AZone" }),
+			).rejects.toThrow(InvalidTimeZoneError);
 		});
 
-		it("alarm がオフセット無しの floating 形式だと InvalidAlarmError を投げる", async () => {
+		it("DST ゾーン(America/New_York)は UnsupportedTimeZoneError を投げる(Phase 1 は固定オフセットゾーンのみ)", async () => {
 			await expect(
-				usecase.execute({ owner: TEST_OWNER, title: "floating alarm", alarm: "2026-07-14T09:00:00" }),
-			).rejects.toThrow(InvalidAlarmError);
+				usecase.execute({
+					owner: TEST_OWNER,
+					title: "DST ゾーン",
+					due: "2026-07-15T09:00:00",
+					timeZone: "America/New_York",
+				}),
+			).rejects.toThrow(UnsupportedTimeZoneError);
+		});
+
+		it("分単位オフセットゾーン(Asia/Kathmandu +05:45)でも正しく VTIMEZONE が生成される", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "分単位オフセット",
+				due: "2026-07-15T09:00:00",
+				timeZone: "Asia/Kathmandu",
+			});
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const timezones = stored.find((r) => r.uid === task.id)!.payload.timezones();
+			const standard = timezones[0]!.standard()[0]!;
+			expect(standard.properties.find((p) => p.name === "TZOFFSETTO")?.value).toBe("+0545");
+		});
+
+		it("往復: 保存された ICS を再度読むと isAllDay:false・due が元の壁時計に一致する offset ISO で返る", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "往復確認",
+				due: "2026-07-10T14:00:00",
+				timeZone: "Asia/Tokyo",
+			});
+			// CreateTodo.execute() 自体が taskFromVTodo(component 直読み)で返す Task なので、
+			// ここでの再確認は「保存された ICS を独立に parse し直しても同じ結果になる」ことを見る
+			// (PutCalendarObject が実際に書き込んだ ICS 文字列からの往復 — component の使い回しでは
+			// なく、DB 相当のストレージに保存されたバイト列を経由する点が execute() 内の変換と違う)。
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const resource = stored.find((r) => r.uid === task.id)!;
+			const vtodo = resource.payload.todos()[0]!;
+			expect(vtodo.dtstart).toEqual({ kind: "zoned", tzid: "Asia/Tokyo", year: 2026, month: 7, day: 10, hour: 14, minute: 0, second: 0 });
+
+			// task.due(Task DTO)は offset ISO8601 で JST 壁時計(+09:00)がそのまま出る
+			// (task-dto.ts の formatDue が zoned CalDateTime を offset ISO に整形する)。
+			expect(task.due).toBe("2026-07-10T14:00:00+09:00");
+			expect(task.isAllDay).toBe(false);
 		});
 	});
 
@@ -208,6 +246,27 @@ describe("CreateTodo", () => {
 					recurrence: { frequency: "daily", count: 3, until: "2026-08-01" },
 				}),
 			).rejects.toThrow(RecurrenceCountUntilConflictError);
+		});
+
+		it("V6: 時刻付き due + weekly + until で UNTIL が UTC DATE-TIME になる(値型は due=DTSTART と揃える・I6)", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "時刻付き反復",
+				due: "2026-07-10T14:00:00",
+				timeZone: "Asia/Tokyo",
+				recurrence: { frequency: "weekly", weekdays: ["SU", "SA"], until: "2026-07-31" },
+			});
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			const rrule = vtodo.raw.properties.find((p) => p.name === "RRULE")!.value;
+			// UNTIL の時刻は due と同じ壁時計(14:00 JST)を 2026-07-31 の日付に適用して UTC 化した
+			// もの(buildRecurrenceRule のコメント参照)。JST 14:00 = UTC 05:00。
+			expect(rrule).toBe("FREQ=WEEKLY;UNTIL=20260731T050000Z;BYDAY=SU,SA");
+
+			// 値型が DTSTART(DATE-TIME)と一致していること(I6)を validate() 経由で確認する
+			// (値型不一致なら何らかの違反が返るはず — update-todo.ts で判明した罠の回帰確認)。
+			const obj = stored.find((r) => r.uid === task.id)!.payload;
+			expect(obj.validate()).toEqual([]);
 		});
 
 		it("weekly 以外に weekdays を指定すると RecurrenceWeekdaysRequireWeeklyError を投げる", async () => {

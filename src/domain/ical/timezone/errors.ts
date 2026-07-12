@@ -24,3 +24,35 @@ export class TimezoneResolutionError extends Error {
 		this.name = "TimezoneResolutionError";
 	}
 }
+
+/**
+ * VTIMEZONE 生成(vtimezone-write.ts の buildVTimezone)が、DST(夏時間)遷移を持つゾーンに
+ * 対して呼ばれたことを表す例外。
+ *
+ * 【TimezoneResolutionError と型を分ける理由】
+ * あちらは「TZID 文字列から IANA 名を決定できない」失敗(パース段階)。こちらは
+ * 「IANA 名は確定しているが、正しい VTIMEZONE を組み立てられない」失敗(生成段階)。
+ * 失敗の種類が違う(名前解決 vs 構造生成)ので、呼び出し側(application 層)が
+ * instanceof で区別して別の CalDAV エラーメッセージへ写像できるよう型を分けた。
+ *
+ * 【Phase 1 は固定オフセットゾーンのみ、という判断をここに明記】
+ * buildVTimezone は STANDARD 1本だけの最小 VTIMEZONE(§3.6.5)を返す実装であり、
+ * DST ゾーン(America/New_York 等、年内にオフセットが変わるゾーン)の STANDARD+DAYLIGHT
+ * ペア + RRULE/RDATE による遷移規則の生成には対応しない(Phase 2 でスコープ外。
+ * 実装すると「観測窓の外で誤ったオフセットを返す VTIMEZONE」を黙って生成してしまう
+ * リスクの方が、機能が無いことより有害と判断した — CLAUDE.md ロスレス優先・
+ * 08 §3「暗黙フォールバック禁止」と同じ考え方をここでも適用)。
+ */
+export class UnsupportedTimeZoneError extends Error {
+	constructor(
+		/** 生成を試みた IANA ゾーン名(例 "America/New_York")。 */
+		readonly ianaId: string,
+	) {
+		super(
+			`cannot generate VTIMEZONE for "${ianaId}": zone has offset transitions in the requested window. ` +
+				"Phase 1 VTIMEZONE generation supports fixed-offset zones only " +
+				"(DST zones such as America/New_York are not yet supported).",
+		);
+		this.name = "UnsupportedTimeZoneError";
+	}
+}
