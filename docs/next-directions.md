@@ -270,6 +270,31 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > registerAppTool + 自己完結バンドル。esm.sh は Claude iOS で失敗する教訓)。OpenAI todo
   > ウィジェットが参照。最大リスク=個人コネクタで UI 描画されるか(要実機。極小 ui:// スパイクで
   > 先に潰す)。Task DTO は既に UI-ready で固定済み。
+  >
+  > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
+  > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
+  >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。
+  > - ②-b: UpdateTodo/CompleteTodo/DeleteTodo + lossless read→patch(vtodo-patch.ts)。既存 VCALENDAR の
+  >   対象 VTODO サブコンポーネントだけを差し替え、VALARM/VTIMEZONE/X-APPLE-* をバイト保持。reopen は
+  >   update-todo.status に集約、delete は無条件、反復完了は RecurringCompletionNotSupportedError で拒否。
+  > - **V2 実機受け入れ成功**(iOS 26.5・本番): update(title/due/priority)/ complete / reopen / delete が
+  >   すべて iOS リマインダーに反映。D1 実データで **VALARM が update 後もバイト保持されていること**を確認
+  >   (lossless の実証)。update で時刻付き due → 終日 due への変換も TZID を正しく除去。
+  > - **⚠️ 新タスク①【VALARM 追随・②-c とは別スライス】**: `update-todo` で `due` を動かしても、元の
+  >   絶対 VALARM トリガー(`TRIGGER;VALUE=DATE-TIME:...`)は取り残される(V2 で顕在化: due を 12-23 へ
+  >   動かしたのにアラームが旧 due 時刻 07-13 のまま → iOS がその通知時刻を表示する「取り残されアラーム」)。
+  >   lossless 保持自体は正しいが、意味論として「due 連動アラームは追随すべき」。方針(2026-07-12 ユーザー
+  >   確定=前者): **今は既知の制限として切り出し、②-c を先に進める**。将来の VALARM 管理スライスで
+  >   「旧 due 時刻と一致する絶対トリガーを新 due に移す」精密な追随を設計(V5 サーバー発 VALARM と同じ束)。
+  >   ヒューリスティック(due 連動 vs ユーザー設定の早期リマインダーの判別)を含むため独立テーマ。
+  > - **⚠️ 新タスク②【VTODO occurrence bounds・要調査】**: 単発 VTODO(due=12-23、RRULE なし)なのに D1 の
+  >   `first_occurrence` が **CREATED 時刻(07-12)**、`last_occurrence` が due(12-23)と食い違う。VTODO の
+  >   computeOccurrenceBounds の癖の可能性。calendar-query time-range REPORT にしか影響せず MCP フローには
+  >   無関係なのでブロックしないが、G-3 の bounds 計算を後で確認する。
+  > - **スライス②-c(次)**: 反復完了 = 06 D4 モデル(buildCompletionSnapshot で新 UID の完了スナップショット
+  >   + advanceMaster でマスターの DTSTART/DUE を次 occurrence へ前進)。complete-todo/update-todo.status の
+  >   RecurringCompletionNotSupportedError 分岐を D4 実装に差し替える。反復付き create(RRULE)もここで。
+  >   完了後に V3(反復完了が iOS に反映されるか)実機確認。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 

@@ -443,3 +443,30 @@
   - CLAUDE.md をコメント方針「情報の書き分け(How/What/Why/Why not)」に再構成(`eb11bb9`)。
   - 次: スライス②(complete/update/delete + 反復。実測で仕様確定)→ E-2(MCP App UI)。
     方向性 H(購読カレンダー)を E/A の後の中優先で起票。
+
+## 2026-07-12(続き)E-1 スライス②-a/②-b + V2 実機受け入れ
+
+- **スライス②-a(`6798fdf`)**: サーバー発 VTODO の生成プロパティを vtodo-stamp.ts に一本化
+  (stampCreate = STATUS:NEEDS-ACTION/CREATED/LAST-MODIFIED/DTSTAMP/X-APPLE-SORT-ORDER、
+  stampUpdate = LAST-MODIFIED/DTSTAMP のみ・CREATED/sortOrder/STATUS は保持)。X-APPLE-SORT-ORDER
+  = CFAbsoluteTime(unix秒 − 978307200)で iOS 実機の並びに一致(実測 805549710 を固定値テスト化)。
+  ListTodos の既定順を sortOrder 昇順・null 末尾・UID タイブレークに。CALSCALE:GREGORIAN も積極生成。
+  create-todo.ts の now 組み立てを now-stamp.ts(nowStampFromDate)に切り出し。
+- **スライス②-b(`44c9f2f`)**: UpdateTodo/CompleteTodo/DeleteTodo + lossless read→patch。
+  vtodo-patch.ts(patchVTodoFields / applyCompletion 3点セット / applyReopen)は edit.ts の
+  upsert/removeProperty だけで組み、VALARM/VTIMEZONE/X-APPLE-* に触れない。UC は既存 VCALENDAR の
+  対象 VTODO サブコンポーネントだけを差し替え(参照等価で特定)→ serialize → must-match PUT。
+  todo-lookup.ts で UID→URI を findUriByUid 解決(iOS 命名に決め打ちしない)。reopen は
+  update-todo.status に集約(別ツールにしない)、delete は chat UX 優先で無条件。反復 VTODO の完了は
+  D4(②-c)まで RecurringCompletionNotSupportedError で拒否(complete/update.status 両経路にガード)。
+  MCP に update/complete/delete-todo(5→8 ツール)。bun 413 + vitest 13 green。
+- **V2 実機受け入れ成功(iOS 26.5・本番 caldav.gigun-dev.workers.dev)**: MCP Inspector 経由で
+  update(title/due/priority)/ complete / reopen / delete をすべて iOS リマインダーに反映確認。
+  本番 D1 の実 ICS で **VALARM が update 後もバイト保持されている**ことを直接確認(lossless 実証)。
+  時刻付き due(DTSTART;TZID+time)→ 終日 due(VALUE=DATE)への変換も TZID を正しく除去。
+- **V2 で顕在化した2件を next-directions の方向性 E に起票**(ユーザー確定=「既知の制限として
+  切り出し ②-c を先行」):①VALARM 追随(update で due を動かすと絶対トリガーが取り残される。将来の
+  VALARM 管理スライスで精密追随を設計)②VTODO の first_occurrence が CREATED 時刻になる索引の癖(要調査・
+  MCP フロー無影響)。
+- 次: **②-c(反復完了 D4)** — buildCompletionSnapshot(新 UID 完了スナップショット)+ advanceMaster
+  (マスター DTSTART/DUE 前進)。反復付き create もここ。完了後 V3 実機確認。
