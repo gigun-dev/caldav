@@ -272,6 +272,23 @@ COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
 > `advanceAbsoluteAlarmTriggers` を追加してこの前進を実装(E-1 スライス②-c フォローアップ)。
 > `buildCompletionSnapshot` 側は無変更(現状のまま iOS 一致)。
 
+> 2026-07-13 追記(V2 実機で判明した別経路の欠落・上記 V3 追記とは独立): 反復完了の前進とは別に、
+> **`update-todo` で単に due を動かすだけの操作でも VALARM 絶対トリガーが取り残される**ことが
+> V2 実機検証で判明した(iOS ネイティブは due を変えるとアラームも一緒に動くが、それまでの
+> UpdateTodo 実装は patchVTodoFields で DTSTART/DUE だけを書き換え、VALARM には触れていなかった)。
+> 上記の「反復前進」も「due 変更」も本質的には同じ変換(絶対トリガーを絶対時間差ぶん shift する)
+> なので、`advanceAbsoluteAlarmTriggers` を `vtodo-recurrence.ts` から `vtodo-patch.ts` の
+> `shiftAbsoluteAlarmTriggers` として共有化し、`update-todo.ts` の execute() で
+> `input.due` 指定時に「旧 DUE(無ければ旧 DTSTART)→ 新 due(start-of-day)」の絶対エポック差を
+> shiftMs として適用するようにした(patch 直後・status 分岐より前 — 反復完了経路
+> `completeRecurringTodo` に渡る `masterVtodo` にもこの shift 済みの状態が伝播する)。
+> **時刻付き→終日(DATE)変換の近似(限界)**: due を「時刻付き→終日」に変える update では、
+> 新 due の「インスタンス」は start-of-day を採るしかない(create/update は現状 DATE の due しか
+> 生成できない既存制約と同じ)。結果アラームは「旧 due 時刻から (新 due の start-of-day − 旧 due
+> の絶対時刻) だけ動いた絶対時刻」になり、iOS が実際に終日リマインダーを鳴らす時刻(ローカル既定
+> 9:00 等)とは一致しない可能性がある。ロスレス・オフセット保存の一貫規則を優先した割り切りとして
+> 許容する(詳細は `src/application/usecases/update-todo.ts` の `dueShiftMillis` JSDoc)。
+
 ### D5. VALARM(VTODO のアラーム)は保持可(確定)
 
 iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`ACTION:DISPLAY` +

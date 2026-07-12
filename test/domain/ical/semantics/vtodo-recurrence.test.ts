@@ -336,6 +336,40 @@ describe("advanceMasterToNextOccurrence", () => {
 			expect(triggerValue(result.vtodo)).toBe("19760401T005545Z");
 		});
 
+		// -------------------------------------------------------------------
+		// 週末反復(BYDAY=SU,SA)の不揃い間隔での VALARM 前進(2026-07-13 追加)
+		// -------------------------------------------------------------------
+		// 【何を裏取りしたいか】上の「本番 D1 実測値」テストは FREQ=DAILY(常に +86400秒の等間隔)
+		// なので、triggerShiftMs = nextEpoch - currentEpoch が「たまたま固定 +1日と一致した」
+		// だけでも green になってしまう懸念がある(固定 +N ミリ秒を足すだけの実装でもこのテストは
+		// 通ってしまう)。vtodo-recurring-master.ics の RRULE(FREQ=WEEKLY;BYDAY=SU,SA)は
+		// 「日曜の次は6日後の土曜、土曜の次は1日後の日曜」という不揃いな実 occurrence 間隔を持つ。
+		// この fixture で VALARM が「固定 +7日」ではなく「iterator が返す実際の occurrence 間隔」
+		// (6日→1日)ぶん前進することを固定値で確認すれば、triggerShiftMs が RRULE 展開結果
+		// (nextEpoch/currentEpoch)に正しく連動していることの証拠になる。
+		test("週末反復(BYDAY=SU,SA)で VALARM が不揃いな実 occurrence 間隔(6日→1日)ぶん前進する", () => {
+			const master = masterVTodoComponent();
+			expect(triggerValue(master)).toBe("20260712T121000Z"); // fixture 初期値(07-12 日曜 12:10Z)。
+
+			// 1回目: 07-12(日)→ 次の occurrence は6日後の07-18(土)。固定+7日なら 07-19 になるはずだが
+			// 実際は6日後の07-18になる(BYDAY=SU,SA の実展開どおり)。VALARM も同じ+6日で前進する。
+			const r1 = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+			if (r1.kind !== "advanced") throw new Error("expected advanced");
+			expect(
+				VTodo.fromComponent(r1.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value,
+			).toBe("20260718T211000");
+			expect(triggerValue(r1.vtodo)).toBe("20260718T121000Z"); // 07-12T12:10Z + 6日。
+
+			// 2回目: 07-18(土)→ 次の occurrence は1日後の07-19(日)。固定+7日ではなく実間隔(1日)で
+			// 前進することを確認する(1回目の6日と非対称であることが RRULE 解釈が効いている証拠)。
+			const r2 = advanceMasterToNextOccurrence(r1.vtodo, iterator, zoneOf);
+			if (r2.kind !== "advanced") throw new Error("expected advanced");
+			expect(
+				VTodo.fromComponent(r2.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value,
+			).toBe("20260719T211000");
+			expect(triggerValue(r2.vtodo)).toBe("20260719T121000Z"); // 07-18T12:10Z + 1日。
+		});
+
 		test("VALARM が無いマスターの前進は従来どおり動く(回帰)", () => {
 			const noDueIcs = [
 				"BEGIN:VCALENDAR",

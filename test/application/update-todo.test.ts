@@ -137,6 +137,160 @@ describe("UpdateTodo", () => {
 		).rejects.toBeInstanceOf(TodoNotFoundError);
 	});
 
+	// -----------------------------------------------------------------------
+	// due 変更時の VALARM 絶対トリガー追随(2026-07-13 追加。V2 実機で判明した欠落)
+	// -----------------------------------------------------------------------
+	// CreateTodo は時刻付き due を生成できない(InvalidDueError — create-todo.ts 冒頭コメント)ため、
+	// 「時刻付き VALARM を持つ単発 VTODO」の fixture は CalendarObjectResource.fromIcs で直接
+	// 作って resourceRepo に seed する(反復系テストと同じパターン)。
+	const SINGLE_SHOT_WITH_ALARMS_ICS = [
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Test//Test//EN",
+		"BEGIN:VTIMEZONE",
+		"TZID:Asia/Tokyo",
+		"BEGIN:STANDARD",
+		"DTSTART:19510909T010000",
+		"TZNAME:JST",
+		"TZOFFSETFROM:+1000",
+		"TZOFFSETTO:+0900",
+		"END:STANDARD",
+		"END:VTIMEZONE",
+		"BEGIN:VTODO",
+		"UID:single-shot-alarm-test",
+		"DTSTAMP:20260712T000000Z",
+		"DTSTART;TZID=Asia/Tokyo:20260712T210000",
+		"DUE;TZID=Asia/Tokyo:20260712T210000",
+		"STATUS:NEEDS-ACTION",
+		"SUMMARY:締め切りリマインダー",
+		"BEGIN:VALARM",
+		"ACTION:DISPLAY",
+		"DESCRIPTION:Reminder",
+		"TRIGGER;VALUE=DATE-TIME:20260712T120000Z",
+		"END:VALARM",
+		"BEGIN:VALARM",
+		"ACTION:DISPLAY",
+		"DESCRIPTION:Reminder",
+		"TRIGGER;RELATED=START:-PT15M",
+		"END:VALARM",
+		"END:VTODO",
+		"END:VCALENDAR",
+	].join("\r\n");
+
+	function alarmTriggers(component: import("../../src/domain/ical").Component): (string | undefined)[] {
+		return component.components
+			.filter((c) => c.name === "VALARM")
+			.map((c) => c.properties.find((p) => p.name === "TRIGGER")?.value);
+	}
+
+	it("due を別日に更新すると絶対トリガーが (新due-旧due) ぶん動き、相対トリガーは不変", async () => {
+		const uri = mkResourceUri("single-shot-alarm.ics");
+		const resource = await CalendarObjectResource.fromIcs(uri, SINGLE_SHOT_WITH_ALARMS_ICS);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+
+		// 旧 DUE: 20260712T210000+09:00 = 20260712T120000Z。新 due: 2026-08-01(終日 = UTC 00:00 起点)。
+		// shiftMs = calDateStartEpochMillis(20260801, "UTC") - 20260712T120000Z
+		//         = Date.UTC(2026,7,1) - Date.UTC(2026,6,12,12,0,0)
+		// 絶対トリガー 20260712T120000Z も同じだけ動くので、新トリガーは
+		// 20260712T120000Z + shiftMs = 20260801T000000Z になる(旧トリガーが旧 due と同時刻だったため
+		// 差分がちょうど打ち消し合い、新 due の start-of-day と一致する — たまたまではなく
+		// 「アラームは常に due と同じだけ動く」オフセット保存規則の帰結)。
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: "single-shot-alarm-test",
+			due: "2026-08-01",
+		});
+		expect(task.due).toBe("2026-08-01");
+
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), "single-shot-alarm-test");
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const vtodoComponent = saved!.payload.todos()[0]!.raw;
+		const triggers = alarmTriggers(vtodoComponent);
+
+		expect(triggers).toContain("20260801T000000Z"); // 絶対トリガー: due と同じだけ前進。
+		expect(triggers).toContain("-PT15M"); // 相対トリガー: 不変。
+	});
+
+	it("title のみの更新では VALARM に触れない(due 不変)", async () => {
+		const uri = mkResourceUri("single-shot-alarm-2.ics");
+		const resource = await CalendarObjectResource.fromIcs(uri, SINGLE_SHOT_WITH_ALARMS_ICS.replace("single-shot-alarm-test", "single-shot-alarm-test-2"));
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+
+		await updateTodo.execute({ owner: TEST_OWNER, todoId: "single-shot-alarm-test-2", title: "新タイトルのみ" });
+
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), "single-shot-alarm-test-2");
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const triggers = alarmTriggers(saved!.payload.todos()[0]!.raw);
+
+		expect(triggers).toContain("20260712T120000Z"); // 絶対トリガー: due を変えていないので不変。
+		expect(triggers).toContain("-PT15M"); // 相対トリガー: 不変。
+	});
+
+	it("反復 VTODO で due 変更 + status:'COMPLETED': スナップショット/前進後マスター双方の VALARM が due 変更ぶん動く", async () => {
+		// 【RECURRING_MASTER_ICS を使わない理由】あのフィクスチャは DTSTART;TZID=...(DATE-TIME)+
+		// RRULE UNTIL=...Z(DATE-TIME)の組み合わせで、UpdateTodo.due(=VALUE=DATE 固定。
+		// vtodo-patch.ts の制約)へ patch すると DTSTART が DATE-TIME→DATE に変わり、RRULE UNTIL の
+		// 値型(DATE-TIME のまま)と食い違って I6(§3.3.10 UNTIL 値型一致 MUST)違反になる
+		// (due を動かす操作全般に共通する既存の制約であり、今回追加した VALARM shift 機能とは
+		// 無関係の別問題 — このテストのスコープ外なので、UNTIL 無し=COUNT ベースの反復 fixture を
+		// 別途用意して回避する)。
+		const uri = mkResourceUri("recurring-master-due-shift.ics");
+		const countBasedIcs = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:recurring-due-shift-test",
+			"DTSTAMP:20260712T000000Z",
+			"DTSTART;VALUE=DATE:20260712",
+			"DUE;VALUE=DATE:20260712",
+			"RRULE:FREQ=DAILY;COUNT=5",
+			"STATUS:NEEDS-ACTION",
+			"SUMMARY:反復due変更テスト",
+			"BEGIN:VALARM",
+			"ACTION:DISPLAY",
+			"DESCRIPTION:Reminder",
+			"TRIGGER;VALUE=DATE-TIME:20260712T121000Z",
+			"END:VALARM",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const resource = await CalendarObjectResource.fromIcs(uri, countBasedIcs);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+		const masterUid = resource.uid;
+
+		// 旧 DUE: 20260712(終日=UTC 00:00 起点)。VALARM は 20260712T121000Z(due の正午+12:10)。
+		// 新 due: 2026-07-20(終日)。
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: masterUid,
+			due: "2026-07-20",
+			status: "COMPLETED",
+		});
+		// 返り値は完了スナップショット。スナップショットの VALARM は「due 変更ぶんの shift」を
+		// 受けた patched を経由して buildCompletionSnapshot に渡っているので、絶対トリガーは
+		// 新 due(start-of-day UTC)と一致する(fixture は旧 DUE==旧 TRIGGER だったため)。
+		expect(task.due).toBe("2026-07-20");
+		expect(task.completed).toBe(true);
+
+		const snapshotUri = mkResourceUri(`${task.id}.ics`);
+		const snapshotResource = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), snapshotUri);
+		const snapshotTriggers = alarmTriggers(snapshotResource!.payload.todos()[0]!.raw);
+		// shiftMs = (2026-07-20 start-of-day UTC) - (2026-07-12 start-of-day UTC) = 8日。
+		// VALARM 20260712T121000Z + 8日 = 20260720T121000Z。
+		expect(snapshotTriggers).toContain("20260720T121000Z");
+
+		// マスターは次 occurrence(反復の前進)へ進んでいるので、VALARM はさらに
+		// advanceMasterToNextOccurrence 側の「occurrence 絶対時間差」ぶん動く(このテストでは
+		// due 変更由来の shift が前進処理にも正しく引き継がれていること = マスターの VALARM が
+		// 「未定義」や「due 変更前の値のまま」になっていないことだけを確認する)。
+		const masterUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), masterUid);
+		const masterResource = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), masterUri!);
+		const masterTriggers = alarmTriggers(masterResource!.payload.todos()[0]!.raw);
+		expect(masterTriggers[0]).not.toBe("20260712T121000Z"); // 旧値のまま取り残されていない。
+		expect(masterTriggers[0]).not.toBeUndefined();
+	});
+
 	it("更新後は resourceRepo 上の ETag も変わっている(must-match PUT が発行された証跡)", async () => {
 		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "etag確認" });
 		const before = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));

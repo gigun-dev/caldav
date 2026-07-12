@@ -23,7 +23,9 @@
 import type { Component } from "../structure/types";
 import { removeProperty, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
+import { formatCalDateTime, parseCalDateTime, toEpochMillis } from "../values/cal-date-time";
 import type { NowStamp } from "./vtodo-stamp";
+import { firstProp, paramFirst } from "./helpers";
 
 // VALUE=DATE パラメータ。vtodo-write.ts と同じ定数(用途が同じなので値も揃える。
 // 型が readonly Parameter[] の局所定数のため、共有ファイルへ格上げするほどの重複ではないと
@@ -126,4 +128,62 @@ export function applyReopen(vtodo: Component): Component {
 	out = removeProperty(out, "COMPLETED");
 	out = removeProperty(out, "PERCENT-COMPLETE");
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// shiftAbsoluteAlarmTriggers — VALARM の絶対トリガーだけを shiftMs だけ動かす
+// ---------------------------------------------------------------------------
+//
+// 【2026-07-13 vtodo-recurrence.ts から移設(共有化)】
+// 元は advanceMasterToNextOccurrence(反復マスターの次 occurrence 前進)専用の非公開関数
+// advanceAbsoluteAlarmTriggers としてそちらに実装されていた。今回 update-todo.ts の
+// due 変更でも「絶対トリガーを差分 shift する」という全く同じ変換が必要になったため、
+// 反復固有ロジック(vtodo-recurrence.ts)から patch 系の共通プリミティブ(このファイル)へ
+// 引き上げて公開関数にする。ロジック自体・下記の判別/除外コメントは移設元のまま(内容の
+// 正しさは既存テスト — vtodo-recurrence.test.ts 「VALARM 絶対トリガーの前進」節 — で
+// 担保済みなので変更しない)。
+//
+// 【関数名を advance→shift に変える理由】
+// 反復前進(advance)は常に「未来へ」動かす一方向の操作だが、update-todo.ts の due 変更は
+// due を過去方向へ動かす(=shiftMs が負)こともある(「締切を早める」ケース)。
+// 「前進」を意味する advance という名前のままだと呼び出し側の意図と語彙が食い違うため、
+// 正負どちらの方向も自然に表せる中立な shift に改名する(実装は shiftMs の符号をそのまま
+// 使うだけで元から双方向対応していた — 名前だけが片方向を示唆していた)。
+export function shiftAbsoluteAlarmTriggers(vtodo: Component, shiftMs: number): Component {
+	const components = vtodo.components.map((c) => {
+		if (c.name !== "VALARM") return c;
+		if (firstProp(c, "X-APPLE-PROXIMITY") !== undefined) return c; // 位置アラーム: 前進しない
+
+		const triggerProp = firstProp(c, "TRIGGER");
+		if (triggerProp === undefined) return c; // TRIGGER 必須違反(壊れたデータ)。validate() 側の仕事。
+
+		const isAbsolute = paramFirst(triggerProp, "VALUE")?.toUpperCase() === "DATE-TIME";
+		if (!isAbsolute) return c; // 相対トリガー: 前進しない
+
+		const triggerValue = parseCalDateTime(triggerProp.value);
+		if (triggerValue.kind !== "utc") return c; // trigabs は utc のはずだが、防御的に非 utc は素通し
+
+		const newEpoch = toEpochMillis(triggerValue) + shiftMs;
+		const newTrigger = { ...triggerValue, ...epochToUtcFields(newEpoch) };
+		return upsertProperty(c, "TRIGGER", formatCalDateTime(newTrigger), triggerProp.parameters);
+	});
+	return { ...vtodo, components };
+}
+
+/**
+ * UTC エポックミリ秒 → CalDateTime(kind:"utc")の年月日時分秒フィールド。
+ * vtodo-recurrence.ts の withNewWallClockFields(template の kind を保つ汎用版)とは違い、
+ * ここでは trigabs が常に kind:"utc" 固定と分かっている(§3.8.6.3)ので、template 分岐を
+ * 持たない単純な形にする(移設に伴う簡略化。呼び出し元は1箇所のみ)。
+ */
+function epochToUtcFields(ms: number): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+	const d = new Date(ms);
+	return {
+		year: d.getUTCFullYear(),
+		month: d.getUTCMonth() + 1,
+		day: d.getUTCDate(),
+		hour: d.getUTCHours(),
+		minute: d.getUTCMinutes(),
+		second: d.getUTCSeconds(),
+	};
 }

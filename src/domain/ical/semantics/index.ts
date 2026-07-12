@@ -36,6 +36,7 @@ export {
 	applyCompletion,
 	applyReopen,
 	patchVTodoFields,
+	shiftAbsoluteAlarmTriggers,
 	type VTodoPatchFields,
 } from "./vtodo-patch";
 
