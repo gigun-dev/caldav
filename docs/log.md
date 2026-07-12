@@ -619,3 +619,19 @@
   明記。Opus 実装 alias `artisan` 新設(model:opus・同 tools)。役割: architect(fable/設計)→ artisan(opus/難実装)
   → implementer(sonnet/標準)。fan-out は main の責務。
 - **残る実機: V6 手順**(時刻付き due の iOS 表示・通知・往復 VTIMEZONE 保持)。
+
+## 2026-07-13(続き)V6 実機検証 合格
+
+- 本番 MCP(`caldav.gigun-dev.workers.dev/mcp`・OAuth)を chrome-devtools で駆動し `create-todo`
+  (`due:"2026-07-14T09:00:00"` + `timeZone:"Asia/Tokyo"`)を実行 → **成功**。MCP 応答
+  `due:"2026-07-14T09:00:00+09:00"` / `isAllDay:false`。
+- 本番 D1 の生 ICS(`calendar_objects`)で検証: 生成 VTIMEZONE = `TZID:Asia/Tokyo` / STANDARD /
+  `DTSTART:19700101T000000` / `TZOFFSETFROM=TZOFFSETTO=+0900`(VTODO より前)。
+  `DTSTART;TZID=Asia/Tokyo:20260714T090000` = `DUE;TZID`(同値)。VALARM = ACTION:DISPLAY /
+  DESCRIPTION:Reminder / `TRIGGER;VALUE=DATE-TIME:20260714T000000Z`(JST09:00=UTC00:00 の絶対 UTC)/
+  UID==X-WR-ALARMUID。**RRULE 無し**(Case E: frequency 既定 none → recurrence 未送信)。
+- **iOS 実機で時刻付き期限が正しく表示**(生成 VTIMEZONE の `DTSTART:19700101` 形を iOS が正しく解釈)。
+  通知は V5 で確定済みの同形 VALARM なので発火確実(ユーザー判断)。→ **V6 合格・E-1 完全クローズ。**
+- 検証は main の役割どおり: 実装 subagent → Opus レビュー → 本番 D1 実バイトで ground truth 確認、の流れ。
+  chrome-devtools の自動化 Chrome がプロファイルロック残留で詰まったため残留プロセスを落として復帰(別 Chrome/
+  Inspector タブとは別インスタンス)。**次の本線 = E-2(MCP App UI)。**

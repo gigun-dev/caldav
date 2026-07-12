@@ -348,6 +348,12 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   Inspector 手動フォームの `{frequency:""}` バグを presentation 層で吸収(application には漏らさない・
   >   "none"+サブフィールド併用はエラー)。
   >   **残る実機: V6 手順**(時刻付き due の iOS 表示・通知・往復 VTIMEZONE 保持)。据え置き: V6 Phase 2(DST ゾーン)。
+  >
+  > **2026-07-13 更新: V6 実機検証 合格 ✅。** 本番 MCP を chrome-devtools で駆動し時刻付き due を作成 →
+  >   本番 D1 の生 ICS で VTIMEZONE(`DTSTART:19700101T000000`・+0900)/ DTSTART;TZID=DUE;TZID /
+  >   VALARM 絶対 UTC TRIGGER(JST09:00=UTC00:00)/ UID==X-WR-ALARMUID / RRULE 無し(Case E)を確認。
+  >   **iOS 実機で時刻付き期限が正しく表示**(通知は V5 確定の同形 VALARM で確実)。**E-1 完全クローズ。
+  >   次の本線 = E-2(MCP App UI)**。据え置き: V6 Phase 2(DST ゾーン)。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 

@@ -542,10 +542,21 @@ V5 の確定を受け、時刻付き due(DATE-TIME;TZID)を独立 alarm フィ�
   (`test/application/create-todo.test.ts`)を追加。DST ゾーン・分単位オフセットゾーン
   (Asia/Kathmandu +05:45)・offset 付き ISO8601 拒否・timeZone 欠落/不正・UNTIL 値型分岐を
   カバーする。
-- **未検証**: 実装後の実機検証(iOS が `DTSTART:19700101T000000` 形の生成 VTIMEZONE を
-  正しく表示・通知・往復できるか)は本タスクのスコープ外(手順案: `create-todo` を
-  `due:"YYYY-MM-DDTHH:MM:SS"` + `timeZone:"Asia/Tokyo"` 等の固定オフセットゾーンで呼び、
-  iOS 実機のリマインダーアプリで①時刻付き期限が正しく表示されるか、②指定時刻に通知が
-  鳴るか、③iOS 側で編集後 PUT が返ってきたときに VTIMEZONE の形が壊れていないか、を確認する)。
+- **実機検証(合格・2026-07-13)**: 本番 MCP(`caldav.gigun-dev.workers.dev/mcp`、OAuth 経由)を
+  chrome-devtools で駆動し `create-todo`(`due:"2026-07-14T09:00:00"` + `timeZone:"Asia/Tokyo"`)を実行。
+  - **サーバー出力(本番 D1 の生 ICS で確認)**: 生成 VTIMEZONE は
+    `TZID:Asia/Tokyo` / `STANDARD` / `DTSTART:19700101T000000` / `TZOFFSETFROM=TZOFFSETTO=+0900` で
+    VTODO より前に配置。`DTSTART;TZID=Asia/Tokyo:20260714T090000` = `DUE;TZID=...`(同値)。
+    VALARM は `ACTION:DISPLAY` / `DESCRIPTION:Reminder` / `TRIGGER;VALUE=DATE-TIME:20260714T000000Z`
+    (JST 09:00 = UTC 00:00 の絶対 UTC)/ `UID`==`X-WR-ALARMUID`。RRULE 無し(Case E の
+    frequency 既定 `none` が効いて recurrence 未送信)。MCP 応答も `due:"2026-07-14T09:00:00+09:00"`・
+    `isAllDay:false` で往復一致。
+  - **iOS 実機**: リマインダーアプリで**時刻付き期限が正しく表示された**(生成 VTIMEZONE
+    `DTSTART:19700101T000000` 形を iOS が正しく解釈)。①表示 = 合格。②通知は V5 で確定済みの
+    同形 VALARM(絶対 UTC TRIGGER)なので発火は確実(ユーザー判断)。③編集往復での VTIMEZONE 保持は
+    lossless PUT(②-b で実証済み)により担保。
+- **Case E(繰り返さない選択)も本番で確認**: `create-todo` の recurrence.frequency が既定 `none` で
+  表示され、`none` のまま送ると RRULE 無しの単発 VTODO になった(Inspector 手動フォームの
+  `{frequency:""}` バグを presentation 層で吸収)。
 - **Phase 2(DST ゾーンの VTIMEZONE 生成)は未着手**。America/New_York 等は
   `UnsupportedTimeZoneError` で明示的に拒否される。
