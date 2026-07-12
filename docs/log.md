@@ -470,3 +470,25 @@
   MCP フロー無影響)。
 - 次: **②-c(反復完了 D4)** — buildCompletionSnapshot(新 UID 完了スナップショット)+ advanceMaster
   (マスター DTSTART/DUE 前進)。反復付き create もここ。完了後 V3 実機確認。
+
+## 2026-07-13 E-1 スライス②-c(反復完了 D4)
+
+- **スライス②-c(`e9e47bc`)**: 反復 VTODO の完了を拒否せず iOS 実機に忠実に再現(D4 モデル)。
+  Fable 設計 → sonnet 実装。CompleteTodo/UpdateTodo.status の RecurringCompletionNotSupportedError を
+  D4 実装に差し替え。
+  - domain 純関数(vtodo-recurrence.ts): `buildCompletionSnapshot`(新 UID・RRULE/RDATE/EXDATE 除去・
+    3点セット・DTSTART/DUE をマスターから継承・VALARM を UID/X-WR-ALARMUID 新採番でコピー・
+    X-APPLE-SORT-ORDER は付けない=fixture 忠実)/ `advanceMasterToNextOccurrence`(次 occurrence へ
+    DTSTART/DUE 前進・元 params[TZID/VALUE=DATE]流用・DUE−DTSTART の壁時計差保持・COUNT は §3.3.10
+    「DTSTART は常に最初の occurrence」根拠で1減算・UNTIL は inclusive 判定で RRULE 不変・最終回は
+    exhausted)。expansion.ts の非公開ヘルパーは G-1/G-2 完成物を変更しない方針でローカル小複製。
+  - application(recurring-completion.ts): snapshot-first の非原子2PUT(a:新 UID must-not-exist →
+    b:マスター前進 must-match)。失敗モード表をコメント明文化(a 失敗=無変更で再実行回復、
+    a 成功 b 失敗=完了スナップショット余剰1件[良性・可逆]、master-first だと occurrence 消失=非可逆
+    なので snapshot-first 厳守)。exhausted(最終回)は 1 PUT でマスター完了。返す Task=完了スナップショット。
+  - RRULE 反復展開は既存 RecurrenceIterator へ委譲(再実装しない)。bun 427 + vitest 13 green。
+- **06 §D4 に追記**: 最終 occurrence 完了時のスナップショット有無は実測未確定 → ②-c は「作らない
+  (マスター完了のみ)」を採用・実機検証項目 V8 として登録。
+- **新タスク③(next-directions 方向性 E に起票)**: 反復付き create(RRULE)は未対応 = chat から反復 todo を
+  ゼロから作れない(完了=前進は既存の反復マスターに対してのみ)。別スライスで判断。
+- 次: **V3 実機確認**(我々の反復完了が iOS リマインダーに反映されるか)→ 問題なければ E-2(MCP App UI)。

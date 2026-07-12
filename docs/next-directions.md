@@ -291,10 +291,19 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   `first_occurrence` が **CREATED 時刻(07-12)**、`last_occurrence` が due(12-23)と食い違う。VTODO の
   >   computeOccurrenceBounds の癖の可能性。calendar-query time-range REPORT にしか影響せず MCP フローには
   >   無関係なのでブロックしないが、G-3 の bounds 計算を後で確認する。
-  > - **スライス②-c(次)**: 反復完了 = 06 D4 モデル(buildCompletionSnapshot で新 UID の完了スナップショット
-  >   + advanceMaster でマスターの DTSTART/DUE を次 occurrence へ前進)。complete-todo/update-todo.status の
-  >   RecurringCompletionNotSupportedError 分岐を D4 実装に差し替える。反復付き create(RRULE)もここで。
-  >   完了後に V3(反復完了が iOS に反映されるか)実機確認。
+  > - **スライス②-c 完了 ✅**(`e9e47bc`): 反復完了を拒否せず D4 モデルで実装。vtodo-recurrence.ts の
+  >   純関数2つ(buildCompletionSnapshot = 新 UID・RRULE 除去・3点セット・DTSTART/DUE 継承・VALARM を
+  >   UID/X-WR-ALARMUID 新採番でコピー / advanceMasterToNextOccurrence = 次 occurrence へ前進・DUE−DTSTART
+  >   壁時計差保持・COUNT は §3.3.10 根拠で1減算・UNTIL inclusive・最終回は exhausted)+ recurring-completion.ts の
+  >   snapshot-first 非原子2PUT(a:新 UID must-not-exist → b:マスター前進 must-match、失敗モード明文化)。
+  >   最終 occurrence はスナップショット無しでマスター完了(実測未確定=06 §D4 に V8 として起票)。
+  >   RRULE 展開は既存 RecurrenceIterator へ委譲。bun 427 + vitest 13 green。
+  >   **残:** V3(反復完了が iOS に反映されるか)実機確認 → 実施予定 / V8(最終回スナップショット有無)。
+  >   **新タスク③【反復付き create(RRULE)】**: 現状 create-todo は RRULE 非対応 = chat から「毎週〜」の
+  >   反復リマインダーを**ゼロから作れない**(完了=前進は既存の反復マスターに対してのみ動く)。iOS 作成の
+  >   反復 todo は往復・完了できる。agentic 入口として反復 todo 作成を足すなら別スライス(create-todo に
+  >   recurrence 引数 + buildVTodoCalendar の RRULE 生成。VALUE=DATE 反復が主経路)。E-2 前後で判断。
+  >   次の本線: **E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 
