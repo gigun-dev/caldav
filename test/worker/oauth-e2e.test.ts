@@ -205,7 +205,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 		accessToken = body.access_token as string;
 	});
 
-	it("(d) /mcp: OAuth access_token で tools/list を呼ぶと3ツールが見える", async () => {
+	it("(d) /mcp: OAuth access_token で tools/list を呼ぶと5ツールが見える(E-1 create-todo/list-todos 追加)", async () => {
 		const response = await callWorker(
 			new Request("https://example.com/mcp", {
 				method: "POST",
@@ -231,7 +231,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["get-current-time", "get-freebusy", "list-events-expanded"]);
+		expect(toolNames).toEqual(["create-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos"]);
 	});
 
 	it("(e) 静的 Bearer 経路: MCP_TOKEN でも OAuth を経由せず /mcp の tools/list が通る", async () => {
@@ -259,7 +259,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["get-current-time", "get-freebusy", "list-events-expanded"]);
+		expect(toolNames).toEqual(["create-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos"]);
 	});
 
 	// --- 失敗系 --------------------------------------------------------------

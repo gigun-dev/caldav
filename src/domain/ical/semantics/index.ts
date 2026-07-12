@@ -20,3 +20,7 @@ export { VTodo } from "./vtodo";
 export { VJournal } from "./vjournal";
 export { VTimezone } from "./vtimezone";
 export { VAlarm } from "./valarm";
+
+// E-1 スライス①: VTODO 新規組み立て(CreateTodo 専用。vtodo.ts の読み取りレンズとは別ファイル
+// — vtodo-write.ts 冒頭コメントの「CreateTodo 以外で使わない」方針を参照)。
+export { buildVTodoCalendar, type VTodoFields } from "./vtodo-write";

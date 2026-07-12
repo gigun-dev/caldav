@@ -1,5 +1,5 @@
 // =============================================================================
-// mcp/server — G-5 MCP 照会ツールサーバー(get-current-time / list-events-expanded / get-freebusy)
+// mcp/server — MCP ツールサーバー(G-5 照会3ツール + E-1 スライス① create-todo/list-todos)
 // =============================================================================
 //
 // 【この層の責務】
@@ -32,9 +32,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { z } from "zod";
 
-import type { AuthenticationPort } from "../../application/ports";
+import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
-import { ComputeFreeBusy, ListOccurrences } from "../../application/usecases";
+import {
+	ComputeFreeBusy,
+	CreateTodo,
+	InvalidDueError,
+	ListOccurrences,
+	ListTodos,
+	PutCalendarObject,
+} from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
 import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
 import type { CollectionId, PrincipalRef } from "../../domain/caldav";
@@ -46,6 +53,10 @@ export interface McpAppDeps {
 	readonly collectionRepo: CalendarCollectionRepository;
 	readonly resourceRepo: CalendarObjectResourceRepository;
 	readonly iterator: RecurrenceIterator;
+	// E-1 スライス①: create-todo が PutCalendarObject(collectionRepo/resourceRepo/uow/iterator の
+	// 4依存)を合成するために必要。既存3ツールは uow を使わない(読み取り専用)ため、
+	// この依存追加は create-todo/list-todos の追加に伴う最小限の拡張。
+	readonly uow: CollectionUnitOfWork;
 }
 
 // --- get-current-time -------------------------------------------------------
@@ -73,6 +84,28 @@ const getFreeBusyInputShape = {
 	timeMax: z.string().describe("free/busy 集計範囲の終了(offset 付き ISO8601。必須)。"),
 	timeZone: z.string().optional().describe("応答時刻の表示に使う IANA タイムゾーン。省略時は UTC。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して集計する。"),
+};
+
+// --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
+
+const createTodoInputShape = {
+	title: z.string().describe("SUMMARY(タイトル)。"),
+	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
+	due: z.string().optional().describe(
+		'期日。"YYYY-MM-DD"(終日)のみサポート。時刻付き due(VTIMEZONE 合成が必要)はこのスライスでは未対応 — 指定すると invalid_input エラーになる。',
+	),
+	priority: z.number().int().min(0).max(9).optional().describe(
+		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
+	),
+	calendarId: z.string().optional().describe('保存先コレクション ID。省略時は "tasks"。'),
+};
+
+const listTodosInputShape = {
+	includeCompleted: z.boolean().optional().describe("完了済み(STATUS:COMPLETED)を含めるか。既定は未完了のみ(false)。"),
+	dueBefore: z.string().optional().describe("DUE がこの offset 付き ISO8601 より前の TODO だけに絞る(due 無しは除外)。"),
+	dueAfter: z.string().optional().describe("DUE がこの offset 付き ISO8601 より後の TODO だけに絞る(due 無しは除外)。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+	timeZone: z.string().optional().describe("due の表示 + floating/DATE の解釈に使う IANA タイムゾーン。省略時は UTC。"),
 };
 
 /**
@@ -111,7 +144,8 @@ function toolError(message: string) {
 }
 
 /**
- * リクエストごとに McpServer + StreamableHTTPTransport を新規生成し、3ツールを登録する
+ * リクエストごとに McpServer + StreamableHTTPTransport を新規生成し、5ツール
+ * (get-current-time / list-events-expanded / get-freebusy / create-todo / list-todos)を登録する
  * ファクトリ。principal をクロージャで束縛するため、認証成功後(ミドルウェア内)で呼ぶ。
  */
 function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
@@ -273,6 +307,77 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				}));
 
 				const result = { timeZone: zone, busy };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- create-todo(E-1 スライス①)---------------------------------------------
+	server.registerTool(
+		"create-todo",
+		{
+			title: "Create todo",
+			description:
+				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。due は \"YYYY-MM-DD\"(終日)のみ対応 — 時刻付き期日は未対応。",
+			inputSchema: createTodoInputShape,
+		},
+		async ({ title, notes, due, priority, calendarId }) => {
+			try {
+				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
+				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const createTodo = new CreateTodo(putCalendarObject);
+				const { task } = await createTodo.execute({
+					owner: principal,
+					title,
+					notes,
+					due,
+					priority,
+					calendarId,
+				});
+				const result = { task };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				// InvalidDueError(時刻付き due 未対応)/ ETagConditionError(UID 衝突。実質起きない
+				// はずだが防御的に)/ CalDAVPreconditionError / CollectionNotFoundError(calendarId 指定
+				// 誤り)いずれも「入力起因のエラー」としてメッセージをそのまま返す(toolError は
+				// isError:true にするだけで HTTP ステータスの区別は持たない — MCP のエラー表現に
+				// HTTP 相当のコード分類は無いため、既存3ツールと同じ扱いに揃える)。
+				if (error instanceof InvalidDueError) return toolError(error.message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- list-todos(E-1 スライス①)-----------------------------------------------
+	server.registerTool(
+		"list-todos",
+		{
+			title: "List todos",
+			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。",
+			inputSchema: listTodosInputShape,
+		},
+		async ({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }) => {
+			try {
+				const zone = resolveTimeZone(timeZone);
+				const listTodos = new ListTodos(deps.resourceRepo);
+				const { tasks } = await listTodos.execute({
+					owner: principal,
+					includeCompleted,
+					dueBefore,
+					dueAfter,
+					calendarId,
+					timeZone: zone,
+				});
+				const result = { tasks, calendarId: calendarId ?? "tasks", timeZone: zone };
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(result) }],
 					structuredContent: result,

@@ -790,6 +790,9 @@ export const mcpApiApp = new Hono<{ Bindings: CloudflareBindings }>().route(
 			collectionRepo: repos.collections,
 			resourceRepo: repos.resources,
 			iterator: recurrenceIterator,
+			// E-1 スライス①: create-todo が PutCalendarObject を合成するために uow も渡す
+			// (McpAppDeps 拡張。DAV 側の PUT ハンドラが repos.uow を使うのと同じ実体)。
+			uow: repos.uow,
 		};
 	}),
 );

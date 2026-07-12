@@ -105,3 +105,22 @@ export {
 	UpdateCollectionProperties,
 	type UpdateCollectionPropertiesInput,
 } from "./update-collection-properties";
+
+// Task DTO(E-2 UI-ready。CreateTodo/ListTodos 共通)
+export { taskFromVTodo, type Task } from "./task-dto";
+
+// MCP create-todo(方向性 E-1 スライス①)
+export {
+	CreateTodo,
+	InvalidDueError,
+	type CreateTodoInput,
+	type CreateTodoOutput,
+	type CreateTodoError,
+} from "./create-todo";
+
+// MCP list-todos(方向性 E-1 スライス①)
+export {
+	ListTodos,
+	type ListTodosInput,
+	type ListTodosOutput,
+} from "./list-todos";

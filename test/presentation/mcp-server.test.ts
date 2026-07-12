@@ -90,6 +90,7 @@ beforeEach(() => {
 			collectionRepo: repos.collections,
 			resourceRepo: repos.resources,
 			iterator: recurrenceIterator,
+			uow: repos.uow,
 		})),
 	);
 });
@@ -152,12 +153,18 @@ describe("/mcp", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("正しい Bearer で tools/list に3ツールが並ぶ", async () => {
+	it("正しい Bearer で tools/list に5ツールが並ぶ(E-1 スライス①で create-todo/list-todos を追加)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
 		const names = rpc.result.tools.map((t: { name: string }) => t.name).sort();
-		expect(names).toEqual(["get-current-time", "get-freebusy", "list-events-expanded"]);
+		expect(names).toEqual([
+			"create-todo",
+			"get-current-time",
+			"get-freebusy",
+			"list-events-expanded",
+			"list-todos",
+		]);
 	});
 
 	it("initialize が単発でも成功する(stateless transport)", async () => {
