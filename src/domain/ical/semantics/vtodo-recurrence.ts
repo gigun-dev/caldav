@@ -30,11 +30,11 @@ import type { Component } from "../structure/types";
 import { removeProperty, upsertProperty } from "../structure/edit";
 import { applyCompletion, applyReopen } from "./vtodo-patch";
 import type { NowStamp } from "./vtodo-stamp";
-import { firstProp, isCalDateTime, parseDateOrDateTime, rawValue } from "./helpers";
+import { firstProp, isCalDateTime, paramFirst, parseDateOrDateTime, rawValue } from "./helpers";
 import type { CalDate } from "../values/cal-date";
 import { formatCalDate } from "../values/cal-date";
 import type { CalDateTime } from "../values/cal-date-time";
-import { formatCalDateTime, toEpochMillis } from "../values/cal-date-time";
+import { formatCalDateTime, parseCalDateTime, toEpochMillis } from "../values/cal-date-time";
 import type { RecurrenceRule, RecurUntil } from "../values/recurrence-rule";
 import { formatRecurrenceRule, parseRecurrenceRule } from "../values/recurrence-rule";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../timezone";
@@ -249,6 +249,20 @@ export function advanceMasterToNextOccurrence(
 	}
 	// DUE 無しなら何もしない(spec どおり)。
 
+	// --- VALARM 絶対トリガーの前進(2026-07-13 追加。本番 D1 実機検証 V3 で判明した欠落) ---
+	// 【DUE の壁時計差保持(上のブロック)とは別物 — 混同しないこと】
+	// DUE は「DTSTART との壁時計フィールドの見た目上の差」を保持する(TZ を見ない暦カウンタ差分)。
+	// 対して VALARM 絶対トリガー(TRIGGER;VALUE=DATE-TIME、常に UTC — §3.8.6.3 trigabs 文法。
+	// docs/rfc/rfc5545.txt で確認済み)は "絶対時刻" そのものなので、前進させるべきは
+	// 「occurrence の絶対エポックの差」= triggerShiftMs = nextEpoch - currentEpoch。
+	// 本番実測(CAP-RRULE2・FREQ=DAILY・DTSTART 20260712T010000+09:00→20260713T010000+09:00)で
+	// iOS が VALARM を 20260712T160000Z → 20260713T160000Z へちょうど +86400000ms 前進させて
+	// いることを確認済み(= DTSTART の壁時計差 86400000ms と一致。夏時間を跨ぐ TZID では
+	// 壁時計差と絶対時刻差がズレうるが、trigabs は UTC 絶対値そのものなので "絶対時刻差" が
+	// 常に正しい前進量— DUE のような「TZ 非依存の壁時計差」ロジックを流用してはいけない)。
+	const triggerShiftMs = nextEpoch - currentEpoch;
+	out = advanceAbsoluteAlarmTriggers(out, triggerShiftMs);
+
 	// --- STATUS:NEEDS-ACTION + COMPLETED/PERCENT-COMPLETE 除去 ---------------------------
 	out = applyReopen(out);
 
@@ -257,6 +271,62 @@ export function advanceMasterToNextOccurrence(
 	// に合わせ、この純関数はフィールドの前進だけに責務を絞る。
 
 	return { kind: "advanced", vtodo: out };
+}
+
+// ---------------------------------------------------------------------------
+// advanceAbsoluteAlarmTriggers — VALARM の絶対トリガーだけを shiftMs 前進させる
+// ---------------------------------------------------------------------------
+
+/**
+ * マスターの VALARM サブコンポーネントを走査し、**絶対トリガー**(TRIGGER;VALUE=DATE-TIME、
+ * §3.8.6.3 trigabs 文法で常に UTC)だけを shiftMs 前進させる。他の VALARM は素通し(ロスレス)。
+ *
+ * 【何を「絶対トリガー」と判定するか — trigabs 文法に忠実に、VALUE パラメータで判定する】
+ * §3.8.6.3 の ABNF は trigabs のとき `VALUE=DATE-TIME` パラメータが REQUIRED(trigrel には
+ * それが無い/DURATION)。つまり「VALUE パラメータが DATE-TIME かどうか」だけで絶対/相対を
+ * 一意に判別でき、値そのものの構文(Z の有無)を先に見る必要がない(VALUE 未指定時の既定は
+ * DURATION なので、パラメータ無し=相対という判定にもなる)。
+ *
+ * 【触ってはいけない2種類(タスク指示・06 §D5 の iOS 実機所見どおり)】
+ * 1. 相対トリガー(TRIGGER;RELATED=START/END:±PT.. や既定 DURATION)— DTSTART/DUE に自動
+ *    追随するので前進不要。VALUE=DATE-TIME でない時点で下の isAbsolute 判定で弾かれる。
+ * 2. 位置アラーム(VALARM が X-APPLE-PROXIMITY を持つ)— TRIGGER の値自体は構文上
+ *    VALUE=DATE-TIME の絶対トリガーに見える(iOS はダミーの過去日時、例 19760401T005545Z を
+ *    埋める)が、実際の発火はジオフェンスで TRIGGER の値に意味が無い。iOS 自身もこの
+ *    ダミー値を前進させない(06 §D5・fixture vtodo-proximity-alarm.ics で確認済み)ので、
+ *    ここでも X-APPLE-PROXIMITY の有無を先に見て除外する。
+ *
+ * 【parseCalDateTime に tzid を渡さない理由】trigabs は UTC 固定(§3.8.6.3 "the property
+ * value MUST be specified in the UTC time format")なので、TZID パラメータは元々付き得ない
+ * (付いていれば I8 相当の別の検証対象。ここでは寛容に「utc kind でなければ触らない」で
+ * 防御する)。
+ *
+ * 【kind !== "utc" を「触らない」で防御する理由】万一 Z なしの値が来ても(壊れたデータ/
+ * 将来の拡張)、絶対時刻としての前進量が定義できないのでここで前進を諦めるのが安全側の
+ * 判断(validate() 側で別途違反として拾われる想定。この関数はロスレス優先で沈黙して素通し）。
+ */
+function advanceAbsoluteAlarmTriggers(vtodo: Component, shiftMs: number): Component {
+	const components = vtodo.components.map((c) => {
+		if (c.name !== "VALARM") return c;
+		if (firstProp(c, "X-APPLE-PROXIMITY") !== undefined) return c; // 位置アラーム: 前進しない
+
+		const triggerProp = firstProp(c, "TRIGGER");
+		if (triggerProp === undefined) return c; // TRIGGER 必須違反(壊れたデータ)。validate() 側の仕事。
+
+		const isAbsolute = paramFirst(triggerProp, "VALUE")?.toUpperCase() === "DATE-TIME";
+		if (!isAbsolute) return c; // 相対トリガー: 前進しない
+
+		const triggerValue = parseCalDateTime(triggerProp.value);
+		if (triggerValue.kind !== "utc") return c; // trigabs は utc のはずだが、防御的に非 utc は素通し
+
+		const newEpoch = toEpochMillis(triggerValue) + shiftMs;
+		// withNewWallClockFields は template の kind("utc")を保ったまま新エポックへ組み直す
+		// (ファイル下方の同名ヘルパー。DUE 前進で使っているのと同じ「epoch → CalDateTime」変換を
+		// ここでも再利用する — 別ロジックを増やさない)。
+		const newTrigger = withNewWallClockFields(triggerValue, newEpoch) as CalDateTime;
+		return upsertProperty(c, "TRIGGER", formatCalDateTime(newTrigger), triggerProp.parameters);
+	});
+	return { ...vtodo, components };
 }
 
 // ---------------------------------------------------------------------------

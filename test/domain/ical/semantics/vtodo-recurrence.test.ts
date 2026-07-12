@@ -234,4 +234,127 @@ describe("advanceMasterToNextOccurrence", () => {
 		if (result.kind !== "advanced") throw new Error("expected advanced");
 		expect(due(result.vtodo)).toBe("20260718T211000");
 	});
+
+	// -----------------------------------------------------------------------
+	// VALARM 絶対トリガーの前進(2026-07-13 追加。本番 D1 実機検証 V3 で判明した欠落の回帰防止)
+	// -----------------------------------------------------------------------
+	// 本番実測値(CAP-RRULE2・FREQ=DAILY): DTSTART が 20260713T010000+09:00 → 20260714T010000+09:00
+	// へ前進したとき、VALARM の絶対トリガーは 20260712T160000Z → 20260713T160000Z へ、
+	// ちょうど DTSTART と同じ絶対時間差(+86400秒)だけ前進していた。この節はその実測値を
+	// 固定値として貼る回帰テスト(実運用の本番 D1 から採取した値そのもの)。
+	describe("VALARM 絶対トリガーの前進", () => {
+		function triggerValue(component: Component, alarmIndex = 0): string | undefined {
+			const alarm = VTodo.fromComponent(component).alarms()[alarmIndex];
+			return alarm?.raw.properties.find((p) => p.name === "TRIGGER")?.value;
+		}
+
+		test("絶対トリガー(VALUE=DATE-TIME)は DTSTART と同じ絶対時間差で前進する(本番 D1 実測値)", () => {
+			const ics = [
+				"BEGIN:VCALENDAR",
+				"VERSION:2.0",
+				"PRODID:-//Test//Test//EN",
+				"BEGIN:VTODO",
+				"UID:absolute-trigger-test",
+				"DTSTAMP:20260101T000000Z",
+				"DTSTART;TZID=Asia/Tokyo:20260713T010000",
+				"DUE;TZID=Asia/Tokyo:20260713T010000",
+				"RRULE:FREQ=DAILY",
+				"STATUS:NEEDS-ACTION",
+				"BEGIN:VALARM",
+				"ACTION:DISPLAY",
+				"DESCRIPTION:Reminder",
+				"TRIGGER;VALUE=DATE-TIME:20260712T160000Z",
+				"END:VALARM",
+				"END:VTODO",
+				"END:VCALENDAR",
+			].join("\r\n");
+			const cal = ICalendarObject.fromComponent(parse(ics));
+			const master = cal.todos()[0]!.raw;
+
+			const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+			if (result.kind !== "advanced") throw new Error("expected advanced");
+			expect(
+				VTodo.fromComponent(result.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value,
+			).toBe("20260714T010000");
+			expect(triggerValue(result.vtodo)).toBe("20260713T160000Z");
+		});
+
+		test("相対トリガー(RELATED=START の DURATION)は前進で不変", () => {
+			const ics = [
+				"BEGIN:VCALENDAR",
+				"VERSION:2.0",
+				"PRODID:-//Test//Test//EN",
+				"BEGIN:VTODO",
+				"UID:relative-trigger-test",
+				"DTSTAMP:20260101T000000Z",
+				"DTSTART;TZID=Asia/Tokyo:20260713T010000",
+				"DUE;TZID=Asia/Tokyo:20260713T010000",
+				"RRULE:FREQ=DAILY",
+				"STATUS:NEEDS-ACTION",
+				"BEGIN:VALARM",
+				"ACTION:DISPLAY",
+				"DESCRIPTION:Reminder",
+				"TRIGGER;RELATED=START:-PT15M",
+				"END:VALARM",
+				"END:VTODO",
+				"END:VCALENDAR",
+			].join("\r\n");
+			const cal = ICalendarObject.fromComponent(parse(ics));
+			const master = cal.todos()[0]!.raw;
+
+			const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+			if (result.kind !== "advanced") throw new Error("expected advanced");
+			expect(triggerValue(result.vtodo)).toBe("-PT15M");
+		});
+
+		test("位置アラーム(X-APPLE-PROXIMITY を持つ VALARM のダミー絶対トリガー)は前進で不変", () => {
+			const ics = [
+				"BEGIN:VCALENDAR",
+				"VERSION:2.0",
+				"PRODID:-//Test//Test//EN",
+				"BEGIN:VTODO",
+				"UID:proximity-trigger-test",
+				"DTSTAMP:20260101T000000Z",
+				"DTSTART;TZID=Asia/Tokyo:20260713T010000",
+				"DUE;TZID=Asia/Tokyo:20260713T010000",
+				"RRULE:FREQ=DAILY",
+				"STATUS:NEEDS-ACTION",
+				"BEGIN:VALARM",
+				"ACTION:DISPLAY",
+				"DESCRIPTION:Reminder",
+				"TRIGGER;VALUE=DATE-TIME:19760401T005545Z",
+				"X-APPLE-PROXIMITY:LEAVE",
+				"END:VALARM",
+				"END:VTODO",
+				"END:VCALENDAR",
+			].join("\r\n");
+			const cal = ICalendarObject.fromComponent(parse(ics));
+			const master = cal.todos()[0]!.raw;
+
+			const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+			if (result.kind !== "advanced") throw new Error("expected advanced");
+			expect(triggerValue(result.vtodo)).toBe("19760401T005545Z");
+		});
+
+		test("VALARM が無いマスターの前進は従来どおり動く(回帰)", () => {
+			const noDueIcs = [
+				"BEGIN:VCALENDAR",
+				"VERSION:2.0",
+				"PRODID:-//Test//Test//EN",
+				"BEGIN:VTODO",
+				"UID:no-alarm-test",
+				"DTSTAMP:20260101T000000Z",
+				"DTSTART:20260101T090000Z",
+				"RRULE:FREQ=DAILY;COUNT=2",
+				"STATUS:NEEDS-ACTION",
+				"END:VTODO",
+				"END:VCALENDAR",
+			].join("\r\n");
+			const cal = ICalendarObject.fromComponent(parse(noDueIcs));
+			const master = cal.todos()[0]!.raw;
+			const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
+			if (result.kind !== "advanced") throw new Error("expected advanced");
+			expect(VTodo.fromComponent(result.vtodo).alarms()).toHaveLength(0);
+		});
+	});
 });

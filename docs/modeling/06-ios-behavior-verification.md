@@ -256,6 +256,22 @@ COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
 > 一致するかは、次回の実機検証項目として残す(反復 VTODO を UNTIL/COUNT の最後まで
 > chat から完了させ、iOS 側の完了リストに何件表示されるかを数える)。
 
+> 2026-07-13 追記(本番 D1 実機検証 V3・CAP-RRULE2/FREQ=DAILY で採取): iOS は反復完了で
+> マスターを前進させるとき、DTSTART/DUE だけでなく **VALARM の絶対トリガー
+> (`TRIGGER;VALUE=DATE-TIME:<UTC>`)も同じ絶対時間差だけ前進**させる。実測:
+> 前進前マスター `DTSTART;TZID=Asia/Tokyo:20260713T010000` / VALARM
+> `TRIGGER;VALUE=DATE-TIME:20260712T160000Z` → 前進後マスター
+> `DTSTART;TZID=Asia/Tokyo:20260714T010000` / VALARM
+> `TRIGGER;VALUE=DATE-TIME:20260713T160000Z`(ちょうど +86400 秒、DTSTART の日次前進と同じ差)。
+> 一方、**完了スナップショット側の VALARM はその回の時刻のまま**(前進させない)— D4 本文の
+> スナップショットは「その occurrence を切り出した単発 VTODO」なので、絶対トリガーもその
+> occurrence の値を保持するのが正しい。相対トリガー(`TRIGGER;RELATED=START/END:±PT..`)は
+> DTSTART/DUE に自動追随するため対象外。位置アラーム(`X-APPLE-PROXIMITY` を持つ VALARM。
+> D5 参照)はダミー過去 TRIGGER のままで前進しないことも確認済み(iOS 自身が前進させていない)。
+> → `advanceMasterToNextOccurrence`(domain/ical/semantics/vtodo-recurrence.ts)に
+> `advanceAbsoluteAlarmTriggers` を追加してこの前進を実装(E-1 スライス②-c フォローアップ)。
+> `buildCompletionSnapshot` 側は無変更(現状のまま iOS 一致)。
+
 ### D5. VALARM(VTODO のアラーム)は保持可(確定)
 
 iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`ACTION:DISPLAY` +
