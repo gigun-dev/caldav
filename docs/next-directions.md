@@ -307,13 +307,21 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   ネイティブ出力と構造完全一致)。当初「前進しない」と見えたのは iOS のキャッシュ/同期遅延で、強制再同期
   >   (アプリ終了 or アカウント off/on)で解消。sync_changes・sync_counter は PUT で正しく進む(D1 実測)。
   >   **残:** V8(最終回スナップショット有無の実測)。
-  >   **新タスク①昇格【VALARM 追随を update-todo にも】**: advanceAbsoluteAlarmTriggers と同じ「絶対トリガーを
-  >   差分で前進」を update-todo の due 変更時にも適用すれば V2 の「取り残されアラーム」も解消(private のまま。
-  >   共有するなら export)。反復完了で仕組みは実証済みなので小さい。
-  >   **新タスク③【反復付き create(RRULE)】**: 現状 create-todo は RRULE 非対応 = chat から「毎週〜」の
-  >   反復リマインダーを**ゼロから作れない**(完了=前進は既存の反復マスターに対してのみ動く)。iOS 作成の
-  >   反復 todo は往復・完了できる。agentic 入口として反復 todo 作成を足すなら別スライス(create-todo に
-  >   recurrence 引数 + buildVTodoCalendar の RRULE 生成。VALUE=DATE 反復が主経路)。E-2 前後で判断。
+  >   **タスク①完了 ✅**(`1f4bec4`): update-todo の due 変更で VALARM 追随。②-c の前進プリミティブを
+  >   vtodo-patch.ts の `shiftAbsoluteAlarmTriggers` として共有化し、due 変更時に (新due−旧due) ぶん絶対
+  >   トリガーを shift(オフセット保存)。週末反復(BYDAY=SU,SA)の VALARM 前進を不揃い間隔(6日→1日)で
+  >   固定値検証=前進量が固定周期でなく iterator の実 occurrence 間隔である裏取り。V2 の取り残されアラーム解消。
+  >   **新エッジ【反復 todo の due→DATE 変更で I6 違反】**: 反復マスターの RRULE が `UNTIL=...Z`(DATE-TIME)の
+  >   とき、update-todo の due 変更は DTSTART を VALUE=DATE にするため UNTIL の値型と食い違い I6 事前条件で
+  >   エラー(サイレント破損ではなく明示エラー)。反復 todo の due 変更自体がレア(シリーズ anchor を動かす)
+  >   なので優先度低。直すなら due patch 時に UNTIL も DATE 化する等。要判断。
+  >   **タスク③完了 ✅**(`03540c0`): 反復付き create-todo。MCP create-todo に recurrence 入力
+  >   (frequency/interval/weekdays/count/until)を追加、buildVTodoCalendar が RecurrenceRule → RRULE 生成。
+  >   until は DTSTART の VALUE=DATE に合わせ DATE 型で出し I6 を構造的に回避(§3.3.10 原文根拠)。recurrence は
+  >   due 必須・count/until 排他(I5)・weekdays は weekly のみ、を専用エラーで明示。反復 create→complete が
+  >   ②-c の D4 経路で動くことを e2e 検証。chat から反復 todo をゼロから作れるように。
+  >   **残: V8(最終回の実測)のみ** — 反復を最後まで完了したとき iOS がスナップショットを作るか/マスターを
+  >   完了させるだけか(我々は後者=スナップショット無しでマスター完了を採用・実測で確定させる)。
   >   次の本線: **E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】

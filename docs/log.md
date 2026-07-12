@@ -510,3 +510,20 @@
   副産物: 本番 D1 に principal が admin(iOS 実機 + MCP の実使用)と旧 caldav-user(counter 8・不使用)の2つ。
 - **E-1 スライス②(a/b/c)完了**。残: V8(最終回スナップショット有無)/ タスク①(update-todo の due 変更時の
   VALARM 追随・仕組みは②-c で実証済み)/ 新タスク③(反復付き create)。次の本線: E-2(MCP App UI)。
+
+## 2026-07-13(続き)タスク①③(VALARM 追随 + 反復付き create)
+
+- **タスク①(`1f4bec4`)**: update-todo の due 変更で VALARM 追随。②-c の VALARM 前進プリミティブを
+  vtodo-patch.ts の `shiftAbsoluteAlarmTriggers` として共有化(vtodo-recurrence から移設)、update-todo の
+  due 変更時に (新due−旧due) ぶん絶対トリガーを shift(オフセット保存=due 連動アラームも早期リマインダーも
+  同じだけ動く)。相対/位置アラームは据え置き。時刻付き→終日変換は start-of-day 近似(限界コメント)。
+  週末反復(BYDAY=SU,SA)の VALARM 前進を不揃い間隔(6日→1日)で固定値検証=前進量が固定周期でなく
+  RecurrenceIterator の実 occurrence 間隔である裏取り。V2 の取り残されアラーム解消。
+  新エッジ起票: 反復 todo の due→DATE 変更は RRULE UNTIL が DATE-TIME だと I6 違反(レア・優先度低)。
+- **タスク③(`03540c0`)**: 反復付き create-todo。MCP に recurrence(frequency/interval/weekdays/count/until)。
+  buildVTodoCalendar が RecurrenceRule→RRULE 生成。until は DATE 型で DTSTART と揃え I6 を構造回避
+  (§3.3.10 原文根拠)。recurrence は due 必須・count/until 排他・weekdays は weekly 限定を専用エラーで明示。
+  反復 create→complete が D4 経路で動く e2e 済み。bun 445 + vitest 13 green。
+- 残: **V8**(反復を最後まで完了 → iOS がスナップショットを作るか/マスター完了だけか。我々は後者採用)。
+  その後 **E-2(MCP App UI)** が本線。タスク①③で agentic todo 入口(create/list/update/complete/delete・
+  単発/反復・VALARM 追随)がほぼ揃った。
