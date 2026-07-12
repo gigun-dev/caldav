@@ -569,3 +569,20 @@
   単独で切り出せず判定保留。ただし ②-c は V8 実測 + ユニットテストで一致担保済み、B-2 が V8 モデルを再確認して
   いるので実害のある不一致は無しと判断(混線は完了操作を重ねたテスト痕でありバグではない)。
 - 残る実機: **V5 発火**(サーバー発 VALARM を iOS が鳴らすか。機能は `8903a9f` で deploy 済み)。据え置き: V6。
+
+## 2026-07-13(続き)MCP recurrence スキーマ = ネスト維持(案 C 確定)
+
+- **問題**: MCP Inspector 手動フォームが、未入力の optional な `recurrence` を `{"frequency":""}` で送るため
+  zod が enum 外で弾き「繰り返し無し todo すら作れない」。
+- **調査(Fable・一次情報)**: Inspector の generateDefaultValue(client/src/utils/schemaUtils.ts L120-136)は
+  optional object でも中の required サブフィールドを "" で埋めて初期化し、cleanParams(paramUtils.ts)は
+  shallow で落とせない。→ Inspector 側バグ(closed #771 / PR #772「optional の空 array/object を省く」の
+  取り残し残件)。一方 MCP のイディオムとして**ネスト optional object は正**(Anthropic 公式 Google Calendar
+  コネクタ create_event・modelcontextprotocol/servers が採用。prefix 平坦化パターンは公式例に無い)。
+- **判断**: 当初 Fable は平坦化(案 A)を推奨したが、「MCP のイディオム性・アーキテクチャの綺麗さ」を主軸に
+  再考させ **案 C(ネスト維持・サーバー無変更・Inspector はバグと割り切り)に反転**。バグに公開語彙を
+  歪めない。**サーバーは無変更**、Why not コメントを server.ts に積層。
+- **回避**: 開発時に Inspector で create-todo を叩くときは **JSON モード**で送る(生 JSON なら正しいペイロード)。
+  実運用の主入口(Claude コネクタ=LLM)は未使用 optional を省くので無問題。
+- **upstream issue**: 起票候補(#771/#772 参照 + 最小再現)として残すが**今は起票しない**(ユーザー判断)。
+- 経緯: 一度 implementer が案 A を server.ts に部分適用したが、案 C 確定で `git checkout` で破棄しネスト版へ復帰。

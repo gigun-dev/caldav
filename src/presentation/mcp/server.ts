@@ -102,6 +102,26 @@ const getFreeBusyInputShape = {
 // recurrence(タスク③: 反復付き create-todo)。iOS リマインダーの繰り返し UI に語彙を合わせる。
 // z.object にしたのは createTodoInputShape 直下に平坦展開せず「反復指定」というまとまりを
 // スキーマ上も保つため(due 等と混ざらず MCP クライアント側の入力補完でも塊として見える)。
+//
+// 【Why not: 平坦化(recurrenceFrequency 等の prefix フィールド)を採らない — ネスト維持が正
+//  2026-07-13 判断・Fable 一次調査】
+// 症状: MCP Inspector の手動フォームは、ユーザーが触っていない optional な recurrence でも
+// `{"frequency": ""}` を送ってくる(inspector の client/src/utils/schemaUtils.ts generateDefaultValue
+// L120-136 が「optional object でも中の required サブフィールドを "" で埋めて」初期化し、
+// cleanParams[paramUtils.ts] は top-level しか掃除しない=shallow なので残る。ソースで裏取り済み)。
+// zod は frequency:"" を enum 外で弾くため、繰り返し無し todo すら作れない噛み合わせが起きる。
+// 対策として recurrence を top-level 平坦フィールド(recurrenceFrequency 等)に分解する案も検討したが
+// **不採用**。理由:
+//  (1) ネスト optional object は MCP のイディオムとして正 — Anthropic 公式コネクタ(Google Calendar
+//      create_event)や modelcontextprotocol/servers も採用。prefix 平坦化のパターンは公式例に無い。
+//      平坦化はクライアント(Inspector)のバグに公開語彙を歪めることになる(かつ公開語彙は一度
+//      使われると戻しにくい=不可逆性が高い)。
+//  (2) この Inspector 挙動は upstream 自身が認めるバグクラス(closed #771 / PR #772 が
+//      「optional の空 array/object を省く」を修正済み。required サブフィールド持ち object の分岐が
+//      取り残された残件)。バグに API を合わせるべきでない。将来 upstream issue に起こす候補
+//      (#771/#772 参照 + 最小再現 {recurrence?:{frequency:enum}})だが、今は起票しない。
+// 回避: 開発時に Inspector で create-todo を叩くときは **JSON モード**で送れば正しいペイロードになる。
+// 実運用の主入口(Claude コネクタ=LLM)は未使用 optional を省くので無問題。
 const createTodoRecurrenceInputShape = z
 	.object({
 		frequency: z.enum(["daily", "weekly", "monthly", "yearly"]).describe("反復頻度。RRULE の FREQ に対応。"),
