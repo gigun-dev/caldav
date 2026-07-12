@@ -247,6 +247,37 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > 接続成功と整合)/ `/mcp` は単発でも SSE で返る(Accept に text/event-stream 必須)。
   > CI に workerd step 追加(secret 不要=ダミー secret を miniflare.bindings 注入)。
   > 振り分け基準は Makefile check ターゲット・vitest.config.ts に厚くコメント。
+  >
+  > 2026-07-12 更新: **E-1(VTODO を chat から読み書きする MCP ツール)着手**。
+  > 調査(sonnet)→ 設計(Fable)→ 実測(iOS 実機 docs/modeling/06 §D)→ 実装(sonnet)。
+  > **語彙は todo で統一**(create-todo / list-todos / complete-todo / update-todo / delete-todo)。
+  > **スライス①完了 ✅**(`b18efe9`): ドメイン書き込み経路(structure/edit.ts の汎用 upsert
+  > プリミティブ + semantics/vtodo-write.ts の VTODO builder。レンズに setter を生やさず
+  > ロスレス維持)+ CreateTodo/ListTodos(既存 PutCalendarObject を must-not-exist で合成)+
+  > MCP `create-todo`/`list-todos` + E2E。id=UID、出力は E-2 UI-ready な共通 Task DTO。
+  > 実機受け入れ: **MCP で作った todo を iOS が素直に読み書き**(06 D8。If-Match に我々の ETag、
+  > DTSTART=DUE 終日・PRODID を iOS が受容、SEQUENCE 据え置き)。
+  > **スライス②(次)**: complete-todo / update-todo / delete-todo。実測で仕様確定済み —
+  > update/complete = read→patch→**must-match** PUT(iOS が我々の ETag で If-Match を打つ)・
+  > **SEQUENCE 据え置き**、delete = ETag 条件なし、**反復完了 = 06 D4 モデル**(新 UID で完了
+  > スナップショット作成 + マスターの DTSTART/DUE 前進。拒否ではなく iOS 忠実に実装)。反復の
+  > 作成(RRULE 付き create)もここで。残る実機検証は V2/V3(完了を我々から書いて iOS に反映
+  > されるか)・V5(サーバー発 VALARM が鳴るか)・V6(時刻付き due の VTIMEZONE)。
+  > **iOS 連携の天井が確定**(06 §D2/D3): フラグ・画像・サブタスク・タグは iOS が CalDAV
+  > アカウントでグレーアウト/CloudKit 限定で**不可**。優先度=1/5/9(緊急なし)。これらは
+  > 我々の chat 面でだけ CATEGORIES/RELATED-TO 拡張として将来持てるが iOS には映らない前提。
+  > **E-2(MCP App UI・ext-apps/SEP-1865)**: スライス②後。tdr-concierge 方式(registerAppResource/
+  > registerAppTool + 自己完結バンドル。esm.sh は Claude iOS で失敗する教訓)。OpenAI todo
+  > ウィジェットが参照。最大リスク=個人コネクタで UI 描画されるか(要実機。極小 ui:// スパイクで
+  > 先に潰す)。Task DTO は既に UI-ready で固定済み。
+
+## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
+
+- 2026-07-12 起票(ユーザー着想)。iOS が PROPFIND する `source`/`subscribed-strip-*`/
+  `apple:refreshrate` に対応 = 外部 .ics(webcal)を購読して読み取り専用で取り込む。
+- agentic ビジョンにも効く(外部カレンダーを取り込んでタスク提案の文脈に使う)= 単なる
+  iOS パリティ以上の価値。実装は自己完結で軽め(source URL を持つコレクション種別 + Worker
+  から定期 fetch + strip)。コア価値(CalDAV RFC + iOS **書き込み**)ではないので E/A の後。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 

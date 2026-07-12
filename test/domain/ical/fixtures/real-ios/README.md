@@ -46,6 +46,12 @@ iOS は物理行を**文字境界**で折る(マルチバイト UTF-8 を分割�
 | `vtodo-completed.ics` | ⑫ | 完了操作。`STATUS:COMPLETED` + `COMPLETED:<UTC>` + `PERCENT-COMPLETE:100`。RFC 9074 の ACKNOWLEDGED は**使われない** | オクテット等価 |
 | `vtodo-proximity-alarm.ics` | ⑬ | 位置情報リマインダー。VALARM に `X-APPLE-PROXIMITY:ARRIVE` + X-APPLE-STRUCTURED-LOCATION(geo)。TRIGGER は過去日時のダミー | 冪等 |
 | `dquote-location-event.ics` | A7 第3ラウンド(2026-07-11) | 場所名に ASCII DQUOTE(スマート句読点オフで入力)。LOCATION 値には**生 DQUOTE がそのまま**、X-TITLE パラメータでは **iOS が DQUOTE を黙って除去**(RFC 6868 `^` は使わない)。キャプチャ経路は本作サーバー(caldav-dev.097969.xyz → wrangler dev) | 冪等 |
+| `vtodo-recurring-master.ics` | D4 第3ラウンド(2026-07-12) | 反復 VTODO のマスター。`RRULE:FREQ=WEEKLY;UNTIL=...;BYDAY=SU,SA` + `DTSTART;TZID=Asia/Tokyo=DUE;TZID` + 時刻 VALARM + VTIMEZONE。反復完了で iOS が DTSTART/DUE を前進させる(06 D4) | 冪等 |
+| `vtodo-recurring-completed-instance.ics` | D4 第3ラウンド(2026-07-12) | 反復 VTODO の完了スナップショット。**新 UID・RRULE 除去**・STATUS:COMPLETED + COMPLETED + PERCENT-COMPLETE:100 + その回の DTSTART/DUE + VALARM コピー。iOS の「マスター前進+スナップショット分離」モデルの片割れ | 冪等 |
+
+**補足(第3ラウンド 2026-07-12)**: `vtodo-recurring-*` の2本は VTODO/リマインダー挙動検証
+(docs/modeling/06 §D)で採取。キャプチャ経路は本作 dev サーバー(caldav-dev.097969.xyz →
+wrangler dev)。位置情報を含まない(時刻アラームのみ)ため伏せ字化は不要。
 
 ## 伏せ字化(個人情報)
 

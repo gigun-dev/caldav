@@ -420,3 +420,26 @@
     text/event-stream 必須。json のみは 406)→ 最小 SSE パーサをテスト内に用意。
   - 配線: `make check` 末尾に test-worker、CI に workerd step(secret 不要=ダミー secret を
     miniflare.bindings 注入)。deploy 系は不変。bun 361 + vitest worker 10 green。
+- 2026-07-12: **方向性 E に舵を切る(ユーザー判断)+ E-1 スライス①(VTODO todo ツール)完了**。
+  MCP Apps 方向を本命に、chat 利用前提でマルチユーザー(A)より E(agentic 入口)を先行
+  (シングルユーザー土台は OAuth-for-MCP で完成済み)。語彙は todo で統一。
+  - プロセス: 調査(sonnet Explore ×2: リポジトリ内 VTODO 前提 / MCP Apps・tdr-concierge・
+    OpenAI todo ウィジェット)→ 設計(Fable architect)→ **iOS 実機モデリング**(docs/modeling/06 §D)
+    → 実装(sonnet implementer)、main が各節目レビュー。
+  - **iOS 実機キャプチャ第3ラウンド(06 §D、DUMP_DAV_REQUESTS で採取)**: 優先度=1/5/9(緊急なし)/
+    フラグ・画像=iOS が CalDAV アカウントでグレーアウト=不可(スクショで確定)/ iCloud リマインダー
+    =CloudKit 同期で CalDAV 非経由(Proxyman: p125-caldav に iPhone リクエスト無し・gateway は
+    ピンニング)→ リッチ機能は Apple 自身が CalDAV で運ばない=天井確定 / 反復完了=マスター前進+
+    完了スナップショット分離(D4)/ VALARM 保持可 / PROPPATCH リネーム・色=207 対応済み /
+    **MCP 作成 todo を iOS が素直に往復**(D8: If-Match に我々の ETag、DTSTART=DUE 終日・PRODID 受容、
+    SEQUENCE 据え置き)。ローカル D1 の 0002 未適用で全 PUT 500 → `make migrate-local` で解消(本番
+    ギャップのローカル版)。fixtures 2本追加(vtodo-recurring-master / -completed-instance)。
+  - **スライス①(`b18efe9`)**: structure/edit.ts(汎用 upsert プリミティブ)+ semantics/vtodo-write.ts
+    (VTODO builder。レンズに setter を生やさずロスレス維持)+ CreateTodo/ListTodos(既存
+    PutCalendarObject を must-not-exist で合成)+ MCP create-todo/list-todos + E2E。id=UID、
+    出力は E-2 UI-ready な共通 Task DTO(title/notes は decodeText、層境界のため format.ts を
+    複製)。時刻付き due は VTIMEZONE 生成器未整備のため明示エラー(黙って落とさない)。
+    bun 385 + vitest worker 13 green。
+  - CLAUDE.md をコメント方針「情報の書き分け(How/What/Why/Why not)」に再構成(`eb11bb9`)。
+  - 次: スライス②(complete/update/delete + 反復。実測で仕様確定)→ E-2(MCP App UI)。
+    方向性 H(購読カレンダー)を E/A の後の中優先で起票。

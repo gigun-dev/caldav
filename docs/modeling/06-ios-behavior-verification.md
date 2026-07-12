@@ -193,6 +193,107 @@ wrangler tail の `[CAP]` ログ 114 リクエスト(前作サーバー + iOS 26
   これは iOS の探索フォールバック挙動(B1 の「正規チェーン成立後も別 principal を投機的に探る」)で
   想定内。正規パスは全て 2xx。**リトライループにはなっていない**(各バースト 6 連 × 数回で収束)。
 
+## 2026-07-12 キャプチャ第3ラウンド: VTODO/リマインダー実測(E-1 の一次資料)
+
+方向性 E-1(chat から VTODO 読み書きする MCP ツール)の設計にあたり、iOS リマインダーの
+VTODO 挙動を実測した(iOS 26.5 remindd、ローカル dev サーバー = `caldav-dev.097969.xyz` へ
+CalDAV 接続、`DUMP_DAV_REQUESTS=1` でボディ採取)。**この節は「iOS リマインダーの
+CalDAV 天井」を確定させる。以降 E-1/E-2 の tool 表面はこれを正とする。**
+
+### D1. 優先度(PRIORITY)= 1/5/9(確定)
+
+iOS UI の「低/中/高」を各1件で設定 → PUT の `PRIORITY:` 値: **低=`9` / 中=`5` / 高=`1`**。
+RFC 5545 §3.8.1.9 の CUA マッピング(1-4=HIGH / 5=MEDIUM / 6-9=LOW)の端点そのもの。
+**「緊急」という第4段階は存在しない**(UI にも無い)。作成時は PRIORITY 無し → 優先度設定で
+**2回目の PUT に PRIORITY を追加**する2段構え(iOS の一般的な作成→属性追記パターン)。
+→ create-todo は priority を 0-9 で受け、0=未設定はプロパティ省略(iOS の実データに揃える)。
+
+### D2. フラグ・画像は CalDAV アカウントでは不可(iOS がグレーアウト・確定)
+
+編集画面のツールバーで **日付/時刻・位置は有効(黒)、フラグ・カメラ(画像)はグレーアウト**
+(押せない)。グレーアウト = iOS 自身が「このアカウント種別では非対応」と判断して無効化して
+いる状態で、**サーバー側で何をしても解錠できない**(能力ネゴシエーションの余地なし)。
+サブタスク・タグも同様(iCloud/CloudKit 限定)。→ **iOS 連携の天井 = 日付/時刻/位置/優先度/
+繰り返し/基本 VALARM/完了**。フラグ・画像・サブタスク・タグは iOS には出せない(我々の
+chat/MCP 面でだけ CATEGORIES/RELATED-TO 等として持つ拡張は将来可能だが iOS には映らない)。
+
+### D3. iCloud リマインダー = CloudKit 同期(CalDAV 非経由・確定)
+
+Proxyman 復号キャプチャで確認: iPhone の iCloud 宛は全て `gateway.icloud.com`(証明書
+ピンニングで復号不可 = CloudKit)。`p125-caldav.icloud.com`(iCloud の CalDAV)には
+iPhone からの CalDAV リクエストが**一切飛ばない**(Mac 由来の CONNECT のみ)。
+→ **iCloud リマインダーのリッチ機能(タグ/サブタスク/フラグ/画像)は Apple 自身が CalDAV で
+運んでいない**(CloudKit 専用)。よってサードパーティ CalDAV サーバーがそれらを iOS UI に
+出せないのは構造的必然。gateway をこじ開ける価値は無い(仮に復号できても CloudKit 独自形式で
+CalDAV 表現は存在しない)。
+
+### D4. 反復 VTODO の完了モデル = マスター前進 + 完了スナップショット分離(確定)
+
+毎週(BYDAY=SU,SA, UNTIL=20260731)の反復 VTODO を1 occurrence ずつ完了 → iOS は完了ごとに
+**2つの PUT** を打つ:
+
+1. **完了スナップショットを新 UID・新リソースで PUT**: `STATUS:COMPLETED` + `COMPLETED:<UTC>` +
+   `PERCENT-COMPLETE:100`、その回の DTSTART/DUE、**RRULE を除去**、VALARM はコピー
+   (fixture: `vtodo-recurring-completed-instance.ics`)。
+2. **マスターを同一 UID で前進 PUT**: DTSTART/DUE を**次の occurrence へ進める**、RRULE 維持、
+   STATUS を NEEDS-ACTION に戻す。マスターの DUE 推移を実証: `7/12 → 7/18 → 7/19 → 7/25 →
+   7/26 → (最終 occurrence 完了でマスター自身が STATUS:COMPLETED)`
+   (fixture: `vtodo-recurring-master.ics`)。
+
+→ **RECURRENCE-ID オーバーライド方式ではない**(VEVENT の A5 とは別モデル)。単発 VTODO の
+完了は3点セット(STATUS/COMPLETED/PERCENT-COMPLETE)のみ。**slice ② の CompleteTodo は
+反復のとき「新 UID で完了スナップショット作成 + マスターの DTSTART/DUE 前進(無ければ
+COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
+
+### D5. VALARM(VTODO のアラーム)は保持可(確定)
+
+iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`ACTION:DISPLAY` +
+`TRIGGER;VALUE=DATE-TIME:<絶対 UTC>` + `X-WR-ALARMUID`。iOS は相対 TRIGGER でなく絶対時刻で送る)/
+**位置アラーム**(ダミー過去 TRIGGER + `X-APPLE-PROXIMITY:ARRIVE` + `X-APPLE-STRUCTURED-LOCATION` +
+`geo:`。RFC 9074 の PROXIMITY でなく Apple 独自 = A9 と一致)。我々のドメインは `vtodo.ts` の
+`alarms()` で集約し X-APPLE-* を生値保持(A1 のロスレス方針)。**保持・往復は確定でできる**。
+ただし「**サーバー発の**(MCP で作った)VALARM を iOS が実際に鳴らすか」は未検証(create-todo に
+アラーム引数を足すときの宿題。iOS が自作項目のアラームしか鳴らさない可能性がある)。
+
+### D6. コレクションのリネーム・色変更(PROPPATCH)は対応済み(確定)
+
+タスクリストの名前・色を iOS で変更 → **PROPPATCH が 207 Multi-Status で成功**:
+リネーム=`<A:displayname>` / 色=`<D:calendar-color symbolic-color="green">#83D754</D:calendar-color>`
+(iOS は6桁 `#RRGGBB` を送る。`apple-color.ts` VO は #RRGGBBAA/#RRGGBB 両対応)。
+フラグ/画像と違いグレーアウトされず通る = コレクションのメタ変更は iOS 連携の対応範囲内。
+処理は `UpdateCollectionProperties` UC + `app.ts:592` の PROPPATCH 経路。
+
+### D7. ローカル D1 のマイグレーション未適用インシデント(記録)
+
+このラウンド初回、全 PUT が `D1_ERROR: table calendar_objects has no column named
+first_occurrence` で 500 になった。ローカル dev D1 に 0002(occurrence 索引)未適用が原因
+(本番マイグレーションギャップ 2026-07-12 の**ローカル版**)。`make migrate-local` で 0002/0003
+適用して解消。→ 教訓: 新環境/リセット後は `make migrate-local` を忘れない(本番は deploy に
+組み込み済みだがローカルは手動)。
+
+### D8. 我々が作った VTODO を iOS が編集/完了できる(往復健全性・確定・V7)
+
+MCP `create-todo` で作った VTODO(UID d3ee8879、`DTSTART;VALUE=DATE=DUE;VALUE=DATE:20260715`、
+`PRIORITY:1`、PRODID=我々の `-//gigun-dev//caldav//EN`)を iPhone で編集・完了 → iOS は我々の
+ICS を**素直に読み書き**した(server→iOS→server の往復健全性を実証):
+
+- **更新 PUT に `If-Match: "<我々のサーバーの ETag>"` を付ける**。iOS が我々の todo を読み、
+  我々の ETag を受け取り、それを If-Match で返す = 我々の ETag 計算は iOS 互換。
+  → slice ② の UpdateTodo/CompleteTodo は **must-match で受ける**(read→patch→If-Match PUT)。
+- 我々の出力を保持: UID / SUMMARY / **DTSTART=DUE(終日)** / PRIORITY:1。編集で DESCRIPTION 追加。
+  iOS は PRODID を自分のに差し替え、`CREATED`/`LAST-MODIFIED`/`X-APPLE-SORT-ORDER` を補完
+  (我々は未出力だが iOS が足す = 我々の最小出力で問題なし)。
+- **SEQUENCE は付けない**(iOS は todo 編集で SEQUENCE を増分しない)→ UpdateTodo も **SEQUENCE
+  据え置きで iOS 準拠**。
+- 完了(単発)= STATUS:COMPLETED + COMPLETED + PERCENT-COMPLETE:100 の3点セット(If-Match 付き)。
+- 削除(V4)= iOS の DELETE は **If-Match を付けず無条件**(4件実測)→ delete-todo は ETag 条件必須にしない。
+
+→ **create-todo の出力は iOS と完全相互運用**。DTSTART=DUE の終日表現・我々の PRODID を iOS が
+問題なく受ける = `buildVTodoCalendar` の設計判断が実機で裏取りされた。**slice ②(update/complete/
+delete)の仕様は実データで確定**。残る未検証は V2/V3(完了を**我々から**書いたとき iOS に反映されるか、
+単発/反復)・V5(サーバー発 VALARM が鳴るか)・V6(時刻付き due の VTIMEZONE)で、いずれも
+slice ② 以降のコードができてからの server→iOS 検証。
+
 ## 結果の還元先
 
 - **フィクスチャ**: A1〜A5 のキャプチャ ICS を `test/domain/ical/fixtures/` に実データとして
