@@ -72,6 +72,13 @@ export interface CreateTodoInput {
 	 * 指定時は due が必須(RRULE は DTSTART をアンカーにするため — RecurrenceRequiresDueError)。
 	 */
 	recurrence?: CreateTodoRecurrenceInput;
+	/**
+	 * 通知時刻(VALARM の TRIGGER)。offset 付き ISO8601(例 "2026-07-14T09:00:00+09:00" /
+	 * "...Z")。due とは独立(due 無しでもアラーム単体で設定できる — vtodo-write.ts の
+	 * VTodoFields.alarm コメント参照)。V5 実機検証(サーバー発 VALARM を iOS が鳴らすか)の
+	 * 前提となる小機能として追加(2026-07-13)。
+	 */
+	alarm?: string;
 }
 
 /** MCP `create-todo` の recurrence 入力(zod 前段は presentation 層が担う。ここは素朴な形のまま)。 */
@@ -162,16 +169,64 @@ export class RecurrenceWeekdaysRequireWeeklyError extends Error {
 	}
 }
 
+/**
+ * alarm が offset 付き ISO8601(Z または ±HH:MM)形式でなかったときのエラー。
+ * 【設計判断】list-todos.ts の parseOffsetIso は素の RangeError を投げる(dueBefore/dueAfter
+ * 用途では呼び出し元 MCP ツールがそのまま catch-all で拾えば十分だったため)。alarm は
+ * 「サーバーが VALARM を生成する」という新しい効果を持つ入力であり、InvalidDueError 等と
+ * 同様に kind タグ付きの専用エラー型にして呼び出し側(MCP ツールハンドラ)が
+ * instanceof で判別・整形できるようにする(既存 CreateTodoError の並びに揃える)。
+ */
+export class InvalidAlarmError extends Error {
+	readonly kind = "InvalidAlarmError" as const;
+	constructor(readonly alarm: string, cause: string) {
+		super(`alarm must be an offset ISO8601 datetime (Z or ±HH:MM): "${alarm}" (${cause})`);
+		this.name = "InvalidAlarmError";
+	}
+}
+
 export type CreateTodoError =
 	| InvalidDueError
 	| RecurrenceRequiresDueError
 	| RecurrenceCountUntilConflictError
 	| RecurrenceWeekdaysRequireWeeklyError
+	| InvalidAlarmError
 	| PutCalendarObjectError;
 
 // YYYY-MM-DD の厳密マッチ(値の実在性チェックは domain の calDate ファクトリに委ねる —
 // ここでは「時刻付きではないこと」の形式だけを見る)。
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// offset 付き ISO8601 の厳密マッチ("Z" または "±HH:MM")。list-todos.ts の
+// OFFSET_ISO_PATTERN/parseOffsetIso と同一パターン。application → presentation import は
+// 層境界違反になるため import で共有せず複製する(list-todos.ts 冒頭コメントと同じ判断。
+// 10行未満の正規表現チェックを1箇所に集約する価値より層境界を守る価値を優先)。
+const OFFSET_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
+
+/**
+ * alarm 入力(offset ISO8601)→ VALARM TRIGGER の UTC 生値("YYYYMMDDTHHMMSSZ")。
+ * 【now-stamp.ts の nowStampFromDate と同じ組み立て手法】対象が「今」ではなく「alarm の
+ * epoch」である点だけが違う。DTSTAMP 用に一本化された nowStampFromDate をそのまま使わない
+ * のは、あちらが NowStamp{utcRaw, unixSeconds} という別の型(X-APPLE-SORT-ORDER 用の
+ * unixSeconds を含む)を返す契約になっており、VALARM TRIGGER には utcRaw 相当の文字列だけで
+ * 十分なため(不要なフィールドを持つ型を無理に使い回さない判断)。
+ */
+function alarmTriggerUtcRaw(alarm: string): string {
+	if (!OFFSET_ISO_PATTERN.test(alarm)) {
+		throw new InvalidAlarmError(alarm, "does not match offset ISO8601 pattern");
+	}
+	const epochMillis = Date.parse(alarm);
+	if (Number.isNaN(epochMillis)) {
+		throw new InvalidAlarmError(alarm, "unparseable date");
+	}
+	const d = new Date(epochMillis);
+	return `${d.getUTCFullYear().toString().padStart(4, "0")}` +
+		`${(d.getUTCMonth() + 1).toString().padStart(2, "0")}` +
+		`${d.getUTCDate().toString().padStart(2, "0")}T` +
+		`${d.getUTCHours().toString().padStart(2, "0")}` +
+		`${d.getUTCMinutes().toString().padStart(2, "0")}` +
+		`${d.getUTCSeconds().toString().padStart(2, "0")}Z`;
+}
 
 // chat 語彙の frequency ("daily"等) → ドメインの Frequency("DAILY"等)。
 const FREQUENCY_MAP: Record<CreateTodoRecurrenceInput["frequency"], Frequency> = {
@@ -234,6 +289,14 @@ export class CreateTodo {
 			recurrence = buildRecurrenceRule(input.recurrence);
 		}
 
+		// alarm は due と独立(要件どおり)。ここで先に検証し、buildVTodoCalendar には
+		// 「呼び出し側で組み立て済みの絶対 UTC 生値 + UID」だけを渡す(domain 層に offset ISO
+		// のパースロジックを持ち込まない — application 層が入力変換を担う既存の境界どおり)。
+		let alarm: { triggerUtcRaw: string; uid: string } | undefined;
+		if (input.alarm !== undefined) {
+			alarm = { triggerUtcRaw: alarmTriggerUtcRaw(input.alarm), uid: crypto.randomUUID() };
+		}
+
 		const uid = crypto.randomUUID();
 		// DTSTAMP は UTC MUST(§3.8.7.2。VTodo.validate() の I2 も検証している)。
 		// values/cal-date-time.ts の formatCalDateTime は CalDateTime 型を要求するが、
@@ -253,6 +316,7 @@ export class CreateTodo {
 			dueValueType: due !== undefined ? "DATE" : undefined,
 			priority: input.priority,
 			recurrence,
+			alarm,
 		};
 		const component = buildVTodoCalendar(fields);
 		const ics = serialize(component);

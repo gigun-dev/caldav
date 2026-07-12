@@ -318,6 +318,21 @@ iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`A
 ただし「**サーバー発の**(MCP で作った)VALARM を iOS が実際に鳴らすか」は未検証(create-todo に
 アラーム引数を足すときの宿題。iOS が自作項目のアラームしか鳴らさない可能性がある)。
 
+> 2026-07-13 追記: create-todo の `alarm` 入力(offset ISO8601)から、上記の実測形式
+> (`ACTION:DISPLAY` + `DESCRIPTION:Reminder` + `TRIGGER;VALUE=DATE-TIME:<絶対 UTC>` +
+> `UID`/`X-WR-ALARMUID` 同値)を素直に再現する VALARM 生成を実装した
+> (`src/domain/ical/semantics/vtodo-write.ts` の `VTodoFields.alarm` /
+> `src/application/usecases/create-todo.ts`)。相対トリガー・複数 VALARM・位置アラームは
+> 対象外(絶対時刻の DISPLAY アラーム1個のみ)。絶対 UTC トリガーのため VTIMEZONE 生成は
+> 不要(時刻付き due の VTIMEZONE 問題=D11/V6 とは別スコープ)。
+> **V5 実機検証(サーバー発 VALARM を iOS が実際に鳴らすか)はまだ未実施** — 手順案:
+> ①`create-todo` を `alarm` に「数分後(例: 現在時刻+3分)」の offset ISO8601 を指定して呼ぶ
+> (due は無しでも可 — due と alarm は独立)。②iOS 実機のリマインダーアプリで初回同期を待つ
+> (B1/B2 シーケンス、通常数秒〜数十秒)。③指定時刻に通知(バナー/ロック画面)が鳴るかを
+> 目視確認する。④鳴らない場合は「iOS が自作項目のアラームしか鳴らさない」仮説を検証するため、
+> 同じ VTODO を iOS 側でいったん編集(タイトル変更等)してから再度 due/alarm を確認する
+> (iOS 側の「所有」操作を挟むと鳴るようになるか、の比較)。
+
 ### D6. コレクションのリネーム・色変更(PROPPATCH)は対応済み(確定)
 
 タスクリストの名前・色を iOS で変更 → **PROPPATCH が 207 Multi-Status で成功**:

@@ -33,10 +33,15 @@
 //   「終日(DATE)を確実に対応する」ことを優先する(黙って落とさず明示的にエラーにする)。
 // - CreateTodo では VALARM を設定しない(要件どおり。サーバー発アラームの実機挙動が
 //   未検証のため、スライス①では踏み込まない)。
+//   【2026-07-13 更新】V5 実機検証(サーバー発 VALARM を iOS が鳴らすか)の前提として、
+//   任意指定の VALARM 生成に対応した(下記 alarm フィールド参照)。docs/modeling/06 §D5 の
+//   実測どおり iOS は絶対 UTC TRIGGER の DISPLAY アラームを使う(相対 TRIGGER ではない)ため、
+//   この実装もそれに倣う。相対トリガー・複数 VALARM・位置アラームは対象外(今回は
+//   「絶対時刻の DISPLAY アラーム1個」のみ。iOS が最も素直に鳴らす形に絞って実機検証を先に通す)。
 // =============================================================================
 
 import type { Component, Parameter } from "../structure/types";
-import { upsertProperty } from "../structure/edit";
+import { appendSubComponent, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { formatRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { stampCreate, type NowStamp } from "./vtodo-stamp";
@@ -85,6 +90,16 @@ export interface VTodoFields {
 	 * 検証済み値がここに来る)。
 	 */
 	recurrence?: RecurrenceRule;
+	/**
+	 * VALARM(§3.6.6)。任意指定(due とは独立 — due が無くてもアラーム単体で設定できる)。
+	 * 【iOS 実機準拠(docs/modeling/06 §D5)】iOS の時刻アラームは相対 TRIGGER
+	 * (TRIGGER;RELATED=START 等)ではなく **絶対 UTC の TRIGGER;VALUE=DATE-TIME** を使う。
+	 * よってここでも絶対 UTC のみ受け付ける(相対トリガーは対象外 — ファイル冒頭コメント)。
+	 * triggerUtcRaw は呼び出し側(application 層)が組み立てた "YYYYMMDDTHHMMSSZ" の生値。
+	 * uid は呼び出し側が採番した UUID(VALARM の UID と X-WR-ALARMUID に同値で使う —
+	 * iOS 実機フィクスチャ real-ios/vtodo-recurring-master.ics の実測どおり)。
+	 */
+	alarm?: { triggerUtcRaw: string; uid: string };
 }
 
 // VALUE=DATE パラメータ。DTSTART/DUE を終日として立てるときに共通で使う。
@@ -140,6 +155,40 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 	// vtodo-stamp.ts の stampCreate に一本化(このファイルに直書きしない — 生成方針の
 	// 単一情報源を1箇所に保つため。②-a のスライス方針どおり)。
 	vtodo = stampCreate(vtodo, fields.now);
+
+	if (fields.alarm !== undefined) {
+		// VALARM は VTODO 本体プロパティが揃った後に足す(stampCreate の後段。VALARM 自体は
+		// STATUS/DTSTAMP 等の生成プロパティに依存しないが、fixture の並び — VTODO 本体プロパティ
+		// 群の後に VALARM サブコンポーネント — に揃えて決定的な出力にする)。
+		// 【iOS 実機フィクスチャ準拠のプロパティ順序: ACTION → DESCRIPTION → TRIGGER → UID →
+		// X-WR-ALARMUID】RFC 5545 はプロパティの出現順に意味を持たせないが、
+		// real-ios/vtodo-recurring-master.ics の実測順をそのまま再現する(diff/テストの安定性、
+		// および「iOS が書く形を素直に模倣する」V5 検証の狙いに沿うため)。
+		const valarm: Component = {
+			name: "VALARM",
+			properties: [
+				// ACTION:DISPLAY(§3.8.6.1)。iOS の時刻通知はこの1択(AUDIO/EMAIL 等は対象外)。
+				{ name: "ACTION", parameters: [], value: "DISPLAY" },
+				// DESCRIPTION は ACTION:DISPLAY で REQUIRED(§3.8.6.1)。iOS 実機は固定文字列
+				// "Reminder" を送ってくる(ユーザー入力の SUMMARY とは無関係)ので、それに倣う。
+				{ name: "DESCRIPTION", parameters: [], value: "Reminder" },
+				// TRIGGER;VALUE=DATE-TIME(§3.8.6.3)。既定は RELATED=START の相対値だが、
+				// iOS 実機は絶対 UTC を使う(ファイル冒頭コメント・VTodoFields.alarm コメント参照)。
+				{
+					name: "TRIGGER",
+					parameters: [{ name: "VALUE", values: ["DATE-TIME"] }],
+					value: fields.alarm.triggerUtcRaw,
+				},
+				// UID / X-WR-ALARMUID(iOS 拡張・非標準)。iOS はこの2つを同値にして VALARM を
+				// 一意識別する。UID は VALARM 内では RFC 5545 上 OPTIONAL だが、iOS 実機が
+				// 必ず送ってくるため同じ形を再現する(ロスレス方針・iOS 品質基準)。
+				{ name: "UID", parameters: [], value: fields.alarm.uid },
+				{ name: "X-WR-ALARMUID", parameters: [], value: fields.alarm.uid },
+			],
+			components: [],
+		};
+		vtodo = appendSubComponent(vtodo, valarm);
+	}
 
 	const vcalendar: Component = {
 		name: "VCALENDAR",

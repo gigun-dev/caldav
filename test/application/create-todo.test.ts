@@ -9,6 +9,7 @@ import {
 	RecurrenceRequiresDueError,
 	RecurrenceCountUntilConflictError,
 	RecurrenceWeekdaysRequireWeeklyError,
+	InvalidAlarmError,
 	ListTodos,
 	CompleteTodo,
 } from "../../src/application/usecases";
@@ -97,6 +98,74 @@ describe("CreateTodo", () => {
 		await usecase.execute({ owner: TEST_OWNER, title: "別コレクション", calendarId: "other-tasks" });
 		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("other-tasks"));
 		expect(stored).toHaveLength(1);
+	});
+
+	// --- alarm(VALARM。V5 実機検証の前提。2026-07-13 追加)-------------------------------
+
+	describe("alarm", () => {
+		it("offset ISO の alarm を指定すると絶対 UTC 生値の TRIGGER;VALUE=DATE-TIME を持つ VALARM が保存される", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "通知つきタスク",
+				alarm: "2026-07-14T09:00:00+09:00", // JST 09:00 = UTC 00:00
+			});
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			const valarms = vtodo.raw.components.filter((c) => c.name === "VALARM");
+			expect(valarms).toHaveLength(1);
+			const trigger = valarms[0]!.properties.find((p) => p.name === "TRIGGER")!;
+			expect(trigger.value).toBe("20260714T000000Z");
+			expect(trigger.parameters).toContainEqual({ name: "VALUE", values: ["DATE-TIME"] });
+		});
+
+		it("alarm を 'Z' 付きで指定してもそのまま UTC 生値になる", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "UTC 指定タスク",
+				alarm: "2026-07-14T09:00:00Z",
+			});
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			const trigger = vtodo.raw.components.find((c) => c.name === "VALARM")!.properties.find((p) => p.name === "TRIGGER")!;
+			expect(trigger.value).toBe("20260714T090000Z");
+		});
+
+		it("due 無しでもアラーム単体を指定できる(due とアラームは独立)", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "due なし通知タスク",
+				alarm: "2026-07-14T09:00:00Z",
+			});
+			expect(task.due).toBeNull(); // Task DTO は due 無しを null で表す(task-dto.ts の既存契約)。
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(1);
+		});
+
+		it("due と alarm を併用できる", async () => {
+			const { task } = await usecase.execute({
+				owner: TEST_OWNER,
+				title: "due + 通知",
+				due: "2026-07-15",
+				alarm: "2026-07-14T09:00:00Z",
+			});
+			expect(task.due).toBe("2026-07-15");
+			const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));
+			const vtodo = stored.find((r) => r.uid === task.id)!.payload.todos()[0]!;
+			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(1);
+		});
+
+		it("alarm が offset ISO8601 形式でないと InvalidAlarmError を投げる", async () => {
+			await expect(
+				usecase.execute({ owner: TEST_OWNER, title: "不正な alarm", alarm: "not-a-date" }),
+			).rejects.toThrow(InvalidAlarmError);
+		});
+
+		it("alarm がオフセット無しの floating 形式だと InvalidAlarmError を投げる", async () => {
+			await expect(
+				usecase.execute({ owner: TEST_OWNER, title: "floating alarm", alarm: "2026-07-14T09:00:00" }),
+			).rejects.toThrow(InvalidAlarmError);
+		});
 	});
 
 	// --- recurrence(タスク③: 反復付き create-todo。RRULE 生成)-----------------------

@@ -116,6 +116,7 @@ export {
 	RecurrenceRequiresDueError,
 	RecurrenceCountUntilConflictError,
 	RecurrenceWeekdaysRequireWeeklyError,
+	InvalidAlarmError,
 	type CreateTodoInput,
 	type CreateTodoOutput,
 	type CreateTodoError,

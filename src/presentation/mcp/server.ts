@@ -42,6 +42,7 @@ import {
 	DeleteETagMismatchError,
 	DeleteTargetNotFoundError,
 	DeleteTodo,
+	InvalidAlarmError,
 	InvalidDueError,
 	ListOccurrences,
 	ListTodos,
@@ -136,6 +137,13 @@ const createTodoInputShape = {
 	recurrence: createTodoRecurrenceInputShape.optional().describe(
 		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
 			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
+	),
+	// 2026-07-13 追加: V5 実機検証(サーバー発 VALARM を iOS が鳴らすか)の前提。
+	alarm: z.string().optional().describe(
+		"通知時刻。offset 付き ISO8601(例 \"2026-07-14T09:00:00+09:00\" または \"...Z\")。" +
+			"絶対 UTC の VALARM(ACTION:DISPLAY・TRIGGER;VALUE=DATE-TIME)として生成する — " +
+			"iOS 実機は相対 TRIGGER でなく絶対時刻を使うため、それに合わせる。due とは独立に指定できる" +
+			"(due が無くてもアラーム単体で設定可)。",
 	),
 };
 
@@ -393,7 +401,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。due は \"YYYY-MM-DD\"(終日)のみ対応 — 時刻付き期日は未対応。",
 			inputSchema: createTodoInputShape,
 		},
-		async ({ title, notes, due, priority, calendarId, recurrence }) => {
+		async ({ title, notes, due, priority, calendarId, recurrence, alarm }) => {
 			try {
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
@@ -407,6 +415,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					priority,
 					calendarId,
 					recurrence,
+					alarm,
 				});
 				const result = { task };
 				return {
@@ -422,11 +431,14 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				// InvalidDueError と同様、recurrence 関連の3エラー(due 不在/count・until 排他/
 				// weekdays は weekly 限定)もメッセージが自己説明的なのでそのまま返す
 				// (タスク③で追加。create-todo.ts のクラス定義コメント参照)。
+				// InvalidAlarmError(alarm が offset ISO8601 形式でない)も同様に自己説明的
+				// (2026-07-13 alarm 追加時に同じ扱いへ揃えた)。
 				if (
 					error instanceof InvalidDueError ||
 					error instanceof RecurrenceRequiresDueError ||
 					error instanceof RecurrenceCountUntilConflictError ||
-					error instanceof RecurrenceWeekdaysRequireWeeklyError
+					error instanceof RecurrenceWeekdaysRequireWeeklyError ||
+					error instanceof InvalidAlarmError
 				) {
 					return toolError(error.message);
 				}

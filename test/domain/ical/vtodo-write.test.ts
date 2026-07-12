@@ -193,4 +193,60 @@ describe("buildVTodoCalendar", () => {
 			).toThrow();
 		});
 	});
+
+	// --- alarm(VALARM。V5 実機検証の前提。2026-07-13 追加)-----------------------------
+
+	describe("alarm", () => {
+		test("alarm 指定で iOS 実機フィクスチャ準拠の VALARM が1個足される(ACTION/DESCRIPTION/TRIGGER;VALUE=DATE-TIME/UID/X-WR-ALARMUID)", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-alarm-1",
+				now: NOW,
+				summary: "通知つきタスク",
+				alarm: { triggerUtcRaw: "20260714T000000Z", uid: "alarm-uid-1" },
+			});
+			const ics = serialize(component);
+			const reparsed = ICalendarObject.fromComponent(parse(ics));
+			expect(reparsed.validate()).toEqual([]);
+
+			const vtodo = reparsed.todos()[0]!;
+			const valarms = vtodo.raw.components.filter((c) => c.name === "VALARM");
+			expect(valarms).toHaveLength(1);
+			const valarm = valarms[0]!;
+			expect(valarm.properties.find((p) => p.name === "ACTION")?.value).toBe("DISPLAY");
+			expect(valarm.properties.find((p) => p.name === "DESCRIPTION")?.value).toBe("Reminder");
+			const trigger = valarm.properties.find((p) => p.name === "TRIGGER")!;
+			expect(trigger.value).toBe("20260714T000000Z");
+			expect(trigger.parameters).toContainEqual({ name: "VALUE", values: ["DATE-TIME"] });
+			const uidProp = valarm.properties.find((p) => p.name === "UID")?.value;
+			const alarmUidProp = valarm.properties.find((p) => p.name === "X-WR-ALARMUID")?.value;
+			expect(uidProp).toBe("alarm-uid-1");
+			expect(alarmUidProp).toBe("alarm-uid-1");
+			expect(uidProp).toBe(alarmUidProp); // UID と X-WR-ALARMUID は同値(iOS 実機準拠)。
+		});
+
+		test("alarm 未指定なら VALARM は無い", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-alarm-2",
+				now: NOW,
+				summary: "通知なしタスク",
+			});
+			const vtodo = ICalendarObject.fromComponent(parse(serialize(component))).todos()[0]!;
+			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(0);
+		});
+
+		test("due 無しでもアラーム単体で設定できる(due とアラームは独立)", () => {
+			const component = buildVTodoCalendar({
+				uid: "uid-alarm-3",
+				now: NOW,
+				summary: "due なし通知タスク",
+				alarm: { triggerUtcRaw: "20260714T090000Z", uid: "alarm-uid-3" },
+			});
+			const ics = serialize(component);
+			const reparsed = ICalendarObject.fromComponent(parse(ics));
+			expect(reparsed.validate()).toEqual([]);
+			const vtodo = reparsed.todos()[0]!;
+			expect(vtodo.due).toBeUndefined();
+			expect(vtodo.raw.components.filter((c) => c.name === "VALARM")).toHaveLength(1);
+		});
+	});
 });
