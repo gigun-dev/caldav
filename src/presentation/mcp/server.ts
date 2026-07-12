@@ -34,6 +34,7 @@ import { z } from "zod";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
+import type { CreateTodoRecurrenceInput } from "../../application/usecases";
 import {
 	CompleteTodo,
 	ComputeFreeBusy,
@@ -124,9 +125,37 @@ const getFreeBusyInputShape = {
 //      (#771/#772 参照 + 最小再現 {recurrence?:{frequency:enum}})だが、今は起票しない。
 // 回避: 開発時に Inspector で create-todo を叩くときは **JSON モード**で送れば正しいペイロードになる。
 // 実運用の主入口(Claude コネクタ=LLM)は未使用 optional を省くので無問題。
+//
+// 【2026-07-13 Case E 採用: frequency に "none"(繰り返さない)を追加】
+// 上の Why-not で「平坦化は不採用、JSON モードで回避すればよい」としたが、それでも
+// Inspector の **手動フォーム**(JSON モードを使わない一般的な操作)では recurrence を
+// 一切触っていなくても `{frequency:""}` が送られ、繰り返さない todo すら作れない実害が残る
+// (JSON モード回避は「知っている開発者向けの workaround」であって、フォーム操作そのものを
+// 直しはしない)。generateDefaultValue(client/src/utils/schemaUtils.ts L94-96)は
+// **明示的な .default(...) を先に見て尊重する**分岐を持つため、frequency enum に "none" を足し
+// `.default("none")` を付けると、Inspector は `{frequency:"none"}`(サブフィールド無し)を
+// 送るようになり、これは zod 的に valid になる — 「未初期化 required フィールド」問題を
+// スキーマ側の値レベルで無害化する。
+// iOS リマインダーの繰り返し UI にも「繰り返ししない」の選択肢があり、"none" は語彙としても
+// 自然(iOS 対応を品質基準とする CLAUDE.md の方針にも合う)。
+// 【application 層に "none" を漏らさない理由】CreateTodoRecurrenceInput(create-todo.ts)の
+// frequency は既存の4値("daily"|"weekly"|"monthly"|"yearly")のまま変更しない契約にする。
+// "none" は「MCP Inspector のクライアントバグを吸収するための presentation 層限定の語彙」であり、
+// ドメイン/アプリケーション層には存在しない概念(RRULE 自体を出さない=recurrence undefined と
+// 同義)。application まで4値+"none" の5値にすると、DAV 経由など他の入口(将来の REST 等)にも
+// "none" という MCP 固有の都合が波及しかねない。CLAUDE.md の「application 層は DAV 専用にせず
+// 複数入口から呼べる形を保つ」方針に沿って、MCP 固有の吸収は presentation に閉じ込める。
+// 【"none" + サブフィールド併用をエラーにする理由(黙って無視しない)】
+// 例えば `{frequency:"none", count:5}` のような矛盾した入力をサイレントに count を捨てて
+// 受理すると、ユーザー(または LLM)が意図した反復設定が黙って失われる。CalDAV/RFC 5545 の
+// 「曖昧な入力は拒否する」姿勢(他の recurrence 系エラー: RecurrenceCountUntilConflictError 等)
+// と同じく、ここでも明示的にエラーを返して気づかせる。
 const createTodoRecurrenceInputShape = z
 	.object({
-		frequency: z.enum(["daily", "weekly", "monthly", "yearly"]).describe("反復頻度。RRULE の FREQ に対応。"),
+		frequency: z
+			.enum(["none", "daily", "weekly", "monthly", "yearly"])
+			.default("none")
+			.describe('反復頻度。RRULE の FREQ に対応。"none"=繰り返さない(既定)。'),
 		interval: z.number().int().min(1).optional().describe(
 			"間隔(例: 2 なら「2日/2週間ごと」)。省略時は RRULE に INTERVAL を出さない(既定 1 と等価)。",
 		),
@@ -432,6 +461,33 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
 			try {
+				// recurrence 正規化(Case E): frequency:"none" は presentation 限定の語彙なので、
+				// application 層に渡す前にここで吸収する(上の createTodoRecurrenceInputShape
+				// コメント「Case E 採用」参照)。"none" + サブフィールド併用は黙殺せずエラーにする
+				// (ユーザー/LLM が意図した反復設定が静かに消えるのを防ぐ)。
+				let normalizedRecurrence: CreateTodoRecurrenceInput | undefined;
+				if (recurrence === undefined) {
+					normalizedRecurrence = undefined;
+				} else if (recurrence.frequency === "none") {
+					const hasSubfields =
+						recurrence.interval !== undefined ||
+						recurrence.weekdays !== undefined ||
+						recurrence.count !== undefined ||
+						recurrence.until !== undefined;
+					if (hasSubfields) {
+						return toolError(
+							'recurrence.frequency:"none"(繰り返さない)は interval/weekdays/count/until と併用できません。' +
+								"繰り返しを設定する場合は frequency に daily/weekly/monthly/yearly のいずれかを指定してください。",
+						);
+					}
+					normalizedRecurrence = undefined;
+				} else {
+					// ここに来る時点で recurrence.frequency は "none" ではないと TypeScript 上も
+					// 確定している(直前の else-if で絞り込み済み)ので、application 層の
+					// CreateTodoRecurrenceInput["frequency"](4値のみ)にそのまま代入できる。
+					normalizedRecurrence = { ...recurrence, frequency: recurrence.frequency };
+				}
+
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
@@ -444,7 +500,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					timeZone,
 					priority,
 					calendarId,
-					recurrence,
+					recurrence: normalizedRecurrence,
 				});
 				const result = { task };
 				return {

@@ -296,4 +296,76 @@ describe("/mcp", () => {
 		const rpc = await jsonRpcResult(res);
 		expect(rpc.result.structuredContent.busy).toHaveLength(1);
 	});
+
+	// 2026-07-13 Case E(server.ts のコメント参照): recurrence.frequency:"none" は
+	// MCP Inspector の手動フォームが optional な recurrence を触っていなくても
+	// `{frequency:""}` を送ってくる不具合を presentation 層で吸収するための正規化。
+	// application(CreateTodoRecurrenceInput)には存在しない語彙なので、ここで
+	// 「正規化後に正しく無反復/エラーになるか」を確認する(application のテストでは検証できない)。
+	describe("create-todo: recurrence.frequency:\"none\" 正規化(Case E)", () => {
+		// create-todo の既定保存先は collectionId "tasks"。calendarId を明示しないので
+		// fake の collectionRepo に "tasks" コレクションを OWNER 所有で撒いておかないと
+		// CollectionNotFoundError で PUT が落ちる(既存 seedEvent は "calendar" 用のため流用不可)。
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+
+		it("frequency:\"none\"(サブフィールド無し)は成功し、RRULE を持たない VTODO が作られる", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todo",
+					arguments: { title: "非反復", due: "2026-07-15", recurrence: { frequency: "none" } },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent.task).toBeDefined();
+
+			// 正規化で recurrence が undefined として application に渡ったことを、保存された
+			// 生 ICS に RRULE プロパティが無いことで確認する(task DTO 上の反復有無フィールドより
+			// rawIcs を直接見る方が「本当に RRULE を生成しなかった」ことの確実な証拠になる)。
+			const saved = await repos.resources.findAllInCollection(OWNER, TASKS);
+			expect(saved).toHaveLength(1);
+			expect(saved[0].rawIcs).not.toContain("RRULE");
+		});
+
+		it("frequency:\"none\" + サブフィールド(count 等)併用は isError", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todo",
+					arguments: { title: "矛盾", due: "2026-07-15", recurrence: { frequency: "none", count: 5 } },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("frequency:\"weekly\" は従来どおり RRULE を生成する(回帰確認)", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todo",
+					arguments: { title: "毎週", due: "2026-07-18", recurrence: { frequency: "weekly", weekdays: ["SA"] } },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+
+			const saved = await repos.resources.findAllInCollection(OWNER, TASKS);
+			expect(saved).toHaveLength(1);
+			expect(saved[0].rawIcs).toContain("FREQ=WEEKLY");
+		});
+	});
 });
