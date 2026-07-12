@@ -124,3 +124,32 @@ export {
 	type ListTodosInput,
 	type ListTodosOutput,
 } from "./list-todos";
+
+// todoId(UID) → リソース解決の共有ヘルパー(E-1 スライス②-b。Update/Complete/DeleteTodo 共通)
+export { lookupTodo, TodoNotFoundError, type LookedUpTodo } from "./todo-lookup";
+
+// Date → NowStamp 共有ヘルパー(E-1 スライス②-b。CreateTodo からも抽出して共用)
+export { nowStampFromDate } from "./now-stamp";
+
+// MCP update-todo(方向性 E-1 スライス②-b)
+export {
+	UpdateTodo,
+	type UpdateTodoInput,
+	type UpdateTodoOutput,
+	type UpdateTodoError,
+} from "./update-todo";
+
+// MCP complete-todo(方向性 E-1 スライス②-b、単発のみ)
+export {
+	CompleteTodo,
+	RecurringCompletionNotSupportedError,
+	type CompleteTodoInput,
+	type CompleteTodoOutput,
+	type CompleteTodoError,
+} from "./complete-todo";
+
+// MCP delete-todo(方向性 E-1 スライス②-b)
+export {
+	DeleteTodo,
+	type DeleteTodoInput,
+} from "./delete-todo";

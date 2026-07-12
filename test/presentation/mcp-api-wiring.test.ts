@@ -120,7 +120,16 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
 		const rpc = JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text);
 		const names = rpc.result.tools.map((t: { name: string }) => t.name).sort();
-		expect(names).toEqual(["create-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos"]);
+		expect(names).toEqual([
+			"complete-todo",
+			"create-todo",
+			"delete-todo",
+			"get-current-time",
+			"get-freebusy",
+			"list-events-expanded",
+			"list-todos",
+			"update-todo",
+		]);
 	});
 
 	it("ctx.props 無し(provider 未検証相当)は 401(OAuthPropsAuth の防御フォールバック)", async () => {

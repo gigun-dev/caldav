@@ -35,12 +35,20 @@ import { z } from "zod";
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
 import {
+	CompleteTodo,
 	ComputeFreeBusy,
 	CreateTodo,
+	DeleteCalendarObject,
+	DeleteETagMismatchError,
+	DeleteTargetNotFoundError,
+	DeleteTodo,
 	InvalidDueError,
 	ListOccurrences,
 	ListTodos,
 	PutCalendarObject,
+	RecurringCompletionNotSupportedError,
+	TodoNotFoundError,
+	UpdateTodo,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
 import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
@@ -98,6 +106,33 @@ const createTodoInputShape = {
 		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
 	),
 	calendarId: z.string().optional().describe('保存先コレクション ID。省略時は "tasks"。'),
+};
+
+// --- update-todo / complete-todo / delete-todo(方向性 E-1 スライス②-b)-------------
+
+const updateTodoInputShape = {
+	id: z.string().describe("更新対象の VTODO UID(create-todo/list-todos が返す id)。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+	title: z.string().optional().describe("SUMMARY(タイトル)。省略時は変更しない。"),
+	notes: z.string().optional().describe("DESCRIPTION(メモ)。省略時は変更しない。"),
+	due: z.string().optional().describe('期日。"YYYY-MM-DD"(終日)のみサポート。省略時は変更しない。'),
+	priority: z.number().int().min(0).max(9).optional().describe(
+		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
+	),
+	status: z.enum(["COMPLETED", "NEEDS-ACTION"]).optional().describe(
+		"STATUS の遷移。COMPLETED で完了・NEEDS-ACTION で未完了に戻す。省略時は変更しない。" +
+			"反復 VTODO(RRULE あり)への COMPLETED 指定は complete-todo と異なりガードしない点に注意。",
+	),
+};
+
+const completeTodoInputShape = {
+	id: z.string().describe("完了対象の VTODO UID。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+};
+
+const deleteTodoInputShape = {
+	id: z.string().describe("削除対象の VTODO UID。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
 };
 
 const listTodosInputShape = {
@@ -383,6 +418,100 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					structuredContent: result,
 				};
 			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- update-todo(E-1 スライス②-b)---------------------------------------------
+	server.registerTool(
+		"update-todo",
+		{
+			title: "Update todo",
+			description:
+				"既存 VTODO(リマインダー)の一部フィールドを更新する。指定したフィールドのみ変更し、他は維持する。" +
+				"status:\"COMPLETED\"/\"NEEDS-ACTION\" でフィールド更新と同時に完了/再開もできる" +
+				"(status:\"COMPLETED\" は complete-todo と同じ理由で定期タスク(RRULE あり)には未対応)。",
+			inputSchema: updateTodoInputShape,
+		},
+		async ({ id, calendarId, title, notes, due, priority, status }) => {
+			try {
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const updateTodo = new UpdateTodo(putCalendarObject, deps.resourceRepo);
+				const { task } = await updateTodo.execute({
+					owner: principal,
+					todoId: id,
+					calendarId,
+					title,
+					notes,
+					due,
+					priority,
+					status,
+				});
+				const result = { task };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				// TodoNotFoundError / InvalidDueError / ETagConditionError / CalDAVPreconditionError /
+				// CollectionNotFoundError いずれも「入力起因のエラー」としてメッセージをそのまま返す
+				// (create-todo と同じ扱い。instanceof で特別分岐する意味的な差が無いため catch-all で足りる)。
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- complete-todo(E-1 スライス②-b、単発のみ)-----------------------------------
+	server.registerTool(
+		"complete-todo",
+		{
+			title: "Complete todo",
+			description:
+				"VTODO(リマインダー)を完了する(STATUS:COMPLETED + COMPLETED + PERCENT-COMPLETE:100 の三点セット)。" +
+				"定期タスク(RRULE あり)は未対応(②-c で対応予定 — docs/modeling/06 §D4 の新 UID スナップショット方式が必要なため)。",
+			inputSchema: completeTodoInputShape,
+		},
+		async ({ id, calendarId }) => {
+			try {
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const completeTodo = new CompleteTodo(putCalendarObject, deps.resourceRepo);
+				const { task } = await completeTodo.execute({ owner: principal, todoId: id, calendarId });
+				const result = { task };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				if (error instanceof RecurringCompletionNotSupportedError) return toolError(error.message);
+				if (error instanceof TodoNotFoundError) return toolError(error.message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- delete-todo(E-1 スライス②-b)---------------------------------------------
+	server.registerTool(
+		"delete-todo",
+		{
+			title: "Delete todo",
+			description: "VTODO(リマインダー)を削除する。常に無条件削除(ETag 条件なし — delete-todo.ts 冒頭コメント参照)。",
+			inputSchema: deleteTodoInputShape,
+		},
+		async ({ id, calendarId }) => {
+			try {
+				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
+				const deleteTodo = new DeleteTodo(deleteCalendarObject, deps.resourceRepo);
+				await deleteTodo.execute({ owner: principal, todoId: id, calendarId });
+				const result = { deleted: true, id };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				if (error instanceof TodoNotFoundError) return toolError(error.message);
+				if (error instanceof DeleteTargetNotFoundError) return toolError(error.message);
+				if (error instanceof DeleteETagMismatchError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

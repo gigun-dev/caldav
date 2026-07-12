@@ -28,3 +28,13 @@ export { buildVTodoCalendar, type VTodoFields } from "./vtodo-write";
 // E-1 スライス②-a: サーバー発 VTODO の生成プロパティ(単一情報源)。CreateTodo(stampCreate)に
 // 加え、将来の UpdateTodo/CompleteTodo(②-b/②-c)が stampUpdate を再利用する想定で公開する。
 export { CF_ABSOLUTE_EPOCH_OFFSET_SECONDS, stampCreate, stampUpdate, type NowStamp } from "./vtodo-stamp";
+
+// E-1 スライス②-b: 既存 VTODO の部分更新プリミティブ(UpdateTodo/CompleteTodo/DeleteTodo が使う
+// patch 方式。vtodo-write.ts の buildVTodoCalendar とは対称的に「既存 Component の一部だけ書き
+// 換える」ロスレス編集を担う)。
+export {
+	applyCompletion,
+	applyReopen,
+	patchVTodoFields,
+	type VTodoPatchFields,
+} from "./vtodo-patch";

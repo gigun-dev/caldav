@@ -231,7 +231,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["create-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos"]);
+		expect(toolNames).toEqual(["complete-todo", "create-todo", "delete-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos", "update-todo"]);
 	});
 
 	it("(e) 静的 Bearer 経路: MCP_TOKEN でも OAuth を経由せず /mcp の tools/list が通る", async () => {
@@ -259,7 +259,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["create-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos"]);
+		expect(toolNames).toEqual(["complete-todo", "create-todo", "delete-todo", "get-current-time", "get-freebusy", "list-events-expanded", "list-todos", "update-todo"]);
 	});
 
 	// --- 失敗系 --------------------------------------------------------------
