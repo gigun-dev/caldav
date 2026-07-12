@@ -21,7 +21,7 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install hooks up dev proxy tunnel seed test typecheck boundaries check deploy deploy-proxy deploy-migrations migrate-local reset-local mobileconfig typegen
+.PHONY: help install hooks up dev proxy tunnel seed test test-worker typecheck boundaries check deploy deploy-proxy deploy-migrations migrate-local reset-local mobileconfig typegen
 
 help: ## このヘルプを表示
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -80,8 +80,29 @@ mobileconfig: ## iOS 用 .mobileconfig を生成(CALDAV_HOST 等は env で上�
 	bun run scripts/make-mobileconfig.ts
 
 # --- 品質チェック(CI と同一)-----------------------------------------------
-test: ## テストを実行
-	bun test
+#
+# テストランナーが2レーンに分かれている理由(2026-07-12 vitest-pool-workers 導入
+# スライス1):
+#   - bun test(test)  — 従来どおりの主レーン。test/domain 等、Bun の Node ライク
+#     環境で完結するユニット/結合テストの大半をここで回す。
+#   - vitest run(test-worker) — `cloudflare:workers` / `cloudflare:test` を
+#     import する、または src/index.ts の provider 本体(OAuthProvider の
+#     default export)を実際に fetch で叩く検証だけを test/worker/ に隔離し、
+#     実 workerd(Miniflare)上で回す(vitest.config.ts 参照)。Bun の Node ライク
+#     環境には `cloudflare:*` の仮想モジュールが存在しないため、この種のテストは
+#     bun test では原理的に書けない。
+# 振り分け基準: 新しいテストを足すとき、上記の import/検証対象に該当するかどうかで
+# test/ 配下(bun)と test/worker/ 配下(vitest)のどちらに置くかを決める。
+test: ## テストを実行(bun レーン。test/worker/ は拾わない — test-worker 参照)
+	# `bun test`(引数なし)ではなく `bun run test`(package.json の test script)を
+	# 呼ぶ。script 側でテスト対象ディレクトリを明示列挙しており、それにより
+	# test/worker/(cloudflare:workers 依存で bun からは import できない)を
+	# 除外している。ここで素の `bun test` を呼ぶと全 test/ 配下を再帰的に拾って
+	# しまい、test/worker/spike.test.ts の import で落ちる(実際に踏んだ)。
+	bun run test
+
+test-worker: ## テストを実行(vitest-pool-workers レーン、実 workerd 上)
+	bun run test:worker
 
 # typegen を前段に挟む理由(2026-07-11): 公式推奨は「TS を使うタスクの前に wrangler types」。
 # 手動 typegen は忘れるので typecheck が毎回自動再生成する(数秒・オフラインで完結)。
@@ -89,13 +110,19 @@ test: ## テストを実行
 # CI に組み込まない理由: 型には .dev.vars(gitignore 対象)のキーも含まれるため、
 # .dev.vars が無い CI で再生成/--check すると偽陽性で落ちる。CI は commit 済みの
 # worker-configuration.d.ts をそのまま tsc に使う(bun run typecheck 直呼びで typegen を通らない)。
-typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから)
+#
+# typecheck:worker を後ろに連結している理由: test/worker/ はルートの tsconfig.json と
+# 型セットが共存できず(bun-types vs cloudflare:test の型衝突。tsconfig.json の
+# exclude コメント参照)専用 tsconfig(test/worker/tsconfig.json)を持つため、
+# tsc の実行自体を2回に分ける必要がある。
+typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから、2レーン分)
 	bun run typecheck
+	bun run typecheck:worker
 
 boundaries: ## 層境界チェック(dependency-cruiser)
 	bun run boundaries
 
-check: boundaries typecheck test ## CI と同じ順(境界→型→テスト)で全チェック
+check: boundaries typecheck test test-worker ## CI と同じ順(境界→型→テスト→workerテスト)で全チェック
 
 typegen: ## worker-configuration.d.ts を再生成(wrangler.jsonc / .dev.vars 変更後に実行)
 	# 素の `wrangler types` は禁止: インターフェース名が Env になり、Hono テンプレートが

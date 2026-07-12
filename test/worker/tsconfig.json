@@ -1,0 +1,18 @@
+{
+	// ルート tsconfig.json は "types": ["bun"] を指定しており(bun test レーン用)、
+	// test/worker/ の vitest レーンは "@cloudflare/vitest-pool-workers/types"
+	// (cloudflare:test / cloudflare:workers の型定義)を必要とするため、bun の型と
+	// 共存できない。二つの型セットは一部のグローバル(fetch の型など)で衝突するため、
+	// このレーンだけ独立した tsconfig を持たせる(ルート tsconfig.json 側は
+	// "exclude": ["test/worker"] で素の tsc から外す。詳細はルート tsconfig.json 参照)。
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"types": ["@cloudflare/vitest-pool-workers/types"]
+	},
+	// worker-configuration.d.ts(CloudflareBindings、wrangler types 生成物)と
+	// src/env.d.ts(同インターフェースへの declaration merging で CALDAV_PASSWORD /
+	// OAUTH_PROVIDER 等の secret・ライブラリ注入値を足す手書き分)の両方を include に
+	// 足す。片方だけだと import チェーンで引き込まれる src/app.ts が
+	// `c.env.OAUTH_PROVIDER` を解決できず tsc が落ちる(実際に踏んだ)。
+	"include": ["./**/*.ts", "../../worker-configuration.d.ts", "../../src/env.d.ts"]
+}

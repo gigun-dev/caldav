@@ -14,4 +14,11 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   },
+  // test/worker/ は vitest-pool-workers レーン(@cloudflare/vitest-pool-workers/types が
+  // 提供する cloudflare:test / cloudflare:workers の型を使う)専用で、独自の
+  // test/worker/tsconfig.json を持つ。ルート側の "types": ["bun"] と共存できないため
+  // (bun-types と cloudflare:test の型が一部グローバルで衝突する)、素の tsc(bun run
+  // typecheck)からは除外し、typecheck:worker(tsc --noEmit -p test/worker)で
+  // 別レーンとして型検査する(2026-07-12 vitest-pool-workers 導入スライス1)。
+  "exclude": ["test/worker"]
 }
