@@ -4,7 +4,10 @@
 // buildCompletionSnapshot は実機フィクスチャ2本(vtodo-recurring-master.ics /
 // vtodo-recurring-completed-instance.ics)を突き合わせて検証する。
 // advanceMasterToNextOccurrence は同じマスターに対して IcaljsRRuleIterator を実際に注入し、
-// DUE の週次前進(7/12→7/18→7/19→7/25→7/26→exhausted)を確認する。
+// DUE の週次前進(7/12→7/18→7/19→7/25→7/26→UNTIL 越えの次の生ステップ)を確認する。
+// 2026-07-13 V8 本番実機実測で「最終 occurrence も次の生ステップへ前進する」ことが判明したため、
+// advanceMasterToNextOccurrence の "exhausted" 分岐は撤去し、常に "advanced"(+ seriesEnded
+// フラグ)を返す契約に変更した(下記テストもその契約で書く)。
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { parse, serialize } from "../../../../src/domain/ical";
@@ -117,13 +120,18 @@ describe("advanceMasterToNextOccurrence", () => {
 			if (result.kind !== "advanced") throw new Error(`expected advanced, got ${result.kind}`);
 			expect(due(result.vtodo)).toBe(expected);
 			expect(rruleRaw(result.vtodo)).toBe(rruleBefore); // UNTIL のとき RRULE は前進しても不変。
+			expect(result.seriesEnded).toBe(false); // まだ UNTIL 未到達(継続)。
 			expect(VTodo.fromComponent(result.vtodo).status).toBe("NEEDS-ACTION");
 			current = result.vtodo;
 		}
 	});
 
-	test("UNTIL(20260731T111300Z)を超えたら exhausted", () => {
+	// 2026-07-13 V8 実機実測: iOS は UNTIL を越えても "advanced"(次の生ステップへ前進)を返す。
+	// 前は "exhausted" を返して前進しない仕様だったが、本番実機で「最終回もマスターは次の生
+	// ステップへ前進し、RRULE(UNTIL 込み)は不変」という挙動が確認されたため、この仕様に揃えた。
+	test("UNTIL(20260731T111300Z)を超えても advanced・seriesEnded=true で RRULE 不変のまま次の生ステップへ前進する", () => {
 		let current = masterVTodoComponent();
+		const rruleBefore = rruleRaw(current);
 		for (let i = 0; i < 4; i++) {
 			const result = advanceMasterToNextOccurrence(current, iterator, zoneOf);
 			if (result.kind !== "advanced") throw new Error("expected advanced during warm-up");
@@ -131,10 +139,16 @@ describe("advanceMasterToNextOccurrence", () => {
 		}
 		// current の DUE は 7/26。次候補は 8/1(WEEKLY;BYDAY=SU,SA の次は土曜 8/1)で UNTIL を超える。
 		const result = advanceMasterToNextOccurrence(current, iterator, zoneOf);
-		expect(result.kind).toBe("exhausted");
+		if (result.kind !== "advanced") throw new Error("expected advanced");
+		expect(result.seriesEnded).toBe(true); // UNTIL を越えた生ステップ。
+		expect(due(result.vtodo)).toBe("20260801T211000"); // UNTIL 無視で次の生ステップ(8/1 土曜)へ前進。
+		expect(rruleRaw(result.vtodo)).toBe(rruleBefore); // UNTIL 込みで RRULE は不変(実測どおり)。
 	});
 
-	test("COUNT=3→2、COUNT=1→exhausted", () => {
+	// COUNT 系列の最終回(count<=1 で今回が最後)の RRULE 書き戻しは実機未検証(推定)。
+	// UNTIL 系列で「RRULE 不変」が実測されたことに揃え、count を減算しない判断を採用している
+	// (vtodo-recurrence.ts の実装コメント参照。可逆な判断)。
+	test("COUNT=3→2(継続)、count<=1(最終回)は advanced・seriesEnded=true で RRULE 不変のまま前進する", () => {
 		const ics = [
 			"BEGIN:VCALENDAR",
 			"VERSION:2.0",
@@ -155,13 +169,23 @@ describe("advanceMasterToNextOccurrence", () => {
 		const r1 = advanceMasterToNextOccurrence(master, iterator, zoneOf);
 		if (r1.kind !== "advanced") throw new Error("expected advanced");
 		expect(rruleRaw(r1.vtodo)).toBe("FREQ=DAILY;COUNT=2");
+		expect(r1.seriesEnded).toBe(false); // COUNT=3 は継続中(まだ2回残る)。
 
 		const r2 = advanceMasterToNextOccurrence(r1.vtodo, iterator, zoneOf);
 		if (r2.kind !== "advanced") throw new Error("expected advanced");
 		expect(rruleRaw(r2.vtodo)).toBe("FREQ=DAILY;COUNT=1");
+		expect(r2.seriesEnded).toBe(false); // COUNT=2 も継続中(まだ1回残る)。
 
+		// 3回目(COUNT=1 だった occurrence の完了): 今回が数え上げ上の最後 → seriesEnded=true。
+		// RRULE は不変(count を減算しない — 実機未検証の推定)。DTSTART は次の生ステップ
+		// (FREQ=DAILY なので+1日)へ前進する。
 		const r3 = advanceMasterToNextOccurrence(r2.vtodo, iterator, zoneOf);
-		expect(r3.kind).toBe("exhausted");
+		if (r3.kind !== "advanced") throw new Error("expected advanced");
+		expect(r3.seriesEnded).toBe(true);
+		expect(rruleRaw(r3.vtodo)).toBe("FREQ=DAILY;COUNT=1"); // 減算しない(推定)。
+		expect(VTodo.fromComponent(r3.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value).toBe(
+			"20260104T090000Z",
+		);
 	});
 
 	test("VALUE=DATE 反復(FREQ=DAILY)は VALUE=DATE のまま前進する", () => {
@@ -184,6 +208,7 @@ describe("advanceMasterToNextOccurrence", () => {
 
 		const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
 		if (result.kind !== "advanced") throw new Error("expected advanced");
+		expect(result.seriesEnded).toBe(false); // COUNT=3 の1回目、継続中。
 		const vtodo = VTodo.fromComponent(result.vtodo);
 		expect(vtodo.raw.properties.find((p) => p.name === "DTSTART")?.value).toBe("20260102");
 		// DATE dtstart なので BYHOUR は無視される(構文上残っていても展開に影響しないことの確認)。
@@ -216,6 +241,7 @@ describe("advanceMasterToNextOccurrence", () => {
 		const master = cal.todos()[0]!.raw;
 		const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
 		if (result.kind !== "advanced") throw new Error("expected advanced");
+		expect(result.seriesEnded).toBe(false); // COUNT=2 の1回目、継続中。
 		expect(VTodo.fromComponent(result.vtodo).raw.properties.some((p) => p.name === "DUE")).toBe(false);
 	});
 
@@ -232,6 +258,7 @@ describe("advanceMasterToNextOccurrence", () => {
 		const master = cal.todos()[0]!.raw;
 		const result = advanceMasterToNextOccurrence(master, iterator, zoneResolverFor(cal));
 		if (result.kind !== "advanced") throw new Error("expected advanced");
+		expect(result.seriesEnded).toBe(false); // UNTIL(20260731)にはまだ遠い。
 		expect(due(result.vtodo)).toBe("20260718T211000");
 	});
 
@@ -273,6 +300,7 @@ describe("advanceMasterToNextOccurrence", () => {
 
 			const result = advanceMasterToNextOccurrence(master, iterator, zoneOf);
 			if (result.kind !== "advanced") throw new Error("expected advanced");
+			expect(result.seriesEnded).toBe(false); // RRULE に UNTIL/COUNT 無し(無限反復)、常に継続。
 			expect(
 				VTodo.fromComponent(result.vtodo).raw.properties.find((p) => p.name === "DTSTART")?.value,
 			).toBe("20260714T010000");

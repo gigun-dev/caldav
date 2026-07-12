@@ -14,9 +14,10 @@
 // buildCompletionSnapshot と advanceMasterToNextOccurrence は「同じ入力(マスター VTODO)から
 // 別々の出力を作る」独立した変換であり、互いの結果に依存しない(advance の結果を snapshot が
 // 必要とすることはなく、その逆もない)。1関数に混ぜると「スナップショットを作る条件」と
-// 「マスターを前進できるか(exhausted 判定)」という異なる関心がテストしにくい形で結合する。
-// recurring-completion.ts が両方を呼んで、advance が exhausted かどうかで
-// snapshot を作るかどうかを分岐する(1 PUT/2 PUT の切り替え)。
+// 「マスターを前進できるか」という異なる関心がテストしにくい形で結合する。
+// recurring-completion.ts が両方を常に呼ぶ(2026-07-13 V8 実機実測より前は「advance が
+// exhausted なら1 PUT」という分岐があったが、実機は最終回もスナップショットを作ることが
+// 判明したため均一化した。下記 AdvanceResult のコメント参照)。
 //
 // 【iterator/zoneOf/uid/now をすべて引数注入にする理由】
 // このファイルは domain/ical 層(オニオンの最内層)に置く。RecurrenceIterator は
@@ -28,7 +29,7 @@
 
 import type { Component } from "../structure/types";
 import { removeProperty, upsertProperty } from "../structure/edit";
-import { applyCompletion, applyReopen, shiftAbsoluteAlarmTriggers } from "./vtodo-patch";
+import { applyCompletion, shiftAbsoluteAlarmTriggers } from "./vtodo-patch";
 import type { NowStamp } from "./vtodo-stamp";
 import { firstProp, isCalDateTime, parseDateOrDateTime, rawValue } from "./helpers";
 import type { CalDate } from "../values/cal-date";
@@ -127,7 +128,29 @@ export function buildCompletionSnapshot(masterVtodo: Component, ids: CompletionS
 // advanceMasterToNextOccurrence — マスターの DTSTART/DUE を次の occurrence へ前進させる
 // ---------------------------------------------------------------------------
 
-export type AdvanceResult = { readonly kind: "advanced"; readonly vtodo: Component } | { readonly kind: "exhausted" };
+/**
+ * 【2026-07-13 V8 本番実機実測で確定した契約(旧 "exhausted" 分岐からの変更)】
+ * 旧仕様は「UNTIL を越えた/COUNT が尽きた」場合に "exhausted" を返し、呼び出し側は前進を
+ * 諦めてマスターへその場 applyCompletion していた(スナップショット無し・1 PUT)。
+ * しかし本番実機(iOS 26.5・FREQ=DAILY;UNTIL・2 occurrence を最後まで完了)を見たところ、
+ * iOS は**最終 occurrence でも**完了スナップショットを作り、かつマスターの DTSTART/DUE を
+ * 「UNTIL/COUNT を無視した次の生ステップ」へ前進させ、その上で STATUS:COMPLETED を立てていた
+ * (RRULE は UNTIL 込みで不変)。つまり「前進できるかどうか」の分岐点は UNTIL/COUNT ではなく
+ * 「iterate() が次の壁時計候補を1件も返せない(病的ケース)かどうか」だけになる。
+ *
+ * - "advanced": 常に「次の生ステップ」(UNTIL/COUNT を無視して FREQ 上あり得る次の候補)へ
+ *   前進した結果。`seriesEnded` は「この生ステップが UNTIL を越えた、または今回の occurrence が
+ *   COUNT 上の最後だった」ことを示すフラグで、STATUS をどちらにすべきか(NEEDS-ACTION か
+ *   COMPLETED か)は呼び出し側(recurring-completion.ts)がこのフラグを見て決める。
+ *   この関数自身はもう STATUS を決めない(下記の責務分離コメント参照)。
+ * - "no-next-step": 1000 件走査しても次の生ステップが1件も見つからなかった病的ケースのみ
+ *   (BYxxx の組み合わせが不整合で実質的に「二度と発生しない」RRULE 等)。実機でこの経路が
+ *   踏まれる状況は想定していない(理論上の保険)。呼び出し側はこのときだけ前進を諦め、
+ *   その場 applyCompletion するフォールバックを取る。
+ */
+export type AdvanceResult =
+	| { readonly kind: "advanced"; readonly vtodo: Component; readonly seriesEnded: boolean }
+	| { readonly kind: "no-next-step" };
 
 /**
  * 「次候補を探すために消費する iterate() の壁時計フィールド数」の上限。COUNT も UNTIL も
@@ -143,7 +166,7 @@ const MAX_ADVANCE_SCAN = 1000;
  *
  * 【展開規約は expansion.ts(RecurrenceExpansion)と同一だが、ここでは複製する】
  * expansion.ts の instantOfDateValue/wallFieldsOf/reconstructCalDateTime/
- * ruleWithoutUntilForIterator/untilEpochOf は非公開(export されていない)関数で、
+ * ruleWithoutBoundsForIterator/untilEpochOf は非公開(export されていない)関数で、
  * G-1/G-2 の完成物(expansion.ts)は変更しない方針(CLAUDE.md 準拠のタスク指示)のため、
  * このファイル内に同じロジックをそのまま複製する(calendarDaysBetween を独自複製した
  * expansion.ts 自身の前例と同じ判断)。壁時計のまま列挙し、UTC 化は個別に行う鉄則
@@ -179,7 +202,11 @@ export function advanceMasterToNextOccurrence(
 	const currentEpoch = instantOfDateValue(dtstart, instantOpts);
 
 	const isDate = !isCalDateTime(dtstart);
-	const ruleForIterator = ruleWithoutUntilForIterator(rrule, isDate);
+	// UNTIL だけでなく COUNT も除いた「生の」ルールを iterator に渡す(下記関数コメント参照)。
+	// COUNT 付きのまま渡すと、最終 occurrence(COUNT=1 が消費し切った状態)の完了時に iterator が
+	// 「もう1件も返せない」状態になり、"次の生ステップ" を探せなくなってしまう
+	// (2026-07-13 V8 実機実測で「最終回も前進する」ことが確定したため、この除去が必須になった)。
+	const ruleForIterator = ruleWithoutBoundsForIterator(rrule, isDate);
 	const untilEpoch = rrule.until !== undefined ? untilEpochOf(rrule.until, instantOpts) : undefined;
 	const dtstartFields = wallFieldsOf(dtstart);
 
@@ -199,35 +226,44 @@ export function advanceMasterToNextOccurrence(
 	}
 
 	if (nextLocal === undefined) {
-		// 1000 件走査しても currentEpoch より後が見つからなかった = 事実上ここで打ち切り。
-		return { kind: "exhausted" };
+		// 1000 件走査しても currentEpoch より後が見つからなかった = 病的ケース(理論上の保険。
+		// 実機でこの経路を踏む状況は確認できていない — AdvanceResult コメント参照)。
+		return { kind: "no-next-step" };
 	}
 
-	// --- UNTIL 判定(inclusive。§3.3.10: occurrence == UNTIL は含む) --------------------
-	if (untilEpoch !== undefined && nextEpoch > untilEpoch) {
-		return { kind: "exhausted" };
-	}
-
-	// --- COUNT 判定 ---------------------------------------------------------------------
-	// 【COUNT を1減らす理由(§3.3.10「DTSTART は常に最初の occurrence」)】
-	// 前進後は「新しい DTSTART」が反復の起点になる。元の COUNT は「元 DTSTART から数えて
-	// 何回」なので、前進した新マスターにとっては「新 DTSTART から数えて (COUNT-1) 回」が
-	// 残りの正しい回数になる。COUNT=1(=今回が最後の occurrence)なら本来ここに来る前に
-	// iterate() が2件目を返さず nextLocal が undefined のまま exhausted になっているはずだが、
-	// 「見つかった」を先に判定してから COUNT を見る設計(Fable 確定設計の記述順)に合わせ、
-	// count===1 を明示的な exhausted としても再チェックする(iterator 実装の実際の挙動に
-	// 依存しすぎない防御的な二重チェック)。
-	if (rrule.count !== undefined && rrule.count <= 1) {
-		return { kind: "exhausted" };
-	}
+	// --- seriesEnded 判定(前進処理そのものは止めない — 2026-07-13 V8 実機実測で確定) ---------
+	// 【UNTIL(inclusive。§3.3.10: occurrence == UNTIL は含む)】
+	// 「次の生ステップが UNTIL を越えた」ら、その生ステップは RFC 上は存在しない occurrence だが、
+	// iOS は実機上「それでも DTSTART/DUE をそこへ前進させ、STATUS だけ COMPLETED にする」動きを
+	// 見せた(本番実機: UNTIL=20260714 の最終回完了で DTSTART が UNTIL 越えの 07-15 になった)。
+	// 【COUNT】今回の occurrence の完了時点で rrule.count <= 1(=今回が数え上げ上の最後)だった
+	// ケースも同様に「越えた」とみなす。
+	const seriesEnded = (untilEpoch !== undefined && nextEpoch > untilEpoch) || (rrule.count !== undefined && rrule.count <= 1);
 
 	let out = masterVtodo;
 
+	// --- RRULE の書き戻し -----------------------------------------------------------------
+	// UNTIL は前進しても常に不変(実機実測どおり・上下 seriesEnded どちらの場合も同じ)。
 	if (rrule.count !== undefined) {
-		const newRule: RecurrenceRule = { ...rrule, count: rrule.count - 1 };
-		out = upsertProperty(out, "RRULE", formatRecurrenceRule(newRule));
+		if (seriesEnded) {
+			// 【推定・実機未検証】COUNT 由来で今回が最後だったケースの RRULE 書き戻しは
+			// 2026-07-13 時点で実機実測が無い(実機で確認できたのは UNTIL 系列の最終回のみ)。
+			// UNTIL 系列で「RRULE(UNTIL 含め)は前進しても不変」だった実測と平仄を合わせ、
+			// ここでも count を減算せず不変に保つ判断を採用する。可逆な判断であり、後日 COUNT
+			// 系列の実機実測が取れ次第、ここだけ直せばよい(count-1 等への変更を想定)。
+			// ボツ案: 「continuation と同様に count-1 する」も検討したが、count=1→count=0 という
+			// 「もう発生しない」ことを RRULE 自身が語る形になり、STATUS:COMPLETED と情報が
+			// 重複する(RRULE 側だけで見ても矛盾は起きない)ため、両論あり得ると判断し保留した。
+		} else {
+			// 【COUNT を1減らす理由(§3.3.10「DTSTART は常に最初の occurrence」)】
+			// 前進後は「新しい DTSTART」が反復の起点になる。元の COUNT は「元 DTSTART から数えて
+			// 何回」なので、前進した新マスターにとっては「新 DTSTART から数えて (COUNT-1) 回」が
+			// 残りの正しい回数になる。
+			const newRule: RecurrenceRule = { ...rrule, count: rrule.count - 1 };
+			out = upsertProperty(out, "RRULE", formatRecurrenceRule(newRule));
+		}
 	}
-	// UNTIL のときは RRULE を変更しない(fixture 実測どおり — UNTIL は前進しても不変)。
+	// UNTIL のみ(COUNT 無し)のときは常に RRULE 不変(fixture 実測どおり)。
 
 	// --- DTSTART 書き戻し(元の parameters=TZID/VALUE=DATE 等を流用) ---------------------
 	out = upsertProperty(out, "DTSTART", formatDateValue(nextLocal), dtstartProp.parameters);
@@ -250,6 +286,12 @@ export function advanceMasterToNextOccurrence(
 	// DUE 無しなら何もしない(spec どおり)。
 
 	// --- VALARM 絶対トリガーの前進(2026-07-13 追加。本番 D1 実機検証 V3 で判明した欠落) ---
+	// 【seriesEnded に関わらず同じロジックを適用する】このシフト自体は「マスターを次の生
+	// ステップへ前進させる」処理の一部であり、STATUS が NEEDS-ACTION になるか COMPLETED に
+	// なるかとは独立(前進する以上、絶対トリガーも前進すべき値は変わらない)。
+	// 【実機未検証の注記】この「最終回でも VALARM を同じロジックで前進させる」という判断は、
+	// V8 実機実測(VALARM 無しの反復)からの類推であり、VALARM 付きの最終回パターン自体は
+	// 実機で確認できていない(推定)。
 	// 【DUE の壁時計差保持(上のブロック)とは別物 — 混同しないこと】
 	// DUE は「DTSTART との壁時計フィールドの見た目上の差」を保持する(TZ を見ない暦カウンタ差分)。
 	// 対して VALARM 絶対トリガー(TRIGGER;VALUE=DATE-TIME、常に UTC — §3.8.6.3 trigabs 文法。
@@ -263,14 +305,21 @@ export function advanceMasterToNextOccurrence(
 	const triggerShiftMs = nextEpoch - currentEpoch;
 	out = shiftAbsoluteAlarmTriggers(out, triggerShiftMs);
 
-	// --- STATUS:NEEDS-ACTION + COMPLETED/PERCENT-COMPLETE 除去 ---------------------------
-	out = applyReopen(out);
+	// 【STATUS の決定はこの関数の責務から外した(2026-07-13)】
+	// 旧実装はここで無条件に applyReopen(STATUS:NEEDS-ACTION に戻す)を呼んでいたが、それは
+	// 「前進 = 継続」しかなかった旧契約(exhausted 時はこの関数を素通りしていた)の名残。
+	// 新契約では advanced が「継続」と「最終回」の両方をカバーするため、STATUS をどちらに
+	// すべきか(NEEDS-ACTION か COMPLETED か)は seriesEnded の値次第になり、それを知っているのは
+	// 呼び出し側(recurring-completion.ts — applyCompletion/applyReopen のどちらを当てるか判断する
+	// 場所)であって、この関数ではない。DTSTART/DUE/RRULE/VALARM の前進という「時刻・反復定義の
+	// 変換」に責務を絞り、STATUS という「完了状態の解釈」を混ぜないことで、テスト・呼び出し側
+	// それぞれの関心を分離する。
 
 	// LAST-MODIFIED/DTSTAMP はここでは触らない。呼び出し側(recurring-completion.ts)が
 	// stampUpdate を後から呼ぶ既存規律(vtodo-stamp.ts 冒頭コメント「生成プロパティの単一情報源」)
 	// に合わせ、この純関数はフィールドの前進だけに責務を絞る。
 
-	return { kind: "advanced", vtodo: out };
+	return { kind: "advanced", vtodo: out, seriesEnded };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,10 +360,19 @@ function reconstructCalDateTime(dtstart: CalDateTime, wf: RecurrenceWallClockFie
 	}
 }
 
-/** RRULE から UNTIL を除いた(DATE dtstart なら BYSECOND/BYMINUTE/BYHOUR も除いた)コピー。
- *  expansion.ts の ruleWithoutUntilForIterator の複製。 */
-function ruleWithoutUntilForIterator(rule: RecurrenceRule, isDate: boolean): RecurrenceRule {
-	const { until: _until, bySecond, byMinute, byHour, ...rest } = rule;
+/**
+ * RRULE から UNTIL・COUNT を除いた(DATE dtstart なら BYSECOND/BYMINUTE/BYHOUR も除いた)コピー。
+ * expansion.ts の ruleWithoutUntilForIterator を出発点に複製したが、この関数は「UNTIL だけ」
+ * ではなく「反復を打ち切りうる境界(UNTIL/COUNT)を両方除いた"生の"ルール」を返す必要がある
+ * ため、複製時に COUNT 除去を追加し、実態に合わせて改名した(2026-07-13。旧名
+ * ruleWithoutUntilForIterator のままだと COUNT も除いている事実が読み取れず誤解を招くため)。
+ * 【なぜ COUNT も除くか】advanceMasterToNextOccurrence は「次の生ステップ」(UNTIL/COUNT を
+ * 無視した FREQ 上あり得る次の occurrence)を探す必要がある。COUNT 付きのまま iterator に
+ * 渡すと、COUNT を使い切った状態(今回が最終 occurrence)からは iterator が1件も返せず、
+ * 「次の生ステップへ前進する」という新契約(seriesEnded)を満たせなくなる。
+ */
+function ruleWithoutBoundsForIterator(rule: RecurrenceRule, isDate: boolean): RecurrenceRule {
+	const { until: _until, count: _count, bySecond, byMinute, byHour, ...rest } = rule;
 	if (!isDate) {
 		return { ...rest, bySecond, byMinute, byHour };
 	}

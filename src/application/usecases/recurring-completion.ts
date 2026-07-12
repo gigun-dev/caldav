@@ -27,20 +27,32 @@
 // 完了させた occurrence の記録が消え、かつ次回の occurrence へ進んでしまっている(スキップ扱い)
 // という非可逆な事故になる。よって snapshot-first を必ず守る((a)→(b) の順序を変えない)。
 //
-// 【exhausted(最終 occurrence)のときは 1 PUT のみ】
-// advanceMasterToNextOccurrence が exhausted を返したら「これ以上の occurrence が無い」ので、
-// スナップショットは作らずマスター自身に applyCompletion する(単発完了と同じ処理)。
-// 【未確定事項】この「最終 occurrence 完了時にスナップショットを作らない」という判断は
-// iOS 実機で実測できていない(反復を最後まで完了させて完了リストの件数を数える実機検証が
-// 未実施 — docs/modeling/06 §D4 に追記済み)。実測と食い違うことが分かったら、このファイルと
-// vtodo-recurrence.ts の advanceMasterToNextOccurrence 呼び出し側だけを直せばよい設計にしてある
-// (exhausted の分岐はこの関数の中だけに閉じている)。
+// 【均一化した2 PUT モデル(2026-07-13 V8 本番実機実測で確定)】
+// 旧実装は advanceMasterToNextOccurrence が "exhausted" を返す(=前進先が無い)場合に
+// 「スナップショットを作らずマスターへ直接 applyCompletion して1 PUT のみ」という特別扱いを
+// していた。しかし本番実機(iOS 26.5・FREQ=DAILY;UNTIL・2 occurrence を最後まで完了)を見たところ、
+// **iOS は最終 occurrence でも必ずスナップショットを作り、マスターも次の生ステップへ前進させる**
+// ことが判明した(完了スナップショットが2件・マスター DTSTART/DUE が UNTIL 越えの次の日へ
+// 前進・RRULE 不変・STATUS:COMPLETED)。これを受けて、advanceMasterToNextOccurrence の契約を
+// 「常に次の生ステップへ前進し、境界を越えたかどうかは seriesEnded フラグで返す」に変更し
+// (vtodo-recurrence.ts 参照)、この関数は **常に2 PUT** を行うよう均一化した。
+//
+// STATUS の決定はこの関数の責務(advanceMasterToNextOccurrence 側から引き上げた — 同ファイルの
+// 責務分離コメント参照):
+//   - advance.kind === "advanced" && seriesEnded === false(継続): applyReopen
+//     (STATUS:NEEDS-ACTION に戻す — 次回まだ発生する)。
+//   - advance.kind === "advanced" && seriesEnded === true(最終回): applyCompletion
+//     (前進した DTSTART/DUE のまま STATUS を COMPLETED 系にする)。
+//   - advance.kind === "no-next-step"(病的ケースのみの例外): 前進を諦め、マスター自身へ
+//     その場 applyCompletion する(旧 "exhausted" 分岐の名残 — こちらは実機で踏まれる想定がない
+//     保険的フォールバックなので、稀なケースとして残す)。
 // =============================================================================
 
 import { ICalendarObject, serialize, type Component } from "../../domain/ical";
 import {
 	advanceMasterToNextOccurrence,
 	applyCompletion,
+	applyReopen,
 	buildCompletionSnapshot,
 	stampUpdate,
 	type NowStamp,
@@ -91,35 +103,10 @@ export async function completeRecurringTodo(
 	// calendar-query.ts と同じ規約 — PUT 時点の floating 解決は UTC 固定の確定設計)。
 	const zoneOf = zoneResolverFor(looked.resource.payload);
 
-	// advance を先に評価する(exhausted かどうかで 1 PUT/2 PUT を分岐するため)。
+	// advance を先に評価する(no-next-step の病的ケースのみ前進処理そのものを諦めるため)。
 	const advance = advanceMasterToNextOccurrence(masterVtodo, deps.recurrenceIterator, zoneOf);
 
-	if (advance.kind === "exhausted") {
-		// --- 最終 occurrence: マスターへ直接 applyCompletion(単発完了と同じ) -------------
-		let patched: Component = applyCompletion(masterVtodo, now);
-		patched = stampUpdate(patched, now);
-
-		const components = vcalendar.components.map((c) => (c === looked.vtodo.raw ? patched : c));
-		const newVcalendar: Component = { ...vcalendar, components };
-		const ics = serialize(newVcalendar);
-
-		await deps.putCalendarObject.execute({
-			owner,
-			collectionId,
-			resourceUri: looked.resourceUri,
-			ics,
-			condition: { kind: "must-match", etag: looked.etag.hex },
-		});
-
-		const obj = ICalendarObject.fromComponent(newVcalendar);
-		const vtodo = obj.todos().find((t) => t.uid === looked.vtodo.uid) ?? obj.todos()[0];
-		if (vtodo === undefined) {
-			throw new Error("completeRecurringTodo: internal error — patched master VTODO not found after round-trip");
-		}
-		return { task: taskFromVTodo(vtodo) };
-	}
-
-	// --- 次回あり: snapshot-first の 2 PUT(冒頭コメントの失敗モード分析どおり順序厳守) -----
+	// --- 常に2 PUT: snapshot-first の順序厳守(冒頭コメントの失敗モード分析どおり) -----------
 	const snapshotUid = crypto.randomUUID();
 	const snapshot = buildCompletionSnapshot(
 		masterVtodo,
@@ -146,7 +133,19 @@ export async function completeRecurringTodo(
 
 	// PUT (b): 既存リソース(マスター)を前進後の内容で更新。ETagConditionError 等はここで
 	// 握りつぶさずそのまま呼び出し側へ伝播させる(冒頭コメント「エラーは握りつぶさない」)。
-	const advancedMaster = stampUpdate(advance.vtodo, now);
+	//
+	// STATUS の決定(advanceMasterToNextOccurrence から引き上げた責務。ファイル冒頭コメント参照):
+	//   - "no-next-step"(病的ケースの保険): 前進を諦め、元のマスターへその場 applyCompletion。
+	//   - "advanced" && seriesEnded: 前進した DTSTART/DUE のまま STATUS を COMPLETED 系にする
+	//     (最終回。V8 実機実測どおり)。
+	//   - "advanced" && !seriesEnded: STATUS を NEEDS-ACTION に戻す(継続。次回がまだある)。
+	const patchedMaster: Component =
+		advance.kind === "no-next-step"
+			? applyCompletion(masterVtodo, now)
+			: advance.seriesEnded
+				? applyCompletion(advance.vtodo, now)
+				: applyReopen(advance.vtodo);
+	const advancedMaster = stampUpdate(patchedMaster, now);
 	const masterComponents = vcalendar.components.map((c) => (c === looked.vtodo.raw ? advancedMaster : c));
 	const masterVcalendar: Component = { ...vcalendar, components: masterComponents };
 	const masterIcs = serialize(masterVcalendar);

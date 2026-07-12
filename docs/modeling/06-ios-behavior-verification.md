@@ -289,6 +289,25 @@ COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
 > 9:00 等)とは一致しない可能性がある。ロスレス・オフセット保存の一貫規則を優先した割り切りとして
 > 許容する(詳細は `src/application/usecases/update-todo.ts` の `dueShiftMillis` JSDoc)。
 
+> 2026-07-13 追記(V8 本番実機実測で確定): 248行目以降の「未確定事項」が確定した。
+> **iOS は最終 occurrence もスナップショット作成 + マスター DTSTART/DUE を UNTIL 越えの
+> 次の生ステップへ前進 + STATUS:COMPLETED(RRULE は UNTIL 含め維持)** という、非最終回と
+> 同じ2リソースモデルで扱う。本番 D1 実機実測(反復・`FREQ=DAILY;UNTIL=20260714`・毎日・
+> 終日・VALARM 無し・07-13/07-14 の2 occurrence を chat から完了 → マスター
+> `DTSTART/DUE=07-15`・`RRULE:FREQ=DAILY;UNTIL=20260714`(不変)・`STATUS:COMPLETED`・
+> 完了スナップショットが2件(07-13 分・07-14 分))。「最終回だけスナップショットが
+> 作られない」という旧設計上の非対称さは実機と食い違っていたことが分かった。
+> これを受け、`advanceMasterToNextOccurrence`(domain/ical/semantics/vtodo-recurrence.ts)を
+> 「常に次の生ステップ(UNTIL/COUNT を無視した FREQ 上の次)へ前進し、境界を越えたかどうかは
+> `seriesEnded` フラグで返す」契約に変更し、`completeRecurringTodo`
+> (application/usecases/recurring-completion.ts)は常に2 PUT(スナップショット +
+> 前進マスター)を行うよう均一化した。STATUS の決定(NEEDS-ACTION か COMPLETED か)は
+> `seriesEnded` を見て呼び出し側が行う。
+> **COUNT 最終回の RRULE 扱いは実機未検証の推定**: 今回実機実測できたのは UNTIL 系列のみで、
+> COUNT 由来で今回が最後だった occurrence(`rrule.count <= 1`)の RRULE 書き戻しは、UNTIL 系列と
+> 平仄を合わせて「count を減算せず不変に保つ」という推定を採用している(可逆な判断。
+> `vtodo-recurrence.ts` の実装コメント参照)。COUNT 系列の実機実測が取れ次第、直す可能性がある。
+
 ### D5. VALARM(VTODO のアラーム)は保持可(確定)
 
 iOS は VTODO に VALARM を付ける2形態を実測: **時刻アラーム**(`ACTION:DISPLAY` +

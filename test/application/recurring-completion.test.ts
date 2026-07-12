@@ -83,13 +83,18 @@ describe("completeRecurringTodo", () => {
 		expect(task.status).toBe("COMPLETED");
 	});
 
-	it("最終 occurrence(前進先が無い)場合: PUT は1回(must-match)のみ、マスターへ直接完了三点セット", async () => {
-		// UNTIL の直前(7/26)まで進めた状態を作り、そこから完了させると exhausted になる状況を作る。
+	// 2026-07-13 V8 本番実機実測: 最終 occurrence 完了時も iOS は「スナップショット作成 +
+	// マスターを UNTIL 越えの次の生ステップへ前進 + STATUS:COMPLETED」を行う(旧仕様の
+	// 「前進先が無いので1 PUTのみ・マスターへ直接完了」という想定は誤りだった)。均一化した
+	// 2 PUT モデルに合わせてこのテストを差し替える。
+	it("最終 occurrence(UNTIL 越え)の場合: PUT は2回(スナップショット + 前進したマスター)、マスターは STATUS:COMPLETED", async () => {
+		// UNTIL の直前(7/26)まで進めた状態を作り、そこから完了させると「次の生ステップ(8/1)へ
+		// 前進しつつ最終回扱い」になる状況を作る(セットアップ自体は旧テストのものを流用できる)。
 		await seedRecurringMaster();
 		let looked = await lookupTodo(resourceRepo, TEST_OWNER, COLLECTION_ID, "64F062E0-AF06-411E-8AC2-ABDFC8576159");
 		if (looked === null) throw new Error("setup failed");
 
-		// 4回前進(7/18→7/19→7/25→7/26)させて「次が無い」状態のマスターを作り、
+		// 4回前進(7/18→7/19→7/25→7/26)させて「次は UNTIL 越え」の状態のマスターを作り、
 		// それを resourceRepo に上書き保存してから最後の完了を試みる。
 		const plainPut = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
 		for (let i = 0; i < 4; i++) {
@@ -110,11 +115,24 @@ describe("completeRecurringTodo", () => {
 		);
 		const after = await resourceRepo.findAllInCollection(TEST_OWNER, COLLECTION_ID);
 
-		expect(recordingPut.calls).toHaveLength(1);
-		expect(recordingPut.calls[0]!.condition).toEqual({ kind: "must-match", etag: looked.etag.hex });
-		expect(after.length).toBe(before.length); // 新規リソースは作られない。
+		// 常に2 PUT(スナップショット must-not-exist → 前進マスター must-match)。
+		expect(recordingPut.calls).toHaveLength(2);
+		expect(recordingPut.calls[0]!.condition).toEqual({ kind: "must-not-exist" });
+		expect(recordingPut.calls[0]!.resourceUri).not.toBe(looked.resourceUri);
+		expect(recordingPut.calls[1]!.condition).toEqual({ kind: "must-match", etag: looked.etag.hex });
+		expect(recordingPut.calls[1]!.resourceUri).toBe(looked.resourceUri);
+		expect(after.length).toBe(before.length + 1); // 完了スナップショットが1件増える。
+
+		// 返る Task はスナップショット(完了済み)。
+		expect(task.completed).toBe(true);
 		expect(task.status).toBe("COMPLETED");
-		expect(task.id).toBe("64F062E0-AF06-411E-8AC2-ABDFC8576159"); // マスターと同じ UID。
+
+		// マスター自身(元 UID)も STATUS:COMPLETED になり、DTSTART/DUE は UNTIL 越えの
+		// 次の生ステップ(8/1)へ前進している。
+		const masterLooked = await lookupTodo(resourceRepo, TEST_OWNER, COLLECTION_ID, "64F062E0-AF06-411E-8AC2-ABDFC8576159");
+		if (masterLooked === null) throw new Error("master re-lookup failed");
+		expect(masterLooked.vtodo.status).toBe("COMPLETED");
+		expect(masterLooked.vtodo.raw.properties.find((p) => p.name === "DUE")?.value).toBe("20260801T211000");
 	});
 
 	it("PUT(b) が ETagConditionError を投げる場合: (a) は実行済みでエラーが伝播する(握りつぶさない)", async () => {
