@@ -320,9 +320,16 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   until は DTSTART の VALUE=DATE に合わせ DATE 型で出し I6 を構造的に回避(§3.3.10 原文根拠)。recurrence は
   >   due 必須・count/until 排他(I5)・weekdays は weekly のみ、を専用エラーで明示。反復 create→complete が
   >   ②-c の D4 経路で動くことを e2e 検証。chat から反復 todo をゼロから作れるように。
-  >   **残: V8(最終回の実測)のみ** — 反復を最後まで完了したとき iOS がスナップショットを作るか/マスターを
-  >   完了させるだけか(我々は後者=スナップショット無しでマスター完了を採用・実測で確定させる)。
-  >   次の本線: **E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。
+  >   **V8 完了 ✅ + 設計修正**(`711d7c4`): 本番実機実測(FREQ=DAILY;UNTIL=20260714・07-13/07-14 完了)で
+  >   当初設計(最終回はスナップショット無し・その場完了)が**iOS と食い違うと判明**。iOS は最終回でも
+  >   ①スナップショット作成 ②マスターを UNTIL 越えの次ステップ(07-15)へ前進 + STATUS:COMPLETED(RRULE 維持)。
+  >   → advanceMasterToNextOccurrence を「常に次の生ステップへ前進し seriesEnded を返す」契約に変更・STATUS 決定を
+  >   completeRecurringTodo へ引き上げ・**常に snapshot-first の2PUT に均一化**。exhausted 特別扱いは廃止
+  >   (no-next-step の病的ケースのみ保険)。COUNT 最終回の RRULE 不変は推定(UNTIL のみ実測・可逆)。
+  >   **E-1 スライス②系すべて完了。** agentic todo 入口(create/list/update/complete/delete・単発/反復・
+  >   VALARM 追随・反復の D4 完全再現)が iOS 忠実に揃った。
+  >   **次の本線: E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。極小 ui:// スパイクで
+  >   「個人コネクタで UI 描画されるか」を先に潰してから本実装(tdr-concierge の registerAppResource/registerAppTool 方式)。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 

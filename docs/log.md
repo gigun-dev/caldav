@@ -527,3 +527,18 @@
 - 残: **V8**(反復を最後まで完了 → iOS がスナップショットを作るか/マスター完了だけか。我々は後者採用)。
   その後 **E-2(MCP App UI)** が本線。タスク①③で agentic todo 入口(create/list/update/complete/delete・
   単発/反復・VALARM 追随)がほぼ揃った。
+
+## 2026-07-13(続き)V8 実測 → 最終回モデル修正
+
+- **V8 本番実機実測**: 「反復」todo(FREQ=DAILY;UNTIL=20260714・終日・VALARM 無し)を2 occurrence
+  最後まで iOS ネイティブ完了 → D1 に完了スナップショット2件(07-13/07-14・新 UID・RRULE 無し)+
+  元マスターが DTSTART/DUE=07-15(UNTIL 越えの次ステップへ前進)・RRULE 維持・STATUS:COMPLETED。
+  → 当初設計「最終回はスナップショット無しでマスターその場完了」が iOS と食い違うと判明。
+- **修正(`711d7c4`)**: advanceMasterToNextOccurrence を「常に次の生ステップへ前進(UNTIL/COUNT を無視して
+  境界越えステップも取得=ruleWithoutBoundsForIterator)し seriesEnded を返す」契約に変更。STATUS 決定
+  (COMPLETED/NEEDS-ACTION)を completeRecurringTodo へ引き上げ、**常に snapshot-first の2PUT に均一化**。
+  exhausted の特別扱い(1PUT・その場完了)は廃止し、no-next-step(病的ケース)のみ保険フォールバック。
+  COUNT 最終回の RRULE 不変は推定(UNTIL のみ実測・可逆)。bun 445 + vitest 13 green。
+- **E-1 スライス②系すべて完了**(②-a/b/c + VALARM 追随 + 反復 create + V2/V3/V8 実機)。agentic todo 入口が
+  iOS 忠実に揃った(create/list/update/complete/delete・単発/反復・D4 完全再現・VALARM 前進)。
+  次の本線: **E-2(MCP App UI)**。極小 ui:// スパイクで個人コネクタ描画を先に潰す。
