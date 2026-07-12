@@ -427,6 +427,32 @@ D4(反復 VTODO の完了 = マスター前進 + 完了スナップショット�
   (recurring-completion.ts)は元データが iOS 発か我々発かを区別せず RRULE の有無だけで
   分岐するため、当然の帰結ではあるが回帰確認として明示的にテストしておく。
 
+### D11. 単発 VTODO の occurrence bounds 不整合 / 反復 VTODO due 変更の UNTIL 型不一致(修正・2026-07-13)
+
+本番実測(単発終日 VTODO: DTSTART=DUE=2026-12-23, CREATED=2026-07-12。「時刻付き due で
+作成→update-todo で due を終日に変更」という経緯)で D1 索引列 first_occurrence が
+CREATED 相当(07-12)になっていた。RFC 4791 §9.9 の VTODO 実効値表(`docs/rfc/rfc4791.txt`
+L5104-5137)を原文で読み直すと、CREATED/COMPLETED は DTSTART・DUE がどちらも無い行にしか
+登場しない — occurrence-bounds.ts の旧実装(存在するプロパティ全部の min/max を取る)は
+表の行の優先順位を無視して CREATED を無条件候補に混ぜており、これは表と食い違う実装
+バグと判断した。表の行ごとに一意に決める実装に直した(`computeVTodoBounds`)。
+単発なら first=last=DUE(DTSTART も同時にあれば同じ扱い、DUE 単独/DTSTART 単独は退化点)
+になり、CREATED 単独のみのケースは条件式が `end > CREATED` で上限が無いため
+`last=OCCURRENCE_INDEX_MAX`(VEVENT の無限反復と同じ扱い)にした。
+
+同じ「due 変更」経路で D10 が予告していた罠(update-todo.ts で先に踏んだ同種の罠)も
+実際に発生を確認した: iOS 発の反復マスター(DTSTART;TZID=...(DATE-TIME) +
+RRULE UNTIL=...Z(DATE-TIME))の due を chat 経由で終日(DATE)に変更すると、
+`patchVTodoFields` が DTSTART/DUE を DATE にする一方 RRULE の UNTIL は DATE-TIME のまま
+残り、PutCalendarObject の事前条件 I6(§3.3.10 UNTIL 値型一致 MUST)違反で 412 相当の
+エラーになっていた。`vtodo-patch.ts` に `untilToDateIfNeeded`(due 分岐の直後にのみ呼ぶ
+内部ヘルパー)を追加し、RRULE があり UNTIL が DATE-TIME なら日付部分だけ残して DATE 化
+するようにした(RRULE 無し/UNTIL 無し/既に DATE なら不変)。create 側の
+`buildVTodoCalendar` が最初から UNTIL を DATE で出す方針(D10)と対称になるよう、
+domain/semantics 層(patchVTodoFields と同じファイル)に置いた — application 層
+(update-todo.ts)に置くと「DTSTART が DATE なら UNTIL も揃える」という I6 由来の
+domain 制約の知識が application 層に漏れてしまうため。
+
 ## 結果の還元先
 
 - **フィクスチャ**: A1〜A5 のキャプチャ ICS を `test/domain/ical/fixtures/` に実データとして

@@ -187,6 +187,100 @@ describe("computeOccurrenceBounds — VTODO", () => {
 		expect(bounds.firstMillis).toBeNull();
 		expect(bounds.lastMillis).toBeNull();
 	});
+
+	// --- A-1 回帰テスト群 ------------------------------------------------------------------
+	// 実測で踏んだ不整合: 単発終日 VTODO(DTSTART=DUE=2026-12-23, CREATED=2026-07-12)で
+	// first が CREATED(07-12)まで巻き戻っていた。RFC 4791 §9.9 の表(rfc4791.txt L5104-5137)は
+	// DTSTART/DUE が存在する行では CREATED を一切参照しない。旧実装(min/max 集合演算)は
+	// これに反していたので、表の行を1つずつ固定するテストを足す。
+
+	test("単発終日 VTODO: DTSTART=DUE(終日)、CREATED は無視され first=last=DUE(A-1 実測ケース)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:single-allday-due-created-mismatch",
+			"DTSTAMP:20260712T142933Z",
+			"CREATED:20260712T142933Z",
+			"DTSTART;VALUE=DATE:20261223",
+			"DUE;VALUE=DATE:20261223",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const todo = loadVTodo(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		const expected = Date.UTC(2026, 11, 23, 0, 0, 0);
+		expect(bounds.firstMillis).toBe(expected);
+		expect(bounds.lastMillis).toBe(expected);
+	});
+
+	test("DTSTART のみ(DUE/DURATION 無し): CREATED があっても無視され first=last=DTSTART", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:dtstart-only-with-created",
+			"DTSTAMP:20260101T000000Z",
+			"CREATED:20260101T000000Z",
+			"DTSTART:20260715T090000Z",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const todo = loadVTodo(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		const expected = Date.UTC(2026, 6, 15, 9, 0, 0);
+		expect(bounds.firstMillis).toBe(expected);
+		expect(bounds.lastMillis).toBe(expected);
+	});
+
+	test("DUE のみ + CREATED: CREATED は無視され first=last=DUE", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:due-only-with-created",
+			"DTSTAMP:20260101T000000Z",
+			"CREATED:20260101T000000Z",
+			"DUE:20260715T120000Z",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const todo = loadVTodo(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		const expected = Date.UTC(2026, 6, 15, 12, 0, 0);
+		expect(bounds.firstMillis).toBe(expected);
+		expect(bounds.lastMillis).toBe(expected);
+	});
+
+	test("DTSTART/DUE とも無し、CREATED のみ: first=CREATED, last=OCCURRENCE_INDEX_MAX(§9.9 の end>CREATED は上限が無い)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:created-only",
+			"DTSTAMP:20260101T000000Z",
+			"CREATED:20260101T000000Z",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const todo = loadVTodo(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBe(Date.UTC(2026, 0, 1, 0, 0, 0));
+		expect(bounds.lastMillis).toBe(OCCURRENCE_INDEX_MAX);
+	});
+
+	test("DTSTART/DUE とも無し、COMPLETED+CREATED: first=min, last=max", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VTODO",
+			"UID:completed-and-created",
+			"DTSTAMP:20260101T000000Z",
+			"CREATED:20260101T000000Z",
+			"COMPLETED:20260201T000000Z",
+			"END:VTODO",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const todo = loadVTodo(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VTODO", master: todo, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBe(Date.UTC(2026, 0, 1, 0, 0, 0));
+		expect(bounds.lastMillis).toBe(Date.UTC(2026, 1, 1, 0, 0, 0));
+	});
 });
 
 // =============================================================================

@@ -94,6 +94,51 @@ describe("patchVTodoFields", () => {
 		// VALARM サブコンポーネントは構造ごと不変(ロスレス編集の核心)。
 		expect(out.components).toEqual(vtodo.components);
 	});
+
+	// --- A-2 回帰テスト群 ------------------------------------------------------------------
+	// iOS 発の反復マスターは DTSTART;TZID=...(DATE-TIME) + RRULE の UNTIL も DATE-TIME
+	// (§3.3.10 ③ TZID/UTC 付き DTSTART → UNTIL は UTC 形式)。due を「終日(DATE)」に変更する
+	// patchVTodoFields の due 分岐は DTSTART/DUE を VALUE=DATE に書き換えるが、RRULE の UNTIL を
+	// 追従させないと DTSTART=DATE なのに UNTIL=DATE-TIME という I6 違反(RFC 5545 §3.3.10)状態が
+	// 残ってしまう。vtodo-recurring-master.ics(RRULE:FREQ=WEEKLY;UNTIL=20260731T111300Z;BYDAY=SU,SA)
+	// を使い、UNTIL が日付部分だけ残して DATE 化されることを確認する。
+
+	test("due を DATE に patch すると RRULE:UNTIL(DATE-TIME) も DATE に追従する(A-2)", () => {
+		const vtodo = loadRecurringMasterVTodo();
+		expect(propValue(vtodo, "RRULE")).toBe("FREQ=WEEKLY;UNTIL=20260731T111300Z;BYDAY=SU,SA");
+
+		const out = patchVTodoFields(vtodo, { due: "20260801", dueValueType: "DATE" });
+
+		// UNTIL の日付部分(20260731)はそのまま、時刻(T111300Z)だけ落ちて DATE 型になる。
+		expect(propValue(out, "RRULE")).toBe("FREQ=WEEKLY;UNTIL=20260731;BYDAY=SU,SA");
+		expect(propValue(out, "DTSTART")).toBe("20260801");
+		expect(propValue(out, "DUE")).toBe("20260801");
+	});
+
+	test("RRULE が無ければ何もしない(UNTIL 追従の対象がない)", () => {
+		const out = patchVTodoFields(emptyVTodo(), { due: "20260715", dueValueType: "DATE" });
+		expect(propValue(out, "RRULE")).toBeUndefined();
+	});
+
+	test("RRULE に UNTIL が無ければ(COUNT 等)不変", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "RRULE", parameters: [], value: "FREQ=DAILY;COUNT=5" }],
+			components: [],
+		};
+		const out = patchVTodoFields(vtodo, { due: "20260715", dueValueType: "DATE" });
+		expect(propValue(out, "RRULE")).toBe("FREQ=DAILY;COUNT=5");
+	});
+
+	test("UNTIL が既に DATE 型なら不変", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "RRULE", parameters: [], value: "FREQ=DAILY;UNTIL=20260801" }],
+			components: [],
+		};
+		const out = patchVTodoFields(vtodo, { due: "20260715", dueValueType: "DATE" });
+		expect(propValue(out, "RRULE")).toBe("FREQ=DAILY;UNTIL=20260801");
+	});
 });
 
 describe("applyCompletion", () => {

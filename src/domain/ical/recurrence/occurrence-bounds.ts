@@ -177,16 +177,37 @@ function computeVEventBounds(
 }
 
 /**
- * VTODO の bounds を計算する。RFC 4791 §9.9 の VTODO 実効値表に従い、反復展開はしない
- * (VTODO の RRULE 展開は G-3 のスコープ外。反復 VTODO は索引が粗くなるが、SQL 絞り込みの
- * 段階でのみ使われ最終判定はしない = 正しさは損なわれない、という確定設計メモの割り切り)。
+ * VTODO の bounds を計算する。RFC 4791 §9.9 の VTODO 実効値表(rfc4791.txt L5103-5137)に
+ * 従う。反復展開はしない(VTODO の RRULE 展開は G-3 のスコープ外。反復 VTODO は索引が粗く
+ * なるが、SQL 絞り込みの段階でのみ使われ最終判定はしない = 正しさは損なわれない、という
+ * 確定設計メモの割り切り)。
  *
- * first = DTSTART/DUE/COMPLETED/CREATED のうち存在するものの最小値。
- * last  = DTSTART+DURATION(両方あるとき)/DUE/COMPLETED/CREATED のうち存在するものの最大値。
- *         DTSTART だけがあって DUE も DURATION も無い場合、last 候補が空になってしまうので
- *         その場合は first(=DTSTART)を last としてフォールバックする(退化した「瞬間」区間)。
- * 全プロパティ欠落 → null/null(§9.9 VTODO 表の最終行「すべて欠落 → TRUE」と一致させる。
- * 「常に候補に含める」は NULL の意味そのもの)。
+ * 【2026-07-13 バグ修正: CREATED/COMPLETED を無条件候補に混ぜていた】
+ * 旧実装は「DTSTART/DUE/COMPLETED/CREATED のうち存在するものすべての min/max」という
+ * 単純な集合演算で first/last を出していた。だが原文の表(L5104-5137)を読むと、CREATED と
+ * COMPLETED は **DTSTART も DUE も無いとき(表の N,N,N,*,* 系の行)にしか登場しない**。
+ * DTSTART・DUE が存在する行(L5116-5125)の条件式は DTSTART/DUE/DURATION だけで書かれており
+ * CREATED は一切現れない。
+ * 実測で踏んだ不整合(単発 終日 VTODO: DTSTART=DUE=2026-12-23, CREATED=2026-07-12 だが
+ * 「時刻付き due 07-12 で作成 → update-todo で due を 12-23 に変更」という経緯)はまさに
+ * この旧実装の欠陥が原因: firstCandidates に CREATED(07-12)が無条件で混ざり、本来
+ * DTSTART=DUE=12-23 のみで決まるべき first が 07-12 まで巻き戻っていた。RFC 4791 §9.9 の
+ * time-range フィルタは「絞り込みが甘い(=索引が実際より広い)」なら安全側だが、本件は
+ * 逆方向 — CREATED を早い側の候補に混ぜたことで first が「本来より早い」方向にずれるのは
+ * まだ安全側(取りこぼしにはならない)だが、CREATED が DUE より後ろの日付だった場合は
+ * last が縮む方向にもなり得て、その場合は time-range REPORT の取りこぼしに直結するバグ
+ * (タスク A-1 の懸念どおり)。表どおり「行の優先順位に従って一意に決める」実装に直す。
+ *
+ * 表の各行(DTSTART?/DURATION?/DUE?/COMPLETED?/CREATED? の順、* は don't-care):
+ *   Y,Y,N,*,* → first=DTSTART, last=DTSTART+DURATION
+ *   Y,N,Y,*,* → first=DTSTART, last=DUE(DUE は DTSTART 以降が RFC 5545 の制約なので min/max 不要)
+ *   Y,N,N,*,* → first=last=DTSTART(退化点)
+ *   N,N,Y,*,* → first=last=DUE(退化点)
+ *   N,N,N,Y,Y → first=min(CREATED,COMPLETED), last=max(CREATED,COMPLETED)
+ *   N,N,N,Y,N → first=last=COMPLETED(退化点)
+ *   N,N,N,N,Y → first=CREATED, last=無限大(条件が end>CREATED のみで上限が無い →
+ *               VEVENT の無限反復と同じ考え方で OCCURRENCE_INDEX_MAX を使う)
+ *   N,N,N,N,N → null/null(表の最終行 TRUE = 常に候補、NULL の意味そのもの)
  */
 function computeVTodoBounds(todo: VTodo, opts: ComputeOccurrenceBoundsOptions): OccurrenceBounds {
 	const dtstart = todo.dtstart;
@@ -199,30 +220,38 @@ function computeVTodoBounds(todo: VTodo, opts: ComputeOccurrenceBoundsOptions): 
 	const createdProp = firstProp(todo.raw, "CREATED");
 	const created = createdProp !== undefined ? parseDateOrDateTime(createdProp) : undefined;
 
-	const firstCandidates: number[] = [];
-	const push = (v: CalDate | CalDateTime | undefined): void => {
-		if (v !== undefined) firstCandidates.push(instantOf(v, opts.zoneOf));
-	};
-	push(dtstart);
-	push(due);
-	push(completed);
-	push(created);
+	const at = (v: CalDate | CalDateTime): number => instantOf(v, opts.zoneOf);
 
-	if (firstCandidates.length === 0) {
-		return { firstMillis: null, lastMillis: null };
-	}
-	const first = Math.min(...firstCandidates);
-
-	const lastCandidates: number[] = [];
-	if (due !== undefined) lastCandidates.push(instantOf(due, opts.zoneOf));
 	if (dtstart !== undefined && duration !== undefined) {
-		lastCandidates.push(effectiveEventPeriod({ dtstart, duration }, { zoneOf: opts.zoneOf, floatingTimeZone: "UTC" }).endMillis);
+		const end = effectiveEventPeriod({ dtstart, duration }, { zoneOf: opts.zoneOf, floatingTimeZone: "UTC" }).endMillis;
+		return { firstMillis: at(dtstart), lastMillis: end };
 	}
-	if (completed !== undefined) lastCandidates.push(instantOf(completed, opts.zoneOf));
-	if (created !== undefined) lastCandidates.push(instantOf(created, opts.zoneOf));
-
-	const last = lastCandidates.length > 0 ? Math.max(...lastCandidates) : first;
-	return { firstMillis: first, lastMillis: last };
+	if (dtstart !== undefined && due !== undefined) {
+		return { firstMillis: at(dtstart), lastMillis: at(due) };
+	}
+	if (dtstart !== undefined) {
+		const v = at(dtstart);
+		return { firstMillis: v, lastMillis: v };
+	}
+	if (due !== undefined) {
+		const v = at(due);
+		return { firstMillis: v, lastMillis: v };
+	}
+	if (completed !== undefined && created !== undefined) {
+		const c1 = at(completed);
+		const c2 = at(created);
+		return { firstMillis: Math.min(c1, c2), lastMillis: Math.max(c1, c2) };
+	}
+	if (completed !== undefined) {
+		const v = at(completed);
+		return { firstMillis: v, lastMillis: v };
+	}
+	if (created !== undefined) {
+		// 条件式が (end > CREATED) のみで上限が無い(L5134)。VEVENT の無限反復
+		// (isInfinite ブロック)と同じ「先まで候補でありうる」を OCCURRENCE_INDEX_MAX で表す。
+		return { firstMillis: at(created), lastMillis: OCCURRENCE_INDEX_MAX };
+	}
+	return { firstMillis: null, lastMillis: null };
 }
 
 /**

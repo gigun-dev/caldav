@@ -227,13 +227,16 @@ describe("UpdateTodo", () => {
 	});
 
 	it("反復 VTODO で due 変更 + status:'COMPLETED': スナップショット/前進後マスター双方の VALARM が due 変更ぶん動く", async () => {
-		// 【RECURRING_MASTER_ICS を使わない理由】あのフィクスチャは DTSTART;TZID=...(DATE-TIME)+
-		// RRULE UNTIL=...Z(DATE-TIME)の組み合わせで、UpdateTodo.due(=VALUE=DATE 固定。
-		// vtodo-patch.ts の制約)へ patch すると DTSTART が DATE-TIME→DATE に変わり、RRULE UNTIL の
-		// 値型(DATE-TIME のまま)と食い違って I6(§3.3.10 UNTIL 値型一致 MUST)違反になる
-		// (due を動かす操作全般に共通する既存の制約であり、今回追加した VALARM shift 機能とは
-		// 無関係の別問題 — このテストのスコープ外なので、UNTIL 無し=COUNT ベースの反復 fixture を
-		// 別途用意して回避する)。
+		// 【RECURRING_MASTER_ICS を使わない理由(2026-07-13 追記: 現在は A-2 で解消済みの制約)】
+		// このテストを書いた時点では、RECURRING_MASTER_ICS(DTSTART;TZID=...(DATE-TIME)+
+		// RRULE UNTIL=...Z(DATE-TIME))へ UpdateTodo.due(=VALUE=DATE 固定。vtodo-patch.ts の制約)を
+		// patch すると DTSTART が DATE-TIME→DATE に変わるのに RRULE の UNTIL は DATE-TIME のまま
+		// 残り、I6(§3.3.10 UNTIL 値型一致 MUST)違反になっていた。vtodo-patch.ts の
+		// patchVTodoFields に untilToDateIfNeeded を足し、due を DATE に patch する際 UNTIL も
+		// 追従して DATE 化するよう直したので、現在は RECURRING_MASTER_ICS でも due 変更は通る
+		// (下の「A-2」テストで検証)。このテスト自体は元々「VALARM shift が反復前進に正しく
+		// 引き継がれるか」の検証が主眼で UNTIL の値型とは無関係なので、既存の COUNT ベース
+		// fixture のままにして関心を混ぜない。
 		const uri = mkResourceUri("recurring-master-due-shift.ics");
 		const countBasedIcs = [
 			"BEGIN:VCALENDAR",
@@ -289,6 +292,33 @@ describe("UpdateTodo", () => {
 		const masterTriggers = alarmTriggers(masterResource!.payload.todos()[0]!.raw);
 		expect(masterTriggers[0]).not.toBe("20260712T121000Z"); // 旧値のまま取り残されていない。
 		expect(masterTriggers[0]).not.toBeUndefined();
+	});
+
+	// -----------------------------------------------------------------------
+	// A-2: RRULE:UNTIL(DATE-TIME) を持つ反復 VTODO の due 変更が I6 違反にならない
+	// -----------------------------------------------------------------------
+	it("RRULE:UNTIL(DATE-TIME) を持つ反復 VTODO の due 変更は I6 違反にならず、UNTIL が DATE に追従する", async () => {
+		const uri = mkResourceUri("recurring-master-until-datetime.ics");
+		const resource = await CalendarObjectResource.fromIcs(uri, RECURRING_MASTER_ICS);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+		const masterUid = resource.uid;
+
+		// PutCalendarObject の precondition I6 に引っかかって throw すればこの await 自体が
+		// reject する(patchVTodoFields が UNTIL を追従させていなければここで失敗する)。
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: masterUid,
+			due: "2026-08-01",
+		});
+		expect(task.due).toBe("2026-08-01");
+		expect(task.isAllDay).toBe(true);
+
+		const masterUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), masterUid);
+		const masterResource = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), masterUri!);
+		const masterVtodo = masterResource!.payload.todos()[0]!;
+		const rruleRaw = masterVtodo.raw.properties.find((p) => p.name === "RRULE")?.value;
+		// 元は UNTIL=20260731T111300Z(DATE-TIME)。日付部分だけ残して DATE 化されているはず。
+		expect(rruleRaw).toBe("FREQ=WEEKLY;UNTIL=20260731;BYDAY=SU,SA");
 	});
 
 	it("更新後は resourceRepo 上の ETag も変わっている(must-match PUT が発行された証跡)", async () => {

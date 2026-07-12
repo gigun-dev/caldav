@@ -24,8 +24,9 @@ import type { Component } from "../structure/types";
 import { removeProperty, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { formatCalDateTime, parseCalDateTime, toEpochMillis } from "../values/cal-date-time";
+import { formatRecurrenceRule, parseRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import type { NowStamp } from "./vtodo-stamp";
-import { firstProp, paramFirst } from "./helpers";
+import { firstProp, paramFirst, rawValue } from "./helpers";
 
 // VALUE=DATE パラメータ。vtodo-write.ts と同じ定数(用途が同じなので値も揃える。
 // 型が readonly Parameter[] の局所定数のため、共有ファイルへ格上げするほどの重複ではないと
@@ -85,6 +86,12 @@ export function patchVTodoFields(vtodo: Component, fields: VTodoPatchFields): Co
 		// (vtodo-write.ts buildVTodoCalendar と同じ規約)。
 		out = upsertProperty(out, "DTSTART", fields.due, VALUE_DATE_PARAMS);
 		out = upsertProperty(out, "DUE", fields.due, VALUE_DATE_PARAMS);
+		// 2026-07-13 A-2 修正: DTSTART を DATE に patch したのに RRULE:UNTIL が DATE-TIME の
+		// ままだと PutCalendarObject の事前条件 I6(UNTIL の値型は DTSTART に従う。
+		// RFC 5545 §3.3.10、recurrence-rule.ts 冒頭コメントの I6 参照)に違反してしまう。
+		// iOS 発の反復マスター(DTSTART;TZID=...(DATE-TIME) + RRULE UNTIL=...Z(DATE-TIME))の
+		// due を「終日」に変更する update-todo で実際に踏んだ経路。
+		out = untilToDateIfNeeded(out);
 	}
 	if (fields.priority !== undefined) {
 		if (fields.priority === 0) {
@@ -95,6 +102,46 @@ export function patchVTodoFields(vtodo: Component, fields: VTodoPatchFields): Co
 	}
 
 	return out;
+}
+
+/**
+ * RRULE:UNTIL が DATE-TIME 型なら DATE 型に変換して書き戻す(A-2)。RRULE 無し・UNTIL 無し・
+ * 既に DATE 型なら何もしない(この関数は「due を DATE に patch した直後」専用の後始末なので、
+ * 呼び出し側 patchVTodoFields の due 分岐の直後でのみ呼ぶ)。
+ *
+ * 【実装場所の判断: application(update-todo.ts)ではなくここに置く根拠】
+ * create 側の buildVTodoCalendar(vtodo-write.ts)は最初から RRULE の UNTIL を DTSTART と
+ * 同じ VALUE 型(DATE)で組み立てて出す — 「DTSTART の値型と UNTIL の値型を揃えるのは
+ * VTODO を組み立てる/書き換える側の責務」という設計がすでにそちらにある。patchVTodoFields は
+ * まさに「既存 VTODO の DTSTART/DUE を書き換える」関数なので、UNTIL 追従はその同じ責務の
+ * 延長線上にあり、対称性のためにここへ置く。update-todo.ts (application 層) に置くと、
+ * 「DTSTART を DATE にしたら UNTIL も揃える」という I6 由来の domain 制約の知識が application
+ * 層に漏れてしまう(このリポジトリの層分離方針: プロトコル/ドメイン知識は domain/semantics に
+ * 閉じ込め、application は「どのユースケースでどのフィールドを patch するか」だけを知る)。
+ *
+ * 【日付部分はそのまま、時刻だけ落とす】
+ * UNTIL の「日付」自体を書き換えると反復系列の終了日がずれてしまう(iOS が意図した終了日を
+ * サーバーが勝手に変えることになる)。ここでやってよいのは値型(DATE-TIME→DATE)の変換だけで、
+ * year/month/day はそのまま転写する。
+ */
+function untilToDateIfNeeded(vtodo: Component): Component {
+	const rruleRaw = rawValue(vtodo, "RRULE");
+	if (rruleRaw === undefined) return vtodo; // RRULE 無し: 何もしない。
+
+	const rrule = parseRecurrenceRule(rruleRaw);
+	if (rrule.until === undefined || rrule.until.type === "date") {
+		// UNTIL 無し、または既に DATE 型: 何もしない(COUNT のみの RRULE もここで弾かれる)。
+		return vtodo;
+	}
+
+	// DATE-TIME(utc/floating いずれか。recurrence-rule.ts の RecurUntil コメント参照)→ DATE。
+	// 日付部分(年月日)だけを転写し、時刻は落とす(上記コメントの方針)。
+	const dt = rrule.until.dateTime;
+	const newRule: RecurrenceRule = {
+		...rrule,
+		until: { type: "date", date: { year: dt.year, month: dt.month, day: dt.day } },
+	};
+	return upsertProperty(vtodo, "RRULE", formatRecurrenceRule(newRule));
 }
 
 /**
