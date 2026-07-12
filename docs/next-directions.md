@@ -326,9 +326,14 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   ①スナップショット作成 ②マスターを UNTIL 越えの次ステップ(07-15)へ前進 + STATUS:COMPLETED(RRULE 維持)。
   >   → advanceMasterToNextOccurrence を「常に次の生ステップへ前進し seriesEnded を返す」契約に変更・STATUS 決定を
   >   completeRecurringTodo へ引き上げ・**常に snapshot-first の2PUT に均一化**。exhausted 特別扱いは廃止
-  >   (no-next-step の病的ケースのみ保険)。COUNT 最終回の RRULE 不変は推定(UNTIL のみ実測・可逆)。
+  >   (no-next-step の病的ケースのみ保険)。
+  >   **COUNT 宿題クローズ(2026-07-13 B-2 実測)**: iOS は「繰り返し N 回」を **COUNT でなく UNTIL** で保存する
+  >   ことが判明(iOS は RRULE に COUNT を一切出さない)。よって COUNT の iOS 実測基準は存在せず照合不能=
+  >   我々の COUNT 処理は自前機能(タスク③ create)の内部整合のみ守ればよい(テスト済み)。V8 は B-2 で再確認。
+  >   **小課題掃除完了(2026-07-13)**: 新タスク②(bounds)・新エッジ(due→DATE の I6)`c7af31b` / V5 前提の
+  >   create-todo アラーム生成 `8903a9f`。残る実機は **V5 発火**(下記)、据え置きは V6(VTIMEZONE・E-2 後)。
   >   **E-1 スライス②系すべて完了。** agentic todo 入口(create/list/update/complete/delete・単発/反復・
-  >   VALARM 追随・反復の D4 完全再現)が iOS 忠実に揃った。
+  >   VALARM 追随/生成・反復の D4 完全再現)が iOS 忠実に揃った。
   >   **次の本線: E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。極小 ui:// スパイクで
   >   「個人コネクタで UI 描画されるか」を先に潰してから本実装(tdr-concierge の registerAppResource/registerAppTool 方式)。
 

@@ -245,6 +245,16 @@ CalDAV 表現は存在しない)。
 反復のとき「新 UID で完了スナップショット作成 + マスターの DTSTART/DUE 前進(無ければ
 COMPLETED)」を実装する**(拒否ではなく iOS 忠実に)。
 
+**2026-07-13 V8/B-2 実測で更新(本番 D1)**:
+- **最終 occurrence も snapshot を作る + マスターは UNTIL を越えた次ステップへ前進して STATUS:COMPLETED**
+  (RRULE 維持)。当初の「最終回はスナップショット無しでマスターその場完了」は誤りだった
+  (`FREQ=DAILY;UNTIL=20260714`・07-13/07-14 完了 → snapshot 2件 + マスター 07-15 COMPLETED)。
+  → ②-c を「毎回 snapshot + 前進、系列終了なら STATUS を COMPLETED」に均一化(`711d7c4`)。
+- **iOS は「繰り返し N 回」を COUNT ではなく UNTIL(計算した終了日)で保存する**(B-2 実測: 「2回」の
+  リマインダーが `FREQ=DAILY;UNTIL=<終了日>` になった)。**iOS は RRULE に COUNT を一切出さない**。
+  → 我々の COUNT 生成(タスク③ create)・COUNT 完了処理(②-c)は **iOS 忠実性の対象外=自前機能の
+  内部整合のみ**。iOS 側に COUNT の実測基準は存在しない(照合不能=宿題クローズ)。
+
 > 2026-07-13 更新(②-c 実装時の確定): 上記「最終 occurrence 完了でマスター自身が
 > STATUS:COMPLETED」は iOS 実機キャプチャの記述だが、②-c の実装スコープでは
 > **反復を実際に最後の occurrence まで完了させて完了リストの件数を数える実機検証は
