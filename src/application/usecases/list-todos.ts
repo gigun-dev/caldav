@@ -104,6 +104,23 @@ export class ListTodos {
 			tasks.push(taskFromVTodo(vtodo, zoneOf, timeZone));
 		}
 
+		// 既定の並び順: X-APPLE-SORT-ORDER 昇順(iOS のリマインダーアプリの並びに合わせる —
+		// スライス②-a で導入)。sortOrder が無い(サーバー生成前の古いデータ等)ものは末尾に
+		// 送る。同値(または両方 null)は id(UID)でタイブレークして結果を決定的にする
+		// (Array.sort は安定ソートだが、findAllInCollection の返却順を前提にしたくないため
+		// 明示的に比較関数へ入れる)。
+		// 【ソートモードは足さない判断】due/priority 昇順などのモード切り替えは非同期の
+		// クライアント責務とし、DTO に due/priority/title が既に載っているので MCP-app 側で
+		// 並べ替え可能(仕様どおり)。ここでは「サーバーが持つ唯一の順序情報」である
+		// X-APPLE-SORT-ORDER を機械的に適用するだけに留める。
+		tasks.sort((a, b) => {
+			if (a.sortOrder === null && b.sortOrder === null) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+			if (a.sortOrder === null) return 1;
+			if (b.sortOrder === null) return -1;
+			if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+			return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+		});
+
 		return { tasks };
 	}
 }

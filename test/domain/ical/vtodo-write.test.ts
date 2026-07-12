@@ -9,15 +9,20 @@ import { ICalendarObject, VTodo } from "../../../src/domain/ical/semantics";
 import { serialize } from "../../../src/domain/ical/serialize/serializer";
 import { parse } from "../../../src/domain/ical/parse/parser";
 
+// テスト全体で使う固定 NowStamp(vtodo-stamp.test.ts と同じ実測ペア。決定的な期待値にするため)。
+const NOW = { utcRaw: "20260712T114830Z", unixSeconds: 1783856910 };
+
 describe("buildVTodoCalendar", () => {
-	test("最小構成(UID/DTSTAMP/SUMMARY のみ)が VCALENDAR+VTODO として往復する", () => {
+	test("最小構成(UID/SUMMARY のみ)が VCALENDAR+VTODO として往復する", () => {
 		const component = buildVTodoCalendar({
 			uid: "uid-1",
-			dtstamp: "20260712T120000Z",
+			now: NOW,
 			summary: "牛乳を買う",
 		});
 		expect(component.name).toBe("VCALENDAR");
 		expect(component.properties).toContainEqual({ name: "VERSION", parameters: [], value: "2.0" });
+		// CALSCALE(§3.7.1)。②-a で追加(iOS 実機キャプチャ準拠)。
+		expect(component.properties).toContainEqual({ name: "CALSCALE", parameters: [], value: "GREGORIAN" });
 
 		const ics = serialize(component);
 		const reparsed = ICalendarObject.fromComponent(parse(ics));
@@ -28,12 +33,18 @@ describe("buildVTodoCalendar", () => {
 		expect(vtodo.summary).toBe("牛乳を買う");
 		expect(vtodo.due).toBeUndefined();
 		expect(vtodo.priority).toBeUndefined();
+		// stampCreate(vtodo-stamp.ts)が付ける生成プロパティ。
+		expect(vtodo.status).toBe("NEEDS-ACTION");
+		expect(vtodo.dtstamp).toEqual({ kind: "utc", year: 2026, month: 7, day: 12, hour: 11, minute: 48, second: 30 });
+		expect(vtodo.raw.properties.find((p) => p.name === "CREATED")?.value).toBe("20260712T114830Z");
+		expect(vtodo.raw.properties.find((p) => p.name === "LAST-MODIFIED")?.value).toBe("20260712T114830Z");
+		expect(vtodo.raw.properties.find((p) => p.name === "X-APPLE-SORT-ORDER")?.value).toBe("805549710");
 	});
 
 	test("due 指定時は DTSTART/DUE が同値の VALUE=DATE で両方立つ(iOS 実機キャプチャ準拠)", () => {
 		const component = buildVTodoCalendar({
 			uid: "uid-2",
-			dtstamp: "20260712T120000Z",
+			now: NOW,
 			summary: "資料を提出",
 			due: "20260715",
 			dueValueType: "DATE",
@@ -50,7 +61,7 @@ describe("buildVTodoCalendar", () => {
 	test("priority が往復する(iOS 準拠: 1=高/5=中/9=低)", () => {
 		const component = buildVTodoCalendar({
 			uid: "uid-3",
-			dtstamp: "20260712T120000Z",
+			now: NOW,
 			summary: "重要タスク",
 			priority: 1,
 		});
@@ -61,7 +72,7 @@ describe("buildVTodoCalendar", () => {
 	test("priority:0(未設定)は PRIORITY プロパティ自体を省略する", () => {
 		const component = buildVTodoCalendar({
 			uid: "uid-4",
-			dtstamp: "20260712T120000Z",
+			now: NOW,
 			summary: "優先度なし",
 			priority: 0,
 		});
@@ -72,7 +83,7 @@ describe("buildVTodoCalendar", () => {
 	test("description が TEXT エスケープを経て往復する", () => {
 		const component = buildVTodoCalendar({
 			uid: "uid-5",
-			dtstamp: "20260712T120000Z",
+			now: NOW,
 			summary: "カンマ, セミコロン; を含む",
 			description: "改行\nと\\バックスラッシュ",
 		});
@@ -88,7 +99,7 @@ describe("buildVTodoCalendar", () => {
 		expect(() =>
 			buildVTodoCalendar({
 				uid: "uid-6",
-				dtstamp: "20260712T120000Z",
+				now: NOW,
 				summary: "未対応ケース",
 				due: "20260715T090000",
 				// @ts-expect-error dueValueType は "DATE" のみサポート(型でも縛っているが実行時ガードも確認する)

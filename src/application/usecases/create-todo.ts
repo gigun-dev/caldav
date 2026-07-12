@@ -105,17 +105,20 @@ export class CreateTodo {
 		// ここでは Date から直接 UTC 文字列を組み立てる方が簡潔なので専用コーデックは経由しない
 		// (「現在時刻 → DTSTAMP 生値」という一方向の単純な変換であり、往復性を保証する必要が
 		// ないため values/ 層の CalDateTime ファクトリを通す価値が薄いと判断)。
-		const now = new Date();
-		const dtstamp = `${now.getUTCFullYear().toString().padStart(4, "0")}` +
-			`${(now.getUTCMonth() + 1).toString().padStart(2, "0")}` +
-			`${now.getUTCDate().toString().padStart(2, "0")}T` +
-			`${now.getUTCHours().toString().padStart(2, "0")}` +
-			`${now.getUTCMinutes().toString().padStart(2, "0")}` +
-			`${now.getUTCSeconds().toString().padStart(2, "0")}Z`;
+		const nowDate = new Date();
+		const utcRaw = `${nowDate.getUTCFullYear().toString().padStart(4, "0")}` +
+			`${(nowDate.getUTCMonth() + 1).toString().padStart(2, "0")}` +
+			`${nowDate.getUTCDate().toString().padStart(2, "0")}T` +
+			`${nowDate.getUTCHours().toString().padStart(2, "0")}` +
+			`${nowDate.getUTCMinutes().toString().padStart(2, "0")}` +
+			`${nowDate.getUTCSeconds().toString().padStart(2, "0")}Z`;
+		// X-APPLE-SORT-ORDER(vtodo-stamp.ts stampCreate)は Unix 秒が要る。utcRaw と同じ
+		// nowDate から素直に導出する(秒未満切り捨て = Math.floor)。
+		const now = { utcRaw, unixSeconds: Math.floor(nowDate.getTime() / 1000) };
 
 		const fields: VTodoFields = {
 			uid,
-			dtstamp,
+			now,
 			summary: input.title,
 			description: input.notes,
 			due,

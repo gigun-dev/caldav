@@ -24,3 +24,7 @@ export { VAlarm } from "./valarm";
 // E-1 スライス①: VTODO 新規組み立て(CreateTodo 専用。vtodo.ts の読み取りレンズとは別ファイル
 // — vtodo-write.ts 冒頭コメントの「CreateTodo 以外で使わない」方針を参照)。
 export { buildVTodoCalendar, type VTodoFields } from "./vtodo-write";
+
+// E-1 スライス②-a: サーバー発 VTODO の生成プロパティ(単一情報源)。CreateTodo(stampCreate)に
+// 加え、将来の UpdateTodo/CompleteTodo(②-b/②-c)が stampUpdate を再利用する想定で公開する。
+export { CF_ABSOLUTE_EPOCH_OFFSET_SECONDS, stampCreate, stampUpdate, type NowStamp } from "./vtodo-stamp";

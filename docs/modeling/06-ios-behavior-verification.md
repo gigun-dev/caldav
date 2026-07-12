@@ -294,6 +294,38 @@ delete)の仕様は実データで確定**。残る未検証は V2/V3(完了を*
 単発/反復)・V5(サーバー発 VALARM が鳴るか)・V6(時刻付き due の VTIMEZONE)で、いずれも
 slice ② 以降のコードができてからの server→iOS 検証。
 
+### D9. サーバー発 VTODO のプロパティ生成方針(確定・E-1 スライス②-a)
+
+D8 で「我々の最小出力(UID/DTSTAMP/SUMMARY/DESCRIPTION/DTSTART/DUE/PRIORITY のみ)でも iOS は
+問題なく読む(CREATED/LAST-MODIFIED/X-APPLE-SORT-ORDER は iOS 側が補完)」ことが実証された。
+一方で MCP からの一覧・完了操作を agentic に成立させるには、サーバー自身がこれらを積極的に
+生成しておく方が体験がよい(iOS 補完待ちにしない)。以下の基準で生成範囲を確定する:
+
+**生成基準**: 「RFC 定義 + iOS 使用 + 忠実維持できる → 積極生成 / ベンダー拡張は保持のみ、ただし
+意味を解読でき忠実再現できるものは生成可」(2026-07-12 ユーザー確定)。
+
+- **全書き込み(create・update 共通)**: `LAST-MODIFIED`(§3.8.7.3)・`DTSTAMP`(§3.8.7.2)を
+  操作時刻(now, UTC)で upsert する。
+- **create のみ**:
+  - `STATUS:NEEDS-ACTION`(§3.8.1.11 の初期値)。
+  - `CREATED`(§3.8.7.1、"Date and Time of Creation")。
+  - `CALSCALE:GREGORIAN`(§3.7.1、VCALENDAR プロパティ)。iOS 実機の VCALENDAR に必ず含まれる。
+  - `X-APPLE-SORT-ORDER`(ベンダー拡張。RFC 定義ではないが、iOS 実機キャプチャで構造を
+    実測・デコードできた — CFAbsoluteTime(2001-01-01T00:00:00Z 起点秒)= unixSeconds − 978307200。
+    実測: create 2026-07-12T11:48:30Z(unix 1783856910)→ 805549710。「意味を解読でき忠実再現できる
+    ベンダー拡張」の実例として積極生成の対象に含める)。
+- **完了のみ**(②-c で使用予定): `COMPLETED`(§3.8.2.1、"the value MUST be specified as a date
+  with UTC time" — UTC DATE-TIME MUST)・`PERCENT-COMPLETE:100`(§3.8.1.8)。
+- **生成しない**: `SEQUENCE`(§3.8.7.4)。D8 の実測どおり iOS は todo 編集で SEQUENCE を増分せず、
+  我々も付けない(付けないことで iOS 挙動と揃う)。SEQUENCE 管理はスケジューリング(方向性 B、
+  RFC 6638/5546)に必要になった段階で導入する。
+- **update は保持(ロスレス)**: `CREATED`・`X-APPLE-SORT-ORDER`(共に「作成時点」の情報)と、
+  この UC が関知しない未指定プロパティ(VALARM・X-APPLE-* 等)には触らない。CREATED を更新の
+  たびに今へ書き換えるのは「作成日時」という意味を壊す。
+
+実装は `src/domain/ical/semantics/vtodo-stamp.ts`(`stampCreate`/`stampUpdate`)に一本化し、
+生成プロパティの「何を・いつ触るか」の判断がユースケースごとに分散しないようにする。
+
 ## 結果の還元先
 
 - **フィクスチャ**: A1〜A5 のキャプチャ ICS を `test/domain/ical/fixtures/` に実データとして

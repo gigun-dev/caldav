@@ -48,6 +48,22 @@ function vtodoNoDue(uid: string, summary: string, status?: string): string {
 	].join("\r\n");
 }
 
+// X-APPLE-SORT-ORDER 付き VTODO(スライス②-a のソート順テスト用)。
+function vtodoWithSortOrder(uid: string, summary: string, sortOrder: number): string {
+	return [
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Test//Test//EN",
+		"BEGIN:VTODO",
+		`UID:${uid}`,
+		"DTSTAMP:20260101T000000Z",
+		`SUMMARY:${summary}`,
+		`X-APPLE-SORT-ORDER:${sortOrder}`,
+		"END:VTODO",
+		"END:VCALENDAR",
+	].join("\r\n");
+}
+
 // 反復(RRULE)付き VTODO。既存の反復 TODO も list-todos が壊さず一覧できることを確認する
 // (master を展開せず1件として返す、という仕様どおりの挙動)。
 function vtodoRecurring(uid: string, summary: string): string {
@@ -146,5 +162,16 @@ describe("ListTodos", () => {
 
 		const { tasks } = await usecase.execute({ owner: TEST_OWNER, calendarId: "other-tasks" });
 		expect(tasks.map((t) => t.id)).toEqual(["x"]);
+	});
+
+	it("既定並びは X-APPLE-SORT-ORDER 昇順、sortOrder 無し(null)は末尾になる", async () => {
+		// 挿入順をわざと並び順と逆にして、フィルタではなくソートが効いていることを確認する。
+		await seed("z-high", vtodoWithSortOrder("z-high", "後", 300));
+		await seed("a-low", vtodoWithSortOrder("a-low", "先", 100));
+		await seed("m-mid", vtodoWithSortOrder("m-mid", "中", 200));
+		await seed("no-order", vtodoNoDue("no-order", "順序情報なし"));
+
+		const { tasks } = await usecase.execute({ owner: TEST_OWNER });
+		expect(tasks.map((t) => t.id)).toEqual(["a-low", "m-mid", "z-high", "no-order"]);
 	});
 });

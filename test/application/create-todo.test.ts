@@ -44,6 +44,14 @@ describe("CreateTodo", () => {
 		expect(stored[0]!.uid).toBe(task.id);
 	});
 
+	it("スライス②-a: STATUS:NEEDS-ACTION と sortOrder(X-APPLE-SORT-ORDER)が自動生成される", async () => {
+		const { task } = await usecase.execute({ owner: TEST_OWNER, title: "生成プロパティ確認" });
+		expect(task.status).toBe("NEEDS-ACTION");
+		// unixSeconds は now 依存で決定的値にできないので、数値であることだけ検証する
+		// (固定値でのデコード確認は vtodo-stamp.test.ts が担う)。
+		expect(typeof task.sortOrder).toBe("number");
+	});
+
 	it("due が 'YYYY-MM-DD' なら終日(VALUE=DATE)として保存され、DTSTART/DUE が同値になる", async () => {
 		const { task } = await usecase.execute({ owner: TEST_OWNER, title: "提出物", due: "2026-07-15" });
 		expect(task.due).toBe("2026-07-15");

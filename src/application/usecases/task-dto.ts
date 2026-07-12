@@ -50,6 +50,13 @@ export interface Task {
 	completedAt: string | null;
 	/** DESCRIPTION。未設定は null。 */
 	notes: string | null;
+	/**
+	 * X-APPLE-SORT-ORDER(Apple 拡張・INTEGER)。E-1 スライス②-a で追加。stampCreate が
+	 * CFAbsoluteTime(2001-01-01 UTC 起点秒)で書き込む値をそのまま読み戻す(vtodo-stamp.ts
+	 * 参照)。iOS 実機の並び順と一致させるための値なので、意味解釈(逆算して Date に戻す等)は
+	 * せず生の INTEGER を渡す。未設定・不正値(NaN)は null。
+	 */
+	sortOrder: number | null;
 }
 
 function pad2(n: number): string {
@@ -125,6 +132,13 @@ export function taskFromVTodo(
 	const descriptionProp = vtodo.raw.properties.find((p) => p.name === "DESCRIPTION");
 	const notes = descriptionProp !== undefined ? decodeText(descriptionProp.value) : null;
 
+	// X-APPLE-SORT-ORDER。VTodo レンズに型付きアクセサが無い(vtodo.ts は既存ファイルを変更
+	// しない方針のため raw から直接読む — DESCRIPTION と同じやり方)。parseInt が NaN を返す
+	// (プロパティ無し、または不正な値)場合は null にする(ロスレス優先: 例外にはしない)。
+	const sortOrderProp = vtodo.raw.properties.find((p) => p.name === "X-APPLE-SORT-ORDER");
+	const parsedSortOrder = sortOrderProp !== undefined ? Number.parseInt(sortOrderProp.value, 10) : Number.NaN;
+	const sortOrder = Number.isNaN(parsedSortOrder) ? null : parsedSortOrder;
+
 	// 【既存 MCP ツール(list-events-expanded)との差: title/notes は decodeText する】
 	// vtodo.summary(既存レンズ)は Property.value の生テキスト(エスケープ済み)をそのまま返す
 	// (semantics 層の一貫方針。list-events-expanded の component.summary も同じく raw のまま
@@ -144,6 +158,7 @@ export function taskFromVTodo(
 		percentComplete: vtodo.percentComplete ?? null,
 		completedAt,
 		notes,
+		sortOrder,
 	};
 }
 

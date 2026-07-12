@@ -38,6 +38,7 @@
 import type { Component, Parameter } from "../structure/types";
 import { upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
+import { stampCreate, type NowStamp } from "./vtodo-stamp";
 
 /**
  * VCALENDAR の PRODID(§3.7.3)。既存コードベースに再利用できる定数が無かったため
@@ -51,8 +52,14 @@ const PRODID = "-//gigun-dev//caldav//EN";
 export interface VTodoFields {
 	/** UID(§3.8.4.7)。呼び出し側(application 層)が crypto.randomUUID() 等で採番して渡す。 */
 	uid: string;
-	/** DTSTAMP(§3.8.7.2)。UTC の CalDateTime 生値(例 "20260712T120000Z")。呼び出し側が Clock から組み立てる。 */
-	dtstamp: string;
+	/**
+	 * 「今」の2表現(§3.8.7.2 DTSTAMP の UTC 生値 + X-APPLE-SORT-ORDER 算出用 Unix 秒)。
+	 * 【スライス②-a で dtstamp: string から変更】DTSTAMP は他の生成プロパティ
+	 * (STATUS/CREATED/LAST-MODIFIED/X-APPLE-SORT-ORDER)と合わせて vtodo-stamp.ts の
+	 * stampCreate に一本化した(生成プロパティの単一情報源にする方針)。呼び出し側
+	 * (create-todo.ts)は Date から NowStamp を組み立てて渡す。
+	 */
+	now: NowStamp;
 	/** SUMMARY(§3.8.1.12)。意味的な文字列(エスケープ前)。ここで encodeText する。 */
 	summary: string;
 	/** DESCRIPTION(§3.8.1.5)。省略可。SUMMARY と同じくエスケープ前の意味的文字列。 */
@@ -90,7 +97,6 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 
 	let vtodo: Component = { name: "VTODO", properties: [], components: [] };
 	vtodo = upsertProperty(vtodo, "UID", fields.uid);
-	vtodo = upsertProperty(vtodo, "DTSTAMP", fields.dtstamp);
 	vtodo = upsertProperty(vtodo, "SUMMARY", encodeText(fields.summary));
 	if (fields.description !== undefined) {
 		vtodo = upsertProperty(vtodo, "DESCRIPTION", encodeText(fields.description));
@@ -107,11 +113,20 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 		vtodo = upsertProperty(vtodo, "PRIORITY", String(fields.priority));
 	}
 
+	// 生成プロパティ(STATUS/CREATED/LAST-MODIFIED/DTSTAMP/X-APPLE-SORT-ORDER)は
+	// vtodo-stamp.ts の stampCreate に一本化(このファイルに直書きしない — 生成方針の
+	// 単一情報源を1箇所に保つため。②-a のスライス方針どおり)。
+	vtodo = stampCreate(vtodo, fields.now);
+
 	const vcalendar: Component = {
 		name: "VCALENDAR",
 		properties: [
 			{ name: "VERSION", parameters: [], value: "2.0" },
 			{ name: "PRODID", parameters: [], value: PRODID },
+			// CALSCALE(§3.7.1)。iOS 実機が送ってくる VCALENDAR に必ず含まれる(docs/modeling/06)。
+			// GREGORIAN が既定値だが RFC 上省略可 — 「RFC 定義 + iOS 使用 + 忠実維持できる」の
+			// 積極生成方針(②-a)により明示的に出す。
+			{ name: "CALSCALE", parameters: [], value: "GREGORIAN" },
 		],
 		components: [vtodo],
 	};
