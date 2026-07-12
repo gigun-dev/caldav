@@ -393,3 +393,30 @@
     手動 apply が必要 → 未適用で list/freebusy が落ちていた。手動適用で解消。next-directions に
     「deploy 手順への migrations 組み込み」を起票。
   - MCP_TOKEN は本番 secret + .dev.vars 同値(gitignore なのでローカル/本番を分けない方針)。
+- 2026-07-12: **vitest-pool-workers ハイブリッド導入(2スライス)** — OAuth-for-MCP の E2E を
+  実 workerd 上で自動テスト。プロセスは 調査(sonnet Explore)→ 設計(Fable architect)→
+  実装(sonnet implementer)、main が各節目レビュー。「設計は調査の後」原則どおり調査を先行。
+  - 調査の核: **vitest-pool-workers は v0.13+ で API 刷新済み**。巷でよく知られる
+    `defineWorkersConfig`/`SELF.fetch()` は廃止 → `cloudflareTest()` Vite plugin +
+    `import { env, exports } from "cloudflare:workers"` の `exports.default.fetch()`。
+    D1 は `readD1Migrations`(config/Node 側)+ `applyD1Migrations`(setupFile/worker 側)。
+    ストレージ隔離はテストファイル単位(isolatedStorage/singleWorker は廃止)。
+  - 設計: `test/worker/` を vitest 専用の第2レーンとして隔離。bun test 主レーンは無変更で共存
+    (振り分け基準=`cloudflare:*` を import する or provider 本体を fetch で叩くテストのみ vitest)。
+    tsconfig は test/worker 専用に分離(bun-types と cloudflare:test 型が共存不可)。
+  - スライス1(スパイク `73f420f`): 未確定6点を1ファイルで検証し全て真と確定(fallback 不要。
+    素の OAuthProvider を exports.default.fetch で叩ける / KV は configPath で自動起動・ファイル内
+    state 持続 / D1 マイグレーション setupFile 適用 / tsconfig 分離が必要)。実装者の逸脱3点も妥当:
+    ①ダミー secret を cloudflare:* 非依存の test-secrets.ts に切り出し(config が cloudflare:test を
+    辿ると ERR_UNSUPPORTED_ESM_URL_SCHEME)②`bun test` 直呼びは test/worker を拾って落ちるので
+    package.json の test script(ディレクトリ列挙)経由に ③test/worker tsconfig の include に
+    src/env.d.ts も追加(CloudflareBindings の declaration merging 解決)。
+  - スライス2(E2E `dd17b23`): DCR→PKCE authorize(password 同意)→token 交換→/mcp tools/list を
+    一気通貫 + 静的 Bearer(MCP_TOKEN)経路 + 失敗系(誤 password で 302 に落ちない / 無効 Bearer で
+    401 + WWW-Authenticate realm="OAuth")。実挙動の学び2点(コメントに記録):
+    ①**DCR は `token_endpoint_auth_method: "none"` 明示が必須**(省略で confidential client 扱い →
+    token 交換が 401 invalid_client)。本番 Claude コネクタ接続成功と整合(Claude の DCR は
+    public client 登録)②`/mcp` は単発呼び出しでも SSE(text/event-stream)で返る(Accept に
+    text/event-stream 必須。json のみは 406)→ 最小 SSE パーサをテスト内に用意。
+  - 配線: `make check` 末尾に test-worker、CI に workerd step(secret 不要=ダミー secret を
+    miniflare.bindings 注入)。deploy 系は不変。bun 361 + vitest worker 10 green。

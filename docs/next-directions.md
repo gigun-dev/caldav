@@ -233,6 +233,20 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > 側に相当品があるか)② `export default new OAuthProvider(...)`(src/index.ts の
   > exports.default.fetch)が vitest-pool-workers の worker 実行環境でそのまま動くか
   > ③ GitHub Actions 上で workerd 実行(miniflare 経由)が問題なく走るか(メモリ/時間制約)。
+  > **2026-07-12 完了 ✅**: 調査(sonnet)→ 設計(Fable)→ 実装(sonnet)で 2 スライス完了。
+  > ~~詳細設計は着手時に一次確認~~ → 一次調査で **現行 API が v0.13+ で刷新済み**と判明
+  > (`defineWorkersConfig`/`SELF` は廃止 → `cloudflareTest()` plugin + `exports.default.fetch`。
+  > 「設計は調査の後」が効いた)。`test/worker/`(vitest 専用第2レーン)を新設し bun test は無変更。
+  > スライス1(スパイク `73f420f`)で未確定6点を全て真と確定(fallback 不要): ①素の
+  > OAuthProvider を exports.default.fetch で叩ける ②KV は configPath 経由で自動起動・
+  > ファイル内 state 持続 ③D1 は readD1Migrations + applyD1Migrations(setupFile)で適用
+  > ④bun-types と cloudflare:test 型は共存不可 → test/worker 専用 tsconfig で分離。
+  > スライス2(E2E `dd17b23`)で DCR→authorize→token→/mcp を workerd 上で一気通貫検証 +
+  > 静的 Bearer 経路 + 失敗系。実挙動の学び: **DCR は `token_endpoint_auth_method: "none"`
+  > 明示が必須**(省略で confidential client 扱い → token 交換が 401。本番 Claude コネクタ
+  > 接続成功と整合)/ `/mcp` は単発でも SSE で返る(Accept に text/event-stream 必須)。
+  > CI に workerd step 追加(secret 不要=ダミー secret を miniflare.bindings 注入)。
+  > 振り分け基準は Makefile check ターゲット・vitest.config.ts に厚くコメント。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 
