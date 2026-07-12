@@ -336,6 +336,18 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   VALARM 追随/生成・反復の D4 完全再現)が iOS 忠実に揃った。
   >   **次の本線: E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。極小 ui:// スパイクで
   >   「個人コネクタで UI 描画されるか」を先に潰してから本実装(tdr-concierge の registerAppResource/registerAppTool 方式)。
+  >
+  > **2026-07-13 更新: V6(時刻付き due 統合)完了 ✅ `5bb66dd` + Case E `47dd81d`。**
+  >   create-todo の due を判別 union 化し `"YYYY-MM-DDTHH:MM:SS"` + timeZone(IANA 名)を受理。
+  >   DTSTART;TZID/DUE;TZID を同値で立て、§3.6.5 の VTIMEZONE をサーバー生成して同梱
+  >   (timezone/vtimezone-write.ts 新設・Phase 1 = 固定オフセットゾーン限定。DST は
+  >   UnsupportedTimeZoneError で塞ぐ)。独立 alarm 入力は廃止し due に統合(時刻付き due には常に
+  >   VALARM 自動生成。V5 で「iOS はサーバー発 VALARM でも通知」確定)。offset 付き ISO8601 は拒否
+  >   (TZID を offset から一意逆引き不能)。RRULE UNTIL 値型を due に追従(I6)。
+  >   **Case E**: recurrence.frequency に `"none"`(繰り返さない)+ `.default("none")` を追加し
+  >   Inspector 手動フォームの `{frequency:""}` バグを presentation 層で吸収(application には漏らさない・
+  >   "none"+サブフィールド併用はエラー)。
+  >   **残る実機: V6 手順**(時刻付き due の iOS 表示・通知・往復 VTIMEZONE 保持)。据え置き: V6 Phase 2(DST ゾーン)。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 

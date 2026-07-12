@@ -586,3 +586,36 @@
   実運用の主入口(Claude コネクタ=LLM)は未使用 optional を省くので無問題。
 - **upstream issue**: 起票候補(#771/#772 参照 + 最小再現)として残すが**今は起票しない**(ユーザー判断)。
 - 経緯: 一度 implementer が案 A を server.ts に部分適用したが、案 C 確定で `git checkout` で破棄しネスト版へ復帰。
+
+## 2026-07-13(続き)V6(時刻付き due 統合)+ Case E
+
+- **V6 実装完了 `5bb66dd`**(artisan/実装は sonnet implementer 直列 → Opus レビュー)。create-todo の due を
+  判別 union(`{type:"DATE"}` / `{type:"DATE-TIME",tzid}`)化。`"YYYY-MM-DDTHH:MM:SS"` + `timeZone`(IANA 名)を
+  受理し、DTSTART;TZID=.../DUE;TZID=... を同値で立てる。§3.6.5 が要求する VTIMEZONE をサーバー生成して同梱。
+  - **timezone/vtimezone-write.ts 新設**: `buildVTimezone(ianaId, window)` / `zoneHasOffsetTransitions`。
+    窓を10日刻みでプロービングしオフセット遷移を検出したら `UnsupportedTimeZoneError`(**Phase 1 = 固定
+    オフセットゾーン限定**。DST の STANDARD+DAYLIGHT/RRULE 導出は Intl API から機械的に正しく作れず、境界年で
+    不正な VTIMEZONE を黙って出すリスクの方が有害と判断して塞ぐ)。固定オフセットは `DTSTART:19700101T000000`・
+    TZOFFSETFROM=TZOFFSETTO の最小 STANDARD 1本。
+  - **独立 alarm 入力を廃止し due に統合**: 時刻付き due には常に VALARM(due 時刻の絶対 UTC TRIGGER)を自動生成。
+    V5 で「iOS はサーバー発 VALARM でも通知する」が確定したので「時刻付き due=その時刻に通知」の自然な意味に統合
+    (未リリース内部 API なので後方互換コストゼロ)。
+  - **offset 付き ISO8601("...Z"/"...+09:00")は InvalidDueError で拒否**(offset から TZID を一意逆引き不能。
+    iOS の壁時計+TZID モデルに揃える)。RRULE UNTIL の値型を due に追従(I6・§3.3.10。時刻付き due では UNTIL も
+    UTC DATE-TIME にし、時刻は due の壁時計を流用=この実装のポリシー)。
+  - fixture `real-ios/vtodo-timed-due.ics` 追加(本番 D1 由来の断片から再構成。UID/DTSTAMP 等は実バイトでない旨
+    README に明記)。テストは iOS-JST の VTIMEZONE(DTSTART:19510909/TZOFFSETFROM:+1000)と生成物(1970/+0900)を
+    **バイト比較せず構造比較**(§3.6.5 必須要素 + TZOFFSETTO 一致。DTSTART 日付は RFC 上等価)。
+- **Case E `47dd81d`**: recurrence.frequency enum に `"none"`(繰り返さない)+ `.default("none")` を追加。
+  MCP Inspector 手動フォームが未使用 optional recurrence でも `{frequency:""}` を送るバグ(generateDefaultValue が
+  optional object の required サブフィールドを "" 初期化)を、明示 default を尊重する分岐を突いてスキーマ値レベルで
+  無害化。**"none" は presentation 層限定の語彙**でハンドラで正規化 → application(CreateTodoRecurrenceInput の4値)
+  には漏らさない(DAV/将来 REST 等 他入口に MCP 固有の都合を波及させない)。"none"+サブフィールド併用は黙殺せず
+  toolError。presentation テスト3件追加(mcp-server.test.ts)。
+  - 経緯: 2026-07-13 の「案 C(ネスト維持・サーバー無変更)」を、ユーザー提案の "none" enum(案 E)で更に前進。
+    Fable が「MCP ベストプラクティス上も enum sentinel は proto3 idiom で妥当」と検証済み。ネスト維持は崩さず
+    値語彙だけで Inspector バグを吸収する形に着地。
+- **subagent 構成整理**(2026-07-13): implementer.md に `tools:` 制限(Agent 無し=再委譲構造的に不可)+ 再委譲禁止
+  明記。Opus 実装 alias `artisan` 新設(model:opus・同 tools)。役割: architect(fable/設計)→ artisan(opus/難実装)
+  → implementer(sonnet/標準)。fan-out は main の責務。
+- **残る実機: V6 手順**(時刻付き due の iOS 表示・通知・往復 VTIMEZONE 保持)。
