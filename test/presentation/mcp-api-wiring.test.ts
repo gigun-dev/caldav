@@ -120,6 +120,8 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
 		const rpc = JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text);
 		const names = rpc.result.tools.map((t: { name: string }) => t.name).sort();
+		// 2026-07-13 E-2 スライス②: refresh-todos(UI 専用 app ツール)を追加。
+		// visibility:["app"] でも tools/list には出る(mcp-server.test.ts の同種コメント参照)。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-todo",
@@ -128,6 +130,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"get-freebusy",
 			"list-events-expanded",
 			"list-todos",
+			"refresh-todos",
 			"update-todo",
 		]);
 	});

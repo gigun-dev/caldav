@@ -599,6 +599,45 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	//   "openai/outputTemplate" は ChatGPT(Apps SDK)が同じ ui:// を認識する別ベンダーキーで、
 	//   独立に併記してよい(どちらのホストでも同じ HTML を再利用するための実務上の配線。
 	//   tdr の park_waits と同じ)。
+	// list-todos と refresh-todos(E-2 スライス②)は「同じ ListTodos ユースケースを同じ
+	// principal クロージャで呼び、同じ structuredContent 契約 {tasks, calendarId, timeZone} を
+	// 返す」ことが要件。ハンドラ本体を複製せず、この共通クロージャに括り出して両方から呼ぶ。
+	// 【なぜ共通化するか】E-2 スライス②の検証目的は「UI からの callServerTool でも
+	// 通常ツールと同じ AuthenticationPort→principal 経路で認可が効くか」であり、それを
+	// 保証する最短の形は「認可コンテキスト(principal)を含む実行経路を完全に共有する」こと。
+	// コピーだと将来どちらかだけ直して契約がズレる事故(list-todos と refresh-todos で
+	// 見えるタスクが違う)を招くため、経路そのものを1本にする。
+	// 【引数を listTodosInputShape と同じ形にする理由】refresh-todos は引数なし(空 object)で
+	// 呼ぶが、共通クロージャは list-todos のフルパラメータも受けられるようにしておき、
+	// refresh-todos 側は全 undefined(= 既定: 未完了のみ・tasks コレクション)で呼ぶ。
+	const runListTodos = async (args: {
+		includeCompleted?: boolean;
+		dueBefore?: string;
+		dueAfter?: string;
+		calendarId?: string;
+		timeZone?: string;
+	}) => {
+		try {
+			const zone = resolveTimeZone(args.timeZone);
+			const listTodos = new ListTodos(deps.resourceRepo);
+			const { tasks } = await listTodos.execute({
+				owner: principal,
+				includeCompleted: args.includeCompleted,
+				dueBefore: args.dueBefore,
+				dueAfter: args.dueAfter,
+				calendarId: args.calendarId,
+				timeZone: zone,
+			});
+			const result = { tasks, calendarId: args.calendarId ?? "tasks", timeZone: zone };
+			return {
+				content: [{ type: "text" as const, text: JSON.stringify(result) }],
+				structuredContent: result,
+			};
+		} catch (error) {
+			return toolError(error instanceof Error ? error.message : String(error));
+		}
+	};
+
 	registerAppTool(
 		server,
 		"list-todos",
@@ -611,27 +650,49 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }) => {
-			try {
-				const zone = resolveTimeZone(timeZone);
-				const listTodos = new ListTodos(deps.resourceRepo);
-				const { tasks } = await listTodos.execute({
-					owner: principal,
-					includeCompleted,
-					dueBefore,
-					dueAfter,
-					calendarId,
-					timeZone: zone,
-				});
-				const result = { tasks, calendarId: calendarId ?? "tasks", timeZone: zone };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
-			} catch (error) {
-				return toolError(error instanceof Error ? error.message : String(error));
-			}
+		async ({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }) =>
+			runListTodos({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }),
+	);
+
+	// --- refresh-todos(E-2 スライス②: UI 専用の再読み込みツール)---------------------
+	// 【なぜ app 専用ツール(visibility:["app"])にするか】
+	//   このツールは「UI(todos.html)の再読み込みボタンから App.callServerTool で叩く」
+	//   ためだけに存在する。モデル(LLM)のツール一覧に出す必要はなく、むしろ出すと
+	//   list-todos と役割が重なってモデルがどちらを呼ぶか迷う誤選択事故を招く(list-todos の
+	//   registerAppTool コメント「同じ『一覧して』で2ツールを迷う」と同型の懸念)。
+	//   ext-apps の _meta.ui.visibility は "model"(=モデルに見せて呼ばせる)/"app"(=この
+	//   サーバーの UI からのみ呼べる)の2値配列で、既定は ["model","app"]。ここを ["app"] に
+	//   絞ることで「モデルには見せず UI からの callServerTool 専用」を宣言する
+	//   (spec.types.d.ts McpUiToolVisibility / server/index.d.ts の appOnlyVisibility 例で確認)。
+	// 【認可はどう通るか = このスライスで検証したい当のもの】
+	//   visibility を絞っても handler の実行経路は list-todos と同一(runListTodos 共通クロージャ)
+	//   で、principal は buildMcpServer に束縛された「認証済みユーザー」そのもの。つまり UI から
+	//   callServerTool 経由で呼ばれても、通常の tools/call と同じ AuthenticationPort→principal
+	//   経路を通り、呼び出したユーザーの tasks だけが返る「はず」。この「はず」を実機
+	//   (claude.ai Web / iOS)で潰すのが E-2 スライス②の目的。
+	// 【なぜ tools/list には出てしまうか(既存テストへの影響)】
+	//   registerAppTool は registerTool の薄いラッパーで、_meta.ui.visibility を付けるだけ。
+	//   visibility は「ホストがモデルに見せるか」という描画/提示ヒントであって、MCP プロトコル
+	//   レベルの tools/list からツールを消す機構ではない。よって refresh-todos は tools/list に
+	//   出る(=既存の本数 assert が 8→9 に変わる)。テスト側の期待値はこの事実に合わせて更新した。
+	// 【inputSchema を空 object にする理由】スパイクなので引数は取らず、既定(未完了のみ・
+	//   tasks コレクション・UTC)で一覧を返す。listTodosInputShape を流用してもよいが、UI の
+	//   ボタンは常に「今の既定ビューを最新化する」用途しか無いため、余計な引数面を持たせない。
+	registerAppTool(
+		server,
+		"refresh-todos",
+		{
+			title: "Refresh todos",
+			description:
+				"UI(リマインダー一覧 App)専用の再読み込みツール。引数なしで既定ビュー(未完了のみ)を返す。" +
+				"モデルからは呼べない(visibility:[\"app\"])— UI の再読み込みボタンが callServerTool で叩く用。",
+			inputSchema: {},
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
+		async () => runListTodos({}),
 	);
 
 	// --- update-todo(E-1 スライス②-b)---------------------------------------------

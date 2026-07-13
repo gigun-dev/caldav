@@ -146,6 +146,21 @@ export const TODOS_APP_HTML = `<!doctype html>
     color: var(--color-text-secondary, #767676);
     padding: 8px 4px;
   }
+  /* 再読み込みボタン(E-2 スライス②)。ホストのテーマ変数に寄せた控えめな見た目にし、
+   * 未注入環境でも壊れないフォールバック色を添える。disabled 中は薄く見せる。 */
+  #refresh {
+    display: inline-block;
+    margin-bottom: 8px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--color-text-primary, #1a1a1a);
+    background: var(--color-background-secondary, rgba(128, 128, 128, 0.15));
+    border: 1px solid var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    border-radius: var(--border-radius-md, 8px);
+    cursor: pointer;
+  }
+  #refresh:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>

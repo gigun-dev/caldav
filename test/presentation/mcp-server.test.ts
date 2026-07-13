@@ -153,7 +153,14 @@ describe("/mcp", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("正しい Bearer で tools/list に8ツールが並ぶ(E-1 スライス②-b で update/complete/delete-todo を追加)", async () => {
+	// 2026-07-13 E-2 スライス②: refresh-todos(UI 専用 app ツール)を追加したため 8→9 に更新。
+	// 【なぜ 9(据え置きでない)か】refresh-todos は _meta.ui.visibility:["app"] を持つが、
+	// これは「ホストがモデルに見せるか」という提示ヒントであって、MCP プロトコルの tools/list
+	// からツールを消す機構ではない(registerAppTool は registerTool の薄いラッパーで、
+	// tools/list には従来どおり出る。ext-apps server d.ts で確認)。つまりサーバー実装レベルの
+	// tools/list には refresh-todos も並ぶのが正しい挙動で、visibility による「モデルへの非提示」は
+	// ホスト(claude.ai/iOS)側の描画時フィルタとして効く。よって本テストは 9 本を assert する。
+	it("正しい Bearer で tools/list に9ツールが並ぶ(E-2 スライス②で refresh-todos を追加。visibility:[\"app\"] でも tools/list には出る)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -166,6 +173,7 @@ describe("/mcp", () => {
 			"get-freebusy",
 			"list-events-expanded",
 			"list-todos",
+			"refresh-todos",
 			"update-todo",
 		]);
 	});

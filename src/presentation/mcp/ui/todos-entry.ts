@@ -57,6 +57,22 @@ import { App } from "@modelcontextprotocol/ext-apps";
 
 const root = document.getElementById("root") as HTMLElement;
 
+// --- 再読み込みボタン(E-2 スライス②)-----------------------------------------
+// 【なぜ root の外(document.body 直下)に置くか】
+//   render() は root.innerHTML = "" で中身を作り直す。ボタンを root 内に入れると
+//   再描画のたびに消えて再生成が要る。ボタンは「一覧の状態に依らず常時ある操作」なので
+//   root とは独立に body 直下へ置き、render() の破壊的更新から切り離す。
+// 【初期は disabled にする理由】
+//   App.callServerTool は connect(ui/initialize ハンドシェイク)完了前に呼ぶと strict でない
+//   ホストでも警告になり、strict ホストでは iframe が固まりうる(app.d.ts の _assertInitialized
+//   コメント / claude-ai-mcp#61・#149 参照)。connect 成功後に enable して「押して即エラー」を防ぐ。
+const refreshButton = document.createElement("button");
+refreshButton.id = "refresh";
+refreshButton.type = "button";
+refreshButton.textContent = "再読み込み";
+refreshButton.disabled = true; // connect 完了まで押させない(上記コメント)。
+document.body.insertBefore(refreshButton, root);
+
 /** 診断/空表示など「リスト以外の一行メッセージ」を出す。ontoolresult 前や失敗時に使う。 */
 function show(msg: string): void {
 	root.className = "empty";
@@ -187,6 +203,51 @@ try {
 	show(`① 接続失敗: ${e instanceof Error ? e.message : String(e)}`);
 	throw e;
 }
+
+// --- 再読み込み(E-2 スライス②の検証本体)-------------------------------------
+// connect 完了後にだけ有効化する(strict ホストでの早すぎる callServerTool を避ける)。
+refreshButton.disabled = false;
+refreshButton.addEventListener("click", async () => {
+	// 二重押下防止 + 進行表示。iOS WebView はコンソールが無く画面表示でしか切り分けられない
+	// ため(既存 show() の3段診断と同じ思想)、進行/失敗をボタンラベルと root に出す。
+	refreshButton.disabled = true;
+	const prevLabel = refreshButton.textContent;
+	refreshButton.textContent = "再読み込み中…";
+	try {
+		// 【このスライスで検証したい当のもの】
+		//   App.callServerTool は「ホストが本体 MCP サーバーへプロキシする」ツール呼び出し
+		//   (app.d.ts)。ここで refresh-todos(visibility:["app"])を叩き、
+		//   (a) 呼び出したユーザーの principal のタスクだけが返るか(= OAuth 認可コンテキストが
+		//       callServerTool 経路でも効くか)、
+		//   (b) この呼び出しが会話 transcript に出ないか、
+		//   を実機で確認する。tdr で「claude.ai Web は callServerTool をプロキシし transcript に
+		//   出さない」ことは確認済みだが、caldav 固有の「OAuth + 書き込み可サーバーでの認可」は未検証。
+		// 【戻り値の形】callServerTool は CallToolResult 全体(structuredContent を内包)を返す
+		//   (app.d.ts の callServerTool シグネチャで確認)。ツール実行エラーは throw ではなく
+		//   result.isError:true で返るため、transport 例外(catch)と区別して両方を画面に出す。
+		const result = await app.callServerTool({ name: "refresh-todos", arguments: {} });
+		if (result.isError) {
+			// ツール実行側のエラー(認可失敗・内部エラー等)。content の text を拾って表示する。
+			const first = result.content?.[0];
+			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+			show(`再読み込み失敗: ${text}`);
+			return;
+		}
+		// refresh-todos の structuredContent 契約は list-todos と同一
+		//   { tasks: TodoItem[], calendarId, timeZone }
+		// なので、ローカルの TodoItem をそのまま流用して render() に渡す(entry は application を
+		// import しない疎結合のまま — ファイル冒頭「structuredContent の契約」コメント参照)。
+		const structuredContent = result.structuredContent as { tasks?: TodoItem[] } | undefined;
+		render(structuredContent?.tasks ?? []);
+	} catch (e) {
+		// transport 失敗(ホスト拒否・タイムアウト・接続喪失)。callServerTool は
+		// これらを例外として投げる(app.d.ts の @throws)。
+		show(`再読み込み失敗: ${e instanceof Error ? e.message : String(e)}`);
+	} finally {
+		refreshButton.textContent = prevLabel;
+		refreshButton.disabled = false;
+	}
+});
 
 // 接続後、ホストが initialized を受けて tool-result を push してくるのを待つ。
 // 一定時間来なければ「接続はできたがホストが inline へ結果を送っていない」と切り分ける。
