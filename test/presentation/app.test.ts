@@ -391,4 +391,184 @@ describe("Worker app", () => {
 			expect(res.status).toBe(204);
 		});
 	});
+
+	// -------------------------------------------------------------------------
+	// R-3: RFC 6578 §5 MUST — `If` ヘッダ内の DAV:sync-token を PUT/DELETE の
+	// precondition として評価する。
+	// -------------------------------------------------------------------------
+	// 検証根拠: docs/rfc/rfc6578.txt §5 「Servers MUST support use of DAV:sync-token
+	// values in If request headers」。§5.1/§5.2 の例(`If: </collection/> (<token-uri>)`)を
+	// PUT/DELETE の両方で再現する。トークンは実装内部の URI 形式(SyncToken.toUri。
+	// {base}/ns/sync/{n})を「クライアントが sync-collection REPORT で受け取った不透明値を
+	// そのまま送り返す」体で使う — REPORT で実際に発行された値を使うことで、presentation 層の
+	// base 組み立て(`new URL(collectionHref, publicOrigin).href`)が sync-collection REPORT
+	// 側と一致していることも合わせて検証できる。
+	describe("R-3 If ヘッダの DAV:sync-token precondition(RFC 6578 §5)", () => {
+		const COLLECTION_PATH = `/dav/calendars/${USERNAME}/calendar/`;
+		const RES = `${COLLECTION_PATH}r3.ics`;
+
+		beforeEach(() => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+		});
+
+		/** sync-collection REPORT(初回同期)を叩いて現在の DAV:sync-token URI を取得する。 */
+		async function currentSyncToken(): Promise<string> {
+			const res = await fetchApp(COLLECTION_PATH, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), depth: "0" },
+				body: `<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:prop><d:getetag/></d:prop></d:sync-collection>`,
+			});
+			expect(res.status).toBe(207);
+			const xml = await res.text();
+			const match = xml.match(/<d:sync-token>([^<]+)<\/d:sync-token>/);
+			expect(match).not.toBeNull();
+			return (match as RegExpMatchArray)[1];
+		}
+
+		it("(a) 現在の sync-token を If ヘッダに付けた PUT は成功する", async () => {
+			const token = await currentSyncToken();
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					// RFC 6578 §5.1 の Resource_Tag 構文: コレクション href を Resource-Tag とし、
+					// State-token に sync-token URI を入れる。
+					if: `<${COLLECTION_PATH}> (<${token}>)`,
+				},
+				body: makeVEventIcs("uid-r3-a"),
+			});
+			expect(res.status).toBe(201);
+		});
+
+		it("(b) 古い sync-token(コレクションに別の変更が入った後)を If ヘッダに付けた PUT は 412", async () => {
+			const staleToken = await currentSyncToken();
+			// staleToken 取得後にコレクションへ別の変更を1件入れ、sync-token を進める
+			// (RFC 6578 §5.2 の例と同じ「間に他の変更が起きた」ケース)。
+			await fetchApp(`${COLLECTION_PATH}other.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-other"),
+			});
+
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					if: `<${COLLECTION_PATH}> (<${staleToken}>)`,
+				},
+				body: makeVEventIcs("uid-r3-b"),
+			});
+			expect(res.status).toBe(412);
+		});
+
+		it("(c) Not 構文 — 古い(現在ではない)token を Not で否定すれば通る", async () => {
+			const staleToken = await currentSyncToken();
+			await fetchApp(`${COLLECTION_PATH}other2.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-other2"),
+			});
+			// staleToken はもう現在の token ではない。"Not <staleToken>" は
+			// 「staleToken に一致しないこと」が条件になり、現在は一致しないので条件は真。
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					if: `<${COLLECTION_PATH}> (Not <${staleToken}>)`,
+				},
+				body: makeVEventIcs("uid-r3-c"),
+			});
+			expect(res.status).toBe(201);
+		});
+
+		it("(c') Not 構文 — 現在の token を Not で否定すると 412", async () => {
+			const token = await currentSyncToken();
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					if: `<${COLLECTION_PATH}> (Not <${token}>)`,
+				},
+				body: makeVEventIcs("uid-r3-cprime"),
+			});
+			expect(res.status).toBe(412);
+		});
+
+		it("(d) If ヘッダ無しの PUT は従来どおり無条件で成功する", async () => {
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-d"),
+			});
+			expect(res.status).toBe(201);
+		});
+
+		it("古い sync-token を If ヘッダに付けた DELETE も同様に 412", async () => {
+			await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-delete"),
+			});
+			const staleToken = await currentSyncToken();
+			await fetchApp(`${COLLECTION_PATH}other3.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-other3"),
+			});
+
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: {
+					authorization: authHeader(),
+					if: `<${COLLECTION_PATH}> (<${staleToken}>)`,
+				},
+			});
+			expect(res.status).toBe(412);
+		});
+
+		it("現在の sync-token を If ヘッダに付けた DELETE は成功する", async () => {
+			await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-delete-ok"),
+			});
+			const token = await currentSyncToken();
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: {
+					authorization: authHeader(),
+					if: `<${COLLECTION_PATH}> (<${token}>)`,
+				},
+			});
+			expect(res.status).toBe(204);
+		});
+
+		it("未対応構文(entity-tag 混在)の If ヘッダは黙殺され、無条件で処理が進む", async () => {
+			// 冒頭コメント(if-header.ts)の「未対応構文の扱い」判断の回帰確認。
+			// このヘッダは古い sync-token を含むが entity-tag が混在しており解釈できないため、
+			// sync-token precondition は評価されず(412 にならず)処理が進む。
+			const staleToken = await currentSyncToken();
+			await fetchApp(`${COLLECTION_PATH}other4.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r3-other4"),
+			});
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					if: `<${COLLECTION_PATH}> (<${staleToken}> ["some-etag"])`,
+				},
+				body: makeVEventIcs("uid-r3-unsupported"),
+			});
+			expect(res.status).toBe(201);
+		});
+	});
 });

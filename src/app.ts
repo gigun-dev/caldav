@@ -53,6 +53,8 @@ import {
 	PutCalendarObject,
 	ResourceNotFoundError,
 	SyncCollection,
+	SyncTokenIfConditionError,
+	type SyncTokenIfPrecondition,
 	UpdateCollectionProperties,
 } from "./application";
 import { Principal, collectionId, principalPath } from "./domain/caldav";
@@ -64,6 +66,7 @@ import type {
 } from "./application/ports";
 import { createD1Repositories, IcaljsRRuleIterator, OAuthPropsAuth, type OAuthPrincipalProps } from "./infrastructure";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
+import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
 import { createMcpApp } from "./presentation/mcp/server";
 import {
 	collectionProps,
@@ -152,6 +155,22 @@ function rawEtagCondition(request: Request) {
 	return { kind: "unconditional" as const };
 }
 
+// 2026-07-14 R-3: RFC 6578 §5 MUST への対応。`If` ヘッダから DAV:sync-token precondition を
+// 抜き出し、application 層の SyncTokenIfPrecondition(put-calendar-object.ts)に変換する。
+// ヘッダ構文の解釈(if-header.ts)と「このコレクションを指す List への絞り込み」までを
+// presentation 層で行い、実際の「現在の token と一致するか」の評価は application 層に委ねる
+// (rawEtagCondition と同じ分担方針)。
+//
+// base は SyncToken.toUri/fromUri の base と揃える必要がある。sync-collection REPORT
+// (このファイル内 `result.newSyncToken.toUri(new URL(collectionHref, publicOrigin).href)`)と
+// 全く同じ組み立て方(`new URL(collectionHref, publicOrigin).href`)を使う — ここがズレると
+// クライアントが送り返してきた正当な sync-token が invalid 扱いになってしまう。
+function ifSyncTokenPrecondition(request: Request, collectionHref: string, publicOrigin: string): SyncTokenIfPrecondition {
+	const lists = parseIfHeader(request.headers.get("if"));
+	const groups = syncTokenListsFor(lists, collectionHref);
+	return { base: new URL(collectionHref, publicOrigin).href, groups };
+}
+
 function xml(body: string, status = 207): Response {
 	return new Response(body, { status, headers: XML_HEADERS });
 }
@@ -161,7 +180,7 @@ function errorResponse(error: unknown): Response {
 	if (error instanceof ResourceNotFoundError || error instanceof DeleteTargetNotFoundError) return new Response("Not Found", { status: 404 });
 	if (error instanceof CollectionNotFoundError) return new Response("Collection not found", { status: 409 });
 	if (error instanceof CollectionAlreadyExistsError) return new Response("Collection already exists", { status: 405, headers: DAV_HEADERS });
-	if (error instanceof ETagConditionError || error instanceof DeleteETagMismatchError) return new Response("Precondition Failed", { status: 412 });
+	if (error instanceof ETagConditionError || error instanceof DeleteETagMismatchError || error instanceof SyncTokenIfConditionError) return new Response("Precondition Failed", { status: 412 });
 	if (error instanceof InvalidSyncTokenError) return xml(davError("valid-sync-token"), 403);
 	if (error instanceof CalDAVPreconditionError) {
 		const violation = error.violations[0];
@@ -745,6 +764,7 @@ app.all("*", async (c) => {
 			const result = await new PutCalendarObject(repos.collections, repos.resources, repos.uow, recurrenceIterator).execute({
 				owner: principalPathValue, collectionId: id, resourceUri: resourceName,
 				ics: await readBody(request), condition: rawEtagCondition(request),
+				ifSyncToken: ifSyncTokenPrecondition(request, collectionHref, publicOrigin),
 			});
 			return new Response(null, { status: result.created ? 201 : 204, headers: { ...DAV_HEADERS, ETag: result.etag.toHeader() } });
 		}
@@ -753,6 +773,7 @@ app.all("*", async (c) => {
 			await new DeleteCalendarObject(repos.collections, repos.resources, repos.uow).execute({
 				owner: principalPathValue, collectionId: id, resourceUri: resourceName,
 				ifMatchEtag: request.headers.get("if-match"),
+				ifSyncToken: ifSyncTokenPrecondition(request, collectionHref, publicOrigin),
 			});
 			return new Response(null, { status: 204, headers: DAV_HEADERS });
 		}

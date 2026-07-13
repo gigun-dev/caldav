@@ -24,7 +24,17 @@ import type {
 } from "../ports";
 // 2026-07-14 R-2: splitEtagList を put-calendar-object.ts から共有する
 // (両 usecase で「If-Match ヘッダのカンマ区切り分解」ロジックが同一のため)。
-import { CollectionNotFoundError, splitEtagList } from "./put-calendar-object";
+// 2026-07-14 R-3: evaluateSyncTokenIfPrecondition / SyncTokenIfConditionError も同様に
+// put-calendar-object.ts から共有する(RFC 6578 §5 の If ヘッダ sync-token precondition
+// 評価は PUT/DELETE で全く同じロジック。新規ファイルを立てるほどの分量でもないため
+// splitEtagList と同じ「小さな語彙をここに集約する」判断を踏襲する)。
+import {
+	CollectionNotFoundError,
+	evaluateSyncTokenIfPrecondition,
+	splitEtagList,
+	SyncTokenIfConditionError,
+	type SyncTokenIfPrecondition,
+} from "./put-calendar-object";
 
 // --- 入力 DTO ---
 
@@ -45,6 +55,12 @@ export interface DeleteCalendarObjectInput {
 	 * このコメントも「生のヘッダ値をそのまま渡す」契約として書き直した。
 	 */
 	ifMatchEtag?: string | null;
+	/**
+	 * `If` ヘッダの DAV:sync-token precondition(RFC 6578 §5)。省略 or groups 空配列で
+	 * unconditional。put-calendar-object.ts の同名フィールドと同じ契約
+	 * (presentation 層〈if-header.ts〉が対象コレクションの List だけに絞り込んで渡す)。
+	 */
+	ifSyncToken?: SyncTokenIfPrecondition;
 }
 
 // --- エラー型 ---
@@ -95,6 +111,13 @@ export class DeleteCalendarObject {
 		const collection = await this.collectionRepo.findById(input.owner, input.collectionId);
 		if (!collection) {
 			throw new CollectionNotFoundError(input.collectionId);
+		}
+
+		// `If` ヘッダの sync-token precondition チェック(RFC 6578 §5)。put-calendar-object.ts の
+		// Step 1b と同じロジック・同じ判断(collection 集約はここで既に取得済みなので追加の
+		// D1 読みは発生しない)。
+		if (input.ifSyncToken && !evaluateSyncTokenIfPrecondition(input.ifSyncToken, collection.syncToken)) {
+			throw new SyncTokenIfConditionError(input.ifSyncToken);
 		}
 
 		// リソース存在確認 + ETag 取得。

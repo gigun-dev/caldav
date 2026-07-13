@@ -23,6 +23,7 @@ import {
 	PreconditionViolation,
 	UNLIMITED_POLICY,
 	ETag,
+	SyncToken,
 	type PutPreconditionInput,
 	type ServerPolicy,
 	resourceUri,
@@ -141,6 +142,64 @@ function evaluateMustMatch(rawHeaderValue: string, existingETag: ETag): boolean 
 	});
 }
 
+/**
+ * `If` ヘッダに書かれた1つの DAV:sync-token State-token 条件。
+ * presentation 層(if-header.ts の IfStateCondition)から生の token 文字列だけを
+ * 受け取る(URI としての妥当性判定・カウンタ抽出は SyncToken.fromUri に委ねる — token の
+ * 解釈は application/domain の仕事という層分担。RFC 原文の解釈も domain 層〈SyncToken〉に
+ * 閉じ込めたい)。
+ */
+export interface SyncTokenIfCondition {
+	negate: boolean;
+	/** State-token の中身(`<` `>` を除いた Coded-URL 文字列)。 */
+	token: string;
+}
+
+/**
+ * RFC 6578 §5 の If ヘッダ sync-token precondition。
+ * `groups` は OR-of-AND(RFC 4918 §10.4.3: 複数 List は OR、1 List 内の Condition は AND)。
+ * presentation 層(if-header.ts の syncTokenListsFor)がすでに「このコレクションを指す
+ * List だけ」に絞り込んだ結果を渡してくる想定。
+ *
+ * 【空配列の意味】`groups: []` は「If ヘッダにこのコレクション向けの sync-token 条件が
+ * 無かった」= unconditional。usecase 側は無条件で処理を続ける(412 にしない)。
+ */
+export interface SyncTokenIfPrecondition {
+	/** SyncToken.fromUri に渡す base(= コレクションの絶対 URL。sync-token URI 生成と同じ base)。 */
+	base: string;
+	groups: SyncTokenIfCondition[][];
+}
+
+/**
+ * If ヘッダの sync-token precondition が「現在のコレクション状態に対して真」かどうかを判定する。
+ *
+ * 評価規則(RFC 4918 §10.4.3〜§10.4.4 に沿う):
+ *   - 各 Condition は「token を fromUri で解釈でき、かつそのカウンタが現在の
+ *     collectionSyncToken と一致する」なら true("Not" 付きなら反転)。
+ *   - トークンが解釈不能(他サーバー由来・壊れた形式)な場合は「一致する状態token が
+ *     このリソースに無い」として false 扱い(§10.4.4「Handling unmapped URLs: treat as
+ *     if the URL identified a resource that exists but does not have the specified
+ *     state」に倣う。sync-token は「コレクションの現在状態」という単一の state しか
+ *     持たないので、それ以外はすべて「無い」)。
+ *   - 1つの List(AND)は全 Condition が true のとき true。
+ *   - groups(OR)はいずれか1つの List が true なら全体が true。
+ *   - groups が空配列なら precondition なし = true(呼び出し側で早期リターンする想定だが、
+ *     ここでも矛盾なく true を返す)。
+ */
+export function evaluateSyncTokenIfPrecondition(
+	precondition: SyncTokenIfPrecondition,
+	collectionSyncToken: SyncToken,
+): boolean {
+	if (precondition.groups.length === 0) return true;
+	return precondition.groups.some((conditions) =>
+		conditions.every((condition) => {
+			const parsed = SyncToken.fromUri(precondition.base, condition.token);
+			const matches = parsed.valid && parsed.token.equals(collectionSyncToken);
+			return condition.negate ? !matches : matches;
+		}),
+	);
+}
+
 /** PutCalendarObject の入力。 */
 export interface PutCalendarObjectInput {
 	/** コレクションのオーナー(プリンシパル)。 */
@@ -153,6 +212,11 @@ export interface PutCalendarObjectInput {
 	ics: string;
 	/** ETag に基づく楽観ロック条件。省略時は unconditional。 */
 	condition?: ETagCondition;
+	/**
+	 * `If` ヘッダの DAV:sync-token precondition(RFC 6578 §5)。省略 or groups 空配列で
+	 * unconditional。
+	 */
+	ifSyncToken?: SyncTokenIfPrecondition;
 	/** サーバーポリシー(max-resource-size 等)。省略時は無制限。 */
 	policy?: ServerPolicy;
 }
@@ -227,9 +291,27 @@ export class CollectionNotFoundError extends Error {
 	}
 }
 
+/**
+ * `If` ヘッダの DAV:sync-token precondition 不一致エラー(RFC 6578 §5)。
+ * - HTTP: 412 Precondition Failed(§5.2 の例のとおり)。
+ *
+ * 【なぜ ETagConditionError と分けるのか】どちらも 412 にマッピングされる点は同じだが、
+ * 条件の主体が別(ETag = リソース、sync-token = コレクション)であり、エラーメッセージ・
+ * デバッグ時の切り分けのために型を分ける(R-2 の ETagConditionError / CalDAVPreconditionError
+ * の分離判断を踏襲)。
+ */
+export class SyncTokenIfConditionError extends Error {
+	readonly kind = "SyncTokenIfConditionError" as const;
+	constructor(readonly precondition: SyncTokenIfPrecondition) {
+		super("If header DAV:sync-token precondition failed (collection has changed)");
+		this.name = "SyncTokenIfConditionError";
+	}
+}
+
 /** PutCalendarObject が throw しうるエラーの型ユニオン。presentation 層のマッピング用。 */
 export type PutCalendarObjectError =
 	| ETagConditionError
+	| SyncTokenIfConditionError
 	| CalDAVPreconditionError
 	| CollectionNotFoundError;
 
@@ -270,6 +352,15 @@ export class PutCalendarObject {
 		const collection = await this.collectionRepo.findById(input.owner, input.collectionId);
 		if (!collection) {
 			throw new CollectionNotFoundError(input.collectionId);
+		}
+
+		// --- Step 1b: `If` ヘッダの sync-token precondition チェック(RFC 6578 §5) ---
+		// コレクションの現在 token(collection.syncToken)は Step 1 で取得済みの集約から取れる
+		// ため、追加の D1 読みは発生しない(タスクの制約どおり)。groups が空(= このコレクションへの
+		// sync-token 条件が If ヘッダに無かった)なら evaluateSyncTokenIfPrecondition は無条件で
+		// true を返すので、ここでの分岐は「precondition ありのときだけ 412 の可能性がある」形になる。
+		if (input.ifSyncToken && !evaluateSyncTokenIfPrecondition(input.ifSyncToken, collection.syncToken)) {
+			throw new SyncTokenIfConditionError(input.ifSyncToken);
 		}
 
 		// --- Step 2: 現在のリソース状態を取得(ETag 条件検証 + UID 変更検出に必要) ---

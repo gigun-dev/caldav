@@ -182,4 +182,40 @@
 - **GAP は RELATED-TO のパラメータ**(§6.2、DEPENDS-ON 専用ではない)。値型 dur-value(符号あり)。
 - **REFID は反復プロパティ**(§8.3、0 回以上)。1プロパティ複数値ではなく allProps で全件。
 - **CONCEPT / LINK**(§8.1/§8.2)は型付きアクセサ未実装(生値保持で往復のみ)。使う入口が決まってから。
+
+## R-3: RFC 6578 §5(If ヘッダの DAV:sync-token)の照合(2026-07-14)
+
+`docs/rfc/rfc6578.txt` §5「Servers MUST support use of DAV:sync-token values in If
+request headers」を対象に実装。原文照合結果:
+
+- §5「WebDAV provides an If precondition header ... as defined in Section 10.4 of
+  [RFC4918]. This specification allows the DAV:sync-token value to be used as one such
+  token in an If header.」— sync-token は RFC 4918 §10.4 の **State-token** として使える、
+  という以上の独自構文追加は無い(§6 の XML Element Definitions にも If ヘッダ専用の
+  追加要素は無し)。
+- §5.1/§5.2 の例(PUT/MKCOL)はどちらも **Tagged-list + Resource_Tag**(sync-token が
+  定義されているのはコレクションであり、PUT の対象リソース〈newresource.txt〉とは別のため、
+  「その State-token がどの資源を指すか」を明示する Resource-Tag 構文が必須)。No-tag-list の
+  例は無い。
+- RFC 4918 §10.4.2/§10.4.3/§10.4.4 原文照合(docs/rfc/rfc4918.txt):
+  ABNF `Condition = ["Not"] (State-token | "[" entity-tag "]")`、List 内は AND、
+  Tagged-list/No-tag-list 内の複数 List は OR、ヘッダ全体は全 List が false なら 412。
+  §10.4.4「Handling unmapped URLs: treat as if the URL identified a resource that exists
+  but does not have the specified state」— 解釈できない/知らない state-token は「一致しない」
+  として扱ってよい、が実装の根拠。
+
+**実装スコープ判断(原文に照らして正当化)**: フル ABNF(No-tag-list・entity-tag 混在・
+複数 Resource-Tag またぎの OR)は実装せず、RFC 6578 §5.1/§5.2 の例に一致する
+「Tagged-list(コレクション href) + State-token(sync-token URI、Not 可)」だけをサポート。
+§5 が MUST として要求するのはこの利用形態そのもの(sync-token を If ヘッダの state-token として
+使えること)であり、If ヘッダの汎用構文全体ではないため、このサブセットで §5 の MUST を満たせる
+と判断した。未対応構文(entity-tag 混在等)を検出した場合は 412 にせず黙殺する(§10.4.1 は
+「評価して false なら 412」であって「評価できない」を false とは規定していない。可用性を優先
+= フェイルオープン)。判断の詳細コメントは `src/presentation/dav/if-header.ts` 冒頭。
+
+実装: `src/presentation/dav/if-header.ts`(ヘッダ構文解析。presentation 層)、
+`src/application/usecases/put-calendar-object.ts` の `evaluateSyncTokenIfPrecondition` /
+`SyncTokenIfConditionError`(precondition 評価。PUT/DELETE 共有)、`src/app.ts` の
+`ifSyncTokenPrecondition`(両層をつなぐ配線)。テストは
+`test/presentation/app.test.ts` の `describe("R-3 ...")`。
 - RELATED-TO の既定 RELTYPE は PARENT(RFC 5545 §3.8.4.5 / RFC 9253 §9.1 踏襲)。
