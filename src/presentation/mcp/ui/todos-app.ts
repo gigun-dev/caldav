@@ -103,6 +103,19 @@ export const TODOS_APP_HTML = `<!doctype html>
     --danger: #ff3b30;
     --pri: #ff9500;
     --radius: var(--border-radius-md, 8px);
+    /* --- becoming(変化の中間状態)用の補助トーン(E-2 スライス② 差分表現)-----------
+     * 差分は form(輪郭・線・構造)を主役にし、色は補助に留める方針(モック
+     * scratchpad/todos-refined.html の設計)。Why not 色ハイライト主体: 色だけの差分は
+     * 「何が起きたか」を語らず、ダーク/ライト双方でのコントラスト管理も脆い。
+     *   accent-soft : completed の「凍結した波紋リング」(box-shadow 1枚)
+     *   add/add-wake: added の左端バーと右へ減衰する wake
+     *   edit        : edited の新値強調(琥珀。accent/danger/pri と衝突しない第4色)
+     *   del-border  : removed ゴーストの破線(彩度ゼロ = もう意味を持たない行) */
+    --accent-soft: rgba(0, 122, 255, 0.14);
+    --add: #2f9e63;
+    --add-wake: rgba(47, 158, 99, 0.07);
+    --edit: #b07300;
+    --del-border: #c9c9ce;
   }
   /* ダークはフォールバック値だけ差し替える(ホスト変数が来ていればそちらが勝つ構造は同じ)。
    * systemRed/Blue/Orange はダークで僅かに明度が上がる iOS 定義に合わせる。 */
@@ -114,6 +127,13 @@ export const TODOS_APP_HTML = `<!doctype html>
       --accent: #0a84ff;
       --danger: #ff453a;
       --pri: #ff9f0a;
+      /* becoming 補助トーンのダーク版。リング/wake は暗地で沈むため不透明度を上げ、
+       * edit の琥珀は明度を上げる(モックの theme-dark 実測値)。 */
+      --accent-soft: rgba(10, 132, 255, 0.2);
+      --add: #55b884;
+      --add-wake: rgba(85, 184, 132, 0.1);
+      --edit: #d9a441;
+      --del-border: #55555a;
     }
   }
   * { box-sizing: border-box; }
@@ -297,6 +317,98 @@ export const TODOS_APP_HTML = `<!doctype html>
     overflow-wrap: break-word;
   }
 
+  /* --- becoming(変化の中間状態)------------------------------------------------
+   * 直前の操作で変化した行に「いま変わった」の静的な form を1回の描画だけ与える
+   * (ステートレス: 次に affected/removed の無い応答が来れば自然に平常へ戻る)。
+   * アニメーションは使わない — 会話ログ内の従属カードが勝手に動くのはノイズだし、
+   * fresh-instance 描画のたびに再生されて「また今起きた」ように誤読させるため。 */
+
+  /* becoming マイクロラベル(行右端。「完了/追加/期日変更/削除」等の短い日本語)。
+   * 語彙をアイコンでなく文字にするのは、変化の種別が4つ以上あり記号の学習コストが
+   * 見合わないため(形は行側が語る。ラベルは確認の一言)。 */
+  .tag {
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    padding-left: 4px;
+    white-space: nowrap;
+  }
+
+  /* completed: その場に留まり「いま完了した」を凍結表示。
+   * form = 丸の外に静止した同心リング(波紋の1フレーム = box-shadow 1枚)。
+   * 取消線・減光は li.done の恒久記号をそのまま使う(becoming 側では足さない)。
+   * Why not 行ごと薄緑ハイライト: 面のハイライトは「移動した/選択された」と
+   * 誤読されやすい。変化の主体は丸チェックなので、リングを丸に局在させる。
+   * Why not 完了セクションへ即移動: 押した場所から行が消えると操作の因果が切れる。
+   * 行はその場(元のセクション)に留め、次回描画で完了欄へ移る(entry の sectionize)。 */
+  li.becoming-done .circle { box-shadow: 0 0 0 4px var(--accent-soft); }
+  li.becoming-done .tag { color: var(--accent); }
+
+  /* reopened: completed の逆再生の1フレーム。form = 塗りが抜けて破線に戻りかけた丸
+   * (accent 色の破線)+ 同じ凍結リング。取消線は既に無い(li.done が外れる)ので、
+   * 丸の質感だけで「いま未完了に戻った」を語る。completed(実線塗り+リング)と
+   * reopened(破線空+リング)が同じリングを共有することで「同じ操作の往復」だと分かる。 */
+  li.becoming-undone .circle {
+    border-style: dashed;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+  li.becoming-undone .tag { color: var(--accent); }
+
+  /* added: becoming-in。form = 左端 2px バー + 右へ減衰する淡い wake(入射の残像)。
+   * バーは inset box-shadow で角丸内側に収め、行構造は通常行と同一のまま
+   * (次の描画で装飾だけ消え、すぐ日常に溶ける)。位置は本来のソート位置。 */
+  li.becoming-in {
+    box-shadow: inset 2px 0 0 var(--add);
+    background: linear-gradient(to right, var(--add-wake), transparent 55%);
+  }
+  li.becoming-in .tag { color: var(--add); }
+
+  /* edited: 変更フィールドの旧値→新値をインラインで凍結表示(例: 7/14 → 7/18)。
+   * 旧値は取消線ではなく減光のみ — 取消線=完了の恒久記号、という一貫性を守るため。 */
+  li.becoming-edit .tag { color: var(--edit); }
+  .meta .old { color: var(--muted); opacity: 0.6; }
+  .meta .arrow { color: var(--muted); opacity: 0.6; padding: 0 2px; }
+  .meta .new { color: var(--edit); font-weight: 600; }
+  .meta .more { color: var(--muted); }
+
+  /* removed: becoming-gone(削除ゴースト)。contract の removed:[{id,title,due?}] から
+   * その場描画する「もう存在しない行」。form = 中身が抜け輪郭だけが残る:
+   * 破線ボックス + 45% 減光 + 破線丸。縦寸をわずかに詰め「畳まれつつある途中」を示す。
+   * 取消線は使わない(取消線=完了の恒久記号 → completed と form で厳密に区別)。
+   * min-height 44px の例外: 操作対象外(既に消えた行、チェックボタンも持たない)。 */
+  li.becoming-gone {
+    margin: 4px 0;
+    padding: 3px 8px;
+    min-height: 38px;
+    align-items: center;
+    border: 1px dashed var(--del-border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  /* ゴーストはチェックボタン(44px)を持たないため、丸の水平位置を通常行に揃える
+   * (44px ボタン内の 22px 円は左から 11px。8px はボックス内 padding で消化済み)。 */
+  li.becoming-gone .circle { border-style: dashed; opacity: 0.45; margin: 0 4px 0 3px; }
+  li.becoming-gone .texts { opacity: 0.45; padding: 6px 0; }
+
+  /* --- 操作結果の読み上げ(視覚非表示の aria-live)-------------------------------
+   * becoming は視覚専用の表現なので、スクリーンリーダー向けには #live に
+   * 「「牛乳を買う」を完了しました」等のテキストを別途流す(entry が組み立てる)。
+   * 定番の visually-hidden パターン(display:none だと aria-live が読まれない)。 */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   /* --- 空/スケルトン ----------------------------------------------------------- */
   .empty { color: var(--muted); padding: 12px 0; }
   /* スケルトン: 接続〜初回 tool-result の間に出す「行の影」3本。テキストの点滅より
@@ -327,6 +439,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   <div id="status" class="status" hidden></div>
   <!-- 一覧本体。entry が skeleton → sections で書き換える。 -->
   <div id="root"></div>
+  <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
+       entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
+       role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->
+  <div id="live" class="sr-only" role="status"></div>
 
 <script type="module">
 ${TODOS_BUNDLE_JS}

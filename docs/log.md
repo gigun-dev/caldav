@@ -706,3 +706,14 @@
 - **未確認(実機・実クライアント依存)**: claude.ai Web/iOS が「会話に戻ったとき tool を再実行して
   新 ontoolresult を push するか」。するなら③は staleTime で無駄打ちせず無害、しないなら③が最新化を担う
   (どちらでも正しく動く設計)。chrome-devtools は今セッションで MCP 切断中のため main 側実測は保留。
+
+## 2026-07-13(続き)E-2 UI ドクトリン確定 + 削除undo論点
+
+**長い設計探索(git-diff → ミニマルハイライト → 操作タイプ色 → becoming 中間状態)が ③(refined)に収束。UI ドクトリン確定:**
+- **ステートレス・アニメ無し・トースト無し**(MCP Apps は fresh-instance 描画で before を持てない=遷移アニメ不可・OpenAI Apps SDK「every response = fresh widget instance」明言。設計哲学[Emil/apple-design]も従属 UI+高頻度で抑制側)。
+- **差分は "変化の中間状態(becoming)" を静的に**見せる(色でなく form が主役)。completed=完了欄へ飛ばさず**その場**で塗り丸+静止同心リング(波紋1フレーム)+取消線 / deleted=**破線ボックス+畳み・取消線は使わない**(取消線=完了専用にして衝突を根本回避)/ added=左バー+wake グラデ / edited=インライン 旧(減光)→新(琥珀)。次の list 描画で通常状態に収まる。
+- 丸チェック / 打ち消し線=完了(恒久)/ iOS リマインダー準拠・system-ui・44px。**リスト⇄カンバンは将来案**(Notion 型別ビューが複数入口思想と親和)。
+- **contract(最終)**: `{ tasks, calendarId, timeZone, affected?:[{id, kind:"added"|"completed"|"reopened"|"edited", changes?:[{field, before?, after?}]}], removed?:[{id,title,due?}] }`。affected/changes/removed は additive・欠落時は UI が degrade(list-todos は affected 無し=後方互換)。**edited の網羅性は「changes 欠落・未知 field → 編集済みバッジに degrade」で構造的に解決**。before/after はサーバーが表示用の短い正規化文字列を生成(生 ISO/RRULE を UI に渡さない)。ステートレスと矛盾しない(update UC は If-Match のため更新前値を既に読む)。
+- 設計は Fable が主導(git-diff版→ミニマル→操作タイプ→becoming の各モックを scratchpad に、③ refined が最終)。実アプリ調査: 「完了をその場に留める」中間状態は Things 3 くらいで先行例が薄い=差別化点。削除は実アプリだと Toast+Undo が定石だが **MCP App では不要**(becoming-gone で示す)。
+
+**削除 undo 論点(ユーザー実機観察・E-2 とは独立の CalDAV コア課題)**: iOS の振り取消が CalDAV アカウントで「一瞬復活→sync で再削除」。Fable 分析(docs/rfc 6578/4791 原文): RFC 6578 §3.5.1「delete→recreate 同一 URI は changed 報告 MUST/removed MUST NOT」。有力仮説 H-A=iOS の shake-undo はローカル限定でサーバーに何も送らない→ §3.5.2 準拠の removed 報告に iOS が整合して再削除(=我々のバグでない)。**Step 0 コード確認済**: 削除後の同一 UID 再 PUT は 201(索引掃除OK・H-B(b)否定)。**要実機キャプチャ**(make up DUMP=1 で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/ PUT+4xx なら案A(直す)。tombstone(案B)は不採用。runbook は docs/modeling/06 記録待ち。

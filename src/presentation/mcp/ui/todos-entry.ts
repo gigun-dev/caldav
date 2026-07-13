@@ -38,9 +38,29 @@
 //   ユーティリティは入れず、素の DOM 操作で描画する。
 //
 // 【structuredContent の契約(型 import はしない = ui は末端という設計方針)】
-//   list-todos / refresh-todos が返す structuredContent は
-//     { tasks: Task[], calendarId: string, timeZone: string }
-//   で、Task = {
+//   list-todos / refresh-todos / create-todo / complete-todo / update-todo / delete-todo が
+//   返す structuredContent は
+//     { tasks: Task[], calendarId: string, timeZone: string,
+//       affected?: Array<{ id, kind: "added"|"completed"|"reopened"|"edited",
+//                          task?: TaskSnapshot,
+//                          changes?: Array<{ field, before?, after? }> }>,
+//       removed?: TaskSnapshot[] }
+//   tasks は常に「サーバー確定の全一覧」(ステートレス)。affected/removed は mutation 系
+//   だけが返す差分メタで、list/refresh には無い。UI は affected/removed が欠落していれば
+//   単に通常描画する(後方互換 degrade — 古いサーバー/list 応答でも壊れない)。
+//   【2026-07-13 案X: affected[].task / removed を TaskSnapshot に統一】
+//   complete-todo/update-todo(status:COMPLETED)後の確定一覧 tasks は未完了ビュー
+//   (includeCompleted:false)固定のため、いま完了したタスクは tasks から抜ける。
+//   旧契約はこの id しか持たず、UI は tasks 側から該当行を探せないため becoming-done
+//   (その場で取消線+凍結リング)を描けなかった。解決策として affected にも
+//   TaskSnapshot({id,title,due?,priority?,isAllDay?})を添え、UI は tasks に無い行でも
+//   snapshot から擬似行を合成して描く(旧 removed の ghost 手法を affected にも広げた)。
+//   【差分メタの値の形式(todos-view-model.ts / todos-diff.ts が真実)】TaskSnapshot.due /
+//   changes の before/after は生 ISO/RRULE ではなく「表示用の短い正規化文字列」:
+//   due は "YYYY-MM-DD"(終日)/ "YYYY-MM-DD HH:MM"(時刻付き・空白区切り)、priority は
+//   「高/中/低/なし」の表示語。長い値(notes/長い title/recurrence)は before/after を
+//   省き field だけ来る(→ UI は「編集済み」バッジへ degrade)。
+//   Task = {
 //     id: string, title: string, completed: boolean,
 //     status: "NEEDS-ACTION"|"COMPLETED"|"IN-PROCESS"|"CANCELLED"|null,
 //     due: string|null("YYYY-MM-DD"(終日) or その todo 自身のゾーンの offset ISO8601
@@ -84,6 +104,9 @@ const root = document.getElementById("root") as HTMLElement;
 const updatedEl = document.getElementById("updated") as HTMLElement;
 const bannerEl = document.getElementById("banner") as HTMLElement;
 const statusEl = document.getElementById("status") as HTMLElement;
+// 視覚非表示の aria-live(role="status")。becoming の視覚表現と対になる音声版
+// (「「牛乳を買う」を完了しました」等)。todos-app.ts の .sr-only コメント参照。
+const liveEl = document.getElementById("live") as HTMLElement;
 
 /** structuredContent.tasks の要素。型 import をしない方針のためここでローカル定義する
  *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。 */
@@ -101,6 +124,29 @@ interface TodoItem {
 	sortOrder: number | null;
 }
 
+/** 差分レンズ用の自己完結スナップショット(案X・2026-07-13。server.ts の TaskSnapshot と同型)。
+ *  affected[].task と removed の両方がこれを使う — completed で tasks から抜けた行も、
+ *  削除で tasks から消えた行も、この最小限のフィールドだけで擬似行を描き切れる。 */
+interface TaskSnapshot {
+	id: string;
+	title: string;
+	due?: string;
+	priority?: string;
+	isAllDay?: boolean;
+}
+
+/** affected の1要素(mutation 応答の差分メタ)。kind は既知4種だが、将来の追加に備えて
+ *  string で受け、未知 kind は becoming 装飾なしの通常描画に degrade する。
+ *  task: completed で tasks(未完了ビュー)から抜けた行を自己完結で描くための snapshot
+ *  (案X)。added/reopened/edited でも contract 上は常に添うが、renderAll は completed かつ
+ *  tasks 不在のときだけ合成に使う(他 kind は tasks に実在するので不要)。 */
+interface AffectedEntry {
+	id: string;
+	kind: string; // "added" | "completed" | "reopened" | "edited"(既知分)
+	task?: TaskSnapshot;
+	changes?: Array<{ field: string; before?: string; after?: string }>;
+}
+
 // --- UI 状態(単一の状態 → renderAll() で全描画、という素朴な一方向データフロー)-------
 // フレームワークを入れない代わりに「状態はこの3つだけ・描画は renderAll() だけ」に
 // 絞って予測可能にする。行単位の部分更新はしない(タスク数は個人のリマインダー規模で
@@ -108,6 +154,11 @@ interface TodoItem {
 let tasks: TodoItem[] | null = null; // null = まだ一度もデータを受け取っていない(skeleton 表示)
 const pendingIds = new Set<string>(); // update-todo 送信中の行(spinner+disabled 対象)
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
+// becoming(変化の中間状態)の元データ。応答を受け取るたびに丸ごと置き換える —
+// affected/removed の無い応答(list/refresh)が来れば空になり、becoming は自然に平常へ
+// 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
+let affectedById = new Map<string, AffectedEntry>();
+let ghosts: TaskSnapshot[] = [];
 
 // --- 自動 refetch のガード用状態 -------------------------------------------------
 // connected: connect() 完了フラグ。初期化前の callServerTool を避ける既存規律のため、
@@ -296,7 +347,11 @@ interface Sections {
 function sectionize(items: TodoItem[], todayKey: string): Sections {
 	const s: Sections = { overdue: [], today: [], upcoming: [], noDue: [], completed: [] };
 	for (const t of items) {
-		if (t.completed) s.completed.push(t);
+		// becoming-done(いま完了した行)は完了折り畳みへ飛ばさず「その場」= due ベースの
+		// 元のセクションに留める(モックの設計: 押した場所から行が消えると操作の因果が
+		// 切れる)。次の応答(affected 無し)で通常どおり完了欄へ移る。
+		const inPlaceDone = t.completed && affectedById.get(t.id)?.kind === "completed";
+		if (t.completed && !inPlaceDone) s.completed.push(t);
 		else if (t.due === null) s.noDue.push(t);
 		else {
 			const diff = dayDiff(wallDatePart(t.due), todayKey);
@@ -324,13 +379,85 @@ function sectionize(items: TodoItem[], todayKey: string): Sections {
 // 描画
 // =============================================================================
 
+/** 差分メタ側の due 文字列(TaskSnapshot.due / changes の before/after)を行本体と同じ
+ *  相対表現に整形する。サーバー(todos-diff.ts)は生 ISO ではなく表示用正規化
+ *  「"YYYY-MM-DD"(終日)/ "YYYY-MM-DD HH:MM"(時刻付き・区切りが T でなく空白)」を
+ *  渡してくる契約なので、空白を T に正規化してから formatDue に委譲する — 行本体の
+ *  「明日 14:00」と差分の「2026-07-15 14:00」が別の言語になるのを防ぐ(相対化は now を
+ *  持つ UI の責務、という todos-diff.ts 側の判断と対になる)。 */
+function formatDueMeta(due: string, todayKey: string): string {
+	const normalized = due.replace(" ", "T");
+	return formatDue({ due: normalized, isAllDay: !normalized.includes("T") } as TodoItem, todayKey).text;
+}
+
+/** becoming: edited のインライン差分計画。renderRow の meta 組み立てが使う。
+ *  インライン表示(旧 → 新)は before/after が揃った due / priority だけ(最大2件)。
+ *  Why not title/notes/その他フィールドもインライン: 新値は行本体が既に表示しており、
+ *  title の旧値まで並べると1行の情報量が壊れる。複雑な値(recurrence 等)は整形自体が
+ *  未定義。よって既知2フィールド以外は「編集済み」バッジへ degrade する(契約側も
+ *  changes 欠落を許すので、degrade が常に安全側の既定)。 */
+interface EditPlan {
+	dueChange: { before?: string; after?: string } | null;
+	priChange: { before?: string; after?: string } | null;
+	moreCount: number; // インラインにできなかった変更の件数(「他N件」表示)
+	tag: string; // マイクロラベル文言
+}
+
+function planEdit(aff: AffectedEntry): EditPlan {
+	const changes = aff.changes ?? [];
+	// before/after は片側だけの場合がある(契約: due の「未設定 → 値」「値 → 未設定」は
+	// 無い側のキーを省く)。少なくとも片側があればインライン表示できる(無い側は「なし」)。
+	// 両側とも無い(field だけ)は表示する値が無いので badge へ degrade。
+	const hasValue = (c: { before?: string; after?: string }): boolean =>
+		c.before !== undefined || c.after !== undefined;
+	// find で先頭1件だけ拾う = フィールドごとに最大1件・合計最大2件、を素朴に実現
+	// (同一フィールドの変更が複数来る契約ではないため厳密な slice(0,2) は不要)。
+	const dueChange = changes.find((c) => c.field === "due" && hasValue(c)) ?? null;
+	const priChange = changes.find((c) => c.field === "priority" && hasValue(c)) ?? null;
+	const inlineCount = (dueChange !== null ? 1 : 0) + (priChange !== null ? 1 : 0);
+	const moreCount = changes.length - inlineCount;
+	// ラベル: インライン1件ならフィールド名入り(iOS の語彙に寄せた「期日変更」)、
+	// 複数なら総称「変更」、インライン0件(changes 欠落・未知フィールドのみ)は
+	// 「編集済み」バッジに degrade(何が変わったかは AI の応答文が語る)。
+	const tag =
+		inlineCount === 0 ? "編集済み" : inlineCount === 2 ? "変更" : dueChange !== null ? "期日変更" : "優先度変更";
+	return { dueChange, priChange, moreCount, tag };
+}
+
 /** 1行(li)を組み立てる。チェックは実 <button>(aria-pressed)にする —
  *  div+onclick だと VoiceOver がボタンとして読み上げず、キーボード操作もできないため。 */
 function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
+	// 削除ゴースト(removed 由来の擬似 TodoItem)は専用の form で早期 return
+	// (チェックボタンを持たない・操作不能・破線ボックス。詳細は renderGhostRow)。
+	if (ghosts.some((g) => g.id === task.id)) return renderGhostRow(task, todayKey);
+
 	const li = document.createElement("li");
 	const isPending = pendingIds.has(task.id);
 	if (task.completed) li.classList.add("done");
 	if (isPending) li.classList.add("pending");
+
+	// becoming 装飾の決定。未知 kind は何も足さない(通常描画へ degrade)。
+	// pending と becoming は理論上共存し得る(becoming 表示中に再タップ)が、その場合も
+	// pending の spinner が circle 描画を上書きするだけで破綻しない。
+	const aff = affectedById.get(task.id);
+	let tagText: string | null = null;
+	let editPlan: EditPlan | null = null;
+	if (aff !== undefined) {
+		if (aff.kind === "completed") {
+			li.classList.add("becoming-done");
+			tagText = "完了";
+		} else if (aff.kind === "reopened") {
+			li.classList.add("becoming-undone");
+			tagText = "再開";
+		} else if (aff.kind === "added") {
+			li.classList.add("becoming-in");
+			tagText = "追加";
+		} else if (aff.kind === "edited") {
+			li.classList.add("becoming-edit");
+			editPlan = planEdit(aff);
+			tagText = editPlan.tag;
+		}
+	}
 
 	const check = document.createElement("button");
 	check.type = "button";
@@ -362,12 +489,43 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 	// メタ行: 優先度 !記号 + due 相対表現(あるものだけ)。notes は行内に出さない
 	// (①の情報設計 — カード幅で notes まで出すと一覧の走査性が落ちる。展開 UI は②以降)。
+	// becoming: edited のインライン差分があるフィールドは、通常表示の代わりに
+	// 「旧(減光)→ 新(琥珀)」の凍結表示に差し替える(旧値に取消線は使わない —
+	// 取消線=完了の恒久記号、の一貫性)。新値 = 行の現在値なので情報の重複はない。
 	const marks = priorityMarks(task.priority);
 	const dueInfo = formatDue(task, todayKey);
-	if (marks !== "" || dueInfo.text !== "") {
+	const hasInline = editPlan !== null && (editPlan.dueChange !== null || editPlan.priChange !== null);
+	const hasMore = editPlan !== null && editPlan.moreCount > 0;
+	if (marks !== "" || dueInfo.text !== "" || hasInline || hasMore) {
 		const meta = document.createElement("div");
 		meta.className = "meta";
-		if (marks !== "") {
+
+		/** 旧 → 新 のインライン差分 span 群を親に追加する小ヘルパー(due/priority 共用)。 */
+		const appendDiff = (parent: HTMLElement, before: string, after: string): void => {
+			const old = document.createElement("span");
+			old.className = "old";
+			old.textContent = before;
+			const arrow = document.createElement("span");
+			arrow.className = "arrow";
+			arrow.textContent = "→";
+			const next = document.createElement("span");
+			next.className = "new";
+			next.textContent = after;
+			parent.appendChild(old);
+			parent.appendChild(arrow);
+			parent.appendChild(next);
+		};
+
+		if (editPlan?.priChange != null) {
+			// 優先度の差分。サーバー(todos-diff.ts)が既に「高/中/低/なし」の表示語へ
+			// 正規化して渡す契約なのでそのまま使う(! 記号へ再変換しない — 「なし → 高」の
+			// ような遷移は語の方が読める。行本体の ! 記号との不一致は許容し、差分は差分の
+			// 言語で語る)。片側欠落は「なし」で補う。
+			const pri = document.createElement("span");
+			pri.className = "pri";
+			appendDiff(pri, editPlan.priChange.before ?? "なし", editPlan.priChange.after ?? "なし");
+			meta.appendChild(pri);
+		} else if (marks !== "") {
 			const pri = document.createElement("span");
 			pri.className = "pri";
 			pri.textContent = marks;
@@ -375,7 +533,19 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			pri.setAttribute("aria-label", marks === "!!!" ? "優先度 高" : marks === "!!" ? "優先度 中" : "優先度 低");
 			meta.appendChild(pri);
 		}
-		if (dueInfo.text !== "") {
+
+		if (editPlan?.dueChange != null) {
+			// 期日の差分。overdue の赤は出さない — 差分表示中の主役は「変わったこと」で、
+			// 警告色を重ねると琥珀(新値)との色の意味が濁る(次の描画から通常の赤に戻る)。
+			const due = document.createElement("span");
+			due.className = "due";
+			appendDiff(
+				due,
+				editPlan.dueChange.before !== undefined ? formatDueMeta(editPlan.dueChange.before, todayKey) : "なし",
+				editPlan.dueChange.after !== undefined ? formatDueMeta(editPlan.dueChange.after, todayKey) : "なし",
+			);
+			meta.appendChild(due);
+		} else if (dueInfo.text !== "") {
 			const due = document.createElement("span");
 			due.className = "due";
 			// 完了済み行では期限切れの赤を出さない(もう済んだものに警告色は不要)。
@@ -383,10 +553,89 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			due.textContent = dueInfo.text;
 			meta.appendChild(due);
 		}
+
+		if (editPlan !== null && editPlan.moreCount > 0) {
+			// インラインにできなかった変更の存在だけ示す(内容は AI の応答文に委ねる)。
+			const more = document.createElement("span");
+			more.className = "more";
+			more.textContent = `他${editPlan.moreCount}件`;
+			meta.appendChild(more);
+		}
 		texts.appendChild(meta);
 	}
 	li.appendChild(texts);
+
+	// becoming マイクロラベル(行右端)。装飾(リング・バー等)は支援技術に届かないが、
+	// こちらは読み上げ対象のテキスト — さらに操作直後の要約は #live(aria-live)にも流す。
+	if (tagText !== null) {
+		const tag = document.createElement("span");
+		tag.className = "tag";
+		tag.textContent = tagText;
+		li.appendChild(tag);
+	}
 	return li;
+}
+
+/** 削除ゴースト行(becoming-gone)。removed:[{id,title,due?}] 由来の擬似 TodoItem を
+ *  「もう存在しない行」として描く: 破線ボックス + 減光 + 破線丸。チェックボタンは
+ *  置かない(操作不能 — 削除済みに 44px タップ面を確保する意味がなく、押せそうな見た目は
+ *  誤操作を誘うだけ)。丸は装飾 span のみ。取消線は使わない(完了専用の記号)。 */
+function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
+	const li = document.createElement("li");
+	li.className = "becoming-gone";
+
+	const circle = document.createElement("span");
+	circle.className = "circle";
+	circle.setAttribute("aria-hidden", "true");
+	li.appendChild(circle);
+
+	const texts = document.createElement("div");
+	texts.className = "texts";
+	const title = document.createElement("div");
+	title.className = "title";
+	title.textContent = task.title;
+	texts.appendChild(title);
+	const dueInfo = formatDue(task, todayKey);
+	if (dueInfo.text !== "") {
+		const meta = document.createElement("div");
+		meta.className = "meta";
+		const due = document.createElement("span");
+		due.className = "due";
+		// overdue の赤は付けない — 削除済みタスクに警告色は無意味(もうやらなくてよい)。
+		due.textContent = dueInfo.text;
+		meta.appendChild(due);
+		texts.appendChild(meta);
+	}
+	li.appendChild(texts);
+
+	const tag = document.createElement("span");
+	tag.className = "tag";
+	tag.textContent = "削除";
+	li.appendChild(tag);
+	return li;
+}
+
+/** snapshot(表示用短文 due)→ 描画用擬似 TodoItem。ghost 変換(renderAll のゴースト経路)と
+ *  同じ due 正規化(空白→T)を行う。案X の核心: completed で tasks(未完了ビュー)から抜けた
+ *  行を、この擬似 TodoItem として tasks に合流させ、sectionize の inPlaceDone 判定・
+ *  renderRow の becoming-done 描画にそのまま乗せる。 */
+function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
+	const due = snap.due === undefined ? null : snap.due.replace(" ", "T");
+	return {
+		id: snap.id,
+		title: snap.title,
+		completed,
+		status: completed ? "COMPLETED" : null,
+		due,
+		isAllDay: snap.isAllDay ?? (due !== null && !due.includes("T")),
+		// priority は snapshot では表示語("高")だが TodoItem.priority は数値。becoming-done の
+		// 一過性フレームでは ! 記号は主役でないので 0(記号なし)にする。次応答で通常経路に戻る。
+		priority: 0,
+		percentComplete: null,
+		completedAt: null,
+		notes: null,
+		sortOrder: null,
+	};
 }
 
 /** セクション1つ(見出し + ul)を root に追加する。空セクションは描画しない
@@ -418,7 +667,40 @@ function renderAll(): void {
 	}
 	root.innerHTML = "";
 	const todayKey = localDateKey(new Date());
-	const s = sectionize(tasks, todayKey);
+	// 削除ゴースト(removed)は tasks にもう存在しないので、描画用の擬似 TodoItem に
+	// 変換して合流させる。due からソート位置が決まる(due 無しは期日なしセクション)ため、
+	// 専用の置き場を作らず通常のセクション分け・ソートにそのまま乗せるのが最小実装
+	// (renderRow 側が ghost 判定して becoming-gone の見た目に切り替える)。
+	const ghostItems: TodoItem[] = ghosts.map((g) => {
+		// removed.due はサーバー整形済みの "YYYY-MM-DD" / "YYYY-MM-DD HH:MM"(空白区切り)。
+		// tasks 側の due("T" 区切り ISO)と同じ経路(dueEpoch/formatDue)に乗せるため
+		// T へ正規化する(offset は無いが、ソート位置と表示にはローカル解釈で十分)。
+		const due = g.due === undefined ? null : g.due.replace(" ", "T");
+		return {
+			id: g.id,
+			title: g.title,
+			completed: false, // 完了折り畳みには絶対入れない(削除と完了の form を混ぜない)
+			status: null,
+			due,
+			isAllDay: due !== null && !due.includes("T"),
+			priority: 0,
+			percentComplete: null,
+			completedAt: null,
+			notes: null,
+			sortOrder: null,
+		};
+	});
+	// affected の completed 合成(案X)。completed は tasks の未完了ビューから抜けるので、
+	// tasks に見つからない id だけ snapshot から擬似行を作って合流させる。added/reopened/edited は
+	// tasks に実在するので合成不要(既に tasks 側の行が becoming 装飾を受け取る)。
+	const taskIds = new Set(tasks.map((t) => t.id));
+	const affectedItems: TodoItem[] = [];
+	for (const a of affectedById.values()) {
+		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id)) {
+			affectedItems.push(snapshotToItem(a.task, true));
+		}
+	}
+	const s = sectionize(tasks.concat(ghostItems, affectedItems), todayKey);
 
 	const activeCount = s.overdue.length + s.today.length + s.upcoming.length + s.noDue.length;
 	if (activeCount === 0) {
@@ -488,6 +770,67 @@ function markUpdated(): void {
 }
 
 // =============================================================================
+// structuredContent の取り込み(全応答共通の唯一の入口)
+// =============================================================================
+
+/** 応答の structuredContent の形(冒頭コメントの契約を型に写経したもの)。 */
+interface TodosStructuredContent {
+	tasks?: TodoItem[];
+	affected?: AffectedEntry[];
+	removed?: TaskSnapshot[];
+}
+
+/**
+ * 応答を状態に反映する唯一の関数。ontoolresult / fetchLatest / mutation 成功の
+ * 3経路すべてがここを通ることで、「tasks と becoming メタは常に同じ応答のペア」という
+ * 不変条件を守る(別々に更新すると、古い affected が新しい tasks に重なる事故が起きる)。
+ * affected/removed が無い応答では Map/配列が空になる = becoming が消える(状態コメント参照)。
+ */
+function applyStructuredContent(sc: unknown): void {
+	const structuredContent = sc as TodosStructuredContent | undefined;
+	tasks = structuredContent?.tasks ?? [];
+	affectedById = new Map(
+		(structuredContent?.affected ?? []).map((a) => [a.id, a]),
+	);
+	ghosts = structuredContent?.removed ?? [];
+	markUpdated();
+	announceBecoming();
+}
+
+/**
+ * affected/removed から操作結果の読み上げ文を組み立てて aria-live(#live)へ流す。
+ * becoming の視覚表現(リング・破線等)は装飾でしかなくスクリーンリーダーに届かないため、
+ * 音声版はテキストで別途明示する。文言は iOS の完了読み上げに寄せた短い述語形。
+ * becoming が無い応答では空文字にする(前回の読み上げ文が残っていると、フォーカス移動で
+ * 再読されるホストがあるため明示的に消す)。
+ */
+function announceBecoming(): void {
+	const parts: string[] = [];
+	for (const a of affectedById.values()) {
+		// タイトルは tasks 側から優先して引き、無ければ a.task(案X の snapshot)から補う。
+		// completed は tasks(未完了ビュー)から抜けるため、a.task フォールバックが無いと
+		// completed の読み上げだけ静かに欠落していた(2026-07-13 修正)。それでも無ければ
+		// (サーバーのバグ等の不整合)読み上げだけ静かにスキップする。
+		const title = tasks?.find((t) => t.id === a.id)?.title ?? a.task?.title;
+		if (title === undefined) continue;
+		const verb =
+			a.kind === "added"
+				? "追加しました"
+				: a.kind === "completed"
+					? "完了しました"
+					: a.kind === "reopened"
+						? "未完了に戻しました"
+						: a.kind === "edited"
+							? "変更しました"
+							: null;
+		if (verb === null) continue; // 未知 kind は視覚同様 degrade(何も読まない)
+		parts.push(`「${title}」を${verb}`);
+	}
+	for (const g of ghosts) parts.push(`「${g.title}」を削除しました`);
+	liveEl.textContent = parts.join("。");
+}
+
+// =============================================================================
 // サーバーとのやりとり
 // =============================================================================
 
@@ -503,9 +846,10 @@ const app = new App({ name: "caldav-todos", version: "0.2.0" });
 app.ontoolresult = (r) => {
 	gotResult = true;
 	clearStatus();
-	const structuredContent = r?.structuredContent as { tasks?: TodoItem[] } | undefined;
-	tasks = structuredContent?.tasks ?? [];
-	markUpdated();
+	// list-todos だけでなく create-todo 等の mutation ツールがこの UI を開いた場合も
+	// ここに届く。mutation 応答には affected/removed が乗っており、初回描画から
+	// becoming(「いま追加された」等)を表現できる — applyStructuredContent が共通処理。
+	applyStructuredContent(r?.structuredContent);
 	renderAll();
 };
 
@@ -541,12 +885,11 @@ async function fetchLatest(): Promise<void> {
 		throw new Error(text);
 	}
 	// refresh-todos の structuredContent 契約は list-todos と同一
-	//   { tasks: TodoItem[], calendarId, timeZone }
-	// なので、ローカルの TodoItem をそのまま流用する(entry は application を import しない
-	// 疎結合のまま — 冒頭「structuredContent の契約」コメント参照)。
-	const structuredContent = result.structuredContent as { tasks?: TodoItem[] } | undefined;
-	tasks = structuredContent?.tasks ?? [];
-	markUpdated();
+	//   { tasks: TodoItem[], calendarId, timeZone }(affected/removed は無し)
+	// なので、共通の取り込み経路を通す。affected/removed が無い応答を適用すると
+	// becoming メタが空になる = 表示中の becoming は平常へ戻る(それが「次の描画まで」の
+	// 正しいライフサイクル。focus refetch で差分表示が流れるのは意図どおり)。
+	applyStructuredContent(result.structuredContent);
 }
 
 /** エラーバナーの「再試行」から使う再取得。手動再読込ボタンは廃止したが、mutation 後の
@@ -600,16 +943,28 @@ async function toggleTask(task: TodoItem): Promise<void> {
 			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
 			throw new Error(text);
 		}
-		// 成功 → サーバー確定値で置き換え(楽観確定はしない)。ここが失敗した場合、
-		// 更新自体は成功している可能性が高いので「再読み込み失敗」として出す
-		// (再試行 = fetchLatest のみ。update-todo を再送すると二重完了の恐れがある)。
-		try {
-			await fetchLatest();
-		} catch (e) {
-			showBanner(
-				`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-				() => void retryFetch(),
-			);
+		// 成功 → サーバー確定値で置き換え(楽観確定はしない)。
+		// 【E-2 ② での変更】update-todo の structuredContent 自体が「サーバー確定の全一覧
+		// + affected(completed/reopened の becoming メタ)」を返す契約になったため、
+		// tasks が乗っていればそれをそのまま確定描画に使い、追加の refresh-todos は呼ばない。
+		// Why not 従来どおり refresh を挟む: refresh 応答には affected が無いので、
+		// せっかくの becoming(凍結リング)が届いた瞬間に消えてしまう。ネットワーク1往復の
+		// 節約にもなる。tasks が無い応答(旧サーバー等)のときだけ従来の refresh に degrade。
+		const structuredContent = result.structuredContent as { tasks?: unknown } | undefined;
+		if (structuredContent?.tasks !== undefined) {
+			applyStructuredContent(structuredContent);
+		} else {
+			// degrade 経路。ここが失敗した場合、更新自体は成功している可能性が高いので
+			// 「再読み込み失敗」として出す(再試行 = fetchLatest のみ。update-todo を
+			// 再送すると二重完了の恐れがある)。
+			try {
+				await fetchLatest();
+			} catch (e) {
+				showBanner(
+					`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+					() => void retryFetch(),
+				);
+			}
 		}
 	} catch (e) {
 		// update-todo 自体の失敗(transport / isError)。行は元の状態のまま残る

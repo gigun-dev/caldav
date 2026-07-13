@@ -47,7 +47,10 @@ import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
-import type { CreateTodoRecurrenceInput } from "../../application/usecases";
+import type { CreateTodoRecurrenceInput, Task } from "../../application/usecases";
+// E-2 スライス②: mutate 系ツールが返す差分レンズ付き確定一覧の contract と、その表示用整形。
+import type { AffectedTask, TaskSnapshot, TodosViewModel } from "./todos-view-model";
+import { buildEditedChanges, snapshotFromTask } from "./todos-diff";
 import {
 	CompleteTodo,
 	ComputeFreeBusy,
@@ -500,8 +503,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 	);
 
-	// --- create-todo(E-1 スライス①)---------------------------------------------
-	server.registerTool(
+	// --- create-todo(E-1 スライス① / E-2 スライス②で ui:// を紐付け + 差分レンズ化)-----
+	// registerAppTool 化して list-todos と同じ TODOS_UI_URI を紐付ける(_meta.ui.resourceUri +
+	// "openai/outputTemplate")。structuredContent は差分レンズ付き確定一覧(TodosViewModel)に
+	// 差し替える。UI 紐付けの可逆性・2キー併記の理由は下の list-todos コメント参照。
+	registerAppTool(
+		server,
 		"create-todo",
 		{
 			title: "Create todo",
@@ -509,6 +516,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。" +
 				'due は "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone 必須)。時刻付き due には自動で VALARM(due 時刻の通知)が付く。',
 			inputSchema: createTodoInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
 			try {
@@ -553,11 +564,17 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					calendarId,
 					recurrence: normalizedRecurrence,
 				});
-				const result = { task };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
+				// affected: 新規作成 = "added"。新 UID は createTodo が返した task.id。確定一覧は
+				// 作成先 calendarId・create 入力の timeZone(due 表示ゾーン)で ListTodos を再実行して
+				// 得る(反復作成でも作られるのはマスター1件なので affected は常にこの1件でよい)。
+				// task: snapshotFromTask で自己完結描画用スナップショットを添える(案X・2026-07-13。
+				// tasks に実在する kind でも一貫性のため常に添える契約 — todos-view-model.ts 参照)。
+				const vm = await buildTodosViewModel({
+					calendarId,
+					timeZone,
+					affected: [{ id: task.id, kind: "added", task: snapshotFromTask(task) }],
+				});
+				return toTodosToolResponse(vm);
 			} catch (error) {
 				// InvalidDueError(due の形式不正・offset ISO8601 拒否)/ DueTimeZoneRequiredError
 				// (時刻付き due に timeZone 無し)/ InvalidTimeZoneError(不正な IANA 名)/
@@ -610,6 +627,70 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	// 【引数を listTodosInputShape と同じ形にする理由】refresh-todos は引数なし(空 object)で
 	// 呼ぶが、共通クロージャは list-todos のフルパラメータも受けられるようにしておき、
 	// refresh-todos 側は全 undefined(= 既定: 未完了のみ・tasks コレクション)で呼ぶ。
+	// TodosViewModel を MCP ツールの戻り値エンベロープ(content + structuredContent)に包む。
+	// content 側は「非 UI ホスト(structuredContent の生テキストしか読まない)」向けの後方互換。
+	// 【structuredContent の cast が要る理由】MCP SDK の structuredContent 型は
+	// `{ [x: string]: unknown }`(任意キーの index signature)を要求する。get-current-time 等は
+	// インラインのオブジェクトリテラルを渡すので暗黙に満たせるが、TodosViewModel は「閉じた
+	// contract 型」(UI と共有する明示的な形)なので index signature を持たず、そのままでは
+	// 代入できない。contract 型を index signature で緩めると UI 契約の型安全が崩れるため、
+	// 境界(SDK へ渡す1点)でだけ cast して閉じた型を保つ。
+	const toTodosToolResponse = (vm: TodosViewModel) => ({
+		content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+		structuredContent: vm as unknown as { [key: string]: unknown },
+	});
+
+	// ListTodos を同 principal・同 calendarId で実行して「操作後の確定一覧」を作り、渡された
+	// 差分メタ(affected/removed)を載せた TodosViewModel を返す共通クロージャ。参照系
+	// (list-todos/refresh-todos)も mutate 系(create/complete/update/delete)もこれを共有し、
+	// 全 todos ツールが「同じ ListTodos 経路 = 同じ認可・同じ確定値」で一覧を組む。
+	//
+	// 【mutate 系でも includeCompleted は指定しない(= 既定 false)理由】
+	// 確定一覧 tasks は list-todos/refresh-todos と同じ「未完了ビュー」に揃える(contract の
+	// 「list-todos と同じ ListTodos UC を再実行」を素直に守る)。完了したタスクは
+	// affected:{kind:"completed"} で id を載せるだけで tasks からは抜ける — UI は前回描画に残って
+	// いたその行を「抜けていく(becoming)」演出で消せる。この「completed は一覧から消え affected
+	// だけが残り香を伝える」形が UI 契約とズレないかは親レビューの論点。
+	const buildTodosViewModel = async (opts: {
+		includeCompleted?: boolean;
+		dueBefore?: string;
+		dueAfter?: string;
+		calendarId?: string;
+		timeZone?: string;
+		affected?: AffectedTask[];
+		removed?: TaskSnapshot[];
+	}): Promise<TodosViewModel> => {
+		const zone = resolveTimeZone(opts.timeZone);
+		const listTodos = new ListTodos(deps.resourceRepo);
+		const { tasks } = await listTodos.execute({
+			owner: principal,
+			includeCompleted: opts.includeCompleted,
+			dueBefore: opts.dueBefore,
+			dueAfter: opts.dueAfter,
+			calendarId: opts.calendarId,
+			timeZone: zone,
+		});
+		const vm: TodosViewModel = { tasks, calendarId: opts.calendarId ?? "tasks", timeZone: zone };
+		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
+		if (opts.affected !== undefined) vm.affected = opts.affected;
+		if (opts.removed !== undefined) vm.removed = opts.removed;
+		return vm;
+	};
+
+	// 対象 id の Task を確定一覧から引く(update の before / delete の removed 情報の取得用)。
+	// includeCompleted:true で読むのは、既に完了しているタスクへの update/delete でも対象を
+	// 取り逃さないため(未完了ビューだけだと完了済みが見つからない)。
+	const findTaskById = async (
+		calendarId: string | undefined,
+		timeZone: string | undefined,
+		id: string,
+	): Promise<Task | undefined> => {
+		const zone = resolveTimeZone(timeZone);
+		const listTodos = new ListTodos(deps.resourceRepo);
+		const { tasks } = await listTodos.execute({ owner: principal, includeCompleted: true, calendarId, timeZone: zone });
+		return tasks.find((t) => t.id === id);
+	};
+
 	const runListTodos = async (args: {
 		includeCompleted?: boolean;
 		dueBefore?: string;
@@ -618,21 +699,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		timeZone?: string;
 	}) => {
 		try {
-			const zone = resolveTimeZone(args.timeZone);
-			const listTodos = new ListTodos(deps.resourceRepo);
-			const { tasks } = await listTodos.execute({
-				owner: principal,
-				includeCompleted: args.includeCompleted,
-				dueBefore: args.dueBefore,
-				dueAfter: args.dueAfter,
-				calendarId: args.calendarId,
-				timeZone: zone,
-			});
-			const result = { tasks, calendarId: args.calendarId ?? "tasks", timeZone: zone };
-			return {
-				content: [{ type: "text" as const, text: JSON.stringify(result) }],
-				structuredContent: result,
-			};
+			return toTodosToolResponse(await buildTodosViewModel(args));
 		} catch (error) {
 			return toolError(error instanceof Error ? error.message : String(error));
 		}
@@ -695,8 +762,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		async () => runListTodos({}),
 	);
 
-	// --- update-todo(E-1 スライス②-b)---------------------------------------------
-	server.registerTool(
+	// --- update-todo(E-1 スライス②-b / E-2 スライス②で ui:// + 差分レンズ化)------------
+	registerAppTool(
+		server,
 		"update-todo",
 		{
 			title: "Update todo",
@@ -705,9 +773,19 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"status:\"COMPLETED\"/\"NEEDS-ACTION\" でフィールド更新と同時に完了/再開もできる" +
 				"(status:\"COMPLETED\" は complete-todo と同じ D4 モデルで定期タスク(RRULE あり)にも対応)。",
 			inputSchema: updateTodoInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ id, calendarId, title, notes, due, priority, status }) => {
 			try {
+				// before 値の取得: UpdateTodo UC は「変わったフィールド」を返さないので、更新前の
+				// 確定タスクをここで先に引いておく(edited の changes.before に使う)。UC は If-Match
+				// 検証で更新前リソースを内部で読むが、それを外へ公開しないため presentation で
+				// もう一度 ListTodos 経由で引く(UC を変えない方針。todos-diff.ts の判定コメント参照)。
+				const before = await findTaskById(calendarId, undefined, id);
+
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const updateTodo = new UpdateTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
 				const { task } = await updateTodo.execute({
@@ -720,11 +798,38 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					priority,
 					status,
 				});
-				const result = { task };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
+
+				// affected の kind 判定:
+				//  - status を渡していれば「完了/再開」を優先("COMPLETED"→completed / "NEEDS-ACTION"→reopened)。
+				//    複合操作(例「due を伸ばして完了」)でも contract の affected は1 kind なので、状態遷移を
+				//    主として扱う(フィールド変更は completed 演出に吸収させ、過剰に edited と併記しない)。
+				//  - status 無しでフィールドだけ変えたら "edited" + changes。
+				// 【affected の id】status:"COMPLETED" かつ反復 VTODO(D4)のときは UpdateTodo が完了
+				//   スナップショットの新 UID を持つ task を返す(complete-todo と同じ)。よって id は
+				//   常に「返された task.id」を使う(D4 では新 UID・それ以外は元の id と一致)。
+				// 【task スナップショット(案X・2026-07-13)】completed は確定一覧 tasks の未完了
+				//   ビューから抜けるため、UI が becoming-done をその場に描けるよう snapshotFromTask を
+				//   3分岐すべてに添える(reopened/edited は tasks に実在するが契約上の一貫性で添える)。
+				let affected: AffectedTask[];
+				if (status === "COMPLETED") {
+					affected = [{ id: task.id, kind: "completed", task: snapshotFromTask(task) }];
+				} else if (status === "NEEDS-ACTION") {
+					affected = [{ id: task.id, kind: "reopened", task: snapshotFromTask(task) }];
+				} else {
+					// 「渡された(非 undefined)フィールド」を changed とみなす素朴判定(UC が変更フィールドを
+					// 返さないため。todos-diff.ts の buildEditedChanges コメント参照)。before が取れなかった
+					// (直前に他プロセスが消した等)場合は changes を出さず field も無い edited に degrade する。
+					const provided = new Set<string>();
+					if (title !== undefined) provided.add("title");
+					if (notes !== undefined) provided.add("notes");
+					if (due !== undefined) provided.add("due");
+					if (priority !== undefined) provided.add("priority");
+					const changes = before !== undefined ? buildEditedChanges(before, task, provided) : undefined;
+					affected = [{ id: task.id, kind: "edited", task: snapshotFromTask(task), ...(changes !== undefined ? { changes } : {}) }];
+				}
+
+				const vm = await buildTodosViewModel({ calendarId, affected });
+				return toTodosToolResponse(vm);
 			} catch (error) {
 				// TodoNotFoundError / InvalidDueError / ETagConditionError / CalDAVPreconditionError /
 				// CollectionNotFoundError いずれも「入力起因のエラー」としてメッセージをそのまま返す
@@ -734,8 +839,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 	);
 
-	// --- complete-todo(E-1 スライス②-b、単発のみ)-----------------------------------
-	server.registerTool(
+	// --- complete-todo(E-1 スライス②-b / E-2 スライス②で ui:// + 差分レンズ化)-----------
+	registerAppTool(
+		server,
 		"complete-todo",
 		{
 			title: "Complete todo",
@@ -744,17 +850,32 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				"定期タスク(RRULE あり)は docs/modeling/06 §D4 の D4 モデル(新 UID の完了スナップショットを作り、" +
 				"マスターを次回 occurrence へ前進させる)で処理する。",
 			inputSchema: completeTodoInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ id, calendarId }) => {
 			try {
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const completeTodo = new CompleteTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
 				const { task } = await completeTodo.execute({ owner: principal, todoId: id, calendarId });
-				const result = { task };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
+				// affected: 完了 = "completed"。id は CompleteTodo が返した task.id を使う。
+				// 【反復 D4 での扱い(判断と理由)】反復 VTODO を完了すると CompleteTodo は「完了
+				// スナップショット(新 UID)」の task を返し、裏でマスターを次回 occurrence へ前進させる
+				// (docs/modeling/06 §D4)。affected には「完了スナップショットの id を completed」で
+				// 載せる(= task.id)。マスター前進を別途 edited で併記することもできるが、UI 上の
+				// becoming は「今完了したこの1件」を見せれば足り、前進後マスターは確定一覧 tasks に
+				// 次回 due の未完了行として自然に現れる(前進はユーザーが完了操作で意図した副作用で、
+				// 差分としてわざわざ強調する必要が薄い)。過剰にならないよう completed 1件に留める。
+				// task: snapshotFromTask で自己完結描画用スナップショットを添える(案X・2026-07-13。
+				// completed は tasks の未完了ビューから抜けるので、UI はこの snapshot が無いと
+				// becoming-done を描く元データを失う — todos-view-model.ts の TaskSnapshot コメント参照)。
+				const vm = await buildTodosViewModel({
+					calendarId,
+					affected: [{ id: task.id, kind: "completed", task: snapshotFromTask(task) }],
+				});
+				return toTodosToolResponse(vm);
 			} catch (error) {
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
@@ -762,24 +883,38 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 	);
 
-	// --- delete-todo(E-1 スライス②-b)---------------------------------------------
-	server.registerTool(
+	// --- delete-todo(E-1 スライス②-b / E-2 スライス②で ui:// + 差分レンズ化)------------
+	registerAppTool(
+		server,
 		"delete-todo",
 		{
 			title: "Delete todo",
 			description: "VTODO(リマインダー)を削除する。常に無条件削除(ETag 条件なし — delete-todo.ts 冒頭コメント参照)。",
 			inputSchema: deleteTodoInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ id, calendarId }) => {
 			try {
+				// removed の title/due は「削除直前」に読んで取る(削除後は当然もう読めない)。
+				// DeleteTodo UC は削除対象の DTO を返さない(delete-todo.ts: 返すべき Task が無いので
+				// Promise<void>)ため、presentation で削除前に ListTodos 経由の findTaskById で拾う。
+				const target = await findTaskById(calendarId, undefined, id);
+
 				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
 				const deleteTodo = new DeleteTodo(deleteCalendarObject, deps.resourceRepo);
 				await deleteTodo.execute({ owner: principal, todoId: id, calendarId });
-				const result = { deleted: true, id };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
+
+				// removed も affected と同じ TaskSnapshot に統一した(案X・2026-07-13)。旧 RemovedTask は
+				// {id,title,due?} のみだったが、TaskSnapshot は priority/isAllDay も持つ上位互換なので
+				// ghost 描画(renderGhostRow)に必要な情報はそのまま満たす。target が取れなかった
+				// (既に消えていた等)場合でも id だけは分かるので最低限の {id, title:""} を載せる
+				// (affected は空 = 削除は removed 側で表現する契約どおり)。
+				const removed: TaskSnapshot[] = [target !== undefined ? snapshotFromTask(target) : { id, title: "" }];
+				const vm = await buildTodosViewModel({ calendarId, removed });
+				return toTodosToolResponse(vm);
 			} catch (error) {
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
 				if (error instanceof DeleteTargetNotFoundError) return toolError(error.message);

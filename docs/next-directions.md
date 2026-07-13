@@ -308,6 +308,20 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   実機フィードバックで空バナー修正・手動再読込廃止・app 駆動 refetch(refetchOnWindowFocus 相当)。
   >   **MCP Apps 仕様調査: ホスト自動更新は仕様保証されない=クライアント依存**(app 駆動 refetch が正)。
   >   反復完了 D4 の確認 UX・スヌーズは②、優先度/編集/削除は③。実機で「会話復帰時の更新挙動」実測が残(任意)。
+  >
+  > **2026-07-13 更新: E-2 差分 UI ドクトリン確定(長い設計探索の収束・詳細は log.md)。** ステートレス・
+  >   アニメ無し・トースト無し。差分は「変化の中間状態(becoming)を静的に」見せる(色でなく form)。
+  >   completed=その場で塗り丸+同心リング+取消線 / deleted=破線ボックス+畳み(取消線は完了専用)/
+  >   added=左バー+wake / edited=インライン旧→新(欠落は編集済みバッジに degrade)。contract=
+  >   `{tasks,calendarId,timeZone, affected?:[{id,kind,changes?}], removed?:[{id,title,due?}]}`(additive)。
+  >   Fable が ③ refined を最終案として設計。**スライス②実装に着手**(フロント=Fable/③becoming・
+  >   サーバー=artisan/affected・changes・removed 同梱 + create/complete/update/delete を registerAppTool 化)。
+  >
+  > **⚠️ 新 CalDAV コア課題(E-2 と独立): iOS shake-undo × sync-collection。** iOS の振り削除取消が
+  >   CalDAV で「一瞬復活→sync で再削除」。RFC 6578 §3.5.1 分析より有力仮説 H-A=iOS の undo はローカル限定
+  >   (=我々のバグでない・§3.5.2 準拠)。Step0 コード確認済(削除後の同一UID再PUTは201・掃除漏れ否定)。
+  >   要実機キャプチャ(`make up DUMP=1` で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/
+  >   PUT+412 なら案A。tombstone(案B)は不採用。runbook は log.md/セッション参照。docs/modeling/06・05 記録待ち。
   >   **2026-07-13 追記: スライス② 実装 + 検証 合格 ✅ `1961cd1`**。app 専用ツール `refresh-todos`
   >   (`_meta.ui.visibility:["app"]`)を追加(handler は list-todos と同じ `runListTodos` 共通クロージャ=
   >   認可経路を完全共有)。UI に「再読み込み」ボタン → `App.callServerTool({name:"refresh-todos"})` →

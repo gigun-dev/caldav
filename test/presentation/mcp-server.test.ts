@@ -332,7 +332,13 @@ describe("/mcp", () => {
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
-			expect(rpc.result.structuredContent.task).toBeDefined();
+			// 2026-07-13 E-2 スライス②: create-todo は { task } ではなく差分レンズ付き確定一覧
+			// (TodosViewModel: tasks/calendarId/timeZone/affected)を返すようになった。
+			// 2026-07-13 案X: affected[].task に自己完結描画用スナップショットが常に添う。
+			expect(rpc.result.structuredContent.tasks).toBeDefined();
+			expect(rpc.result.structuredContent.affected).toMatchObject([
+				{ id: expect.any(String), kind: "added", task: { title: "非反復" } },
+			]);
 
 			// 正規化で recurrence が undefined として application に渡ったことを、保存された
 			// 生 ICS に RRULE プロパティが無いことで確認する(task DTO 上の反復有無フィールドより
@@ -374,6 +380,128 @@ describe("/mcp", () => {
 			const saved = await repos.resources.findAllInCollection(OWNER, TASKS);
 			expect(saved).toHaveLength(1);
 			expect(saved[0].rawIcs).toContain("FREQ=WEEKLY");
+		});
+	});
+
+	// 2026-07-13 E-2 スライス②: mutate 系ツールが「差分レンズ付き確定一覧」(TodosViewModel)を
+	// 返すことの presentation テスト。application UC の挙動(D4 等)は application 層のテストで
+	// 担保済みなので、ここでは「structuredContent に tasks/affected/removed が contract どおりの
+	// 形で載るか」だけを最小に確認する(差分メタの組み立ては server.ts の責務)。
+	describe("mutate 系の差分レンズ(affected/removed)", () => {
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+
+		// create-todo で1件作り、その id を返すヘルパー(complete/update/delete の前提づくり)。
+		async function createTodo(args: Record<string, unknown>): Promise<string> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-todo", arguments: args } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent.tasks.find((t: { title: string }) => t.title === args.title).id;
+		}
+
+		it("create-todo: affected=[{kind:'added'}] + 確定一覧 tasks を返す", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-todo", arguments: { title: "牛乳を買う", due: "2026-07-15" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const sc = rpc.result.structuredContent;
+			expect(sc.calendarId).toBe("tasks");
+			expect(Array.isArray(sc.tasks)).toBe(true);
+			expect(sc.affected).toHaveLength(1);
+			expect(sc.affected[0].kind).toBe("added");
+			// added の id は確定一覧に実在する(UI が突き合わせられる)。
+			expect(sc.tasks.some((t: { id: string }) => t.id === sc.affected[0].id)).toBe(true);
+			// 2026-07-13 案X: task に自己完結描画用スナップショットが添う(added は tasks に
+			// 実在するので UI 側では合成不要だが、契約上の一貫性として常に載る)。
+			expect(sc.affected[0].task).toMatchObject({ id: sc.affected[0].id, title: "牛乳を買う" });
+			expect(sc.removed).toBeUndefined();
+		});
+
+		it("complete-todo: affected=[{kind:'completed'}]。完了タスクは確定一覧(未完了ビュー)から抜ける", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "ゴミ出し", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 2,
+				method: "tools/call",
+				params: { name: "complete-todo", arguments: { id } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const sc = rpc.result.structuredContent;
+			// 2026-07-13 案X: completed は tasks(未完了ビュー)から抜けるため、UI が becoming-done を
+			// 自己完結で描けるよう task にスナップショットが添う(becoming-done の核心の契約)。
+			expect(sc.affected).toMatchObject([{ id, kind: "completed", task: { id, title: "ゴミ出し" } }]);
+			// 未完了ビューが既定なので、完了した id は tasks から消える(becoming は affected が伝える)。
+			expect(sc.tasks.some((t: { id: string }) => t.id === id)).toBe(false);
+		});
+
+		it("update-todo(フィールド): affected=[{kind:'edited', changes:[...]}]。before/after は表示用短文", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "書類提出", due: "2026-07-15", priority: 5 });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, due: "2026-07-20", priority: 1 } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const affected = rpc.result.structuredContent.affected;
+			expect(affected).toHaveLength(1);
+			expect(affected[0].kind).toBe("edited");
+			// due は "YYYY-MM-DD"(終日)の表示用短文、priority は iOS 段階語("中"→"高")。
+			expect(affected[0].changes).toEqual(
+				expect.arrayContaining([
+					{ field: "due", before: "2026-07-15", after: "2026-07-20" },
+					{ field: "priority", before: "中", after: "高" },
+				]),
+			);
+			// 2026-07-13 案X: edited でも task に自己完結描画用スナップショットが添う
+			// (tasks に実在するので UI 側の合成には使わないが、契約上の一貫性)。
+			expect(affected[0].task).toMatchObject({ id, title: "書類提出" });
+		});
+
+		it("update-todo(status:COMPLETED): affected=[{kind:'completed'}](edited と併記しない)", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "支払い", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 4,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, status: "COMPLETED" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			// 2026-07-13 案X: status:COMPLETED も completed 同様、task にスナップショットが添う。
+			expect(rpc.result.structuredContent.affected).toMatchObject([{ id, kind: "completed", task: { id, title: "支払い" } }]);
+		});
+
+		it("delete-todo: removed=[TaskSnapshot](削除直前に読んだ表示情報)+ affected は付かない", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "返却する本", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 5,
+				method: "tools/call",
+				params: { name: "delete-todo", arguments: { id } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const sc = rpc.result.structuredContent;
+			// 2026-07-13 案X: removed は affected[].task と同じ TaskSnapshot に統一され、
+			// isAllDay 等のフィールドが増えたため toEqual ではなく toMatchObject で緩める。
+			expect(sc.removed).toMatchObject([{ id, title: "返却する本", due: "2026-07-15" }]);
+			expect(sc.affected).toBeUndefined();
+			// 確定一覧からも消えている。
+			expect(sc.tasks.some((t: { id: string }) => t.id === id)).toBe(false);
 		});
 	});
 });

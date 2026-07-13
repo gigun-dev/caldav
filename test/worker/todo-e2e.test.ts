@@ -87,12 +87,23 @@ describe("todo E2E(E-1 スライス①: create-todo → list-todos)", () => {
 			priority: 1,
 		});
 		expect(rpc.result?.isError).not.toBe(true);
-		const structured = rpc.result?.structuredContent as { task?: { id?: string; title?: string; due?: string; isAllDay?: boolean; priority?: number } };
-		expect(structured.task?.title).toBe("牛乳を買う");
-		expect(structured.task?.due).toBe("2026-07-20");
-		expect(structured.task?.isAllDay).toBe(true);
-		expect(structured.task?.priority).toBe(1);
-		expect(typeof structured.task?.id).toBe("string");
+		// 2026-07-13 E-2 スライス②: create-todo は { task } ではなく差分レンズ付き確定一覧
+		// (TodosViewModel: tasks/calendarId/timeZone/affected)を返す。作成した1件は tasks に
+		// 実在し、affected に added として載る(id は tasks 側と一致)。
+		// 2026-07-13 案X: affected[].task に自己完結描画用スナップショットが添うため、
+		// 型を広げて task?.id も検証する(UI が tasks を見ずに描ける、の契約確認)。
+		const structured = rpc.result?.structuredContent as {
+			tasks?: Array<{ id: string; title?: string; due?: string; isAllDay?: boolean; priority?: number }>;
+			affected?: Array<{ id: string; kind: string; task?: { id: string; title: string } }>;
+		};
+		const created = structured.tasks?.find((t) => t.title === "牛乳を買う");
+		expect(created?.due).toBe("2026-07-20");
+		expect(created?.isAllDay).toBe(true);
+		expect(created?.priority).toBe(1);
+		expect(typeof created?.id).toBe("string");
+		expect(structured.affected).toHaveLength(1);
+		expect(structured.affected?.[0]).toMatchObject({ id: created?.id, kind: "added" });
+		expect(structured.affected?.[0]?.task?.id).toBe(created?.id);
 	});
 
 	it("list-todos で作成した TODO が1件返る(既定は未完了のみ)", async () => {
