@@ -142,7 +142,7 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
   `{tasks,calendarId,timeZone, affected?, removed?}`(additive・後方互換)。
 - **スライス③(次)**: 優先度表示/編集/削除の UI 化、反復完了 D4 の確認 UX・スヌーズ。
   **2026-07-14 ユーザーフィードバックで追加**:
-  - **バグ【view 状態の非保持】**: includeCompleted:true で Open App → 完了済みを reopen すると
+  - ~~**バグ【view 状態の非保持】**~~ ✅ `7149400`(実機確認は次回: reopen で完了済み維持): includeCompleted:true で Open App → 完了済みを reopen すると
     完了済みが UI から全部消える。原因特定済み — refresh-todos は引数なし(既定 false)・mutate 系
     buildTodosViewModel も既定 false 固定(server.ts のコメントが「親レビューの論点」と自認していた
     まさにその点)。**設計**: contract に `view?`(includeCompleted 等)を additive に echo し、
@@ -250,10 +250,10 @@ Codex(gpt-5.4)による6観点レビューの結果を Fable が裏取り・裁�
 判断のみ記載(RFC 主張は docs/rfc/ 原文で確認)。
 
 **採用・即修正(バグ)**:
-- **R-1【high・回帰バグ】** `repositories.ts` の `parseSupported()` が VEVENT/VTODO しか許容せず、
+- ~~**R-1【high・回帰バグ】**~~ ✅ `e5a6acb` `repositories.ts` の `parseSupported()` が VEVENT/VTODO しか許容せず、
   J-2 で導入した VJOURNAL コレクションの hydrate が例外 → 500(実コード確認済み)。
   `COMPONENT_KINDS` を唯一の許容集合に + `["VJOURNAL"]` 往復テスト。J-2 の取りこぼし。
-- **R-2【medium】** `If-Match: *` を hex ETag として `ETag.fromHex` に渡し 500。RFC 7232 §3.1 では
+- ~~**R-2【medium】**~~ ✅ `91900a0`(DELETE 側の If-Match:* 誤 412 も同時修正) `If-Match: *` を hex ETag として `ETag.fromHex` に渡し 500。RFC 7232 §3.1 では
   「存在すること」の意味。wildcard / ETag リスト / 単一 ETag を型分離して条件評価を是正。
 
 **採用・方向性に載せる(RFC 準拠)**:
@@ -261,9 +261,9 @@ Codex(gpt-5.4)による6観点レビューの結果を Fable が裏取り・裁�
   If request headers」(原文確認済み)に未対応 = MUST 違反。ただし iOS は使わない(実測トラフィックに
   出ていない)ため実害は他クライアント互換。**R-2 の条件評価の型分離と同じ束で設計**するのが得
   (If ヘッダ解析 → コレクション sync-token 照合 precondition を application へ)。tsdav ハーネスに回帰を足す。
-- **R-4【medium】** `parseFreeBusyQuery` が time-range 複数/欠落を黙認(RFC 4791 §9.11 は exactly one)。
+- ~~**R-4【medium】**~~ ✅ `aeeb6f5` `parseFreeBusyQuery` が time-range 複数/欠落を黙認(RFC 4791 §9.11 は exactly one)。
   構造的に数えて 400。小粒。
-- **R-5【low】** `supported-report-set` に free-busy-query を広告 / allprop から sync-token を除外
+- ~~**R-5【low】**~~ ✅ `aeeb6f5`(allprop×sync-token の iOS 実機念押しは J-4 に合流) `supported-report-set` に free-busy-query を広告 / allprop から sync-token を除外
   (RFC 6578 §4 SHOULD NOT)。2点セットで小粒。
 
 **採用・タイミングを A に紐付け(設計判断)**:
@@ -284,7 +284,6 @@ Codex(gpt-5.4)による6観点レビューの結果を Fable が裏取り・裁�
 
 ## 小粒の残タスク(方向性に属さない申し送り)
 
-- **R-1・R-2(上記レビュー起票)— 次セッションの最有力候補**(R-1 は既存機能の回帰バグ)。
 - J-4: iOS 実機での calendar/tasks 非回帰 + VJOURNAL time-range(方向性 J 節参照)。
 - iOS shake-undo 実機キャプチャ(方向性 E 節の ⚠️ 参照)。
 - V6 Phase 2(DST ゾーン)/ VALARM 管理スライス / 反復 due→DATE の I6(いずれも E 節「据え置き」参照)。
