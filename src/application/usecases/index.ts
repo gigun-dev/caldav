@@ -6,12 +6,16 @@
 export {
 	PutCalendarObject,
 	ETagConditionError,
+	SyncTokenIfConditionError,
 	CalDAVPreconditionError,
 	CollectionNotFoundError,
+	evaluateSyncTokenIfPrecondition,
 	type PutCalendarObjectInput,
 	type PutCalendarObjectOutput,
 	type PutCalendarObjectError,
 	type ETagCondition,
+	type SyncTokenIfCondition,
+	type SyncTokenIfPrecondition,
 } from "./put-calendar-object";
 
 // GET
@@ -166,4 +170,5 @@ export {
 export {
 	DeleteTodo,
 	type DeleteTodoInput,
+	type DeleteTodoOutput,
 } from "./delete-todo";

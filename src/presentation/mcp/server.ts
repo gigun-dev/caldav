@@ -47,7 +47,9 @@ import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
-import type { CreateTodoRecurrenceInput, Task } from "../../application/usecases";
+// Task 型は findTaskById 廃止(2026-07-14 レイテンシ改善)で presentation から直接参照しなくなった
+// (before/removed は UC が返す。差分整形は todos-diff.ts が Task を受ける)。ここでは型 import しない。
+import type { CreateTodoRecurrenceInput } from "../../application/usecases";
 // E-2 スライス②: mutate 系ツールが返す差分レンズ付き確定一覧の contract と、その表示用整形。
 import type { AffectedTask, TaskSnapshot, TodosViewModel } from "./todos-view-model";
 import { buildEditedChanges, snapshotFromTask } from "./todos-diff";
@@ -298,6 +300,37 @@ function toolError(message: string) {
  */
 function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	const server = new McpServer({ name: "caldav-mcp", version: "1.0.0" });
+
+	// --- ツール別レイテンシ計測(2026-07-14 追加。POST /mcp wall p95≈1164ms 対策の効果測定用)-----
+	// 【なぜ registerTool を monkeypatch するか(各 handler を個別に try/finally で包まない理由)】
+	// 9 ツールの handler を個別に包むと同じ計測コードが散らばる。かつ registerAppTool 経由の
+	// handler は inline arrow の contextual typing(inputSchema から引数型を推論)に依存しており、
+	// 汎用ジェネリックラッパー関数で包むと inline arrow に文脈型が付かず引数が implicit any になる
+	// (ジェネリックは「引数から推論」と「引数へ文脈型を供給」を同時にできない — tsc strict 落ち)。
+	// registerAppTool(ext-apps)は内部で server.registerTool を呼ぶだけの薄いラッパー
+	// (dist/src/server/index.js の K3 が Z.registerTool を呼ぶことを確認済み)。よって
+	// server.registerTool を1箇所差し替えれば、直接登録・registerAppTool 登録の両 handler を
+	// 透過的に計測できる。handler は差し替え前に完全に型付けされて cb として渡ってくるので、
+	// ラッパー内は型を気にせず cb を呼ぶだけでよい(型安全は登録側で既に確定している)。
+	// 【ログ内容】個人データ(タスク内容)は載せず mcpTool 名と所要 ms のみ。Workers observability の
+	// $metadata.message から JSON 1行として拾える(Date.now は Workers で使用可)。
+	// registerTool はオーバーロードされたジェネリックなので、差し替え関数は緩い型で受けて
+	// 元のシグネチャへキャストして被せる(handler の型はここで緩めても呼び出し側に影響しない)。
+	const rawRegisterTool = server.registerTool.bind(server) as (
+		name: string,
+		config: unknown,
+		cb: (...args: unknown[]) => unknown,
+	) => unknown;
+	server.registerTool = ((name: string, config: unknown, cb: (...args: unknown[]) => unknown) =>
+		rawRegisterTool(name, config, async (...args: unknown[]) => {
+			const startedAtMs = Date.now();
+			try {
+				return await cb(...args);
+			} finally {
+				// 1行 JSON(mcpTool 名 + ms のみ)。タスク内容等の個人データは決して載せない。
+				console.log(JSON.stringify({ mcpTool: name, ms: Date.now() - startedAtMs }));
+			}
+		})) as typeof server.registerTool;
 
 	// --- todos ui:// リソース(E-2 スライス①)------------------------------------
 	// list-todos が _meta.ui.resourceUri で参照する MCP Apps の HTML 本体を登録する。
@@ -673,6 +706,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		removed?: TaskSnapshot[];
 	}): Promise<TodosViewModel> => {
 		const zone = resolveTimeZone(opts.timeZone);
+		// 【次の伸びしろ(今回スコープ外)】この確定一覧は応答契約(TodosViewModel.tasks)上必要なので
+		// 残す。ただし ListTodos は findAllInCollection で全リソースを引いてメモリで VTODO/STATUS/DUE を
+		// 絞る(list-todos.ts の設計)ため、コレクションが大きいと 1 mutate で必ず1回の全件読みが残る。
+		// さらに削るなら「VTODO 種別・未完了・due 範囲を SQL(D1)側で絞る専用ポート」を足すのが本筋
+		// (2026-07-14 レイテンシ改善では UC の before/removed 化で presentation 側の余計な全件読みを
+		// 消すところまでに留め、SQL レベルの絞り込みは別タスクにする)。
 		const listTodos = new ListTodos(deps.resourceRepo);
 		const { tasks } = await listTodos.execute({
 			owner: principal,
@@ -697,19 +736,15 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		return vm;
 	};
 
-	// 対象 id の Task を確定一覧から引く(update の before / delete の removed 情報の取得用)。
-	// includeCompleted:true で読むのは、既に完了しているタスクへの update/delete でも対象を
-	// 取り逃さないため(未完了ビューだけだと完了済みが見つからない)。
-	const findTaskById = async (
-		calendarId: string | undefined,
-		timeZone: string | undefined,
-		id: string,
-	): Promise<Task | undefined> => {
-		const zone = resolveTimeZone(timeZone);
-		const listTodos = new ListTodos(deps.resourceRepo);
-		const { tasks } = await listTodos.execute({ owner: principal, includeCompleted: true, calendarId, timeZone: zone });
-		return tasks.find((t) => t.id === id);
-	};
+	// 【findTaskById を廃止した経緯(2026-07-14 MCP レイテンシ改善)】
+	// 以前ここには「update の before / delete の removed のために ListTodos 全件を
+	// includeCompleted:true で読んで id で引く」ヘルパー findTaskById があった。だが本番計測で
+	// POST /mcp wall p95≈1164ms のボトルネックが D1 往復と判明し、トグル1回で ①findTaskById の
+	// 全件読み → ②UpdateTodo/DeleteTodo(内部 read + PUT)→ ③確定一覧の全件読み、と3回の
+	// 全件級読みが直列に走っていた。UpdateTodo/DeleteTodo は If-Match 解決のため更新前リソースを
+	// 既に内部で読んでいる(lookupTodo)。その更新前状態を UC が before/removed として返すように
+	// 変えた(update-todo.ts / delete-todo.ts の JSDoc 参照)ので、presentation はもう①の
+	// 事前全件読みを行わない — これで3回 → 2回に減る。よって findTaskById は削除した。
 
 	const runListTodos = async (args: {
 		includeCompleted?: boolean;
@@ -807,15 +842,13 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 		async ({ id, calendarId, title, notes, due, priority, status }) => {
 			try {
-				// before 値の取得: UpdateTodo UC は「変わったフィールド」を返さないので、更新前の
-				// 確定タスクをここで先に引いておく(edited の changes.before に使う)。UC は If-Match
-				// 検証で更新前リソースを内部で読むが、それを外へ公開しないため presentation で
-				// もう一度 ListTodos 経由で引く(UC を変えない方針。todos-diff.ts の判定コメント参照)。
-				const before = await findTaskById(calendarId, undefined, id);
-
+				// before 値: UpdateTodo UC が更新前スナップショットを返す(2026-07-14 レイテンシ改善で
+				// UC 側に移した。以前は presentation で findTaskById が別途 ListTodos 全件を読んでいたが、
+				// UC が If-Match 検証で内部 read する更新前状態を before として公開したことで、その
+				// 事前全件読みを丸ごと省けた。update-todo.ts の UpdateTodoOutput.before JSDoc 参照)。
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const updateTodo = new UpdateTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
-				const { task } = await updateTodo.execute({
+				const { task, before } = await updateTodo.execute({
 					owner: principal,
 					todoId: id,
 					calendarId,
@@ -925,21 +958,21 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 		async ({ id, calendarId }) => {
 			try {
-				// removed の title/due は「削除直前」に読んで取る(削除後は当然もう読めない)。
-				// DeleteTodo UC は削除対象の DTO を返さない(delete-todo.ts: 返すべき Task が無いので
-				// Promise<void>)ため、presentation で削除前に ListTodos 経由の findTaskById で拾う。
-				const target = await findTaskById(calendarId, undefined, id);
-
+				// removed の title/due は「削除直前」の状態が要る(削除後は当然もう読めない)。
+				// DeleteTodo UC が If-Match 解決のため内部 read する更新前レンズを removed として返す
+				// ようになった(2026-07-14 レイテンシ改善。以前は presentation で findTaskById が別途
+				// ListTodos 全件を読んでいたが、その事前全件読みを省いた。delete-todo.ts の
+				// DeleteTodoOutput.removed JSDoc 参照)。
 				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
 				const deleteTodo = new DeleteTodo(deleteCalendarObject, deps.resourceRepo);
-				await deleteTodo.execute({ owner: principal, todoId: id, calendarId });
+				const { removed: removedTask } = await deleteTodo.execute({ owner: principal, todoId: id, calendarId });
 
 				// removed も affected と同じ TaskSnapshot に統一した(案X・2026-07-13)。旧 RemovedTask は
 				// {id,title,due?} のみだったが、TaskSnapshot は priority/isAllDay も持つ上位互換なので
-				// ghost 描画(renderGhostRow)に必要な情報はそのまま満たす。target が取れなかった
-				// (既に消えていた等)場合でも id だけは分かるので最低限の {id, title:""} を載せる
-				// (affected は空 = 削除は removed 側で表現する契約どおり)。
-				const removed: TaskSnapshot[] = [target !== undefined ? snapshotFromTask(target) : { id, title: "" }];
+				// ghost 描画(renderGhostRow)に必要な情報はそのまま満たす。UC が removed を必ず返す
+				// (対象不在なら execute が TodoNotFoundError を投げる)ので、旧実装の「target 取得失敗時の
+				// {id, title:""} フォールバック」はもう不要になった。
+				const removed: TaskSnapshot[] = [snapshotFromTask(removedTask)];
 				const vm = await buildTodosViewModel({ calendarId, removed });
 				return toTodosToolResponse(vm);
 			} catch (error) {

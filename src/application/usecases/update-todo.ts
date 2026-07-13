@@ -127,6 +127,30 @@ export interface UpdateTodoInput {
 
 export interface UpdateTodoOutput {
 	task: Task;
+	/**
+	 * 更新「前」の Task スナップショット(2026-07-14 追加。MCP レイテンシ改善のため)。
+	 *
+	 * 【なぜ UC から before を返すか(経緯: 旧「UC を変えない」方針の撤回)】
+	 * ②-b 実装時は「UpdateTodo は変更後の task だけ返し、差分の before は presentation 側で
+	 * 別途 ListTodos を全件読みして引く」という分業だった(presentation の findTaskById)。
+	 * だが本番計測(POST /mcp wall p95≈1164ms)で、トグル1回に対し ①before 取得の ListTodos 全件 →
+	 * ②UpdateTodo(内部 read + PUT)→ ③確定一覧の ListTodos 全件、という直列 D1 往復が
+	 * ボトルネックと判明した。UpdateTodo は If-Match 検証のため更新前リソースを既に内部で読んで
+	 * いる(lookupTodo)。その読み済みの更新前状態をそのまま before として公開すれば、
+	 * presentation は①の全件読みを丸ごと省ける(3回の全件級読み → 2回)。「UC は変更後だけ返す」
+	 * より「読んだものは無駄にせず返す」方が I/O を減らせるという判断で方針を反転した。
+	 *
+	 * 【undefined になりうるか】lookupTodo が null(対象不在)なら execute は TodoNotFoundError を
+	 * 投げるため、正常 return 経路では before は必ず定義される。それでも optional(?)にするのは、
+	 * 「更新前状態が存在しない create 的経路が将来増えても契約を壊さない」ための余地
+	 * (呼び出し側は before === undefined を「差分を描かない」に degrade できる)。
+	 *
+	 * 【zoneOf/timeZone を渡さない理由】下の execute が返す task も taskFromVTodo(vtodo) を
+	 * 既定(identity zoneOf / UTC)で呼んでいる。before/after を同一パラメータで整形することで、
+	 * 差分比較(presentation の buildEditedChanges)が「整形ゾーンのズレ由来の偽差分」を出さない
+	 * (before と after が同じ物差しで並ぶことが差分の正しさより重要)。
+	 */
+	before?: Task;
 }
 
 export type UpdateTodoError = InvalidDueError | TodoNotFoundError | PutCalendarObjectError;
@@ -163,6 +187,11 @@ export class UpdateTodo {
 		if (looked === null) {
 			throw new TodoNotFoundError(input.todoId);
 		}
+
+		// 更新前スナップショット(before)。lookupTodo が読んだ更新前 VTODO レンズから作る
+		// (追加の D1 往復は無い — 既に読み終えたものを整形するだけ)。presentation の差分レンズが
+		// これを edited の changes.before に使う(UpdateTodoOutput.before の JSDoc 参照)。
+		const before = taskFromVTodo(looked.vtodo);
 
 		let patched: Component = patchVTodoFields(looked.vtodo.raw, {
 			summary: input.title,
@@ -228,7 +257,9 @@ export class UpdateTodo {
 					{ putCalendarObject: this.putCalendarObject, recurrenceIterator: this.recurrenceIterator },
 					{ owner: input.owner, collectionId, looked, masterVtodo: patched, now: nowStampFromDate(new Date()) },
 				);
-				return { task };
+				// 反復 D4 経路でも before は添える(呼び出し側 status:"COMPLETED" では before を
+				// 使わないが、契約の一貫性のため全 return 経路で返す)。
+				return { task, before };
 			}
 			patched = applyCompletion(patched, nowStampFromDate(new Date()));
 		} else if (input.status === "NEEDS-ACTION") {
@@ -259,6 +290,6 @@ export class UpdateTodo {
 			throw new Error("UpdateTodo: internal error — patched VTODO not found after round-trip");
 		}
 
-		return { task: taskFromVTodo(vtodo) };
+		return { task: taskFromVTodo(vtodo), before };
 	}
 }

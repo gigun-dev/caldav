@@ -13,16 +13,22 @@
 // という不可解な失敗になる。iOS 実機自身も DELETE では If-Match を送らず無条件削除を行う
 // (docs/modeling/06 実測)。よって chat UX 優先で無条件削除にする。
 //
-// 【戻り値を Promise<void> にする理由】
-// DeleteCalendarObject.execute 自体が Promise<void> を返す既存慣行(delete-calendar-object.ts)。
-// 削除後に返すべき意味のある DTO が無い(Task は「削除された」状態を表現できない)ため、
-// この既存パターンにそのまま揃える(CreateTodo/UpdateTodo/CompleteTodo が { task: Task } を
-// 返すのとは非対称になるが、「削除は返すものが無い」という意味では自然な非対称)。
+// 【戻り値を { removed: Task } にする(旧 Promise<void> からの変更・2026-07-14)】
+// ②-b 実装当初は「削除後に返すべき意味のある DTO が無い(Task は『削除された』状態を表現
+// できない)」として Promise<void> にしていた。だが presentation(MCP delete-todo ツール)は
+// 「消えた行を UI で ghost 表示する」ために削除直前の title/due を必要とし、それを別途
+// ListTodos 全件読み(findTaskById)で拾っていた。本番計測で POST /mcp の p95≈1164ms の
+// ボトルネックが D1 往復と判明したため、この UC が If-Match 解決も兼ねて既に読んでいる
+// 更新前 VTODO(lookupTodo)を removed として返し、presentation の事前全件読みを1回省く。
+// 「削除は返すものが無い」より「削除直前の状態こそ削除操作の唯一の記録なので返す価値がある」
+// と判断を反転した(UpdateTodo が before を返すのと対称。update-todo.ts の JSDoc 参照)。
+// removed は「削除された何か」なので kind 名も CreateTodo/UpdateTodo の task とは別名にする。
 // =============================================================================
 
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
 import { DeleteCalendarObject } from "./delete-calendar-object";
 import { lookupTodo, TodoNotFoundError } from "./todo-lookup";
+import { taskFromVTodo, type Task } from "./task-dto";
 import type { CalendarObjectResourceRepository } from "../ports";
 
 // --- 入力 DTO ---
@@ -35,18 +41,33 @@ export interface DeleteTodoInput {
 	calendarId?: string;
 }
 
+// --- 出力 DTO ---
+
+export interface DeleteTodoOutput {
+	/**
+	 * 削除された VTODO の「削除直前」スナップショット(ghost 表示用)。lookupTodo が If-Match 解決の
+	 * ために読んだ更新前レンズから作る(追加の D1 往復は無い)。zoneOf/timeZone は既定
+	 * (identity / UTC)— UpdateTodo.before と同じ理由(update-todo.ts の JSDoc)。
+	 */
+	removed: Task;
+}
+
 export class DeleteTodo {
 	constructor(
 		private readonly deleteCalendarObject: DeleteCalendarObject,
 		private readonly resourceRepo: CalendarObjectResourceRepository,
 	) {}
 
-	async execute(input: DeleteTodoInput): Promise<void> {
+	async execute(input: DeleteTodoInput): Promise<DeleteTodoOutput> {
 		const collectionId = mkCollectionId(input.calendarId ?? "tasks");
 		const looked = await lookupTodo(this.resourceRepo, input.owner, collectionId, input.todoId);
 		if (looked === null) {
 			throw new TodoNotFoundError(input.todoId);
 		}
+
+		// 削除直前スナップショット。DeleteCalendarObject を呼ぶと当然もう読めないので、必ず
+		// 削除の前に作る(lookupTodo が読み済みの更新前レンズを整形するだけ = 追加往復無し)。
+		const removed = taskFromVTodo(looked.vtodo);
 
 		await this.deleteCalendarObject.execute({
 			owner: input.owner,
@@ -54,5 +75,7 @@ export class DeleteTodo {
 			resourceUri: looked.resourceUri,
 			ifMatchEtag: null,
 		});
+
+		return { removed };
 	}
 }

@@ -469,6 +469,32 @@ describe("/mcp", () => {
 			expect(affected[0].task).toMatchObject({ id, title: "書類提出" });
 		});
 
+		// 2026-07-14 MCP レイテンシ改善: update の before は UpdateTodo UC が返す更新前スナップショット
+		// (以前は presentation が findTaskById で別途 ListTodos 全件を読んでいた)。UC 由来の before が
+		// changes.before に正しく反映される(=更新前の値が保存されている)ことを title で固定する。
+		// due/priority を検証する上のテストと合わせ、「UC の before 起点で edited の before/after が
+		// 正しく組まれる」ことの回帰ガードにする。
+		it("update-todo(title): changes.before は UC が返す更新前 title(旧 findTaskById 廃止後も before が正しい)", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "旧タイトル", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 6,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, title: "新タイトル" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const affected = rpc.result.structuredContent.affected;
+			expect(affected).toHaveLength(1);
+			expect(affected[0].kind).toBe("edited");
+			// before は更新前("旧タイトル")、after は更新後("新タイトル")。before が UC 由来で
+			// 正しく取れていないとここが空/新値になって落ちる(before 経路の回帰ガードの核心)。
+			expect(affected[0].changes).toEqual([{ field: "title", before: "旧タイトル", after: "新タイトル" }]);
+			// 確定一覧側にも新タイトルで実在する。
+			expect(rpc.result.structuredContent.tasks.some((t: { id: string; title: string }) => t.id === id && t.title === "新タイトル")).toBe(true);
+		});
+
 		it("update-todo(status:COMPLETED): affected=[{kind:'completed'}](edited と併記しない)", async () => {
 			seedTasksCollection();
 			const id = await createTodo({ title: "支払い", due: "2026-07-15" });
