@@ -162,7 +162,9 @@ describe("/mcp", () => {
 	// ホスト(claude.ai/iOS)側の描画時フィルタとして効く。
 	// 2026-07-14: list-calendars/create-calendar(ListCollections/CreateCollection UC を MCP から
 	// 露出)を追加したため 9→11 に更新。
-	it("正しい Bearer で tools/list に11ツールが並ぶ(list-calendars/create-calendar 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
+	// 2026-07-14 追記: delete-calendar(list-calendars/create-calendar の対。DeleteCollection UC を
+	// MCP から露出)を追加したため 11→12 に更新。
+	it("正しい Bearer で tools/list に12ツールが並ぶ(delete-calendar 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -171,6 +173,7 @@ describe("/mcp", () => {
 			"complete-todo",
 			"create-calendar",
 			"create-todo",
+			"delete-calendar",
 			"delete-todo",
 			"get-current-time",
 			"get-freebusy",
@@ -404,6 +407,63 @@ describe("/mcp", () => {
 				id: 1,
 				method: "tools/call",
 				params: { name: "create-calendar", arguments: { id: "badcolor", displayName: "Bad", color: "not-a-color" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+	});
+
+	// 2026-07-14: delete-calendar(list-calendars/create-calendar の対。DeleteCollection UC を
+	// MCP から露出。検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機)の e2e。
+	describe("delete-calendar", () => {
+		it("空コレクションは force なしで削除できる", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("empty"), owner: OWNER, displayName: "Empty" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "delete-calendar", arguments: { id: "empty" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent).toEqual({ id: "empty", deleted: true });
+			expect(await repos.collections.findById(OWNER, collectionId("empty"))).toBeNull();
+		});
+
+		it("中身が1件以上あるコレクションは force なしで拒否される(安全装置)", async () => {
+			await seedEvent("uid-mcp-delete-1", "Non-empty guard");
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "delete-calendar", arguments: { id: CALENDAR } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("force");
+			// 拒否された場合はコレクションが残っていること(誤って消えていないこと)を確認する。
+			expect(await repos.collections.findById(OWNER, CALENDAR)).not.toBeNull();
+		});
+
+		it("force:true を指定すると中身ごと削除できる", async () => {
+			await seedEvent("uid-mcp-delete-2", "Non-empty forced");
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "delete-calendar", arguments: { id: CALENDAR, force: true } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(await repos.collections.findById(OWNER, CALENDAR)).toBeNull();
+		});
+
+		it("存在しない id は入力起因エラー(isError)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "delete-calendar", arguments: { id: "no-such-calendar" } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);

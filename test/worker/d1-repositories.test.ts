@@ -136,3 +136,61 @@ describe("D1CalendarObjectResourceRepository.findVTodosInCollection: component_k
 		expect(results.every((r) => r.componentKind === "VTODO")).toBe(true);
 	});
 });
+
+// =============================================================================
+// D1CalendarCollectionRepository.delete: FK ON DELETE CASCADE の実 D1 検証(MCP delete-calendar 追加分)
+// =============================================================================
+//
+// 【何を確認したいか】
+// migrations/0001_init.sql の calendar_objects/sync_changes は両方とも
+// `FOREIGN KEY (owner, collection_id) REFERENCES calendar_collections(owner, id) ON DELETE CASCADE`
+// を持つ(0003_vjournal.sql の再作成後も同じ定義を維持)。D1CalendarCollectionRepository.delete は
+// `DELETE FROM calendar_collections ...` を発行するだけで配下テーブルを明示的に消していない
+// (repositories.ts 参照)ので、この CASCADE が実 D1 上で本当に効くこと自体をテストで固定する
+// (アプリコードのコメントの「思い込み」を実機で裏取りする — CLAUDE.md の RFC 原文確認と同じ
+// 精神で、D1 の挙動もコードコメントの主張だけに頼らず実行して確認する)。
+//
+// 【calendar_objects/sync_changes とも直接 INSERT する理由】
+// 上の findVTodosInCollection テストと同じ判断: D1CollectionUnitOfWork を経由すると
+// CalendarCollection の changeLog 構築など本題(CASCADE の確認)に不要な準備が増える。
+// PRIMARY KEY/CHECK 制約さえ満たせば足りるので直接 INSERT する。
+describe("D1CalendarCollectionRepository.delete: FK ON DELETE CASCADE", () => {
+	it("コレクション削除で配下の calendar_objects と sync_changes も一括削除される", async () => {
+		const owner = principalPath("/dav/principals/d1-repo-cascade-test/");
+		const id = collectionId("cascade-target");
+
+		await new D1PrincipalRepository(env.DB).save(Principal.create(owner, "/dav/d1-repo-cascade-test/"));
+		await new D1CalendarCollectionRepository(env.DB).save(
+			new CalendarCollection({ id, owner, displayName: "Cascade target" }),
+		);
+
+		await env.DB.prepare(
+			`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(owner, id, "cascade.ics", "deadbeef", "BEGIN:VCALENDAR\r\nEND:VCALENDAR", "VEVENT", "cascade-uid", Date.now()).run();
+		await env.DB.prepare(
+			`INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)`,
+		).bind(owner, id, 1, "cascade.ics", "created").run();
+
+		// 削除前提: 両テーブルに確かに1行ずつ存在すること。
+		const objectsBefore = await env.DB.prepare(
+			"SELECT COUNT(*) as n FROM calendar_objects WHERE owner = ? AND collection_id = ?",
+		).bind(owner, id).first<{ n: number }>();
+		const changesBefore = await env.DB.prepare(
+			"SELECT COUNT(*) as n FROM sync_changes WHERE owner = ? AND collection_id = ?",
+		).bind(owner, id).first<{ n: number }>();
+		expect(objectsBefore?.n).toBe(1);
+		expect(changesBefore?.n).toBe(1);
+
+		await new D1CalendarCollectionRepository(env.DB).delete(owner, id);
+
+		const objectsAfter = await env.DB.prepare(
+			"SELECT COUNT(*) as n FROM calendar_objects WHERE owner = ? AND collection_id = ?",
+		).bind(owner, id).first<{ n: number }>();
+		const changesAfter = await env.DB.prepare(
+			"SELECT COUNT(*) as n FROM sync_changes WHERE owner = ? AND collection_id = ?",
+		).bind(owner, id).first<{ n: number }>();
+		expect(objectsAfter?.n).toBe(0);
+		expect(changesAfter?.n).toBe(0);
+	});
+});

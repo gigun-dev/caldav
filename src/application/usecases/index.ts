@@ -56,6 +56,13 @@ export {
 	type CreateCollectionOutput,
 } from "./create-collection";
 
+// MCP delete-calendar(DAV DELETE 経路とは別の薄い専用 UC。delete-collection.ts 冒頭コメント参照)
+export {
+	DeleteCollection,
+	CollectionNotEmptyError,
+	type DeleteCollectionInput,
+} from "./delete-collection";
+
 // calendar-multiget REPORT
 export {
 	MultigetObjects,

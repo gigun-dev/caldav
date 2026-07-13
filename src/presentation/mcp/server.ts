@@ -81,6 +81,9 @@ import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } fr
 // list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
 // 別入口で呼ぶ(CLAUDE.md 長期ビジョン「複数入口」の具体例)。
 import { CollectionAlreadyExistsError, CreateCollection, ListCollections } from "../../application/usecases";
+// delete-calendar(検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機。
+// DAV DELETE 経路とは別の薄い専用 UC — delete-collection.ts 冒頭コメント参照)。
+import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } from "../../application/usecases";
 import { epochToIso, formatDateOnly, isValidIanaZone, parseIsoToEpoch } from "./format";
 
 export interface McpAppDeps {
@@ -173,6 +176,22 @@ function slugifyForCollectionId(displayName: string): string {
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
 	return slug.length > 0 ? slug : crypto.randomUUID();
+}
+
+// --- delete-calendar(検証運用の動機: 作ったリストを消すツールが無く D1 直で消したことがあった。
+// list-calendars/create-calendar の対を埋める) ---------------------------------------------
+// 【非空コレクション既定拒否の安全装置】force を明示しない限り中身が1件でもあれば拒否する
+// (DeleteCollection UC 側のポリシー。delete-collection.ts 冒頭コメント参照)。誤って
+// force:true を渡させないよう、description で「中身も一緒に消える」ことを明示する。
+const deleteCalendarInputShape = {
+	id: z.string().describe("削除するコレクション ID(list-calendars/create-calendar が返す id)。"),
+	force: z
+		.boolean()
+		.optional()
+		.describe(
+			"true を指定すると、中身(予定/リマインダー)が1件以上あるコレクションでも削除する" +
+				"(配下のリソースも一緒に削除される)。省略時(既定 false)は非空コレクションを拒否する。",
+		),
 }
 
 // --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
@@ -670,6 +689,45 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				// presentation でも「入力起因のエラー」としてそのまま返す。既存 create-todo と同じ
 				// toolError 流儀)/ AppleColor.parse の形式エラーもここに落ちる(Error のまま)。
 				if (error instanceof InvalidIdentifierError || error instanceof CollectionAlreadyExistsError) {
+					return toolError(error.message);
+				}
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- delete-calendar(list-calendars/create-calendar の対。UI 無しの素の registerTool) ---
+	server.registerTool(
+		"delete-calendar",
+		{
+			title: "Delete calendar",
+			description:
+				"カレンダー/リマインダーリストを削除する。既定では中身(予定/リマインダー)が1件以上ある" +
+				"コレクションは拒否する(誤操作で予定・リマインダーが巻き添えで消えるのを防ぐ安全装置)。" +
+				"中身ごと削除したい場合のみ force:true を指定する。",
+			inputSchema: deleteCalendarInputShape,
+		},
+		async ({ id, force }) => {
+			try {
+				const targetId = mkCollectionId(id);
+				const deleteCollection = new DeleteCollection(deps.collectionRepo, deps.resourceRepo);
+				await deleteCollection.execute({ owner: principal, collectionId: targetId, force });
+				const result = { id: targetId, deleted: true };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				// InvalidIdentifierError(id が不正な文字列)/ CollectionNotFoundError(存在しない id)/
+				// CollectionNotEmptyError(非空コレクションへの force なし削除)いずれも「入力起因の
+				// エラー」としてメッセージをそのまま返す(create-calendar と同じ toolError 流儀。
+				// CollectionNotEmptyError のメッセージには件数と force の使い方が既に含まれる —
+				// delete-collection.ts 参照)。
+				if (
+					error instanceof InvalidIdentifierError ||
+					error instanceof CollectionNotFoundError ||
+					error instanceof CollectionNotEmptyError
+				) {
 					return toolError(error.message);
 				}
 				return toolError(error instanceof Error ? error.message : String(error));
