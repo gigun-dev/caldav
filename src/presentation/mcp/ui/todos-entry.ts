@@ -100,6 +100,10 @@
 // =============================================================================
 
 import { App } from "@modelcontextprotocol/ext-apps";
+// E-2 スライス④: システム起因(外部)変化のクライアント差分の純関数コア。ui/ 内どうしの
+// import は 'mcp-ui-is-terminal' の除外対象(ui/→ui/ は許可)。bun build がバンドル時に
+// inline するので生成物 todos-bundle.ts は1ファイルのまま。
+import { computeSyncDiff, type SyncDiff } from "./todos-diff-client";
 
 // --- 静的 DOM への参照(骨格は todos-app.ts の HTML 側にある)-----------------------
 // ヘッダ・バナー・ステータス行は「一覧の状態に依らず常時ある面」なので HTML 静的骨格に
@@ -144,6 +148,10 @@ interface TaskSnapshot {
 	due?: string;
 	priority?: string;
 	isAllDay?: boolean;
+	// sync(E-2 スライス④): このゴーストがシステム起因(外部削除)由来か。true なら
+	// renderGhostRow のラベルを中立の「同期(削除)」にする。サーバー由来(ユーザー起因)の
+	// removed には付かない(= undefined)。server の TaskSnapshot には無い client 専用フィールド。
+	sync?: boolean;
 }
 
 /** affected の1要素(mutation 応答の差分メタ)。kind は既知4種だが、将来の追加に備えて
@@ -156,6 +164,11 @@ interface AffectedEntry {
 	kind: string; // "added" | "completed" | "reopened" | "edited"(既知分)
 	task?: TaskSnapshot;
 	changes?: Array<{ field: string; before?: string; after?: string }>;
+	// sync(E-2 スライス④): このエントリがシステム起因(外部変化)由来か。サーバーの affected
+	// (ユーザー起因)には付かない。true のとき becoming の form は同じ語彙を使いつつ、行右端の
+	// ラベルを中立の「同期(...)」に切り替える(出所=iOS 等は断定しない。ユーザーの「追加/完了」
+	// ラベルと区別するため)。クライアント差分(computeSyncDiff)から合成した分だけに立つ。
+	sync?: boolean;
 }
 
 // --- UI 状態(単一の状態 → renderAll() で全描画、という素朴な一方向データフロー)-------
@@ -482,19 +495,26 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
 	if (aff !== undefined) {
+		// sync(E-2 スライス④): システム起因の変化はラベルを中立の「同期(...)」にする。
+		// form(左バー/リング/破線)は user 起因と同一語彙を使い、区別はラベルだけに集約する
+		// (出所は断定しない・ユーザーの「追加/完了」ラベルと明確に区別、という設計)。
+		const isSync = aff.sync === true;
 		if (aff.kind === "completed") {
 			li.classList.add("becoming-done");
-			tagText = "完了";
+			tagText = isSync ? "同期(完了)" : "完了";
 		} else if (aff.kind === "reopened") {
 			li.classList.add("becoming-undone");
-			tagText = "再開";
+			tagText = isSync ? "同期(再開)" : "再開";
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
-			tagText = "追加";
+			tagText = isSync ? "同期(追加)" : "追加";
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
-			tagText = editPlan.tag;
+			// 編集はインライン差分(旧→新)の粒度ラベル(期日変更 等)を user 起因では使うが、
+			// sync では出所不明の一括ラベル「同期(編集)」に丸める(何が変わったかは form と
+			// meta の旧→新が語る。ラベルは「これは同期由来」の一言に徹する)。
+			tagText = isSync ? "同期(編集)" : editPlan.tag;
 		}
 	}
 
@@ -660,7 +680,10 @@ function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 	const tag = document.createElement("span");
 	tag.className = "tag";
-	tag.textContent = "削除";
+	// sync(E-2 スライス④): システム起因の外部削除は中立ラベル「同期(削除)」。ユーザー起因の
+	// 削除(server の removed)は従来どおり「削除」。ghosts の該当スナップショットの sync 印で分岐する。
+	const isSyncGhost = ghosts.find((g) => g.id === task.id)?.sync === true;
+	tag.textContent = isSyncGhost ? "同期(削除)" : "削除";
 	li.appendChild(tag);
 	return li;
 }
@@ -838,6 +861,30 @@ interface TodosStructuredContent {
 }
 
 /**
+ * SyncDiff(システム起因の残差)を AffectedEntry[](sync:true)へ変換する。
+ * added/completed/reopened/edited はいずれも対象行が nextTasks に実在する
+ * (=次の描画で本物の tasks 行が becoming 装飾を受け取る)ため、snapshot は添えない —
+ * server 側 completed の「未完了ビューから抜けた行を snapshot で合成」する必要は sync には無い。
+ *
+ * 【重要な限界(default ビューでの完了と削除の非区別)】
+ *   includeCompleted:false(既定)ビューでは、外部で「完了」されたタスクは未完了一覧から
+ *   抜けるため、クライアント差分では next-欠落 = removed(削除)として検出される
+ *   (completed には入らない — completed は両ビューに残る includeCompleted:true のときだけ検出)。
+ *   つまり既定ビューでの外部完了は「同期(削除)」ゴーストとして見える。DTO に「なぜ消えたか」の
+ *   情報が無い以上クライアントからは区別不能で、これは許容する degrade(実害は「完了なのに削除と
+ *   表示」= 一過性の中間表現が1描画だけ出るだけ)。includeCompleted:true で開いていれば
+ *   完了は completed として正しく検出される。→ 親への論点として報告。
+ */
+function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
+	const out: AffectedEntry[] = [];
+	for (const id of diff.added) out.push({ id, kind: "added", sync: true });
+	for (const id of diff.completed) out.push({ id, kind: "completed", sync: true });
+	for (const id of diff.reopened) out.push({ id, kind: "reopened", sync: true });
+	for (const e of diff.edited) out.push({ id: e.id, kind: "edited", changes: e.changes, sync: true });
+	return out;
+}
+
+/**
  * 応答を状態に反映する唯一の関数。ontoolresult / fetchLatest / mutation 成功の
  * 3経路すべてがここを通ることで、「tasks と becoming メタは常に同じ応答のペア」という
  * 不変条件を守る(別々に更新すると、古い affected が新しい tasks に重なる事故が起きる)。
@@ -845,11 +892,46 @@ interface TodosStructuredContent {
  */
 function applyStructuredContent(sc: unknown): void {
 	const structuredContent = sc as TodosStructuredContent | undefined;
-	tasks = structuredContent?.tasks ?? [];
-	affectedById = new Map(
-		(structuredContent?.affected ?? []).map((a) => [a.id, a]),
-	);
-	ghosts = structuredContent?.removed ?? [];
+	const nextTasks = structuredContent?.tasks ?? [];
+	const serverAffected = structuredContent?.affected ?? [];
+	const serverRemoved = structuredContent?.removed ?? [];
+
+	// --- システム起因(外部)変化の差分レンズ(E-2 スライス④)-------------------------
+	// prev(直前に描画した tasks = この関数が前回セットした値)と nextTasks を突き合わせ、
+	// サーバーの affected/removed で説明済みでない残差 = ユーザーが起こしていない変化を検出する。
+	// 【なぜ applyStructuredContent 1箇所でやるか】ここは全応答(ontoolresult / fetchLatest /
+	// mutation 便乗)の唯一の入口。silent に混ざる経路は (1) focus refetch (2) 自分の mutation
+	// 応答への便乗 の2つあるが、どちらも最終的にここを通るので、1箇所の差分計算で両方に効く。
+	// 【初回は差分なし】tasks===null(まだ一度も描画していない)なら prev が無いので全行が
+	// 「追加」に見えてしまう。初回は差分を取らない(prev 無し=差分なし、が正しい静けさ)。
+	// 【degrade ガード(仕様3)】pending 中の行は差分マークの対象から外す(explainedIds に混ぜる)。
+	// 完全な「延期」はしない理由: 一覧の並べ替え自体は tasks 置換で必ず起きる(becoming マークの
+	// 有無とは独立)ので、becoming だけ遅らせても指の下の並べ替えは防げない。データ鮮度を捨てて
+	// tasks 置換ごと延期するのは stale 表示という別の害を生む。さらに pending 中は maybeRefetch が
+	// 早期 return するので focus 便乗の新データは来ず、来るのは自分の mutation 応答だけ(その行は
+	// server affected 側で説明済み)。よって「pending 行にはシステム差分マークを乗せない」まで
+	// degrade し、それ以外は即適用する(quick-add 入力中も同様 — 入力欄は #root の外なので再描画で
+	// blur されず、指の下で崩れるのは list 行だけ。その list 行の並べ替えは上記のとおり不可避)。
+	// 【アニメーション方針】システム差分も既存 becoming と同じ「静的マーキングのみ」に乗る
+	// (装飾アニメは足さない)。行の移動を滑らかに見せる FLIP はやらない — 将来任意の加点で、
+	// reduced-motion 分岐と会話ログ内カードで動くノイズの検証がセットで要るため今回はスコープ外。
+	// reduced-motion は既存の抑制(spinner/skeleton の @media)にそのまま乗る(新規の動きが無い)。
+	let syncDiff: SyncDiff = { added: [], completed: [], reopened: [], edited: [], removed: [] };
+	if (tasks !== null) {
+		const explained = new Set<string>();
+		for (const a of serverAffected) explained.add(a.id);
+		for (const r of serverRemoved) explained.add(r.id);
+		for (const id of pendingIds) explained.add(id); // pending 行は触らない(degrade ガード)
+		syncDiff = computeSyncDiff(tasks, nextTasks, explained);
+	}
+
+	tasks = nextTasks;
+	// サーバー由来(ユーザー起因)+ システム由来(sync)の affected を統合。sync 側は sync:true を
+	// 立て、renderRow/announceBecoming が中立ラベル「同期(...)」で描く。
+	const combinedAffected: AffectedEntry[] = serverAffected.concat(syncDiffToAffected(syncDiff));
+	affectedById = new Map(combinedAffected.map((a) => [a.id, a]));
+	// removed も同様に統合。システム由来のゴーストは sync:true。
+	ghosts = serverRemoved.concat(syncDiff.removed.map((r): TaskSnapshot => ({ ...r, sync: true })));
 	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
 	// バグ修正の要。list-todos/refresh-todos 応答は view を echo するのでビューが維持され、
 	// mutate 応答(view 無し)を直接適用するのは既定ビューのときだけ(toggleTask の分岐参照)なので
@@ -876,7 +958,15 @@ function applyStructuredContent(sc: unknown): void {
  */
 function announceBecoming(): void {
 	const parts: string[] = [];
+	// システム起因(sync)の件数。個々のタイトルまでは読み上げず、末尾に要約1文で通知する
+	// (E-2 スライス④・仕様4)。ユーザー自身が起こしていない変化を1件ずつ述語形で読み上げると
+	// 「あなたがやった」ように聞こえて誤解を生むため、中立の要約「同期で N 件更新されました」に丸める。
+	let syncCount = 0;
 	for (const a of affectedById.values()) {
+		if (a.sync === true) {
+			syncCount++;
+			continue; // sync は個別読み上げせず要約に集約
+		}
 		// タイトルは tasks 側から優先して引き、無ければ a.task(案X の snapshot)から補う。
 		// completed は tasks(未完了ビュー)から抜けるため、a.task フォールバックが無いと
 		// completed の読み上げだけ静かに欠落していた(2026-07-13 修正)。それでも無ければ
@@ -896,7 +986,14 @@ function announceBecoming(): void {
 		if (verb === null) continue; // 未知 kind は視覚同様 degrade(何も読まない)
 		parts.push(`「${title}」を${verb}`);
 	}
-	for (const g of ghosts) parts.push(`「${g.title}」を削除しました`);
+	for (const g of ghosts) {
+		if (g.sync === true) {
+			syncCount++;
+			continue; // sync 削除も要約へ集約
+		}
+		parts.push(`「${g.title}」を削除しました`);
+	}
+	if (syncCount > 0) parts.push(`同期で${syncCount}件更新されました`);
 	liveEl.textContent = parts.join("。");
 }
 
