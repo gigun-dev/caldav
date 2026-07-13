@@ -191,26 +191,18 @@ export function davError(name: string, detail?: string): string {
 // calendar-query REPORT(RFC 4791 §7.8/§9.7〜9.9)フィルタの解析(G-3)
 // =============================================================================
 //
-// 【対応するもの(確定設計メモ「④ スコープ」の Yes)】
-//   - VCALENDAR 直下の単一 comp-filter(VEVENT または VTODO)
+// 【対応するもの(確定設計メモ「④ スコープ」の Yes。J-4 で VJOURNAL+time-range も解禁)】
+//   - VCALENDAR 直下の単一 comp-filter(VEVENT / VTODO / VJOURNAL)
 //   - その中の time-range(start/end。§9.9 の UTC 形式 YYYYMMDDTHHMMSSZ。片側欠落は
-//     0 / OCCURRENCE_INDEX_MAX へ正規化)
+//     0 / OCCURRENCE_INDEX_MAX へ正規化)。VJOURNAL も含め全 componentName で対応
+//     (J-1 では VJOURNAL+time-range を暫定 unsupported にしていたが、J-4 で
+//     application 層(vjournalOverlapsRange)に §9.9 VJOURNAL 実効値表 + RRULE 展開を
+//     実装したため解禁した)。
 //   - トップレベル(filter の外)の CALDAV:timezone(§9.8。VTIMEZONE 1個の PCDATA)
-//   - J-1(2026-07-11 追加): comp-filter name=VJOURNAL 自体は許可する。ただし
-//     **time-range 無しのときのみ**(下記参照)。
 // 【対応しないもの(No。検出したら unsupported=true)】
-//   prop-filter / param-filter / ネスト comp-filter / VJOURNAL への time-range / CALDAV:expand /
-//   limit-recurrence-set。呼び出し側(index.ts)は unsupported=true を
-//   403 CALDAV:supported-filter(§7.8 precondition)へ写像する。
-//
-// 【VJOURNAL + time-range を unsupported にする理由(J-1 のスコープ判断)】
-// RFC 4791 §9.9 は VJOURNAL の time-range 実効値表を定義しており本来は対応可能だが、
-// 反復 VJOURNAL(RRULE 付き)の展開ロジックはこの実装にまだ無い(occurrence-bounds.ts の
-// computeVJournalBounds コメント参照)。VEVENT のように expandRecurrenceSet へ委譲する
-// 精密な最終判定を実装していない状態で time-range だけ受理すると、単発 VJOURNAL は
-// 正しく判定できても反復 VJOURNAL は誤判定になりうる。「格納・検証・往復ができる」ところまでが
-// J-1 のスコープ(反復展開込みの time-range REPORT は J-4)なので、ここでは安全側に倒して
-// VJOURNAL+time-range をまるごと unsupported として 403 に倒す。
+//   prop-filter / param-filter / ネスト comp-filter / CALDAV:expand / limit-recurrence-set。
+//   呼び出し側(index.ts)は unsupported=true を 403 CALDAV:supported-filter
+//   (§7.8 precondition)へ写像する。
 // =============================================================================
 
 export interface CalendarQueryFilter {
@@ -327,8 +319,11 @@ export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
 	const result: CalendarQueryFilter = { componentName, unsupported: false };
 
 	const trMatch = compBody.match(/<(?:[^:>]+:)?time-range\b([^>]*?)\/?>/i);
-	// J-1: VJOURNAL + time-range は unsupported(冒頭コメントの理由: 反復展開が未実装)。
-	if (trMatch && componentName === "VJOURNAL") return unsupported(componentName);
+	// J-4(2026-07-14): VJOURNAL + time-range は unsupported だった(J-1 の暫定処置)が、
+	// application 層に §9.9 VJOURNAL 実効値表 + RRULE 展開(vjournalOverlapsRange)を実装した
+	// ので解禁。ここでは VEVENT/VTODO と同じ time-range 属性パースを共通に通すだけでよい
+	// (VJOURNAL 固有の判定はすべて application 層 CalendarQuery が担う。presentation 層は
+	// 属性の構文解析だけに専念する層境界の原則どおり)。
 	if (trMatch) {
 		const attrs = trMatch[1];
 		const startAttr = attrs.match(/\bstart=["']([^"']+)["']/i)?.[1];

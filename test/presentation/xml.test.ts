@@ -231,7 +231,8 @@ describe("DAV XML", () => {
 		});
 
 		// =====================================================================
-		// J-1: VJOURNAL の comp-filter 対応(time-range 無しのみ許可)
+		// J-1: VJOURNAL の comp-filter 対応(J-1 時点は time-range 無しのみ許可。
+		// J-4 で time-range 付きも解禁 — 下の describe 末尾のテスト参照)
 		// =====================================================================
 		it("comp-filter VJOURNAL(time-range 無し)は unsupported=false で通す", () => {
 			const body = [
@@ -249,7 +250,9 @@ describe("DAV XML", () => {
 			expect(filter.timeRange).toBeUndefined();
 		});
 
-		it("comp-filter VJOURNAL + time-range は unsupported=true(反復展開は J-4 送り)", () => {
+		// J-4: application 層(vjournalOverlapsRange)に §9.9 VJOURNAL 実効値表 + RRULE 展開を
+		// 実装したため、VJOURNAL+time-range は VEVENT/VTODO と同じく解禁(旧 J-1 の暫定 unsupported を解除)。
+		it("comp-filter VJOURNAL + time-range は unsupported=false で通す(J-4 で解禁)", () => {
 			const body = [
 				'<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">',
 				"<C:filter>",
@@ -261,7 +264,13 @@ describe("DAV XML", () => {
 				"</C:filter>",
 				"</C:calendar-query>",
 			].join("");
-			expect(parseCalendarQueryFilter(body).unsupported).toBe(true);
+			const filter = parseCalendarQueryFilter(body);
+			expect(filter.unsupported).toBe(false);
+			expect(filter.componentName).toBe("VJOURNAL");
+			expect(filter.timeRange).toEqual({
+				startMillis: Date.UTC(2026, 0, 1, 0, 0, 0),
+				endMillis: Date.UTC(2026, 1, 1, 0, 0, 0),
+			});
 		});
 	});
 });

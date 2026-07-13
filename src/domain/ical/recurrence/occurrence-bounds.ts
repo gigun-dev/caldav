@@ -268,17 +268,22 @@ function computeVTodoBounds(todo: VTodo, opts: ComputeOccurrenceBoundsOptions): 
  * §9.9 の表どおり DTSTART 無しを「絶対に time-range にマッチしない」として除外する索引を
  * 書いてしまうと、時間概念を持たない VJOURNAL(§3.6.3: "does not take up time on a calendar"
  * — そもそも DTSTART が無い運用が普通にありうる)が SQL 側で恒久的に候補から落ちてしまう。
- * 一方この J-1 タスクは「calendar-query の VJOURNAL+time-range 自体を unsupported として
- * 403 で弾く」設計(xml.ts の parseCalendarQueryFilter・J-4 送り)なので、この bounds が
- * 実際に time-range 絞り込みへ使われることは現状無い。だが将来 J-4 で VJOURNAL の
- * time-range REPORT を実装するときに「索引が間違って恒久除外していた」状態から始めたくない
- * ため、NULL(常に候補)の安全側に倒しておく — 0002 の NULL の意味(「絞り込めない」は
- * 「除外しない」の側に倒す)と整合させる判断。
+ * 最終判定(application 層 vjournalOverlapsRange。J-4)は §9.9 の表どおり厳密に FALSE を返す
+ * ので、索引側だけ NULL(常に候補)の安全側に倒しても正しさは損なわれない — 0002 の NULL の
+ * 意味(「絞り込めない」は「除外しない」の側に倒す)と整合させる判断。
  *
- * 【反復 VJOURNAL の扱い】
- * VTODO と同じ割り切り(computeVTodoBounds のコメント参照)で展開しない。反復の有無に
- * 関わらず単発の DTSTART のみを見て first/last を出す — RRULE 付き VJOURNAL の展開自体が
- * J-4 のスコープ外なので、索引を精密化する意味がない(どうせ最終判定で使われない)。
+ * 【反復 VJOURNAL の扱い(J-4 更新: RRULE 付きは lastMillis を無限扱いにする)】
+ * この索引自体は VTODO と同じ割り切り(computeVTodoBounds のコメント参照)で展開しない
+ * — 単発の DTSTART のみを見て first/last を出す(索引を精密化するコストを避ける。
+ * どうせ最終判定である vjournalOverlapsRange が正確に絞り込む)。
+ * ただし J-4 で VJOURNAL+time-range REPORT を実際に受理するようになったため、RRULE が
+ * 付いている場合は lastMillis を OCCURRENCE_INDEX_MAX(無限扱い)にする **必要がある**。
+ * そうしないと「DTSTART は過去だが RRULE で未来にも繰り返す VJOURNAL」が、未来の time-range
+ * クエリで SQL 側の索引(firstMillis〜lastMillis の交差判定)によって候補から恒久的に
+ * 落ちてしまい、vjournalOverlapsRange まで到達せず false negative になる(VEVENT の
+ * isInfinite 分岐と同じ理由での対策。COUNT/UNTIL の有無を区別せず一律無限扱いにするのは
+ * 「索引はあくまで粗い候補集合」という設計方針どおりの安全側の単純化 — 精密な UNTIL 判定は
+ * vjournalOverlapsRange 側でどのみち行う)。
  */
 function computeVJournalBounds(journal: VJournal, opts: ComputeOccurrenceBoundsOptions): OccurrenceBounds {
 	const dtstart = journal.dtstart;
@@ -288,6 +293,11 @@ function computeVJournalBounds(journal: VJournal, opts: ComputeOccurrenceBoundsO
 	}
 
 	const first = instantOf(dtstart, opts.zoneOf);
+	if (journal.rrule !== undefined) {
+		// RRULE 付き: 索引は展開しないので、未来の occurrence を取りこぼさないよう
+		// lastMillis を無限扱い(OCCURRENCE_INDEX_MAX)にする(この関数冒頭コメント参照)。
+		return { firstMillis: first, lastMillis: OCCURRENCE_INDEX_MAX };
+	}
 	if (isCalDateTime(dtstart)) {
 		// DATE-TIME: 効果的 duration は 0 秒 → first と last は同一点。
 		return { firstMillis: first, lastMillis: first };

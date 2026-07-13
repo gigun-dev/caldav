@@ -219,3 +219,54 @@ request headers」を対象に実装。原文照合結果:
 `ifSyncTokenPrecondition`(両層をつなぐ配線)。テストは
 `test/presentation/app.test.ts` の `describe("R-3 ...")`。
 - RELATED-TO の既定 RELTYPE は PARENT(RFC 5545 §3.8.4.5 / RFC 9253 §9.1 踏襲)。
+
+## J-4: VJOURNAL の calendar-query time-range 対応(2026-07-14)
+
+`docs/rfc/rfc4791.txt` §9.9(L5158-5170)の VJOURNAL time-range 実効値表を原文照合。
+
+```
++----------------------------------------------------+
+| VJOURNAL has the DTSTART property?                 |
+|   +------------------------------------------------+
+|   | DTSTART property is a DATE-TIME value?         |
+|   |   +--------------------------------------------+
+|   |   | Condition to evaluate                      |
++---+---+--------------------------------------------+
+| Y | Y | (start <= DTSTART)     AND (end > DTSTART) |
++---+---+--------------------------------------------+
+| Y | N | (start <  DTSTART+P1D) AND (end > DTSTART) |
++---+---+--------------------------------------------+
+| N | * | FALSE                                      |
++---+---+--------------------------------------------+
+```
+
+J-1(2026-07-11)時点で `src/domain/ical/recurrence/occurrence-bounds.ts` の
+`computeVJournalBounds`(PUT 時の SQL 索引計算)は既にこの表と一致していた(照合済み・訂正不要)。
+J-1 の時点で残っていたギャップは「calendar-query REPORT の最終判定」側 —
+`parseCalendarQueryFilter`(presentation/dav/xml.ts)が VJOURNAL+time-range を丸ごと
+unsupported=403 に倒しており、表自体は反復展開(RRULE)を伴う最終判定として実装されていなかった。
+
+§9.9 冒頭(L5026-5030、VEVENT 表の直前にある一般規則。VJOURNAL 表にも適用される共通規則)の
+原文:「Time range tests MUST consider every recurrence instance when testing the time range
+condition; if any one instance matches, then the test returns true.」— 反復 VJOURNAL も
+RRULE の全 instance を試し、1つでも一致すれば全体マッチという判定が RFC の MUST 要求。
+
+**実装**: `src/domain/ical/recurrence/vjournal-expansion.ts` の `vjournalOverlapsRange`。
+DTSTART 無し→FALSE(索引側の null/null=常に候補という安全側の割り切りとは意図的に非対称。
+最終判定は表どおり厳密に判定する)、RRULE 付きは expansion.ts の共通ヘルパー(壁時計⇔epoch
+変換・UNTIL 厳密判定・maxOccurrences 上限)を再利用して展開し、各 instance に表の効果的
+duration(DATE-TIME→0秒/DATE→+P1D)を適用して overlap 判定する。
+
+**スコープの割り切り(RDATE/EXDATE 非対応)**: `src/domain/ical/semantics/vjournal.ts` の
+VJournal レンズが現状 RDATE/EXDATE のアクセサを持たないため、この J-4 では RRULE +
+RECURRENCE-ID オーバーライドの展開のみを実装した。§9.9 冒頭の一般規則は RDATE 由来の
+instance にも同じ適用対象だが、レンズ拡張(+validate() 見直し)は別スコープと判断し先送り
+(vjournal-expansion.ts 冒頭コメント参照)。
+
+**副作用として直した索引のバグ**: `computeVJournalBounds` は RRULE の有無に関わらず単発の
+DTSTART のみから first/last を出していた(J-1 時点では VJOURNAL+time-range 自体が
+unsupported で実際には使われなかったため顕在化しなかった)。J-4 で time-range REPORT を
+実際に受理するようになったため、RRULE 付き VJOURNAL の lastMillis を OCCURRENCE_INDEX_MAX
+(無限扱い)に修正 — そうしないと SQL 側の粗い絞り込みで未来の反復回が恒久的に落ちてしまい、
+`vjournalOverlapsRange` まで到達できず false negative になる(VEVENT の isInfinite 分岐と
+同種の対策)。

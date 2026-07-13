@@ -2,18 +2,17 @@
 // CalendarQuery ユースケース — RFC 4791 §7.8 calendar-query REPORT(G-3)
 // =============================================================================
 //
-// 【この G-3 の実装が担う範囲(確定設計メモ「④ スコープ」)】
+// 【この G-3 の実装が担う範囲(確定設計メモ「④ スコープ」。J-4 で VJOURNAL 行を追加)】
 // Yes: VCALENDAR>VEVENT の comp-filter 名一致 / VEVENT の time-range フィルタ
 //      (RRULE/RDATE/EXDATE/RECURRENCE-ID を含む反復展開 + §9.9 の「いずれか1回でも一致」判定)/
 //      CALDAV:timezone による floating の解決ゾーン指定(無ければ UTC)。
+//      VJOURNAL の time-range フィルタ(J-4 追加。§9.9 の VJOURNAL 実効値表 + RRULE 反復展開。
+//      RDATE/EXDATE は VJournal レンズ未対応のため対象外 — vjournal-expansion.ts 冒頭コメント参照)。
 // 半分: VTODO の time-range は SQL 索引(first/last occurrence)による粗い絞り込みのみ。
 //       反復 VTODO の展開はしない(G-3 のスコープ外)。非反復 VTODO は索引値が
 //       §9.9 の実効値そのものなので、SQL の絞り込みだけでほぼ正確に判定できる。
-//       VJOURNAL(J-1 追加)は comp-filter のみ(range 無し)を許可 — presentation 層
-//       (parseCalendarQueryFilter)が VJOURNAL+time-range を unsupported にする設計なので、
-//       このユースケースの `input.range === undefined` 分岐(下記)しか通らない。
-// No: prop-filter / param-filter / text-match / ネスト comp-filter / VJOURNAL+time-range /
-//     CALDAV:expand / limit-recurrence-set / free-busy-query は presentation 層
+// No: prop-filter / param-filter / text-match / ネスト comp-filter / CALDAV:expand /
+//     limit-recurrence-set / free-busy-query は presentation 層
 //     (parseCalendarQueryFilter)が検出して unsupported=true を立て、このユースケースを
 //     呼ぶ前に 403 supported-filter で弾く(呼び出し側 index.ts の責務)。
 //
@@ -28,7 +27,12 @@
 
 import type { CalendarObjectResource } from "../../domain/caldav";
 import type { CollectionId, PrincipalRef } from "../../domain/caldav";
-import { expandRecurrenceSet, zoneResolverFor, type RecurrenceIterator } from "../../domain/ical/recurrence";
+import {
+	expandRecurrenceSet,
+	vjournalOverlapsRange,
+	zoneResolverFor,
+	type RecurrenceIterator,
+} from "../../domain/ical/recurrence";
 import type { CalendarObjectResourceRepository } from "../ports";
 
 // --- 入力 DTO ---
@@ -119,9 +123,38 @@ export class CalendarQuery {
 			return { resources: candidates };
 		}
 
+		const range = input.range; // TS の絞り込み用ローカル束縛。
+
+		// --- VJOURNAL: 候補を1件ずつ展開し、range(スラック無しの本来の窓)と重なる
+		//     instance が1件でもあれば採用する(J-4。§9.9 の VJOURNAL 実効値表 + RRULE 反復)---
+		if (input.componentKind === "VJOURNAL") {
+			const matched: CalendarObjectResource[] = [];
+			for (const candidate of candidates) {
+				const obj = candidate.payload;
+				const journals = obj.journals();
+				const master = journals.find((j) => j.recurrenceId === undefined);
+				if (master === undefined) continue; // マスターが無い壊れたリソースは判定不能 = 除外(VEVENT 分岐と同じ方針)。
+				const overrides = journals.filter((j) => j.recurrenceId !== undefined);
+				const zoneOf = zoneResolverFor(obj);
+				try {
+					const hit = vjournalOverlapsRange(
+						this.recurrenceIterator,
+						{ master, overrides, range },
+						{ zoneOf, floatingTimeZone: input.floatingTimeZone ?? "UTC", maxOccurrences: CALENDAR_QUERY_MAX_OCCURRENCES },
+					);
+					if (hit) matched.push(candidate);
+				} catch {
+					// 壊れた RRULE 等で展開が例外を投げても、その1件を無視して他の候補の判定は続ける
+					// (VEVENT 分岐・occurrence-bounds.ts と同じ「索引/フィルタの失敗で REPORT 全体を
+					// 壊さない」方針)。
+					continue;
+				}
+			}
+			return { resources: matched };
+		}
+
 		// --- VEVENT: 候補を1件ずつ展開し、range(スラック無しの本来の窓)と重なる
 		//     occurrence が1件でもあれば採用する(§9.9)---------------------------------------
-		const range = input.range; // TS の絞り込み用ローカル束縛。
 		const matched: CalendarObjectResource[] = [];
 		for (const candidate of candidates) {
 			// candidate.payload は CalendarObjectResource.fromIcs 時に既に parse 済みの

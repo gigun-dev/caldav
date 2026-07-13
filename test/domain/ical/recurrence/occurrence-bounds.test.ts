@@ -336,4 +336,24 @@ describe("computeOccurrenceBounds — VJOURNAL", () => {
 		expect(bounds.firstMillis).toBeNull();
 		expect(bounds.lastMillis).toBeNull();
 	});
+
+	// J-4: RRULE 付き VJOURNAL は索引を展開しない代わりに lastMillis を無限扱いにする
+	// (occurrence-bounds.ts の computeVJournalBounds コメント参照。未来の occurrence を
+	// SQL 側の索引で恒久的に取りこぼさないための対策)。
+	test("RRULE 付き: lastMillis は OCCURRENCE_INDEX_MAX(無限扱い)", () => {
+		const ics = [
+			"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+			"BEGIN:VJOURNAL",
+			"UID:journal-rrule",
+			"DTSTAMP:20260101T000000Z",
+			"DTSTART;VALUE=DATE:20260101",
+			"RRULE:FREQ=YEARLY",
+			"END:VJOURNAL",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const journal = loadVJournal(ics);
+		const bounds = computeOccurrenceBounds(iterator, { componentKind: "VJOURNAL", master: journal, overrides: [] }, OPTS);
+		expect(bounds.firstMillis).toBe(Date.UTC(2026, 0, 1, 0, 0, 0));
+		expect(bounds.lastMillis).toBe(OCCURRENCE_INDEX_MAX);
+	});
 });

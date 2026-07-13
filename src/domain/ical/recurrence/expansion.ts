@@ -297,8 +297,16 @@ export function expandRecurrenceSet(
 // 内部ヘルパー
 // ---------------------------------------------------------------------------
 
-/** CalDate | CalDateTime → UTC エポックミリ秒。dtstart/RDATE/EXDATE/RECURRENCE-ID 共通の変換窓口。 */
-function instantOfDateValue(v: CalDate | CalDateTime, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
+/**
+ * CalDate | CalDateTime → UTC エポックミリ秒。dtstart/RDATE/EXDATE/RECURRENCE-ID 共通の変換窓口。
+ *
+ * J-4(2026-07-14): VJOURNAL の RRULE 展開(vjournal-expansion.ts)からも同じ変換規約が要る
+ * ため export する。VEVENT 専用ロジック(effectivePeriodForOccurrence 等、DTEND/DURATION を
+ * 見るもの)は export しない — VJOURNAL には無い概念なので、export 範囲を「VEVENT/VJOURNAL
+ * 共通の壁時計⇔epoch 変換」だけに絞ることで「VJOURNAL 展開が誤って VEVENT 専用ロジックに
+ * 依存する」事故を型で防ぐ(export しなければ import できない)。
+ */
+export function instantOfDateValue(v: CalDate | CalDateTime, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
 	if (isCalDateTime(v)) {
 		return calDateTimeToEpochMillis(v, opts);
 	}
@@ -310,7 +318,7 @@ function instantOfDateValue(v: CalDate | CalDateTime, opts: { zoneOf: (tzid: str
  * うるう秒(秒=60)は instant.ts / effective-period.ts と同じ方針で計算時のみ 59 にクランプする
  * (iterator に 60 を渡すと ical.js 側の Date 相当処理で繰り上がる可能性があるための保険)。
  */
-function wallFieldsOf(v: CalDate | CalDateTime): RecurrenceWallClockFields {
+export function wallFieldsOf(v: CalDate | CalDateTime): RecurrenceWallClockFields {
 	if (isCalDateTime(v)) {
 		return { year: v.year, month: v.month, day: v.day, hour: v.hour, minute: v.minute, second: v.second === 60 ? 59 : v.second };
 	}
@@ -321,7 +329,7 @@ function wallFieldsOf(v: CalDate | CalDateTime): RecurrenceWallClockFields {
  * iterator が返した壁時計フィールドを、dtstart と同じ kind(floating/utc/zoned)の
  * CalDateTime へ組み戻す。tzid は dtstart のものをそのまま引き継ぐ(反復中に変わらない)。
  */
-function reconstructCalDateTime(dtstart: CalDateTime, wf: RecurrenceWallClockFields): CalDateTime {
+export function reconstructCalDateTime(dtstart: CalDateTime, wf: RecurrenceWallClockFields): CalDateTime {
 	const base = { year: wf.year, month: wf.month, day: wf.day, hour: wf.hour, minute: wf.minute, second: wf.second };
 	switch (dtstart.kind) {
 		case "utc":
@@ -338,7 +346,7 @@ function reconstructCalDateTime(dtstart: CalDateTime, wf: RecurrenceWallClockFie
  * iterator port の契約(iterator-port.ts 冒頭)どおり、UNTIL の epoch 厳密判定は呼び出し側
  * (このファイル)の責務であって port には渡さない。
  */
-function ruleWithoutUntilForIterator(rule: RecurrenceRule, isDate: boolean): RecurrenceRule {
+export function ruleWithoutUntilForIterator(rule: RecurrenceRule, isDate: boolean): RecurrenceRule {
 	const { until: _until, bySecond, byMinute, byHour, ...rest } = rule;
 	if (!isDate) {
 		return { ...rest, bySecond, byMinute, byHour };
@@ -356,7 +364,7 @@ function ruleWithoutUntilForIterator(rule: RecurrenceRule, isDate: boolean): Rec
  *   - type "date-time" kind "floating"   → floatingTimeZone で解釈。
  * zoned は values 層の構文上あり得ない(RecurUntil 型に含まれない)ので分岐不要。
  */
-function untilEpochOf(until: RecurUntil, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
+export function untilEpochOf(until: RecurUntil, opts: { zoneOf: (tzid: string) => string; floatingTimeZone: string }): number {
 	if (until.type === "date") {
 		return calDateStartEpochMillis(until.date, opts.floatingTimeZone);
 	}
@@ -457,7 +465,7 @@ function calendarDaysBetween(a: CalDate, b: CalDate): number {
  * RFC 4791 §9.9: overlap = "(start < DTEND AND end > DTSTART)"。ゼロ長(end==start)は
  * 同じ §9.9 の別行 "(start <= DTSTART AND end > DTSTART)" に合わせる。
  */
-function overlapsRange(o: { startMillis: number; endMillis: number }, range: { startMillis: number; endMillis: number }): boolean {
+export function overlapsRange(o: { startMillis: number; endMillis: number }, range: { startMillis: number; endMillis: number }): boolean {
 	if (o.startMillis === o.endMillis) {
 		return range.startMillis <= o.startMillis && range.endMillis > o.startMillis;
 	}

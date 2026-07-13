@@ -31,3 +31,10 @@ export {
 	type ComputeOccurrenceBoundsInput,
 	type ComputeOccurrenceBoundsOptions,
 } from "./occurrence-bounds";
+// J-4: VJOURNAL の time-range calendar-query 判定(RRULE 展開込み)。expandRecurrenceSet と
+// 違い occurrence 配列ではなく bool を返す(vjournal-expansion.ts 冒頭コメント参照)。
+export {
+	vjournalOverlapsRange,
+	type VJournalOverlapInput,
+	type VJournalOverlapOptions,
+} from "./vjournal-expansion";
