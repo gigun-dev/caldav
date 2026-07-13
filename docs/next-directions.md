@@ -293,8 +293,15 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   追加のみ=非破壊・可逆)+ `registerAppResource(ui://caldav/todos.html)`。UI は
   >   `src/presentation/mcp/ui/`(entry→build-ui-bundle→bundle→app HTML インライン)。depcruise
   >   `mcp-ui-is-terminal` で末端強制・`tsconfig.ui.json` で DOM 隔離・`typecheck:ui` を make check に。
-  >   make check green・Worker upload gzip 448 KiB。**残: ①実機(claude.ai Web で描画されるか)→ 合格したら
-  >   スライス②(app 専用ツール `refresh-todos` + `App.callServerTool` で OAuth 認可コンテキスト検証)**。
+  >   make check green・Worker upload gzip 448 KiB。
+  >   **2026-07-13 追記: スライス① 描画検証 合格 ✅**。chrome-devtools で本番 MCP(OAuth 認証済み)を
+  >   MCP Inspector 経由で駆動 → Apps タブで list-todos を実行 → **サンドボックス iframe に UI が実データで
+  >   描画**(resources/list に "Todos View"・list-todos が _meta.ui.resourceUri で App 認識・
+  >   App.connect→ontoolresult→render が本番バンドルで動作)。**Inspector の Apps タブが mcp-app を
+  >   フル描画できる**ため claude.ai Web を待たず main 側で検証完了。気づき: 期日が UTC 整形で "00:00"
+  >   表示(list-todos を timeZone 未指定で呼んだため。UI は忠実。実運用は timeZone 渡し or UI 側ローカル
+  >   整形が要る=後続の詰め)。**次: スライス②(app 専用 `refresh-todos` + `App.callServerTool` で OAuth
+  >   認可コンテキスト検証)**。
   > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
   > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
   >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。

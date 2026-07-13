@@ -650,3 +650,17 @@
   ui:// 描画は見えない。ワイヤレベル(resources/list に ui://・list-todos の _meta.ui)は chrome-devtools で
   Inspector から確認可能。→ ①合格でスライス②(app 専用 refresh-todos + callServerTool の OAuth 認可検証)。
 - zod 差: tdr=zod3(v4 サブパス同梱)/ caldav=zod4 直。ext-apps 内部 `import {z} from "zod/v4"` を素直に解決。
+
+## 2026-07-13(続き)E-2 スライス① 描画検証 合格(Inspector Apps タブ)
+
+- chrome-devtools で本番 MCP(`caldav.gigun-dev.workers.dev/mcp`・OAuth 再認可 pass=changeme)を MCP Inspector
+  経由で駆動。Reconnect → OAuth → **Resources タブ有効化(resources capability 広告)**を確認 →
+  `resources/list` に **"Todos View"**(ui://caldav/todos.html)→ Apps タブ「Refresh Apps」で **list-todos が
+  MCP App 認識**(_meta.ui.resourceUri)→ 「Open App」で **サンドボックス iframe(MCP-UI Proxy→sandbox)に
+  UI が実データ描画**(☐ / V6-devtools検証 / 2026-07-14 00:00)。App.connect→ontoolresult→render が本番
+  バンドルで動作。**Inspector の Apps タブが mcp-app をフル描画できる**ため claude.ai Web を待たず main 側で
+  スライス①を検証完了(スクショ取得済み)。
+- **気づき(要フォロー)**: 期日が UTC 整形で "00:00" 表示。list-todos を timeZone 未指定で呼んだため
+  JST09:00=UTC00:00。UI は structuredContent を忠実に描画しているだけ(UI バグではない)。実運用は
+  list-todos に timeZone を渡すか UI 側でローカル整形する詰めが要る(後続スライス)。
+- → スライス②(app 専用ツール refresh-todos + App.callServerTool で OAuth 認可コンテキスト検証)へ。
