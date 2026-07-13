@@ -199,6 +199,13 @@ reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で�
 開いている App に push すると(Inspector で実測・claude.ai でも起こりうる)、mutate 応答は view を
 持たないため App の includeCompleted ビューが既定に上書きされる。防御: applyStructuredContent で
 「currentView 非既定 × 届いた vm に view 無し」は直接適用せず refetch(currentView 付き)に差し替え。
+→ **防御 ✅ `98616f2` + Fable 設計裁定(2026-07-14)**: (a) クライアント防御を正とする
+(ホストの push 挙動は制御外で、品質基準「最も気難しいクライアントで動く」に照らしホスト任せに
+しない)。(b) mutate 応答への view:{} echo は**不採用** — 「view の欠落 = list/refresh 由来でない」
+こと自体が防御の判別シグナルであり、echo を足すと壊れる。この欠落の意味論を contract の
+仕様として明文化する(view はビューを尊重した応答だけが名乗れる)。(c) mutate への view 引数は
+既決どおり不採用(モデル向けスキーマ汚染)。(d) ontoolresult のツール識別フィルタは ext-apps の
+API 拡張待ちで見送り。外部完了 vs 削除の区別は必要になったら removed に reason? を additive 追加。
 
 **E の残り(E-2 の先)**:
 - WebUI(独立した製品要素・ユーザー判断): tsdav 直 CalDAV か REST アダプタ経由かは設計時の論点
