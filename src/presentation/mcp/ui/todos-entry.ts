@@ -1016,8 +1016,12 @@ app.ontoolresult = (r) => {
 	// list-todos だけでなく create-todo 等の mutation ツールがこの UI を開いた場合も
 	// ここに届く。mutation 応答には affected/removed が乗っており、初回描画から
 	// becoming(「いま追加された」等)を表現できる — applyStructuredContent が共通処理。
-	applyStructuredContent(r?.structuredContent);
-	renderAll();
+	// 【2026-07-14】ここは list/refresh の自然な結果だけでなく、ホストが同一 resourceUri の
+	// 別ツール結果を push してくる経路でもある(下記「view 上書き防御」参照)。ontoolresult
+	// のシグネチャは同期だが中身は async(callServerTool を挟みうる)なので void で発火だけする
+	// — ontoolresult 自体の戻り値をホストが待つ契約は無い(fire-and-forget は他の非同期処理
+	// (toggleTask 等)と同じ扱い)。
+	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
 };
 
 showStatus("接続中…");
@@ -1031,6 +1035,85 @@ try {
 }
 // connect 成功。以降は callServerTool を叩いてよい(focus 系リスナーの発火条件にする)。
 connected = true;
+
+// =============================================================================
+// view 上書き防御(2026-07-14・本番検証で実測した契約外挙動への対策)
+// =============================================================================
+// 【実測した穴】MCP Apps 仕様は「ホストが同一 resourceUri を持つ別ツールの結果を、開いている
+// App へ push してよい」ことを禁じていない。Inspector での実機検証でこの push が実際に起きる
+// ことを確認した(claude.ai でも起こり得る契約外に近い挙動として警戒する)。list-todos/
+// refresh-todos 以外のツール(create-todo/update-todo/delete-todo 等の mutate 系)の応答は
+// view を持たない(冒頭コメントのとおり mutate 系は既定ビュー固定を前提に view を省略する契約)。
+// もし includeCompleted:true 等の非既定ビューで App を開いている最中にこの push が届き、
+// applyStructuredContent がそのまま tasks を適用してしまうと、currentView が黙って {} へ
+// 戻り「開いていたビューが勝手に既定へ狭められる」= 完了済みセクションが消える事故になる。
+
+/** 非既定ビュー中に「view echo の無い vm」を tasks ごとそのまま適用してよいかの判定(純関数)。
+ *  【契約の裏付け】list-todos/refresh-todos は非既定ビューのときは必ず view を echo する
+ *  (冒頭コメントの契約)。つまり「非既定ビューで開いている最中に view の無い vm が来た」は
+ *  「この vm は list/refresh 由来ではない(mutate 応答、または無関係な他ツールの結果の push)」の
+ *  確実なシグナルとして使える。既定ビュー({})のときは常に false(素通り)— 既定ビューでは
+ *  mutate 応答をそのまま適用する従来挙動を壊さない。 */
+function needsViewReconcile(view: CurrentView, sc: TodosStructuredContent): boolean {
+	return !isDefaultView(view) && sc.view === undefined;
+}
+
+/**
+ * needsViewReconcile が true のときの合成: refresh-todos(currentView 付き)で確定 tasks/
+ * calendarId/view を取り直し、届いた vm の affected/removed(あれば)だけを重ねる。
+ * toggleTask/submitQuickAdd の非既定ビュー合成(quick-add 非既定ビュー経路)と同じ流儀を
+ * 汎用化したもの — 「一覧は refresh 側、becoming 演出は届いた vm 側」という役割分担は共通。
+ *
+ * 【degrade 方針: refetch 失敗時は「そのまま適用」(重要な判断)】
+ * toggleTask/submitQuickAdd は自分が起こした mutation の確定描画が目的なので、refetch 失敗時は
+ * バナーで「再読み込みに失敗しました」と明示して手動再試行に委ねる(ユーザーは自分の操作が
+ * 送信済みなことを知っている)。しかしここはユーザー起点ではない push への防御なので、
+ * 「弾いて何も描画しない」を選ぶと、ホスト push を無視し続けて最新データが一切届かない画面に
+ * 固まってしまう — サイレントに固まる方が「ビューが既定へ縮む」既知症状より実害が大きい。
+ * よって refetch が失敗したときは、古い正しいビューを守るより最新データ(届いた vm をそのまま)を
+ * 優先する degrade にする(vm の view が無いので currentView は既定へ戻るが、それは修正前の
+ * 既知症状に戻るだけで新規の害を生まない)。
+ */
+async function reconcileViewAndCompose(sc: TodosStructuredContent): Promise<TodosStructuredContent> {
+	try {
+		const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+		if (refreshed.isError) {
+			const first = refreshed.content?.[0];
+			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+			throw new Error(text);
+		}
+		const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+		return {
+			tasks: rsc?.tasks ?? [],
+			calendarId: rsc?.calendarId ?? sc.calendarId,
+			view: rsc?.view,
+			affected: sc.affected,
+			removed: sc.removed,
+		};
+	} catch {
+		// refetch 失敗 → 上のコメントのとおり degrade: 受け取った vm をそのまま返す
+		// (呼び出し側の applyStructuredContent が最新データを最優先で適用する)。
+		return sc;
+	}
+}
+
+/**
+ * ontoolresult(ホストからの push)専用の入口ガード。needsViewReconcile が true のときだけ
+ * reconcileViewAndCompose を挟み、それ以外(既定ビュー・view 付き・初回描画)は従来どおり
+ * applyStructuredContent へ直結する。
+ * 【初回描画は対象外】tasks===null のときは currentView がまだ確立していない(既定 {} のまま)
+ * ため isDefaultView が true になり needsViewReconcile 自体が false を返す — 明示の分岐を
+ * 増やさず自然に対象外になる(仕様どおり)。
+ */
+async function ingestStructuredContent(sc: unknown): Promise<void> {
+	const structuredContent = (sc as TodosStructuredContent | undefined) ?? {};
+	if (needsViewReconcile(currentView, structuredContent)) {
+		const composed = await reconcileViewAndCompose(structuredContent);
+		applyStructuredContent(composed);
+	} else {
+		applyStructuredContent(sc);
+	}
+}
 
 /**
  * refresh-todos を呼んで状態をサーバー確定値で置き換える共通経路。
