@@ -26,7 +26,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { createMcpApp } from "../../src/presentation/mcp/server";
 import { StaticBearerAuth, IcaljsRRuleIterator } from "../../src/infrastructure";
-import { CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
+import { AppleColor, CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,
 	FakeCalendarObjectResourceRepository,
@@ -159,18 +159,22 @@ describe("/mcp", () => {
 	// からツールを消す機構ではない(registerAppTool は registerTool の薄いラッパーで、
 	// tools/list には従来どおり出る。ext-apps server d.ts で確認)。つまりサーバー実装レベルの
 	// tools/list には refresh-todos も並ぶのが正しい挙動で、visibility による「モデルへの非提示」は
-	// ホスト(claude.ai/iOS)側の描画時フィルタとして効く。よって本テストは 9 本を assert する。
-	it("正しい Bearer で tools/list に9ツールが並ぶ(E-2 スライス②で refresh-todos を追加。visibility:[\"app\"] でも tools/list には出る)", async () => {
+	// ホスト(claude.ai/iOS)側の描画時フィルタとして効く。
+	// 2026-07-14: list-calendars/create-calendar(ListCollections/CreateCollection UC を MCP から
+	// 露出)を追加したため 9→11 に更新。
+	it("正しい Bearer で tools/list に11ツールが並ぶ(list-calendars/create-calendar 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
 		const names = rpc.result.tools.map((t: { name: string }) => t.name).sort();
 		expect(names).toEqual([
 			"complete-todo",
+			"create-calendar",
 			"create-todo",
 			"delete-todo",
 			"get-current-time",
 			"get-freebusy",
+			"list-calendars",
 			"list-events-expanded",
 			"list-todos",
 			"refresh-todos",
@@ -303,6 +307,107 @@ describe("/mcp", () => {
 		});
 		const rpc = await jsonRpcResult(res);
 		expect(rpc.result.structuredContent.busy).toHaveLength(1);
+	});
+
+	// 2026-07-14: list-calendars/create-calendar(ListCollections/CreateCollection UC を MCP から
+	// 露出。DAV MKCALENDAR と同じ UC を別入口から呼ぶ)の e2e。
+	describe("list-calendars / create-calendar", () => {
+		it("list-calendars: 認証ユーザーのコレクション一覧を返す(components/color を含む)", async () => {
+			repos.collections.seed(
+				new CalendarCollection({
+					id: collectionId("work"),
+					owner: OWNER,
+					displayName: "Work",
+					supportedComponents: ["VEVENT"],
+					color: AppleColor.parse("#FF0000"),
+				}),
+			);
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "list-calendars", arguments: {} },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent.calendars).toEqual([
+				{ id: "work", displayName: "Work", components: ["VEVENT"], color: "#FF0000" },
+			]);
+		});
+
+		it("list-calendars: supportedComponents 未設定(全種別受理)は3種を明示展開して返す", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("all"), owner: OWNER, displayName: "All" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "list-calendars", arguments: {} },
+			});
+			const rpc = await jsonRpcResult(res);
+			const cal = rpc.result.structuredContent.calendars[0];
+			expect(cal.components.sort()).toEqual(["VEVENT", "VJOURNAL", "VTODO"]);
+			expect(cal.color).toBeUndefined();
+		});
+
+		it("create-calendar: id/components を明示指定して作成できる", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-calendar",
+					arguments: { id: "personal", displayName: "Personal", components: ["VEVENT"], color: "#00FF00" },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent).toEqual({
+				id: "personal",
+				displayName: "Personal",
+				components: ["VEVENT"],
+				color: "#00FF00",
+			});
+			const saved = await repos.collections.findById(OWNER, collectionId("personal"));
+			expect(saved?.displayName).toBe("Personal");
+		});
+
+		it("create-calendar: id/components 省略時は displayName から slug 生成 + 既定 VTODO", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-calendar", arguments: { displayName: "買い物リスト" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent.components).toEqual(["VTODO"]);
+			// 日本語 displayName は slugifyForCollectionId の許容文字([a-z0-9])に1文字も
+			// マッチしないため、生成 id は crypto.randomUUID() フォールバック(UUID 形式)になる。
+			expect(rpc.result.structuredContent.id).toMatch(/^[0-9a-f-]{36}$/);
+		});
+
+		it("create-calendar: 既存 id との衝突は isError(CollectionAlreadyExistsError)", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("dup"), owner: OWNER, displayName: "Dup" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-calendar", arguments: { id: "dup", displayName: "Dup2" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("create-calendar: 不正な color は isError", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-calendar", arguments: { id: "badcolor", displayName: "Bad", color: "not-a-color" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
 	});
 
 	// 2026-07-13 Case E(server.ts のコメント参照): recurrence.frequency:"none" は

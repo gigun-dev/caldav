@@ -76,8 +76,11 @@ import {
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
 import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
-import type { CollectionId, PrincipalRef } from "../../domain/caldav";
-import { collectionId as mkCollectionId } from "../../domain/caldav";
+import type { CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
+import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } from "../../domain/caldav";
+// list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
+// 別入口で呼ぶ(CLAUDE.md 長期ビジョン「複数入口」の具体例)。
+import { CollectionAlreadyExistsError, CreateCollection, ListCollections } from "../../application/usecases";
 import { epochToIso, formatDateOnly, isValidIanaZone, parseIsoToEpoch } from "./format";
 
 export interface McpAppDeps {
@@ -117,6 +120,60 @@ const getFreeBusyInputShape = {
 	timeZone: z.string().optional().describe("応答時刻の表示に使う IANA タイムゾーン。省略時は UTC。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して集計する。"),
 };
+
+// --- list-calendars / create-calendar(直近タスク: DAV MKCALENDAR と同じ UC を MCP から露出)--
+// 【なぜ registerTool(registerAppTool ではない)か】このタスクの要件どおり、todos UI とは
+// 別関心(カレンダー/リマインダーリストそのものの一覧・作成は「一覧を表示するタスク」ではなく
+// 「今後の操作対象を確定するための下ごしらえ」)。UI を持たせると list-todos/create-todo の
+// TODOS_UI_URI と混同されるおそれがあるため、素の registerTool に留める。
+
+// list-calendars は引数を取らない。inputSchema には空 shape を渡す(z.object({}) 相当。
+// SDK は shape が空でも ZodRawShape として扱える — 他ツールと同じ「shape オブジェクトを直接渡す」
+// 流儀を踏襲する)。
+const listCalendarsInputShape = {};
+
+// components: iOS のカレンダー(VEVENT)/リマインダーリスト(VTODO)の対応関係をモデルが理解できる
+// よう description に明示する(list-todos の calendarId と紐付けられるように、という仕様要求)。
+// 【既定 ["VTODO"] を選んだ理由】このリポジトリの MCP ツール群は現状 todos(VTODO)中心
+// (create-todo/list-todos/update-todo/complete-todo/delete-todo の5ツートが VTODO 専用。
+// list-events-expanded/get-freebusy は VEVENT を読むだけで作成系が無い)。create-calendar を
+// 使う主な文脈は「新しいリマインダーリストを作りたい」であり、VEVENT 用カレンダーを作りたい
+// 需要は今のところ無い。既定を VTODO にしておけば、モデルが components を省略しても
+// 「リマインダーリストの新規作成」という最も起きやすい意図に自然に合致する。
+const createCalendarInputShape = {
+	id: z.string().optional().describe(
+		"コレクション ID(URL パスセグメント)。空白/制御文字/\"/\" 不可。省略時は displayName から" +
+			"自動生成する(生成できない場合は UUID にフォールバック)。",
+	),
+	displayName: z.string().describe("表示名(displayName プロパティ)。iOS のカレンダー/リマインダーリスト名に対応。"),
+	components: z
+		.array(z.enum(["VEVENT", "VTODO", "VJOURNAL"]))
+		.optional()
+		.describe(
+			'受け入れるコンポーネント種別(supported-calendar-component-set)。"VEVENT"=カレンダー(予定)、' +
+				'"VTODO"=リマインダーリスト、"VJOURNAL"=ジャーナル。省略時は ["VTODO"](リマインダーリスト作成が' +
+				"主用途のため)。list-todos/create-todo の calendarId はこの components に VTODO を含む" +
+				"コレクションの id を指すのが自然な対応関係。",
+		),
+	color: z.string().optional().describe('Apple 拡張のカレンダー色。"#RRGGBB" または "#RRGGBBAA"(8桁)。'),
+};
+
+/**
+ * create-calendar の id 省略時に displayName から URL セグメントとして安全な slug を生成する。
+ * 【なぜ完全な slugify ライブラリを足さないか】このタスクはドメイン層に触れない制約があり、
+ * 依存追加も避けたい。CollectionId の禁止事項(空文字・空白/制御文字・"/")さえ満たせば足りるので、
+ * 素朴な正規化(小文字化・許容文字以外を "-" に畳む・前後の "-" を削る)で十分。
+ * 【空文字にフォールバックする理由】displayName が絵文字だけ・記号だけ等で slug 化すると
+ * 空文字になるケースがある(collectionId() は空文字を拒否する)。その場合は衝突の心配が無い
+ * crypto.randomUUID() にフォールバックする(create-todo.ts の UID 生成と同じ発想)。
+ */
+function slugifyForCollectionId(displayName: string): string {
+	const slug = displayName
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return slug.length > 0 ? slug : crypto.randomUUID();
+}
 
 // --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
 
@@ -531,6 +588,90 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					structuredContent: result,
 				};
 			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- list-calendars(直近タスク: ListCollections UC を MCP から露出)-------------------
+	server.registerTool(
+		"list-calendars",
+		{
+			title: "List calendars",
+			description:
+				'認証ユーザーが持つカレンダー/リマインダーリストの一覧を返す。各項目の "id" が' +
+				"list-todos/create-todo 等の calendarId、components に含まれる \"VTODO\" がリマインダーリスト・" +
+				'"VEVENT" がカレンダー(予定)であることを示す。',
+			inputSchema: listCalendarsInputShape,
+		},
+		async () => {
+			try {
+				const listCollections = new ListCollections(deps.collectionRepo);
+				const { collections } = await listCollections.execute({ owner: principal });
+				const calendars = collections.map((c) => ({
+					id: c.id,
+					displayName: c.displayName,
+					// supportedComponents undefined = 全種別受理(R2)。モデルへの応答では「実際に
+					// 何が入れられるか」を具体的に示したいので、undefined のときは COMPONENT_KINDS
+					// 全種を明示展開する(calendar-collection.ts accepts() の undefined=全受理という
+					// ドメインの約束を presentation 層でここだけ具体化する。domain 層自体は
+					// undefined のまま保つ判断を尊重し、ここでの展開は表示専用)。
+					components: c.supportedComponents ?? (["VEVENT", "VTODO", "VJOURNAL"] as const),
+					...(c.color !== undefined ? { color: c.color.toString() } : {}),
+				}));
+				const result = { calendars };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- create-calendar(直近タスク: CreateCollection UC を MCP から露出。DAV MKCALENDAR と同じ UC)--
+	server.registerTool(
+		"create-calendar",
+		{
+			title: "Create calendar",
+			description:
+				"新規カレンダー/リマインダーリストを作成する(RFC 4791 MKCALENDAR と同じユースケース)。" +
+				'components を省略すると VTODO 用(リマインダーリスト)として作られる。作成後の id は' +
+				"create-todo/list-todos の calendarId としてそのまま使える。",
+			inputSchema: createCalendarInputShape,
+		},
+		async ({ id, displayName, components, color }) => {
+			try {
+				const resolvedId = id ?? slugifyForCollectionId(displayName);
+				const supportedComponents: readonly ComponentKind[] = (components ?? ["VTODO"]) as readonly ComponentKind[];
+				const parsedColor = color !== undefined ? AppleColor.parse(color) : undefined;
+				const createCollection = new CreateCollection(deps.collectionRepo);
+				const { collection } = await createCollection.execute({
+					owner: principal,
+					collectionId: resolvedId,
+					displayName,
+					supportedComponents,
+					color: parsedColor,
+				});
+				const result = {
+					id: collection.id,
+					displayName: collection.displayName,
+					components: collection.supportedComponents ?? supportedComponents,
+					...(collection.color !== undefined ? { color: collection.color.toString() } : {}),
+				};
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				// InvalidIdentifierError(id/自動生成 slug が不正 — 通常 slugify 側で防げるが id 手動
+				// 指定時は起きうる)/ CollectionAlreadyExistsError(id 衝突。MKCALENDAR の 405/409 相当を
+				// presentation でも「入力起因のエラー」としてそのまま返す。既存 create-todo と同じ
+				// toolError 流儀)/ AppleColor.parse の形式エラーもここに落ちる(Error のまま)。
+				if (error instanceof InvalidIdentifierError || error instanceof CollectionAlreadyExistsError) {
+					return toolError(error.message);
+				}
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},
