@@ -684,3 +684,25 @@
   最終確認可能(機序は確認済み)。
 - → **E-2 スパイク(描画 + callServerTool 認可)完了。** 本実装は UI 作り込み・期日 timeZone 整形
   (現状 UTC で "00:00" 表示)・他ツールの UI 化など。
+
+## 2026-07-13(続き)E-2 本実装スライス① UI 仕上げ + MCP Apps リフレッシュ仕様調査
+
+- 実機フィードバック(ユーザー・claude.ai 実クライアント):デザイン好評・timezone 修正 OK
+  (「明日 09:00」= 09:00 表示に是正)・完了で完了済みセクションへ移動。2点の指摘を修正 `678526c`:
+  1. 上部の空の赤バナー = HTML の `hidden` 属性を `.banner{display:flex}` が上書きする古典バグ →
+     `[hidden]{display:none}` 一枚で解消。
+  2. 手動「再読込」ボタン廃止 → app 駆動の自動 refetch(refetchOnWindowFocus 相当)。
+- **MCP Apps リフレッシュ仕様の調査(Explore/一次情報)**: `@modelcontextprotocol/ext-apps` d.ts +
+  spec.mdx + tdr 実機観察で確認。**結論: 仕様はホスト再描画/再読込時の tool 自動再実行 →
+  新 ontoolresult push を保証しない**(保証は初回 ontoolresult 1回のみ。以降のリフレッシュは
+  `callServerTool` による app 駆動が仕様の想定パターン。app 専用ツール visibility:["app"] がその用途)。
+  host→app の汎用「データ更新通知」は無い(host-context-changed は theme/locale のみ)。
+  → ホスト自動更新の有無は**MCP クライアント依存**。品質基準(最も気難しいクライアントで動く)に
+  照らし、ホスト任せにせず app 駆動 refetch を入れると決定。
+- 実装: visibilitychange(可視化時)/focus/pageshow を冗長に張り `maybeRefetch()` 1本に集約。
+  ガード3段(connect前 / mutation中[pending] / staleTime 2500ms)。失敗は silent。lastFetchAt を
+  markUpdated に集約しホスト自前 push とも二重取得しない。更新経路の最終形 = ①初回ontoolresult
+  ②mutation後fetchLatest ③focus系自動refetch。
+- **未確認(実機・実クライアント依存)**: claude.ai Web/iOS が「会話に戻ったとき tool を再実行して
+  新 ontoolresult を push するか」。するなら③は staleTime で無駄打ちせず無害、しないなら③が最新化を担う
+  (どちらでも正しく動く設計)。chrome-devtools は今セッションで MCP 切断中のため main 側実測は保留。

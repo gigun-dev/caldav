@@ -302,6 +302,12 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   表示(list-todos を timeZone 未指定で呼んだため。UI は忠実。実運用は timeZone 渡し or UI 側ローカル
   >   整形が要る=後続の詰め)。**次: スライス②(app 専用 `refresh-todos` + `App.callServerTool` で OAuth
   >   認可コンテキスト検証)**。
+  >   **2026-07-13 追記: E-2 本実装スライス① 完了 `5197a1d`+`678526c`(実機好評)。** トリアージ UI:
+  >   セクション分け一覧(期限切れ/今日/今後/期日なし/完了折り畳み)+ 単発 complete/reopen を
+  >   callServerTool(update-todo)で + 自ゾーン due 整形(00:00 問題根治)。Fable デザイン+実装。
+  >   実機フィードバックで空バナー修正・手動再読込廃止・app 駆動 refetch(refetchOnWindowFocus 相当)。
+  >   **MCP Apps 仕様調査: ホスト自動更新は仕様保証されない=クライアント依存**(app 駆動 refetch が正)。
+  >   反復完了 D4 の確認 UX・スヌーズは②、優先度/編集/削除は③。実機で「会話復帰時の更新挙動」実測が残(任意)。
   >   **2026-07-13 追記: スライス② 実装 + 検証 合格 ✅ `1961cd1`**。app 専用ツール `refresh-todos`
   >   (`_meta.ui.visibility:["app"]`)を追加(handler は list-todos と同じ `runListTodos` 共通クロージャ=
   >   認可経路を完全共有)。UI に「再読み込み」ボタン → `App.callServerTool({name:"refresh-todos"})` →
