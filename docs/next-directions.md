@@ -194,6 +194,11 @@ becoming 適用 — サーバー側 state の変化(iOS 側で追加/完了し�
 出所は不明なので断定しない)を静的に付ける。装飾アニメは引き続き無し・FLIP は任意・
 reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で並べ替えない)。aria-live 通知。
 編集/削除 UI・D4 確認 UX と同じスライス④の束。
+→ ~~差分レンズ~~ ✅ `5d5378e`(本番検証 PASS: 同期(追加/編集/削除)ラベル・破線ゴースト・aria-live)。
+**検証で発見した契約上の穴(要対応・防御実装中)**: ホストが同一 resourceUri の他ツール結果を
+開いている App に push すると(Inspector で実測・claude.ai でも起こりうる)、mutate 応答は view を
+持たないため App の includeCompleted ビューが既定に上書きされる。防御: applyStructuredContent で
+「currentView 非既定 × 届いた vm に view 無し」は直接適用せず refetch(currentView 付き)に差し替え。
 
 **E の残り(E-2 の先)**:
 - WebUI(独立した製品要素・ユーザー判断): tsdav 直 CalDAV か REST アダプタ経由かは設計時の論点
