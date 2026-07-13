@@ -271,6 +271,23 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   > ウィジェットが参照。最大リスク=個人コネクタで UI 描画されるか(要実機。極小 ui:// スパイクで
   > 先に潰す)。Task DTO は既に UI-ready で固定済み。
   >
+  > **2026-07-13 更新: tdr-concierge 実装を調査 → 描画リスクはほぼ解消。** ユーザーが tdr-concierge
+  >   (`~/ghq/github.com/gigun-dev/tdr-concierge`)でカスタムコネクタに UI 描画済み。同じ Hono/CF Workers
+  >   構成なのでレシピをほぼそのまま移植可(詳細メモリ [[mcp-auth-and-generative-ui-strategy]] に追記)。
+  >   具体: `@modelcontextprotocol/ext-apps`(server + browser)/ `registerAppResource`(`ui://` HTML)+
+  >   `registerAppTool`(`_meta.ui.resourceUri` で紐付け)/ `@hono/mcp` StreamableHTTPTransport /
+  >   `@modelcontextprotocol/sdk ^1.29` / zod 3.25+(ext-apps が zod/v4 サブパス要求)。UI は
+  >   **自己完結 HTML に bun build で単一 ESM バンドル**して `<script type=module>` へインライン
+  >   (esm.sh 実行時 import は Claude iOS で壊れた実証教訓)。text 要約 + structuredContent の二本立てで
+  >   UI 非対応ホストでも会話が壊れない。`ontoolresult` で structuredContent を UI に push。
+  >   参照実装: tdr-concierge `src/mcp/server.ts`(registerApp* 呼び出し)/ `src/ui/*`(HTML+entry+bundle)/
+  >   `scripts/build-ui-bundle.ts` / `docs/research/connectors-and-generative-ui.md`。
+  >   **⚠️ caldav 固有の新論点(tdr-concierge では未検証)**: tdr は authless read-only だが caldav は
+  >   **書き込みあり + OAuth 保護**。UI からの `App.callServerTool` の**認可コンテキスト**をどう通すかは
+  >   要設計・要実機。→ 極小スパイクの目的を「描画されるか」から「**OAuth 保護 + 書き込み可サーバーで
+  >   UI から callServerTool が認可付きで通るか**」に更新する。実機は claude.ai Web の Connector 経由
+  >   (Claude Code では描画確認不可)。
+  >
   > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
   > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
   >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。
