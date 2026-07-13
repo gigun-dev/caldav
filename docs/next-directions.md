@@ -165,8 +165,16 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
     F(運用・横断)の性能版として E-2 の仕上げ束に入れる。
     → **第2弾 ✅** `d7abccd`(list-todos を SQL で VTODO 絞り。STATUS 列追加は別スライス)。
     実測ログ(07-14): refresh 73ms / update 597ms / list 706ms / delete 2707ms — 次は update/delete の点読み経路と STATUS 列。
-- **残る実機確認(任意・claude.ai 実クライアント依存)**: 会話復帰時の更新挙動 /
-  visibility:["app"] の transcript 非出現の実効性。
+- ~~**残る実機確認**: 会話復帰時の更新挙動~~ ✅ **2026-07-14 claude.ai 実測で確定**:
+  ホストは会話復帰時に tool を**自動再実行しない**(キャッシュ結果の replay のみ。
+  observability でサーバー側 0 イベントを裏取り)= app 駆動 refetch 設計の正しさが実証。
+  残: visibility:["app"] の transcript 非出現の実効性(未確認のまま)。
+  **claude.ai のホストモデル実測(2026-07-14)**: ①「1 tool 呼び出し = 1 新カード」で、
+  Inspector のような既存 App への他ツール結果 push は**しない**(view 上書きの穴は Inspector
+  固有。防御 98616f2 は focus refetch 経路で正しく機能・「同期(追加)」becoming も claude.ai
+  実ホストで動作確認)②replay ではキャッシュされた becoming(「追加」ラベル等)がそのまま
+  再演される — 一度きりにしたければ結果に nonce 等が要る(将来課題)③復帰直後、最新以外の
+  App カードは再接続が遅い/描画されないことがある(複数カード UX の留意点)。
 - **据え置き**: V6 Phase 2(DST ゾーンの VTIMEZONE 生成)/ VALARM 管理スライス(due 連動 vs
   ユーザー設定リマインダーの判別ヒューリスティック — 独立テーマ)/ 反復 todo の due→DATE 変更で
   RRULE UNTIL が DATE-TIME だと I6 明示エラー(レアケース・優先度低・直すなら UNTIL も DATE 化)。
