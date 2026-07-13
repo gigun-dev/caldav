@@ -83,7 +83,7 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
 - ~~J-2 宣言是正 + journal オプトイン~~ ✅(MKCALENDAR で VJOURNAL コレクション作成可・自動 provision しない)。
 - ~~J-3 ical-tasks/9253 アクセサ~~ ✅(原文スナップショット docs/rfc/rfc9253.txt・docs/specs/
   draft-ietf-calext-ical-tasks-17.txt を取得してから照合。原文が設計メモを複数訂正 — 照合結果は 05)。
-- **J-4(保留)**: iOS 実機での calendar/tasks 非回帰確認 + VJOURNAL time-range query 対応。
+- **J-4(半分完了)**: ~~VJOURNAL time-range query 対応~~ ✅ `f00786b`(§9.9 表どおり。RDATE/EXDATE 付き VJOURNAL はレンズ拡張とセットで別タスク)。iOS 実機での calendar/tasks 非回帰確認は残(allprop sync-token 除外の念押しと合流)。
 - RFC 9074 ACKNOWLEDGED は生値保持で充足(06 A9)。VAVAILABILITY(7953)は B のタイミング、
   JSCalendar は変換 draft の RFC 化後(09 §4b)。
 
@@ -153,9 +153,7 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
     calendarId(将来は displayname)を表示 + モデル向け text 要約にも対象リストを含める。
   - **UI からのタスク追加**: create-todo は registerAppTool 済みなので UI に quick-add を足すだけで
     callServerTool 経由で可能(スライス③の有力候補)。
-  - **カレンダー(リスト)作成の MCP 露出**: 現状 MCP に MKCALENDAR 相当ツールは無い(DAV のみ)。
-    application に CreateCollection/ListCollections UC は既存なので `list-calendars`/`create-calendar`
-    ツールは薄く足せる。対象リスト明示・複数リスト UX の前提としてスライス③〜④候補。
+  - ~~**カレンダー(リスト)作成の MCP 露出**~~ ✅ `6a2278d`(list-calendars / create-calendar。components 既定 VTODO)。
   - **レイテンシ・チューニング(2026-07-14 起票)** → 第1弾 ✅(UC before/removed 化で全件読み 2→1・{mcpTool,ms} ログ導入。残: SQL レベル絞り込み=専用ポート): UI のトグル1回で
     ① findTaskById = ListTodos 全件(before 取得)→ ② UpdateTodo(内部 read + PUT)→
     ③ buildTodosViewModel = ListTodos 全件、が**直列**に走る(全件は毎回 ICS 全パース)。
@@ -165,6 +163,8 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
     読んだ before を戻り値に載せて presentation の再読込を消す(「UC を変えない方針」の再考)
     (c) ②と③の間で並列化できるものを並列に。ホスト側プロキシ往復(callServerTool)は制御外。
     F(運用・横断)の性能版として E-2 の仕上げ束に入れる。
+    → **第2弾 ✅** `d7abccd`(list-todos を SQL で VTODO 絞り。STATUS 列追加は別スライス)。
+    実測ログ(07-14): refresh 73ms / update 597ms / list 706ms / delete 2707ms — 次は update/delete の点読み経路と STATUS 列。
 - **残る実機確認(任意・claude.ai 実クライアント依存)**: 会話復帰時の更新挙動 /
   visibility:["app"] の transcript 非出現の実効性。
 - **据え置き**: V6 Phase 2(DST ゾーンの VTIMEZONE 生成)/ VALARM 管理スライス(due 連動 vs
