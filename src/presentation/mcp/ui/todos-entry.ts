@@ -81,7 +81,6 @@ import { App } from "@modelcontextprotocol/ext-apps";
 // 置き、#root だけを描画のたびに作り直す(スパイク時代は entry が createElement で
 // ボタンを生やしていたが、静的なものは静的に、へ整理)。
 const root = document.getElementById("root") as HTMLElement;
-const refreshButton = document.getElementById("refresh") as HTMLButtonElement;
 const updatedEl = document.getElementById("updated") as HTMLElement;
 const bannerEl = document.getElementById("banner") as HTMLElement;
 const statusEl = document.getElementById("status") as HTMLElement;
@@ -109,6 +108,22 @@ interface TodoItem {
 let tasks: TodoItem[] | null = null; // null = まだ一度もデータを受け取っていない(skeleton 表示)
 const pendingIds = new Set<string>(); // update-todo 送信中の行(spinner+disabled 対象)
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
+
+// --- 自動 refetch のガード用状態 -------------------------------------------------
+// connected: connect() 完了フラグ。初期化前の callServerTool を避ける既存規律のため、
+//   focus 系リスナーはこれが true のときだけ発火させる(strict ホストでの iframe 凍結回避)。
+// lastFetchAt: 直近の成功取得の時刻(ms)。staleTime ガードの基準。ontoolresult と
+//   fetchLatest 成功時(markUpdated 周辺)に更新する。
+let connected = false;
+let lastFetchAt = 0;
+// staleTime。直近取得からこの時間内の自動 refetch は skip する。2500ms の意図:
+//   (1) visibilitychange/focus/pageshow を冪等に複数張るので、1回の復帰で同時多発する
+//       発火を1本に間引く。
+//   (2) mutation(完了/再開)後は toggleTask が fetchLatest で確定描画する。その直後に
+//       focus が飛んでも二重取得しない。
+//   (3) ホストが自前で app を再実行して新 ontoolresult を push するタイプのクライアントでは、
+//       その push 直後の focus refetch を無駄打ちしない(push でも lastFetchAt を更新するため)。
+const STALE_TIME_MS = 2500;
 
 // --- 診断/エラー表示 ------------------------------------------------------------
 // iOS WebView にはコンソールが無く「画面表示でしか」切り分けられない(スパイクの show()
@@ -460,8 +475,12 @@ function renderSkeleton(): void {
 	}
 }
 
-/** ヘッダの「最終更新 HH:mm」を今にする(成功データを受け取ったときだけ呼ぶ)。 */
+/** ヘッダの「最終更新 HH:mm」を今にする(成功データを受け取ったときだけ呼ぶ)。
+ *  併せて staleTime ガードの基準 lastFetchAt も更新する — 「成功取得の時刻」という意味が
+ *  markUpdated と完全に一致するため、更新点を1箇所に集約して取りこぼしを防ぐ
+ *  (ontoolresult の push・fetchLatest の両方がこの関数を通る)。 */
 function markUpdated(): void {
+	lastFetchAt = Date.now();
 	const now = new Date();
 	const hh = String(now.getHours()).padStart(2, "0");
 	const mm = String(now.getMinutes()).padStart(2, "0");
@@ -499,12 +518,14 @@ try {
 	showStatus(`接続失敗: ${e instanceof Error ? e.message : String(e)}`);
 	throw e;
 }
+// connect 成功。以降は callServerTool を叩いてよい(focus 系リスナーの発火条件にする)。
+connected = true;
 
 /**
  * refresh-todos を呼んで状態をサーバー確定値で置き換える共通経路。
- * ヘッダの再読込ボタンと、完了/再開操作後の確定描画の両方から使う。
+ * 主に完了/再開の mutation 後の確定描画から使う(手動再読込ボタンは廃止した)。
  * 失敗(transport 例外 / isError)はどちらも Error として投げ、表示は呼び出し側に任せる
- * (ボタン起点とトグル起点で出したい文言・再試行導線が違うため、ここでは表示しない)。
+ * (呼び出し起点で出したい文言・再試行導線が違うため、ここでは表示しない)。
  *
  * 【refresh-todos の性質(server.ts 側コメントの要約)】visibility:["app"] の UI 専用
  * ツールで、handler は list-todos と同一(既定: 未完了のみ…ではなく全 undefined 引数の
@@ -528,11 +549,10 @@ async function fetchLatest(): Promise<void> {
 	markUpdated();
 }
 
-/** ヘッダの再読込。二重押下防止 + 進行表示(ラベル差し替え)+ 失敗はバナー(再試行付き)。 */
-async function refreshFromButton(): Promise<void> {
-	refreshButton.disabled = true;
-	const prevLabel = refreshButton.textContent;
-	refreshButton.textContent = "読込中…";
+/** エラーバナーの「再試行」から使う再取得。手動再読込ボタンは廃止したが、mutation 後の
+ *  確定 refresh が失敗したときの復旧導線としてバナー上の再試行は残す(fetchLatest のみ叩く
+ *  = update-todo は再送しない。二重完了を避けるため — toggleTask のコメント参照)。 */
+async function retryFetch(): Promise<void> {
 	clearBanner();
 	try {
 		await fetchLatest();
@@ -540,11 +560,8 @@ async function refreshFromButton(): Promise<void> {
 	} catch (e) {
 		showBanner(
 			`再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-			() => void refreshFromButton(),
+			() => void retryFetch(),
 		);
-	} finally {
-		refreshButton.textContent = prevLabel;
-		refreshButton.disabled = false;
 	}
 }
 
@@ -591,7 +608,7 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		} catch (e) {
 			showBanner(
 				`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-				() => void refreshFromButton(),
+				() => void retryFetch(),
 			);
 		}
 	} catch (e) {
@@ -606,10 +623,42 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	}
 }
 
-// connect 完了後にだけ再読込を有効化する(strict ホストでの初期化前 callServerTool は
-// iframe が固まりうる — app.d.ts の _assertInitialized / claude-ai-mcp#61・#149 参照)。
-refreshButton.disabled = false;
-refreshButton.addEventListener("click", () => void refreshFromButton());
+// --- 自動 refetch(refetchOnWindowFocus 相当)------------------------------------
+// 【なぜ app 駆動の refetch を入れるか(2026-07-13 調査で確定)】
+//   MCP Apps 仕様は「ホストが再描画/再読込時に tool を再実行して新しい ontoolresult を
+//   push すること」を保証していない — 保証されるのは初回 ontoolresult の1回だけで、以降の
+//   リフレッシュは callServerTool による app 駆動が仕様の想定パターン。ホストが自前で
+//   更新してくれるかはクライアント依存で揺れる。caldav の品質基準(最も気難しいクライアントで
+//   動く汎用サーバー)に照らし、ホストの善意に頼らず app 側から明示的に取り直す。
+//   これは TanStack Query の refetchOnWindowFocus と同じ発想 — カードが会話に戻るたび最新に。
+//
+// 【なぜイベントを3つ冗長に張るか】
+//   サンドボックス iframe / WKWebView ではどのイベントが発火するかがホスト実装依存。
+//   visibilitychange(タブ/カード可視化)・focus(ウィンドウ復帰)・pageshow(bfcache 復帰)を
+//   全部張り、実体は maybeRefetch() 1本に集約して冪等にする(多重発火は staleTime が吸収)。
+const maybeRefetch = (): void => {
+	// connect 前は callServerTool を叩かない(初期化前呼び出しで iframe が凍る既存規律)。
+	if (!connected) return;
+	// mutation 進行中は取り直さない。pending 中に一覧が入れ替わると、操作中の行が消えたり
+	// spinner の対象が別タスクにズレる事故になる(toggleTask 完了時の fetchLatest に任せる)。
+	if (pendingIds.size > 0) return;
+	// staleTime ガード: 直近取得から STALE_TIME_MS 以内は skip(多重イベント/mutation 直後/
+	// ホスト自前更新との二重取得を防ぐ。定数のコメント参照)。
+	if (Date.now() - lastFetchAt < STALE_TIME_MS) return;
+	// 自動 refetch の失敗は握りつぶす(ユーザー起点でないのでバナーは出さない=既存データ維持)。
+	// fetchLatest が成功すれば markUpdated 経由で lastFetchAt が進み、次の連打も抑止される。
+	void fetchLatest()
+		.then(() => renderAll())
+		.catch(() => {
+			// 静かに無視。次の focus で再挑戦されるし、既存の一覧はそのまま残す。
+		});
+};
+document.addEventListener("visibilitychange", () => {
+	// 不可視化(visibilitychange で hidden へ)では何もしない。可視化した瞬間だけ取り直す。
+	if (document.visibilityState === "visible") maybeRefetch();
+});
+window.addEventListener("focus", maybeRefetch);
+window.addEventListener("pageshow", maybeRefetch);
 
 // 接続後、ホストが initialized を受けて tool-result を push してくるのを待つ。
 // 一定時間来なければ「接続はできたがホストが inline へ結果を送っていない」と切り分ける
@@ -617,7 +666,7 @@ refreshButton.addEventListener("click", () => void refreshFromButton());
 showStatus("接続完了・データ待ち…");
 setTimeout(() => {
 	if (!gotResult) {
-		showStatus("接続済みですがデータが届いていません(再読込をお試しください)");
+		showStatus("接続済みですがデータが届いていません");
 	} else {
 		clearStatus();
 	}

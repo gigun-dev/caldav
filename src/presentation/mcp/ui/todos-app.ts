@@ -117,6 +117,12 @@ export const TODOS_APP_HTML = `<!doctype html>
     }
   }
   * { box-sizing: border-box; }
+  /* HTML の hidden 属性を確実に効かせる。.banner/.status は display:flex/block を持つため、
+   * 要素セレクタの display 指定が hidden 属性(既定 display:none)を上書きしてしまい
+   * 「中身が空でも赤い長方形が常時出る」バグが起きていた(CSS の display が HTML hidden より
+   * 優先される古典的な罠)。属性セレクタ [hidden] を一枚効かせて「hidden なら常に消える」を
+   * 保証する(!important は使わず、属性セレクタは要素セレクタより詳細度が高いので素直に勝つ)。 */
+  [hidden] { display: none; }
   body {
     margin: 0;
     /* 320px 幅からの崩れ防止: 固定 px の横幅指定を使わず padding も clamp() で
@@ -130,7 +136,9 @@ export const TODOS_APP_HTML = `<!doctype html>
      * コンテンツに自然フィットさせる(固定 height 指定なし)。 */
   }
 
-  /* --- ヘッダ(タイトル + 最終更新 + 再読込)------------------------------------ */
+  /* --- ヘッダ(タイトル + 最終更新)---------------------------------------------
+   * 手動「再読込」ボタンは廃止した(refetchOnWindowFocus 化。理由は todos-entry.ts の
+   * 自動再取得コメント参照)。ヘッダには「いつのデータか」を示す最終更新だけ残す。 */
   .bar {
     display: flex;
     align-items: center;
@@ -141,20 +149,6 @@ export const TODOS_APP_HTML = `<!doctype html>
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .app-title { font-size: 16px; font-weight: 700; }
   .updated { font-size: 11px; color: var(--muted); white-space: nowrap; }
-  #refresh {
-    /* 44px 平方のタップ領域確保(Apple HIG の最小推奨)。見た目は小さくても
-     * padding で当たり判定を稼ぐ。 */
-    min-height: 44px;
-    padding: 4px 14px;
-    font-size: 13px;
-    font-family: inherit;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  #refresh:disabled { opacity: 0.5; cursor: default; }
 
   /* --- 診断/エラーバナー -------------------------------------------------------
    * iOS WebView にはコンソールが無く「画面表示でしか」切り分けられない(スパイク時代の
@@ -325,9 +319,7 @@ export const TODOS_APP_HTML = `<!doctype html>
       <!-- 最終更新 HH:mm。entry が成功データ受領のたびに書く(空のうちは非表示同然)。 -->
       <span id="updated" class="updated"></span>
     </div>
-    <!-- connect 完了まで disabled(strict ホストで初期化前 callServerTool を防ぐ。
-         entry 側の有効化コメント参照)。 -->
-    <button id="refresh" type="button" disabled>再読込</button>
+    <!-- 手動「再読込」ボタンは廃止(refetchOnWindowFocus 化。todos-entry.ts 参照)。 -->
   </header>
   <!-- 操作失敗・接続失敗を「リストを壊さずに」重ねるバナー(既定 hidden)。 -->
   <div id="banner" class="banner" hidden></div>
