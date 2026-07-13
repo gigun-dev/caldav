@@ -664,3 +664,23 @@
   JST09:00=UTC00:00。UI は structuredContent を忠実に描画しているだけ(UI バグではない)。実運用は
   list-todos に timeZone を渡すか UI 側でローカル整形する詰めが要る(後続スライス)。
 - → スライス②(app 専用ツール refresh-todos + App.callServerTool で OAuth 認可コンテキスト検証)へ。
+
+## 2026-07-13(続き)E-2 スライス② callServerTool 認可 検証合格
+
+- 実装 `1961cd1`(artisan/Opus)。app 専用ツール `refresh-todos`(`_meta.ui.visibility:["app"]`)を
+  registerAppTool で追加。handler は list-todos と同じ `runListTodos` 共通クロージャ(同じ principal・
+  同じ structuredContent 契約)=認可経路を完全共有してズレ防止。UI に「再読み込み」ボタン →
+  `App.callServerTool({name:"refresh-todos", arguments:{}})` → CallToolResult.structuredContent.tasks で再描画。
+  isError(ツール実行エラー)と throw(transport 失敗)を区別し画面表示。
+- ext-apps d.ts 確認: `callServerTool(params, opts): Promise<CallToolResult>`(全体を返す)/
+  `_meta.ui.visibility: ("model"|"app")[]`(tdr 1.7.4 と一致)。
+- **検証(chrome-devtools で Inspector Apps タブ)**: list-todos App を開く → UI に「再読み込み」ボタン描画 →
+  押下 → **エラーなくカード再描画**(DOM 再構築を uid 変化で確認)。= callServerTool がプロキシ経由で
+  サーバーに届き **OAuth principal(admin)のタスクを返した**。認可コンテキストが callServerTool 経路でも
+  効くことを実証。callServerTool は app プロキシ channel(localhost:6277/sandbox)を通り Inspector 主 History
+  とは別経路 = transcript 分離の機序も確認。
+- **注意点**: visibility:["app"] でも tools/list には出る(提示ヒントでありプロトコル除外機構ではない。
+  test 本数 8→9 に更新)。「モデルに見せない」実効性・真の会話 transcript 非出現は claude.ai Web でのみ
+  最終確認可能(機序は確認済み)。
+- → **E-2 スパイク(描画 + callServerTool 認可)完了。** 本実装は UI 作り込み・期日 timeZone 整形
+  (現状 UTC で "00:00" 表示)・他ツールの UI 化など。

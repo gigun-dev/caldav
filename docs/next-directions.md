@@ -302,6 +302,17 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   表示(list-todos を timeZone 未指定で呼んだため。UI は忠実。実運用は timeZone 渡し or UI 側ローカル
   >   整形が要る=後続の詰め)。**次: スライス②(app 専用 `refresh-todos` + `App.callServerTool` で OAuth
   >   認可コンテキスト検証)**。
+  >   **2026-07-13 追記: スライス② 実装 + 検証 合格 ✅ `1961cd1`**。app 専用ツール `refresh-todos`
+  >   (`_meta.ui.visibility:["app"]`)を追加(handler は list-todos と同じ `runListTodos` 共通クロージャ=
+  >   認可経路を完全共有)。UI に「再読み込み」ボタン → `App.callServerTool({name:"refresh-todos"})` →
+  >   structuredContent.tasks で再描画。chrome-devtools で Inspector Apps タブから検証: ボタン押下で
+  >   **エラーなくカード再描画**=callServerTool がプロキシ経由でサーバーに届き **OAuth の principal
+  >   (admin)のタスクを返した**(認可コンテキストが callServerTool 経路でも AuthenticationPort→principal で
+  >   効くことを実証)。callServerTool は app プロキシ channel(:6277/sandbox)を通り Inspector 主 History とは
+  >   別経路=transcript 分離の機序も確認。**注意: visibility:["app"] でも tools/list には出る**(提示ヒントで
+  >   あってプロトコル除外ではない。テスト本数 8→9)。真の「会話 transcript 非出現」は claude.ai Web でのみ
+  >   最終確認可能だが機序は確認済み。**E-2 スパイク(描画 + callServerTool 認可)完了。次: E-2 本実装
+  >   (UI の作り込み・期日 timeZone 整形・複数ツール UI 化)or 別方向性へ。**
   > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
   > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
   >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。
