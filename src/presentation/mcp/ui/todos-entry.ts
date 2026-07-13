@@ -112,6 +112,12 @@ const statusEl = document.getElementById("status") as HTMLElement;
 // 視覚非表示の aria-live(role="status")。becoming の視覚表現と対になる音声版
 // (「「牛乳を買う」を完了しました」等)。todos-app.ts の .sr-only コメント参照。
 const liveEl = document.getElementById("live") as HTMLElement;
+// E-2 スライス③: 対象リスト名の見出し + quick-add(タイトル1行追加)の静的要素。
+// いずれも #root の外(常時ある操作面)なので描画の破壊的更新に巻き込まれない。
+const appTitleEl = document.getElementById("app-title") as HTMLElement;
+const quickAddForm = document.getElementById("quick-add") as HTMLFormElement;
+const quickAddInput = document.getElementById("quick-add-input") as HTMLInputElement;
+const quickAddBtn = document.getElementById("quick-add-btn") as HTMLButtonElement;
 
 /** structuredContent.tasks の要素。型 import をしない方針のためここでローカル定義する
  *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。 */
@@ -159,6 +165,10 @@ interface AffectedEntry {
 let tasks: TodoItem[] | null = null; // null = まだ一度もデータを受け取っていない(skeleton 表示)
 const pendingIds = new Set<string>(); // update-todo 送信中の行(spinner+disabled 対象)
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
+// currentCalendarId(E-2 スライス③): この一覧が今どのコレクションを表示しているか。
+// 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
+// ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
+let currentCalendarId: string | null = null;
 // becoming(変化の中間状態)の元データ。応答を受け取るたびに丸ごと置き換える —
 // affected/removed の無い応答(list/refresh)が来れば空になり、becoming は自然に平常へ
 // 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
@@ -513,19 +523,37 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	texts.className = "texts";
 	const title = document.createElement("div");
 	title.className = "title";
-	title.textContent = task.title;
+	// 優先度 ! 記号(E-2 スライス③): iOS リマインダーに合わせてタイトルの左に小さく置く。以前は
+	// meta 行(2行目)に出していたが、iOS の語彙(タイトル前・オレンジ)へ寄せて title 先頭へ移した。
+	// becoming-edit(優先度変更)のときは meta 行に旧→新の差分を出すので、ここでの常時表示は
+	// 抑止する(差分は差分の言語で語る、という既存方針。二重表示を避ける)。
+	const titlePriMarks = priorityMarks(task.priority);
+	if (titlePriMarks !== "" && editPlan?.priChange == null) {
+		const priInline = document.createElement("span");
+		priInline.className = "pri-inline";
+		priInline.textContent = titlePriMarks;
+		// 記号だけだと支援技術に「!!!」と読まれて意味不明なのでラベルを添える(旧 meta 実装を踏襲)。
+		priInline.setAttribute(
+			"aria-label",
+			titlePriMarks === "!!!" ? "優先度 高" : titlePriMarks === "!!" ? "優先度 中" : "優先度 低",
+		);
+		title.appendChild(priInline);
+	}
+	// タイトル本文はテキストノードで追加する(pri-inline span の後ろに置くため textContent 代入は使わない)。
+	title.appendChild(document.createTextNode(task.title));
 	texts.appendChild(title);
 
-	// メタ行: 優先度 !記号 + due 相対表現(あるものだけ)。notes は行内に出さない
+	// メタ行: due 相対表現(あるものだけ)。優先度の常時表示は title 先頭へ移した(上記)。notes は行内に出さない
 	// (①の情報設計 — カード幅で notes まで出すと一覧の走査性が落ちる。展開 UI は②以降)。
 	// becoming: edited のインライン差分があるフィールドは、通常表示の代わりに
 	// 「旧(減光)→ 新(琥珀)」の凍結表示に差し替える(旧値に取消線は使わない —
 	// 取消線=完了の恒久記号、の一貫性)。新値 = 行の現在値なので情報の重複はない。
-	const marks = priorityMarks(task.priority);
+	// 通常の優先度 ! は title 先頭へ移したので meta の描画条件からは外す(E-2 スライス③)。
+	// meta に優先度が出るのは becoming-edit の旧→新差分(priChange)のときだけ = hasInline に含まれる。
 	const dueInfo = formatDue(task, todayKey);
 	const hasInline = editPlan !== null && (editPlan.dueChange !== null || editPlan.priChange !== null);
 	const hasMore = editPlan !== null && editPlan.moreCount > 0;
-	if (marks !== "" || dueInfo.text !== "" || hasInline || hasMore) {
+	if (dueInfo.text !== "" || hasInline || hasMore) {
 		const meta = document.createElement("div");
 		meta.className = "meta";
 
@@ -553,13 +581,6 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			const pri = document.createElement("span");
 			pri.className = "pri";
 			appendDiff(pri, editPlan.priChange.before ?? "なし", editPlan.priChange.after ?? "なし");
-			meta.appendChild(pri);
-		} else if (marks !== "") {
-			const pri = document.createElement("span");
-			pri.className = "pri";
-			pri.textContent = marks;
-			// 記号だけだと支援技術に「!!!」と読まれて意味不明なのでラベルを添える。
-			pri.setAttribute("aria-label", marks === "!!!" ? "優先度 高" : marks === "!!" ? "優先度 中" : "優先度 低");
 			meta.appendChild(pri);
 		}
 
@@ -805,6 +826,10 @@ function markUpdated(): void {
 /** 応答の structuredContent の形(冒頭コメントの契約を型に写経したもの)。 */
 interface TodosStructuredContent {
 	tasks?: TodoItem[];
+	// calendarId(E-2 スライス③): この一覧の対象コレクション ID。server は必ず載せる(省略時 "tasks")。
+	// ヘッダ見出しと quick-add の作成先に使う。合成 vm(mutation の非既定ビュー経路)では refresh 側の
+	// vm から引き継がれる(applyStructuredContent が currentCalendarId を更新する)。
+	calendarId?: string;
 	affected?: AffectedEntry[];
 	removed?: TaskSnapshot[];
 	// view echo(E-2 view 状態非保持バグ修正)。list-todos/refresh-todos が「この一覧はどのビューか」を
@@ -831,6 +856,13 @@ function applyStructuredContent(sc: unknown): void {
 	// {} へ戻っても既に既定=無害。非既定ビューでの mutation は refresh-todos で view を保った
 	// 合成 vm を渡してくるため、ここで currentView が誤って既定に落ちることはない。
 	currentView = structuredContent?.view ?? {};
+	// currentCalendarId を応答の calendarId で更新し、ヘッダ見出しへ反映する(E-2 スライス③)。
+	// server は必ず calendarId を載せるが、旧サーバー/欠落応答に備え、値が来たときだけ更新する
+	// (未受領のうちはプレースホルダ「リマインダー」のまま = 後方互換 degrade)。
+	if (structuredContent?.calendarId !== undefined) {
+		currentCalendarId = structuredContent.calendarId;
+		appTitleEl.textContent = currentCalendarId;
+	}
 	markUpdated();
 	announceBecoming();
 }
@@ -1056,6 +1088,112 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		renderAll();
 	}
 }
+
+// --- quick-add(E-2 スライス③: タイトル1行の素早い追加)-----------------------------
+// フォーム送信(追加ボタン / Enter)で create-todo を叩く。設計は toggleTask と同じ
+// 「楽観確定しない」流儀: 送信中は入力とボタンを disabled にし、サーバー確定の vm
+// (affected:added が乗る)で再描画されるまで二重送信を防ぐ。楽観的に行を先出ししないのは、
+// サーバーが UID・ソート位置・due 整形を確定するまで「どこに何が入るか」を UI が予測できないため
+// (toggleTask の D4 と同じ理由 — 確定値だけを描く)。
+// 【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復の指定はチャット(create-todo を LLM が
+// 呼ぶ)の領分にする — フォームに詰め込むと timeZone 選択・日付ピッカー等の複雑さを一気に抱えるため
+// (todos-app.ts の quick-add コメントと対)。
+let quickAddBusy = false;
+
+async function submitQuickAdd(): Promise<void> {
+	// 二重送信防御(disabled にしているが、描画反映前の連打や多重イベントをここでも弾く)。
+	if (quickAddBusy) return;
+	// 空文字・空白のみは送信しない(iOS リマインダーで空行入力が無視される挙動に合わせる)。
+	const title = quickAddInput.value.trim();
+	if (title === "") return;
+
+	quickAddBusy = true;
+	quickAddInput.disabled = true;
+	quickAddBtn.disabled = true;
+	clearBanner();
+	try {
+		// calendarId は今表示中のコレクション(currentCalendarId)に作る。未受領(null)なら引数を
+		// 省いて server 既定("tasks")に委ねる — ヘッダがプレースホルダ表示中に投入された場合の安全側。
+		const args: Record<string, unknown> =
+			currentCalendarId !== null ? { title, calendarId: currentCalendarId } : { title };
+		const result = await app.callServerTool({ name: "create-todo", arguments: args });
+		if (result.isError) {
+			const first = result.content?.[0];
+			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+			throw new Error(text);
+		}
+		// 成功: 入力をクリアしてから確定描画する。view が既定なら mutate 応答 vm(affected:added)を
+		// そのまま描き、非既定なら refresh-todos(currentView)で取り直して affected を合成する
+		// (toggleTask と同じ view 引き継ぎ経路。currentView/currentCalendarId を壊さない)。
+		quickAddInput.value = "";
+		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
+		if (structuredContent?.tasks !== undefined && !isDefaultView(currentView)) {
+			// 非既定ビュー: mutate 応答の tasks は未完了ビュー固定で currentView と矛盾しうるので、
+			// tasks は refresh-todos(currentView 付き)で取り直し、becoming(affected:added)だけ合成する。
+			try {
+				const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+				if (refreshed.isError) {
+					const first = refreshed.content?.[0];
+					const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+					throw new Error(text);
+				}
+				const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+				// 合成 vm: 一覧 tasks/calendarId/view は refresh(currentView)側、becoming メタは mutate 応答側。
+				const composed: TodosStructuredContent = {
+					tasks: rsc?.tasks ?? [],
+					calendarId: rsc?.calendarId,
+					view: rsc?.view,
+					affected: structuredContent.affected,
+					removed: structuredContent.removed,
+				};
+				applyStructuredContent(composed);
+			} catch (e) {
+				// 追加自体は成功しているので操作結果は失わない。「再読み込み失敗」として degrade
+				// (再試行 = fetchLatest のみ。create-todo は再送しない = 二重追加を避ける)。
+				showBanner(
+					`追加は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+					() => void retryFetch(),
+				);
+			}
+		} else if (structuredContent?.tasks !== undefined) {
+			// 既定ビュー: mutate 応答 vm をそのまま確定描画に使う(affected:added が becoming-in を描く)。
+			applyStructuredContent(structuredContent);
+		} else {
+			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
+			try {
+				await fetchLatest();
+			} catch (e) {
+				showBanner(
+					`追加は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+					() => void retryFetch(),
+				);
+			}
+		}
+	} catch (e) {
+		// create-todo 自体の失敗(transport / isError)。入力値は消さずに残し、ユーザーが再送できるようにする。
+		showBanner(`「${title}」の追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	} finally {
+		quickAddBusy = false;
+		quickAddInput.disabled = false;
+		quickAddBtn.disabled = false;
+		renderAll();
+	}
+}
+
+quickAddForm.addEventListener("submit", (e) => {
+	// フォーム送信は iframe 内のページ遷移(リロード)を伴うので必ず preventDefault する。
+	e.preventDefault();
+	void submitQuickAdd();
+});
+// IME 変換確定の Enter で誤送信しない。単一テキスト入力の form は Enter で暗黙送信されるが、
+// 日本語入力の「変換確定」Enter も submit を発火させてしまう。keydown は submit より先に走るので、
+// ここで isComposing(変換中)の Enter を preventDefault して暗黙送信自体を止める
+// (変換中でない通常の Enter は素通しし、form の submit ハンドラに処理を委ねる)。
+quickAddInput.addEventListener("keydown", (e) => {
+	if (e.key === "Enter" && e.isComposing) {
+		e.preventDefault();
+	}
+});
 
 // --- 自動 refetch(refetchOnWindowFocus 相当)------------------------------------
 // 【なぜ app 駆動の refetch を入れるか(2026-07-13 調査で確定)】

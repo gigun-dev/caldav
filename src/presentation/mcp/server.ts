@@ -547,7 +547,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 			title: "Create todo",
 			description:
 				"新規 VTODO(リマインダー)を作成する。UID/DTSTAMP はサーバーが生成する。priority は 1=高/5=中/9=低(iOS 準拠、「緊急」段階は無い)。" +
-				'due は "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone 必須)。時刻付き due には自動で VALARM(due 時刻の通知)が付く。',
+				'due は "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone 必須)。時刻付き due には自動で VALARM(due 時刻の通知)が付く。' +
+					// E-2 スライス③: quick-add(UI のタイトル1行入力)や calendarId 省略の呼び出し経路が増えたため、
+					// 既定保存先を description 本文にも明示する(従来は inputSchema の calendarId フィールドの
+					// describe にだけ書いていたが、ツール選択・省略時挙動の判断材料として本文にも出す)。
+					' calendarId を省略した場合は "tasks" コレクションに作成する。',
 			inputSchema: createTodoInputShape,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },

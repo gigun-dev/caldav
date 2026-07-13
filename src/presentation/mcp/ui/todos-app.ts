@@ -429,12 +429,72 @@ export const TODOS_APP_HTML = `<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     .skel, .skel * { animation: none; }
   }
+
+  /* --- quick-add(E-2 スライス③: タイトル1行の素早い追加)-------------------------
+   * 一覧の末尾に常設する入力行。iOS リマインダーの「新規リマインダー」入力に語彙を寄せる
+   * (プレースホルダ・末尾配置)。入力とボタンはどちらも 44px 高でタッチターゲットを確保する。
+   * 送信中(create-todo の応答待ち)は入力とボタンを disabled にする — 楽観確定はせず、
+   * サーバー確定の vm(affected:added)が返って再描画されるまで二重送信を防ぐ(既存 pending 流儀)。 */
+  .quick-add {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .quick-add-input {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 10px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  /* フォーカスリングはブラウザ既定を残す(outline:none は書かない — アクセシビリティ要件)。 */
+  .quick-add-input:disabled { opacity: 0.5; }
+  .quick-add button {
+    flex-shrink: 0;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 14px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .quick-add button:disabled { opacity: 0.5; cursor: default; }
+
+  /* --- 優先度インライン記号(E-2 スライス③: タイトル前に表示)-----------------------
+   * iOS リマインダーは優先度の「!」記号をタイトルの左に置く。このプロトタイプは以前 meta 行
+   * (2行目)に出していたが、iOS の語彙(タイトル前・オレンジ)に合わせて title 先頭へ移した。
+   * becoming の優先度差分(旧→新の語表示)は引き続き meta 行に出す(一過性の差分は差分の言語で
+   * 語る、という既存方針。todos-entry.ts の planEdit / priChange コメント参照)。 */
+  .title .pri-inline {
+    color: var(--pri);
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-right: 4px;
+  }
 </style>
 </head>
 <body>
   <header class="bar">
     <div class="bar-left">
-      <span class="app-title">リマインダー</span>
+      <!-- E-2 スライス③: 見出しを「対象リスト名」にする。以前は固定文言「リマインダー」で、どの
+           コレクションを見ているかが曖昧だった(複数リスト運用・quick-add の作成先が不明)。entry が
+           vm.calendarId を書き込む。データ到着前のプレースホルダとして「リマインダー」を初期表示する。
+           【将来課題】いまは calendarId(コレクションの内部 ID 文字列)をそのまま出す。iOS リマインダーの
+           リスト名に相当する displayname(CalDAV の DAV:displayname プロパティ)取得は未実装なので、
+           人間可読名が要るなら別途 principal→コレクション displayname を引く経路を足す(このスライス外)。 -->
+      <span id="app-title" class="app-title">リマインダー</span>
       <!-- 最終更新 HH:mm。entry が成功データ受領のたびに書く(空のうちは非表示同然)。 -->
       <span id="updated" class="updated"></span>
     </div>
@@ -446,6 +506,25 @@ export const TODOS_APP_HTML = `<!doctype html>
   <div id="status" class="status" hidden></div>
   <!-- 一覧本体。entry が skeleton → sections で書き換える。 -->
   <div id="root"></div>
+  <!-- quick-add(E-2 スライス③): タイトル1行だけの素早い追加口。#root の外(常時ある操作面)に
+       置くのはヘッダと同じ理由 — #root は再描画のたびに innerHTML で作り直されるので、その中に
+       入力欄を置くと再描画のたびに未確定の入力文字が消える。ここに置けば描画に巻き込まれない。
+       【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復の指定はチャット(create-todo を
+       LLM が呼ぶ)の領分にする — フォームに詰め込むと timeZone 選択・日付ピッカー等①の外の複雑さを
+       一気に抱える(todos-entry.ts の「作成フォームを持たない理由」も同旨)。素早い1行投入だけを担う。
+       form 要素にするのは Enter 送信を素直に拾うため(submit を entry が listen し、IME 変換確定の
+       Enter は isComposing で弾く)。 -->
+  <form id="quick-add" class="quick-add">
+    <input
+      id="quick-add-input"
+      type="text"
+      class="quick-add-input"
+      autocomplete="off"
+      placeholder="新しいリマインダー"
+      aria-label="新しいリマインダーのタイトル"
+    />
+    <button id="quick-add-btn" type="submit">追加</button>
+  </form>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->
