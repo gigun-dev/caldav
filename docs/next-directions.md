@@ -171,11 +171,23 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
   ユーザー設定リマインダーの判別ヒューリスティック — 独立テーマ)/ 反復 todo の due→DATE 変更で
   RRULE UNTIL が DATE-TIME だと I6 明示エラー(レアケース・優先度低・直すなら UNTIL も DATE 化)。
 
-**⚠️ 新 CalDAV コア課題(E-2 と独立): iOS shake-undo × sync-collection。** iOS の振り削除取消が
-「一瞬復活→sync で再削除」。RFC 6578 §3.5.1 分析より有力仮説 H-A = iOS の undo はローカル限定
-(=我々のバグでない・§3.5.2 準拠)。Step0 コード確認済(削除後の同一 UID 再 PUT は 201・掃除漏れ否定)。
-**要実機キャプチャ**(`make up DUMP=1` で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/
-PUT+412 なら案A。tombstone(案B)は不採用。runbook は log.md。docs/modeling/06・05 記録待ち。
+**~~⚠️ 新 CalDAV コア課題: iOS shake-undo × sync-collection~~ ✅ 実機キャプチャで決着(2026-07-14)。**
+仮説 H-A(undo はローカル限定)は**棄却** — iOS 26.5 remindd は shake-undo で
+**PUT If-None-Match:\* により同一 UID を再作成する**。キャプチャ実測: DELETE 204 → sync REPORT が
+404 removed(token 62→63)→ undo の PUT 201 → 次の sync REPORT が同 URI を 200+新 ETag で
+changed 報告(token 63→64)= 我々のサーバーは全段で RFC 6578 §3.5.1 準拠(delete→recreate を
+changed 報告)。**サーバー側バグ無し**。以前の「一瞬復活→再削除」は undo PUT より先に sync が
+走った際のクライアント側タイミングと推定 = サーバーで直せない。docs/modeling/06 への正式記録は
+次回実機セッション(キャプチャ: ~/caldav-capture.log)。
+
+**E-2 スライス④候補(2026-07-14 ユーザーフィードバック)**: refetch 差分の becoming 適用 —
+focus refetch(refresh-todos)は affected を持たないため、サーバー変更(iOS 側で追加/完了した
+タスク)が UI に「いきなり」現れる/消える。**ステートレス原則はインスタンス跨ぎの話であって、
+生きているインスタンス内では前回 tasks を持っている** → UI 側で prev/next のクライアント差分を
+計算し、既存の becoming 語彙(added=左バー+wake 等)をシステム起因の変化にも適用する。
+方針: ユーザー起因=即時(現行)/ システム起因=becoming マーキングで「何が変わったか」を説明
+(装飾アニメは引き続き無し。位置移動の FLIP は任意・reduced-motion 尊重。pending 中は適用延期)。
+編集/削除 UI・D4 確認 UX と同じスライス④の束。
 
 **E の残り(E-2 の先)**:
 - WebUI(独立した製品要素・ユーザー判断): tsdav 直 CalDAV か REST アダプタ経由かは設計時の論点
