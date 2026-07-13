@@ -12,6 +12,7 @@ import {
 	SyncChange,
 	SyncToken,
 	collectionId,
+	isComponentKind,
 	principalPath,
 	resourceUri,
 	type CollectionId,
@@ -52,7 +53,12 @@ interface ResourceRow {
 function parseSupported(raw: string | null): readonly ComponentKind[] | undefined {
 	if (raw === null) return undefined;
 	const parsed: unknown = JSON.parse(raw);
-	if (!Array.isArray(parsed) || parsed.some((v) => v !== "VEVENT" && v !== "VTODO")) {
+	// 2026-07-14 回帰修正: 以前は "VEVENT" | "VTODO" をこの関数内でハードコード列挙しており、
+	// J-1/J-2 で VJOURNAL が domain の COMPONENT_KINDS に追加された後もここだけ取り残されていた。
+	// その結果 VJOURNAL コレクションを MKCALENDAR で作ると次回 hydrate 時にここで throw → 500 に
+	// なる回帰を踏んだ(R-1)。許容集合の二重管理が原因なので、domain の isComponentKind を
+	// 唯一の判定源として参照する形に直す(infrastructure→domain の依存方向は規約どおり)。
+	if (!Array.isArray(parsed) || parsed.some((v) => typeof v !== "string" || !isComponentKind(v))) {
 		throw new Error("D1 contains invalid supported_components");
 	}
 	return parsed as ComponentKind[];
