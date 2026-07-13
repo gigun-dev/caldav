@@ -635,3 +635,18 @@
 - 検証は main の役割どおり: 実装 subagent → Opus レビュー → 本番 D1 実バイトで ground truth 確認、の流れ。
   chrome-devtools の自動化 Chrome がプロファイルロック残留で詰まったため残留プロセスを落として復帰(別 Chrome/
   Inspector タブとは別インスタンス)。**次の本線 = E-2(MCP App UI)。**
+
+## 2026-07-13(続き)E-2 スパイク スライス①(MCP Apps UI 描画)
+
+- **設計は architect(Fable)が起案** — tdr-concierge の実コード + node_modules の ext-apps@1.7.4 d.ts +
+  caldav の .dependency-cruiser.cjs/tsconfig を実読した上で、配置(presentation/mcp/ui)・ツールの付け方
+  (list-todos を registerAppTool 置換=非破壊可逆)・スライス分割(①描画/②callServerTool)・ビルド配線
+  (bundle コミット+typecheck:ui を make check)・depcruise 末端ルールを確定。
+- **実装は artisan(Opus)** `63b5d46`。ext-apps@1.7.4 / `RESOURCE_MIME_TYPE="text/html;profile=mcp-app"` /
+  sdk・zod は単一解決を確認。UI は自己完結バンドル(esm.sh 実行時 import が Claude iOS で失敗する tdr 教訓)。
+  entry は application の Task を import せず契約コメント写経(mcp-ui-is-terminal で機械強制)。
+  make check green・Worker upload 2341.92 KiB / gzip 448.07 KiB。
+- **未確認=実機描画**(claude.ai Web の caldav コネクタで list-todos → インライン UI カード)。CLI/Inspector では
+  ui:// 描画は見えない。ワイヤレベル(resources/list に ui://・list-todos の _meta.ui)は chrome-devtools で
+  Inspector から確認可能。→ ①合格でスライス②(app 専用 refresh-todos + callServerTool の OAuth 認可検証)。
+- zod 差: tdr=zod3(v4 サブパス同梱)/ caldav=zod4 直。ext-apps 内部 `import {z} from "zod/v4"` を素直に解決。

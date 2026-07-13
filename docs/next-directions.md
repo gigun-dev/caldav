@@ -288,6 +288,13 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
   >   UI から callServerTool が認可付きで通るか**」に更新する。実機は claude.ai Web の Connector 経由
   >   (Claude Code では描画確認不可)。
   >
+  > **2026-07-13 更新: E-2 スパイク スライス① 実装完了 ✅ `63b5d46`(実機描画は未確認)。**
+  >   `@modelcontextprotocol/ext-apps` を追加し `list-todos` を `registerAppTool` 化(_meta.ui.resourceUri
+  >   追加のみ=非破壊・可逆)+ `registerAppResource(ui://caldav/todos.html)`。UI は
+  >   `src/presentation/mcp/ui/`(entry→build-ui-bundle→bundle→app HTML インライン)。depcruise
+  >   `mcp-ui-is-terminal` で末端強制・`tsconfig.ui.json` で DOM 隔離・`typecheck:ui` を make check に。
+  >   make check green・Worker upload gzip 448 KiB。**残: ①実機(claude.ai Web で描画されるか)→ 合格したら
+  >   スライス②(app 専用ツール `refresh-todos` + `App.callServerTool` で OAuth 認可コンテキスト検証)**。
   > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
   > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
   >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。
