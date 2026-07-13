@@ -20,5 +20,12 @@
   // (bun-types と cloudflare:test の型が一部グローバルで衝突する)、素の tsc(bun run
   // typecheck)からは除外し、typecheck:worker(tsc --noEmit -p test/worker)で
   // 別レーンとして型検査する(2026-07-12 vitest-pool-workers 導入スライス1)。
-  "exclude": ["test/worker"]
+  // src/presentation/mcp/ui/*-entry.ts はブラウザ(DOM あり)で動くソース群で、主コンパイル
+  // (Workers 向け・lib は ESNext のみ)に混ぜると DOM グローバルが全体に漏れ、Cloudflare
+  // 拡張型が標準 DOM 型と衝突する(test/worker を別レーンに隔離しているのと同じ理屈)。
+  // DOM lib を足した tsconfig.ui.json(typecheck:ui)で別途型チェックするため、ここでは除外する。
+  // エントリを追加するときは tsconfig.ui.json の include(*-entry.ts glob)だけで追従するので
+  // この exclude は編集不要。※ 生成物 src/presentation/mcp/ui/*-bundle.ts(ただの文字列定数)は
+  // 主コンパイル対象のまま(DOM 不要)。
+  "exclude": ["test/worker", "src/presentation/mcp/ui/*-entry.ts"]
 }

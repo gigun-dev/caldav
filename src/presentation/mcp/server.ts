@@ -29,8 +29,21 @@ import { Hono } from "hono";
 // OAuthProvider の ExecutionContext 型との橋渡し=局所キャストを行う)。
 import type { ExecutionContext } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// E-2 スライス①: MCP Apps(ui://)の登録ヘルパー。registerAppResource は素の
+// registerResource のラッパーで mimeType を RESOURCE_MIME_TYPE("text/html;profile=mcp-app")に
+// 既定化する。registerAppTool は registerTool のラッパーで _meta.ui.resourceUri から
+// 後方互換キー _meta["ui/resourceUri"] を自動補完する(型は registerTool と互換なので、
+// 既存の title/description/inputSchema/handler をそのまま渡せる)。d.ts で 1.7.4 の
+// シグネチャを確認済み(RESOURCE_MIME_TYPE は値 "text/html;profile=mcp-app")。
+import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { z } from "zod";
+
+// E-2 スライス①: list-todos が描画する ui:// リソースの URI と HTML 本体。
+// todos-app.ts → todos-bundle.ts(自動生成)の依存を経由する。ここ(server.ts)から
+// ui/ 配下への import は許可される(.dependency-cruiser.cjs の mcp-ui-is-terminal は
+// 「ui/ から他 src への import」だけを禁止する末端ルールで、ui/ へ入る import は対象外)。
+import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
@@ -283,6 +296,44 @@ function toolError(message: string) {
 function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	const server = new McpServer({ name: "caldav-mcp", version: "1.0.0" });
 
+	// --- todos ui:// リソース(E-2 スライス①)------------------------------------
+	// list-todos が _meta.ui.resourceUri で参照する MCP Apps の HTML 本体を登録する。
+	// config._meta.ui はリソース一覧(resources/list)時点でホストが参照する既定値、
+	// read 時の content item._meta.ui はそれを上書きする(ext-apps の仕様どおり後者が優先)。
+	// このスパイクでは特別な CSP/描画設定は不要なので prefersBorder のみ最小指定にする
+	// (自己完結バンドルで外部 import が無いため resourceDomains 等の CSP 許可は要らない)。
+	// resource 登録も buildMcpServer 内で毎回行う(server はリクエストごとに new する既存方針
+	// どおり — クラス冒頭コメント参照。ステートを持たないので毎回登録で問題ない)。
+	registerAppResource(
+		server,
+		"Todos View",
+		TODOS_UI_URI,
+		{
+			title: "リマインダー一覧 UI",
+			description: "list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async () => ({
+			contents: [
+				{
+					uri: TODOS_UI_URI,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: TODOS_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
 	// --- get-current-time -----------------------------------------------------
 	server.registerTool(
 		"get-current-time",
@@ -534,13 +585,31 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		},
 	);
 
-	// --- list-todos(E-1 スライス①)-----------------------------------------------
-	server.registerTool(
+	// --- list-todos(E-1 スライス① / E-2 スライス①で ui:// を紐付け)-----------------
+	// 【なぜ新ツールを足さず registerAppTool 置換にするか(可逆・非破壊)】
+	//   E-2 の UI 紐付けは「既存 list-todos に _meta を1つ足すだけ」で済む。新たに
+	//   list-todos-ui のような別ツールを増やすと、ホスト LLM が同じ「一覧して」で2ツールの
+	//   どちらを呼ぶか迷う誤選択事故を招く(tdr で park_waits / attraction_wait の守備範囲が
+	//   交差して踏んだ問題と同種)。registerAppTool は registerTool の薄いラッパーで、
+	//   handler・inputSchema・structuredContent・戻り値は一切変えず _meta を追加するだけ。
+	//   UI 対応ホスト(claude.ai/iOS)は ui:// を描画し、非対応ホストは _meta を無視して
+	//   従来どおり structuredContent のテキストを使う——つまり退化しても壊れないし、
+	//   registerAppTool を registerTool に戻せば完全に元へ戻せる(可逆)。
+	// 【_meta の2キー併記】_meta.ui.resourceUri は SEP-1865(Claude 側)の正キー、
+	//   "openai/outputTemplate" は ChatGPT(Apps SDK)が同じ ui:// を認識する別ベンダーキーで、
+	//   独立に併記してよい(どちらのホストでも同じ HTML を再利用するための実務上の配線。
+	//   tdr の park_waits と同じ)。
+	registerAppTool(
+		server,
 		"list-todos",
 		{
 			title: "List todos",
 			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。",
 			inputSchema: listTodosInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }) => {
 			try {

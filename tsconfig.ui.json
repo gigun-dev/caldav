@@ -1,0 +1,29 @@
+{
+  // ブラウザ向けエントリ src/presentation/mcp/ui/*-entry.ts 専用の型チェック設定。
+  //
+  // 【なぜ主 tsconfig.json と分けるか】
+  //   主コンパイルは Workers(V8 isolate・DOM 無し)向けで lib を ESNext のみに絞り、
+  //   Cloudflare 拡張型は worker-configuration.d.ts で供給している。ここに DOM lib を足すと
+  //   標準 DOM のグローバル(CacheStorage 等)が割り込んで Workers 側の型が壊れる。逆に
+  //   ブラウザで動く *-entry.ts は document/setTimeout 等の DOM API が要る。両者の lib 要求が
+  //   相反するため、DOM が要るこのファイル群だけを別 tsconfig に隔離する(test/worker を別
+  //   tsconfig.json に隔離しているのと同じ理屈 — 型セットが共存できないレーンは物理分離する)。
+  //   make check は主 typecheck・typecheck:worker・typecheck:ui の3レーンを回す。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // ブラウザ実行なので DOM を足す。ESNext は主設定から引き継ぐ意図で明示再掲する
+    // (extends は compilerOptions を浅くマージするため lib は上書きになる。ESNext を
+    //  書き忘れると Array/Promise 等の型が欠ける)。
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    // @types/bun(bun:test 用)は不要。worker-configuration.d.ts も include しない
+    // (Workers グローバルをブラウザ側に持ち込まないため types を空にする)。
+    "types": []
+  },
+  // ブラウザ向けエントリ群だけを対象にする(extends の include はここで上書きされる)。
+  // エントリを足したら scripts/build-ui-bundle.ts の TARGETS に対応する *-entry.ts を
+  // 置くだけでこの glob が自動的に拾う(tsconfig.json 側の exclude と対で編集不要にする)。
+  "include": ["src/presentation/mcp/ui/*-entry.ts"],
+  // 主 tsconfig の exclude(まさにこのファイル群を除外している)を extends が継承すると
+  // 「対象0件」エラーになるため、ここで空に上書きしてエントリを対象へ戻す。
+  "exclude": []
+}

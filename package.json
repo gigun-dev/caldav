@@ -9,6 +9,8 @@
     "test:worker": "vitest run",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "tsc --noEmit -p test/worker",
+    "typecheck:ui": "tsc --noEmit -p tsconfig.ui.json",
+    "build:ui": "bun run scripts/build-ui-bundle.ts",
     "boundaries": "depcruise src",
     "proxy:dev": "bun run proxy/server.ts",
     "smoke": "bun run scripts/smoke-test.ts"
@@ -16,6 +18,7 @@
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.1",
     "@hono/mcp": "^0.3.1",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.12.27",
     "ical.js": "^2.2.1",

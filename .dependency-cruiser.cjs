@@ -86,6 +86,28 @@ module.exports = {
       },
     },
     {
+      // src/presentation/mcp/ui/*-entry.ts はブラウザ(サンドボックス iframe/WKWebView)で
+      // 実行される末端コードで、scripts/build-ui-bundle.ts が bun build で単一 ESM に
+      // バンドルして HTML へインライン埋め込みする。ここから src/ 内の他コード(domain /
+      // application / infrastructure / presentation/mcp の worker 側)を import すると、
+      // それらがブラウザバンドルに巻き込まれる(D1 リポジトリ・Workers グローバル依存が
+      // ブラウザで動くはずもなく、そもそも巻き込むべきでない)。「ui は末端」という設計意図を
+      // 人手レビュー任せにせず機械強制する。application 層の Task 型等は import せず、契約は
+      // todos-entry.ts のコメント + ローカル interface に写経する(疎結合を優先)。
+      // 外部 npm(@modelcontextprotocol/ext-apps 等)への import は to.path が ^src/ 限定
+      // なので対象外(許可される)。
+      name: 'mcp-ui-is-terminal',
+      comment:
+        'src/presentation/mcp/ui 配下(ブラウザ実行コード)は src/ 内の他コードへ依存しては' +
+        'ならない。ブラウザバンドルに domain/application/worker コードを巻き込まないため。',
+      severity: 'error',
+      from: { path: '^src/presentation/mcp/ui' },
+      to: {
+        path: '^src/',
+        pathNot: '^src/presentation/mcp/ui',
+      },
+    },
+    {
       name: 'no-circular',
       comment: '循環依存は設計の崩れの兆候。層をまたがなくても禁止する。',
       severity: 'error',

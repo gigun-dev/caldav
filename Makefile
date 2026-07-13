@@ -115,9 +115,15 @@ test-worker: ## テストを実行(vitest-pool-workers レーン、実 workerd �
 # 型セットが共存できず(bun-types vs cloudflare:test の型衝突。tsconfig.json の
 # exclude コメント参照)専用 tsconfig(test/worker/tsconfig.json)を持つため、
 # tsc の実行自体を2回に分ける必要がある。
-typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから、2レーン分)
+# typecheck:ui を3レーン目として連結する理由: src/presentation/mcp/ui/*-entry.ts は
+# ブラウザ(DOM あり)で動くソースで、主 tsconfig(Workers 向け・ESNext lib のみ)とは
+# 型セットが共存できない(DOM グローバルが Cloudflare 拡張型と衝突する)。専用の
+# tsconfig.ui.json(DOM lib を足す)を持つため、test/worker と同じく tsc の実行を分ける。
+# make check がこの3レーンをまとめて回すので、UI のブラウザ TS も CI で型検査される。
+typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから、3レーン分)
 	bun run typecheck
 	bun run typecheck:worker
+	bun run typecheck:ui
 
 boundaries: ## 層境界チェック(dependency-cruiser)
 	bun run boundaries
