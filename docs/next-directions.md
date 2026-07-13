@@ -1,43 +1,55 @@
-# 次セッションの方向性(2026-07-11 棚卸し・第2版)
+# 次セッションの方向性(2026-07-13 棚卸し・第3版)
 
 > **位置づけ**: 恒久ドキュメント(セッション引き継ぎの正典)。セッション開始時にまず読む。
 > **更新ルール**: 計画は消さない。完了は打ち消し線 + ✅、状況変化は該当箇所の直下に
 > `> **YYYY-MM-DD 更新:** ...` の引用ブロックを積層する。大きな節目でタイトルの日付を更新し
-> 全体を棚卸しする(積層を本文に溶かし込む。今回が第2版 = 着手順の DDD 改訂を機に棚卸し)。
+> 全体を棚卸しする(積層を本文に溶かし込む。今回が第3版 = E-1 完全クローズ + E-2 中盤を機に棚卸し。
+> 第2版までの積層の生記録は git 履歴と docs/log.md にある)。
 > 時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
 
-M1「足場固め」が完了した時点。検証フェーズは完了しており、プロダクトとしては序盤。
-**次のセッションは方向性 G(G-1 の TZ 解決層)から拾う。**
-
-> **2026-07-11 更新:** G-1 完了 ✅。次は **G-2(RecurrenceExpansion ドメインサービス)** から。
+**現在地**: 方向性 G(意味計算)✅・J(採択途中 RFC)✅ が完了。着手順で先行させた
+E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD の MCP 完全対応)✅ まで
+クローズし、**E-2(MCP App UI)の本実装スライス②(becoming 差分 UI)まで完了**。
+**次のセッションはまず R-1(VJOURNAL hydrate 回帰バグ・「レビュー起票」節参照)を潰し、
+その後 E-2 スライス③ / shake-undo 実機キャプチャ / A(マルチユーザー)から冒頭で選ぶ。**
+2026-07-13 に Codex 体系レビュー実施 → 裁定は「レビュー起票」節(R-1〜R-8)。
 
 ## 今日までに完成しているもの(前提)
 
 - **iCalendar ドメイン層**(RFC 5545): 構造層 + 値型コーデック + 意味論レンズ + 不変条件 I1〜I10。ロスレス往復。
+  VJOURNAL(J-1)・ical-tasks/9253 読み取りアクセサ(J-3)・VTODO 書き込み経路(builder/patch/stamp)込み。
 - **CalDAV リソース層**: 3集約(Principal / CalendarCollection+SyncChange / CalendarObjectResource)+ put-preconditions R1〜R7。
-- **フルスタック稼働**: application / infrastructure(D1) / presentation(DAV XML + Basic Auth)。
+- **意味計算(G)**: TZ 解決層(IANA 正・Workers ICU)/ RecurrenceExpansion(ical.js を port&adapter で隔離)/
+  first/last occurrence 索引(migration 0002)+ calendar-query time-range / free-busy(UC は TZ 非依存の
+  BusyInterval[]、iCalendar 化は presentation)。
+- **フルスタック稼働**: application / infrastructure(D1) / presentation(DAV XML + Basic Auth + MCP)。
   本番 = Worker `caldav.gigun-dev.workers.dev` + Cloud Run 書き換えプロキシ(iOS 正式入口・恒久構成)。
-- **iOS 実機検証 3ラウンド完了**(docs/modeling/06)。A7(RFC 6868)も決着済み — iOS は
-  パラメータ値の DQUOTE を黙って除去し `^` エンコードは使わない。6868 実装は不要と確定。
-- **M1 足場固め**: CI(境界→tsc→test)/ Workers Builds 自動 deploy / ETag 412 テスト /
-  ローカル開発環境(Makefile + cloudflared tunnel + iPhone 実機接続実証)/ pre-push hook で main 保護。
-- 203+ tests / tsc green。認証方式の調査済み(docs/modeling/07 が M2 一次資料)。
-- proxy の Content-Length 修正は Cloud Run 反映済み(`caldav-proxy-00003-dsz`、OPTIONS 疎通 OK)。
+  **deploy = Workers Builds が main push で migrate→deploy 自動**(package.json `deploy` script。
+  前方互換規律は migrations/README.md)。
+- **MCP サーバー**(`/mcp`・@hono/mcp ステートレス): 照会 3 ツール + todo 5 ツール(create/list/update/
+  complete/delete。単発/反復・VALARM 生成/追随・反復完了は iOS D4 モデル完全再現・時刻付き due +
+  VTIMEZONE 生成)。**OAuth(workers-oauth-provider・DCR→authorize→token)本番実機受け入れ済み** +
+  静的 Bearer 併存。DAV と MCP が同じ application UC を呼ぶ複数入口ビジョンは実証済み。
+- **MCP Apps(E-2)**: list-todos に ui:// UI(ext-apps・自己完結バンドル)。Inspector Apps タブで
+  描画・callServerTool の OAuth 認可を検証済み。トリアージ UI(セクション一覧+完了操作+app 駆動
+  refetch)+ becoming 差分レンズ(スライス②)まで実機好評。
+- **テスト2レーン**: bun test(domain/application 高速)+ vitest-pool-workers(workerd 実 SQL・
+  OAuth E2E)。tsdav CI ハーネス(方向性 C 前倒し)込み。CI = 層境界 → tsc → 両レーン。
+- **iOS 実機検証**: カレンダー 3 ラウンド + リマインダー(D 系・V 系)完了(docs/modeling/06)。
+  A7(RFC 6868 不要)決着。V5(サーバー発 VALARM 通知)・V6(時刻付き due)合格。
 
-## 着手順(2026-07-11 確定・DDD 戦略設計)
+## 着手順(2026-07-11 確定・DDD 戦略設計/2026-07-13 進捗反映)
 
 松岡 DDD のコアドメイン蒸留で A〜K を分類(根拠と分類表は **docs/modeling/11 §1**):
 コアドメイン = **G / J / E**、支援 = B / K / C / H / I、汎用 = **A** / F。
-「コアに最初に投資し、汎用はデファクトをなぞって薄く済ませる」原則から、
-当初案(A 先頭。B vs E はユーザー判断待ち)を改訂して以下に確定:
 
-1. **G(意味計算)** — RFC MUST 違反の解消 + コアドメイン。A に依存せず単独で完結。
-2. **J(採択途中 RFC)** — G でドメイン層が熱いうちに。ical-tasks の RFC 化前に。
+1. ~~**G(意味計算)**~~ ✅
+2. ~~**J(採択途中 RFC)**~~ ✅(J-4 の iOS 非回帰確認のみ保留)
 3. **A(M2 マルチユーザー)** — 汎用だが B/D/E 実運用の前提となるボトルネック。
-4. **E(agentic 入口)** — B より先と確定(ユーザー判断)。K-4 はこの文脈で。
+4. **E(agentic 入口)** — B より先と確定(ユーザー判断)。**実際には A より先行着手し
+   OAuth・MCP ツール・E-1・E-2 中盤まで完了**(G-5 の勢いを利用)。残りは E-2 の仕上げ。
 5. **K-1〜K-3 → B(招待)** — K-1 は B 着手前必須。K-2/K-3 は B と E の共有カーネル。
-6. **C → D → H → I** — ただし C の tsdav CI ハーネスだけ **G-3 完了時点に前倒し**。
-   H は E の設計に吸収。I は最後(着手前に一次調査)。
+6. **C → D → H → I** — C の tsdav CI ハーネスは前倒し完了 ✅。H は E の設計に吸収。I は最後。
 
 **F(運用)はフェーズではなく横断関心事** — 各マイルストーンの Definition of Done に
 「rate limit / 上限 precondition の該当分」を含める。
@@ -46,398 +58,153 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
      現在地・完成物・着手順)。以降の方向性カタログはオンデマンド参照(着手する方向性の節だけ
      agent がそのとき読む)。棚卸し時はこのマーカーより上を最新の現在地に保つこと。 -->
 
-## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)— 現在の本命
+## 方向性 G: 意味計算(RRULE 展開・TZ 解決・free-busy)✅ 完了
 
-- **発端**: agentic 入口(E)の中核能力は「イベントの理解」と「free-busy」という
-  ユーザー判断。一次資料は **docs/modeling/08**(RFC 義務・競合実態・TZ 流派・コスト試算)、
-  優先度の補正は **09**。
-- **発見**: time-range フィルタの RRULE 展開は RFC 4791 の MUST(calendar-query 自体が
-  REQUIRED、非対応表明は不可)。現状は厳密には RFC 非準拠 = コア価値に照らしいずれ必須だった。
-  一方、09 の調査による粒度補正: ①CALDAV:expand は実は REQUIRED でない(calendar-data の
-  子要素)+ iOS はクライアント展開する → 優先度低 ②free-busy-query は REQUIRED だが
-  実クライアントは叩かない(Google すら未実装)→ 「iOS のためでなく RFC 準拠と agentic の
-  ために作る」機能 ③展開・availability はモダン API(Google/Graph/JMAP)の第一級機能で、
-  Nextcloud/Cal.com も本気の計算はアプリ層でやっている。
-- **確定した設計判断**(08 §6): TZ は IANA tzdb を正・VTIMEZONE は保存のみ /
-  RRULE 反復は ical.js をアダプタ内側に採用(rrule.js は不採用)/
-  sabre 式 first/last occurrence 索引を D1 に(PUT 時計算)+ REPORT 時にヒット行のみ展開 /
-  展開済みテーブル・KV/Cache キャッシュ・DO は不採用 / 展開上限を API に組み込む。
-  コストは実質 $5/月の基本料のみ(CPU-ms 課金、詳細試算は 08 §5.5)。
-- **タスク分解**:
-  - ~~G-1: TZ 解決層(IANA 名直引き → Windows 名マップ → VTIMEZONE 推測 → 明示エラー。
-    Workers の Intl/ICU 利用)+ floating/DATE の実効値算出(§9.9 の表)。~~ ✅
-    > **2026-07-11 更新:** 完了。`src/domain/ical/timezone/`(errors / windows-zones /
-    > resolver / instant / effective-period)+ テスト 23 件、227 tests green。
-    > 実装メモ: floating の既定ゾーンは **UTC を明示**(§7.3 の MAY を暗黙にしない)/
-    > DURATION 加算は weeks・days=壁時計 nominal・h/m/s=exact / DST の穴・重なりの
-    > 解決値はテストで絶対 epoch 値に固定(ICU/tzdb 更新の検知線)。詳細は各ファイル冒頭コメント。
-  - ~~G-2: RecurrenceExpansion ドメインサービス(03 §1-4 の輪郭どおり、ical.js アダプタ +
-    オーバーライド解決 + 展開上限)。~~ ✅
-    > **2026-07-11 更新:** 完了。`src/domain/ical/recurrence/`(iterator-port /
-    > occurrence / expansion)+ `src/infrastructure/recurrence/icaljs-rrule-iterator.ts`
-    > (ical.js v2.2.1 を RRULE 反復だけに使用・port&adapter で隔離、domain は ical.js 非依存)。
-    > テスト 11 件、238 pass。実装メモ: UNTIL は iterator に渡さず epoch 厳密で inclusive 判定 /
-    > 展開はローカル壁時計列挙 → occurrence ごとに G-1 で UTC 化 / I9(DATE dtstart の
-    > BYHOUR 等)は展開層で「無視」を実装 / 各回の実効期間は master の DURATION・DTEND を
-    > nominal/exact 使い分けで継承 / detached オーバーライドも結果に含める(iOS 実データ耐性)。
-    > **既知の制約**: maxOccurrences は dtstart からの列挙総数で消費するため、range が
-    > 遠い未来 × 古い dtstart の無限 RRULE では range 到達前に予算切れになりうる →
-    > **G-3 の sabre 式 first/last 索引による事前絞り込みが解決する**(そのための索引)。
-  - ~~G-3: first/last occurrence 索引(D1 スキーマ。A-1 と同じマイグレーション体系に乗る
-    前提で設計、結合はしない)+ calendar-query の time-range フィルタ
-    (方向性 C の中核が前倒しでここに来る)。**完了時点で C の tsdav CI ハーネスを前倒し着手可**。~~ ✅
-    > **2026-07-11 更新:** 完了。設計は Fable subagent が策定 → Opus 承認(手戻りコストの
-    > 大きいスキーマ/PUT 配線判断のため)。実装 = sonnet。256 tests green。
-    > 成果: `migrations/0002_occurrence_index.sql`(first/last 列 + 複合索引、NULL=常に候補、
-    > 無限反復は 2100 キャップ)/ `occurrence-bounds.ts`(PUT 時に expandRecurrenceSet 再利用、
-    > 無限反復のみ展開回避)/ `calendar-query.ts`(SQL 粗絞り込み + ±24h スラック → 展開して
-    > §9.9 判定)/ presentation の `parseCalendarQueryFilter`(ネスト対応のバランス走査)。
-    > 未対応 filter(prop-filter 等)は黙殺せず **403 supported-filter**。floating は UTC 索引化 +
-    > クエリ時スラック補償。**C の tsdav CI ハーネスが前倒し着手可能になった。**
-  - ~~G-4: free-busy 計算ユースケース + free-busy-query REPORT(TRANSP/STATUS → FBTYPE)。
-    MCP 表面の設計は 09 §1 の共通形(時間窓必須 + 応答TZ分離 + JSON busy区間)に従う。~~ ✅
-    > **2026-07-11 更新:** 完了。設計 = Opus(RFC 4791 §7.10 の FBTYPE 表を原文照合)、実装 = sonnet。
-    > `src/domain/ical/freebusy/`(deriveFreeBusyType + coalesceBusyIntervals: 同型のみマージ・
-    > 異型は重複可)/ `compute-free-busy.ts`(出力は構造化 BusyInterval[] = epoch ms・TZ 非依存で
-    > G-5 MCP と共用。CalendarQuery と同じ2段フィルタ + range クリップ + coalesce)/
-    > presentation の parseFreeBusyQuery + serializeFreeBusyResponse(既存 serialize() 再利用で
-    > VFREEBUSY を text/calendar 出力、空でも VFREEBUSY は返す §7.10 MUST)。object に対する
-    > free-busy-query は 403。280 tests green。**応答 TZ 分離の実証** = UC は busy 区間だけ返し
-    > iCalendar 化は presentation。G-5 はこの UC をそのまま MCP ツールに露出する。
-  - ~~G-5: MCP 照会ツール(list-events-expanded / get-freebusy / get-current-time)—
-    E の先鋒。application 層の共通ユースケースを DAV と MCP の両入口から呼ぶ実証。
-    **ここで設計するツールの語彙(名前・引数・応答形)は将来 MCP Apps / WebMCP にも
-    そのまま露出する原型になる(11 §4)。特定の入口に依存しない形で application 層に置く。**~~ ✅
-    > **2026-07-11 更新:** 完了。設計 = Fable、実装 = opus 途中(認証ポート)→ opus セッション上限
-    > → sonnet が続行。343 tests green。トランスポート = `@hono/mcp` を `/mcp` にステートレス
-    > マウント(McpAgent/DO は使わない = キットのマウント可能思想)。認証 = 静的 Bearer だが
-    > **OAuth-ready な AuthenticationPort**(audience 検証の口つき、A で workers-oauth-provider に
-    > ミドルウェア差し替え)。3ツールは offset 付き ISO8601・応答 TZ 分離・epoch 非露出・dayOfWeek
-    > 明示・truncated フラグ。ListOccurrences UC を再利用、calendarId 省略で全カレンダー集約。
-    > **DAV と MCP が同じ application UC を呼ぶ複数入口ビジョンの実証完了。** MCP 統合テスト
-    > (initialize/tools-list/tools-call・Bearer 401/200)込み。書き込み・OAuth・MCP Apps は E。
-  - ~~G-6: supported-calendar-component-set の明示宣言(宣言しないと「全コンポーネント
-    MUST accept」— VJOURNAL を**含めて**宣言する。09 §4a 参照)。~~ ✅(J-2 に統合)
-    > **2026-07-11 更新:** G-6 は J-2 に吸収して完了。collectionProps のフォールバックを
-    > COMPONENT_KINDS 化(宣言=受理を一致、§5.2.3)/ parseCollectionProperties を複数 comp +
-    > VJOURNAL 対応 / MKCALENDAR で VJOURNAL コレクションをオプトイン作成可能に。
-    > journal は自動 provision しない(除去可能性優先)。301 tests green。
-    > iOS 実機での calendar/tasks 非回帰確認だけ保留(J-4)。
+全タスク(G-1〜G-6)完了。一次資料は docs/modeling/08(義務・TZ 流派・コスト)と 09(優先度補正)。
+確定した設計判断(08 §6): TZ は IANA tzdb を正・VTIMEZONE は保存のみ / RRULE 反復は ical.js を
+アダプタ内側に / sabre 式 first/last 索引を D1 に + REPORT 時にヒット行のみ展開 / 展開上限を API に組込み。
 
-## 方向性 J: 採択途中 RFC への先行投資(agentic タスク管理の本丸)
+- ~~G-1 TZ 解決層~~ ✅ `src/domain/ical/timezone/`。floating の既定ゾーンは UTC 明示 /
+  DURATION は weeks・days=nominal・h/m/s=exact / DST の穴・重なりは絶対 epoch 固定テスト(tzdb 検知線)。
+- ~~G-2 RecurrenceExpansion~~ ✅ `src/domain/ical/recurrence/` + icaljs アダプタ。UNTIL は epoch 厳密
+  inclusive / detached オーバーライドも結果に含める。
+- ~~G-3 occurrence 索引 + time-range~~ ✅ migration 0002(NULL=常に候補・無限反復は 2100 キャップ)、
+  SQL 粗絞り + ±24h スラック → 展開して §9.9 判定。未対応 filter は 403 supported-filter。
+- ~~G-4 free-busy~~ ✅ FBTYPE 導出 + 同型のみ coalesce。UC 出力は epoch ms の BusyInterval[](MCP と共用)。
+- ~~G-5 MCP 照会 3 ツール~~ ✅(E の先鋒。詳細は方向性 E 冒頭)。
+- ~~G-6 supported-calendar-component-set~~ ✅(J-2 に吸収。宣言=受理を一致)。
 
-- **発端**: 「使われていない RFC を切る」だけでなく「採択途中の RFC で先行者になる」
-  逆張り(ユーザー方針)。一次資料は **docs/modeling/09 §4**。
-- **2026-07-11 設計方針(Fable 設計 → Opus 承認 → ユーザー確認)**: 「journal」を安定度で3層に
-  分けて疎結合に扱う。①VJOURNAL コンポーネント = RFC 5545 の確定仕様(素直に格納・検証・往復)
-  ②「agentic 日誌」製品コンセプト(journal コレクション常設 + RELATED-TO 紐付け)= 未確定の賭け
-  → **オプトインにして綺麗に除去可能に保つ**(自動 provision しない。ユーザー判断 2026-07-11)
-  ③ical-tasks/9253 プロパティ = draft → 読み取り専用・検証なし・string 型で追従リスク最小。
-  実装分割: J-1 基盤 ✅ / J-2 宣言是正+journal オプトイン / J-3 draft アクセサ先取り(原文
-  スナップショット後)/ J-4 実機検証・time-range query。詳細は Fable 設計メモ(log.md 参照)。
-  - ~~J-1: VJOURNAL 基盤(component-kind / migration 0003 で CHECK 拡張 / VJournal レンズ /
-    journals() / occurrence-bounds / PUT / comp-filter は range 無しのみ)。~~ ✅
-    > **2026-07-11 更新:** 完了。migrations/0003(12-step テーブル再作成で 0002 の列・索引を
-    > 完全再現)/ vjournal.ts(§3.6.3: DTEND/DURATION/DUE/VALARM 無し、DESCRIPTION 複数可・
-    > RELATED-TO[RELTYPE 既定 PARENT]、共有 validateRRule 流用)/ COMPONENT_KINDS に追加で
-    > put-preconditions は自動受理。VJOURNAL+time-range は unsupported(J-4 送り)。295 tests green。
-    > レンズには日誌ビジネスルールを入れず標準の値検証のみ(除去可能性の担保)。
-- **VJOURNAL**: 実装コストほぼゼロでサーバー側対応の薄さが生態系のボトルネックそのもの。
-  「agent の実行ログ・日誌を時系列に置き RELATED-TO でタスクに紐づける」— 長期ビジョン
-  「agentic なタスク管理の基盤」の本丸。検証クライアントは jtx Board + DAVx⁵。
-- **ical-tasks draft(RFC Editor Queue 入り、数ヶ月で RFC 化)+ RFC 9253**:
-  SUBSTATE(OK/ERROR/SUSPENDED)・STATUS:PENDING/FAILED・REASON・ESTIMATED-DURATION・
-  DEPENDS-ON・REFID は agent のタスクグラフ実行ランタイムの状態モデルそのもの。
-  競合実装ほぼ皆無 = 差別化。ドメイン層(vtodo.ts 系)に先取りで織り込む。
-  - ~~J-3: ical-tasks/9253 の型付きアクセサ先取り(vtodo.ts + VJournal 共通 relatedTo)。~~ ✅
-    > **2026-07-11 更新:** 完了。原文スナップショット(docs/rfc/rfc9253.txt・
-    > docs/specs/draft-ietf-calext-ical-tasks-17.txt)を取得してから照合実装。**原文が設計メモを
-    > 複数訂正**(SUBSTATE/REASON は VSTATUS サブコンポーネント内・REASON は URI・DEPENDS-ON は
-    > RELATED-TO の RELTYPE 値・GAP は RELATED-TO パラメータ・REFID は反復プロパティ。照合結果は 05)。
-    > vtodo.ts に substate/reason/estimatedDuration/dependsOn/refids/relatedTo、helpers に共通
-    > relatedToOf。**全て読み取り専用・検証なし・string 型(union にしない)= draft 追従リスク最小**。
-    > CONCEPT/LINK は生値保持のみ。309 tests green(ACKNOWLEDGED 回帰込み)。**方向性 J 一区切り。**
-- RFC 9074 ACKNOWLEDGED は生値保持で既に充足(06 A9)— 壊さない状態を維持。
-- VAVAILABILITY(7953)は G-4/B のタイミングで、JSCalendar は変換 draft の RFC 化後に
-  MCP/REST の JSON 表現として検討(09 §4b)。
+## 方向性 J: 採択途中 RFC への先行投資 ✅ 一区切り
+
+「journal」を安定度で3層に分けて疎結合(①VJOURNAL=確定仕様を素直に ②agentic 日誌コンセプト=
+オプトイン・除去可能 ③ical-tasks/9253=読み取り専用・検証なし・string 型)。一次資料 09 §4。
+
+- ~~J-1 VJOURNAL 基盤~~ ✅(migration 0003 / vjournal レンズ / ビジネスルールはレンズに入れない)。
+- ~~J-2 宣言是正 + journal オプトイン~~ ✅(MKCALENDAR で VJOURNAL コレクション作成可・自動 provision しない)。
+- ~~J-3 ical-tasks/9253 アクセサ~~ ✅(原文スナップショット docs/rfc/rfc9253.txt・docs/specs/
+  draft-ietf-calext-ical-tasks-17.txt を取得してから照合。原文が設計メモを複数訂正 — 照合結果は 05)。
+- **J-4(保留)**: iOS 実機での calendar/tasks 非回帰確認 + VJOURNAL time-range query 対応。
+- RFC 9074 ACKNOWLEDGED は生値保持で充足(06 A9)。VAVAILABILITY(7953)は B のタイミング、
+  JSCalendar は変換 draft の RFC 化後(09 §4b)。
 
 ## 方向性 A: M2 マルチユーザー
 
 - **発端**: 現状は単一ユーザー Basic(secrets 直)。スケジューリング(方向性 B)の前提。
   secret 消失障害(2026-07-10、log.md)の本質解決でもある(D1 salt付きハッシュへ移行)。
 - **確定した方針**(docs/modeling/07): Basic over HTTPS + App Password が業界デファクト。
-  32文字級サーバー生成 → Argon2id/bcrypt で D1 保存 + レート制限。OAuth は方向性 E まで持ち越し。
+  32文字級サーバー生成 → Argon2id/bcrypt で D1 保存 + レート制限。OAuth は E で導入済み
+  (workers-oauth-provider)— A では DAV 側 Basic の App Password 化が主題。
   iOS アカウント追加は .mobileconfig 配布を正式ルート(App Password 発行 → ワンタイム URL で
   プロファイル DL。平文が入るので HTTPS + 使い捨て URL 必須、署名は後回し可)。
 - **タスク分解**:
   - A-1: ユーザー / App Password の D1 スキーマ + principal 複数化。
     **方向性 D の先行準備を織り込む**: コレクション×principal の権限表
     (current-user-privilege-set を実データ化 — ここを逃すと D で手戻り)。
-    G-3 の occurrence 索引と同じマイグレーション体系に乗せる。
   - A-2: 認証ミドルウェアの差し替え(Argon2id 検証 + レート制限)。
   - A-3: App Password 発行フロー + .mobileconfig ワンタイム配布。
   - A-4: プロキシ内部認証を共有シークレット → HMAC 署名へ格上げ(OSS 公開時までに)。
 
-## 方向性 E: M6 agentic 入口(長期ビジョン本命)
+## 方向性 E: M6 agentic 入口(長期ビジョン本命)— 進行中(E-2 中盤)
 
-- MCP / REST アダプタ(application 層は DAV 非依存済み)、メール起点のタスク追加(K-4)。
-- OAuth(Bearer)はここで導入(docs/modeling/07)。
-- **B より先と確定**(2026-07-11 ユーザー判断。根拠: E はコアドメインで B は支援 /
-  G-5 で先鋒が立つため増分小 / B は A + K-1/K-2 と依存の鎖が長い)。
-- **WebUI は独立した製品要素として持つ**(2026-07-11 ユーザー判断): CalDAV は GUI ありきの
-  プロダクトであり、iOS クライアントだけに依存しない。tsdav 直 CalDAV か REST アダプタ
-  経由かは E 設計時の論点(直なら Worker に CORS + DAV メソッドの preflight 対応が必要)。
-- **露出面は三面**(一次資料は **docs/modeling/11**): MCP サーバー / MCP Apps
-  (チャット内 generative UI、2026-01 安定版の公式拡張 — E 設計前に ext-apps spec を読む)/
-  WebMCP(WebUI をブラウザエージェントに開く、Chrome 149 オリジントライアル中 —
-  WebUI が立った時点で実験。J と同じ先行投資の思想)。三面とも同じ application 層の
-  語彙(G-5 が原型)の別露出面であり、ドメイン・application 層への影響はゼロ。
-- **OAuth-for-MCP**: ~~第2スライス(@cloudflare/workers-oauth-provider 導入。src/index.ts /
-  src/app.ts の物理分離込み)~~ ✅ ~~第3スライス(authorize UI = GET/POST /authorize の実装)~~ ✅
-  ~~完了。次は OAuth フロー全体(DCR → authorize → token)の実機/統合検証。~~ ✅
-  > 2026-07-12 更新: **本番実機受け入れ成功**。`68cb67b` を deploy、Claude カスタムコネクタで
-  > OAuth(DCR→authorize でパスワード同意→token)接続 → 3ツール動作 → list-events-expanded が
-  > RRULE 展開5件を返却。スモーク(well-known・401 discovery・静的 Bearer 経路)も全て green。
-  > 経緯は docs/log.md 2026-07-12 / メモリ mcp-auth-and-generative-ui-strategy。
-  > 2026-07-12 起票【運用ギャップ・要対応】**deploy と D1 マイグレーションの乖離**:
-  > 「main push で worker は Workers Builds 自動 deploy だが D1 マイグレーションは手動 apply」。
-  > 今回 0002/0003 未適用のまま deploy し、list/freebusy が `last_occurrence` カラム無しで
-  > 落ちた(get-current-time は DB 非依存で動いた)。手動 `wrangler d1 migrations apply --remote`
-  > で解消したが、次スキーマ変更で再発する。対応案: (a) Makefile に `deploy-migrations` ターゲット
-  > 明文化 + deploy チェックリスト化 / (b) Workers Builds のビルドコマンドに組み込む
-  > (本番 DB 変更を自動化してよいかは方針判断 — 手動承認を残す派もある)。vitest-pool-workers
-  > 導入より先に軽く片付ける候補。
-  > 2026-07-12 更新: **方針確定・実装済み**。前方互換(expand/contract)規律 +
-  > Workers Builds の deploy command で migrate→deploy を自動化する方式を採用
-  > (package.json `deploy` script = `wrangler d1 migrations apply --remote && wrangler deploy`、
-  > Makefile に手動用 `deploy-migrations` 追加、規律の明文化は migrations/README.md 新設)。
-  > 2026-07-12 完了 ✅: (1) 本番ブランチの deploy command を `bun run deploy` に設定済み
-  > (非本番ブランチは `wrangler versions upload` のまま=未マージ migration を本番 D1 に
-  > 当てない。migrations/README.md 参照)。(2) 初回ビルド `afecc023` で
-  > `wrangler d1 migrations apply --remote` が**認証エラーなく実行**され自動 migrate→deploy が
-  > 稼働することを実測(暗黙トークンでリモート D1 に届く=CLOUDFLARE_API_TOKEN 追加は不要)。
-  > → 運用ギャップは恒久対応完了。
-  > 2026-07-12 追記: 第3スライスで `completeAuthorization({ props })` を呼ぶときは、
-  > **必ず `{ username }` 形(`OAuthPrincipalProps`)を渡すこと**。これを守らないと
-  > OAuthPropsAuth(src/infrastructure/auth/oauth-props-auth.ts)が
-  > `ctx.props.username` を読めず principal を解決できず、全 MCP 呼び出しが 401 になる
-  > (第2スライスとの暗黙契約。resolveExternalTokenForMcp が返す props も同じ形に
-  > 合わせてある — src/app.ts 参照)。
-  > 2026-07-12 追記(第2スライス SHOULD-3 対応時に起票)【別タスク・OAuth 完了後】
-  > **vitest-pool-workers をハイブリッド導入**する: bun test は純ドメイン/application に
-  > 残したまま、workerd 上には D1 実 SQL・KV・OAuth E2E(DCR → authorize → token の
-  > フロー全体。cloudflare:workers を静的 import する OAuthProvider は bun test に
-  > 乗らないため、これは workerd 実行でしか検証できない)だけを新設する。全面移行は
-  > しない(bun test の速さを application/domain 層で失いたくない)。詳細設計は着手時に
-  > 一次確認する: ① `applyD1Migrations` の API(wrangler の内部 helper か、vitest-pool-workers
-  > 側に相当品があるか)② `export default new OAuthProvider(...)`(src/index.ts の
-  > exports.default.fetch)が vitest-pool-workers の worker 実行環境でそのまま動くか
-  > ③ GitHub Actions 上で workerd 実行(miniflare 経由)が問題なく走るか(メモリ/時間制約)。
-  > **2026-07-12 完了 ✅**: 調査(sonnet)→ 設計(Fable)→ 実装(sonnet)で 2 スライス完了。
-  > ~~詳細設計は着手時に一次確認~~ → 一次調査で **現行 API が v0.13+ で刷新済み**と判明
-  > (`defineWorkersConfig`/`SELF` は廃止 → `cloudflareTest()` plugin + `exports.default.fetch`。
-  > 「設計は調査の後」が効いた)。`test/worker/`(vitest 専用第2レーン)を新設し bun test は無変更。
-  > スライス1(スパイク `73f420f`)で未確定6点を全て真と確定(fallback 不要): ①素の
-  > OAuthProvider を exports.default.fetch で叩ける ②KV は configPath 経由で自動起動・
-  > ファイル内 state 持続 ③D1 は readD1Migrations + applyD1Migrations(setupFile)で適用
-  > ④bun-types と cloudflare:test 型は共存不可 → test/worker 専用 tsconfig で分離。
-  > スライス2(E2E `dd17b23`)で DCR→authorize→token→/mcp を workerd 上で一気通貫検証 +
-  > 静的 Bearer 経路 + 失敗系。実挙動の学び: **DCR は `token_endpoint_auth_method: "none"`
-  > 明示が必須**(省略で confidential client 扱い → token 交換が 401。本番 Claude コネクタ
-  > 接続成功と整合)/ `/mcp` は単発でも SSE で返る(Accept に text/event-stream 必須)。
-  > CI に workerd step 追加(secret 不要=ダミー secret を miniflare.bindings 注入)。
-  > 振り分け基準は Makefile check ターゲット・vitest.config.ts に厚くコメント。
-  >
-  > 2026-07-12 更新: **E-1(VTODO を chat から読み書きする MCP ツール)着手**。
-  > 調査(sonnet)→ 設計(Fable)→ 実測(iOS 実機 docs/modeling/06 §D)→ 実装(sonnet)。
-  > **語彙は todo で統一**(create-todo / list-todos / complete-todo / update-todo / delete-todo)。
-  > **スライス①完了 ✅**(`b18efe9`): ドメイン書き込み経路(structure/edit.ts の汎用 upsert
-  > プリミティブ + semantics/vtodo-write.ts の VTODO builder。レンズに setter を生やさず
-  > ロスレス維持)+ CreateTodo/ListTodos(既存 PutCalendarObject を must-not-exist で合成)+
-  > MCP `create-todo`/`list-todos` + E2E。id=UID、出力は E-2 UI-ready な共通 Task DTO。
-  > 実機受け入れ: **MCP で作った todo を iOS が素直に読み書き**(06 D8。If-Match に我々の ETag、
-  > DTSTART=DUE 終日・PRODID を iOS が受容、SEQUENCE 据え置き)。
-  > **スライス②(次)**: complete-todo / update-todo / delete-todo。実測で仕様確定済み —
-  > update/complete = read→patch→**must-match** PUT(iOS が我々の ETag で If-Match を打つ)・
-  > **SEQUENCE 据え置き**、delete = ETag 条件なし、**反復完了 = 06 D4 モデル**(新 UID で完了
-  > スナップショット作成 + マスターの DTSTART/DUE 前進。拒否ではなく iOS 忠実に実装)。反復の
-  > 作成(RRULE 付き create)もここで。残る実機検証は V2/V3(完了を我々から書いて iOS に反映
-  > されるか)・V5(サーバー発 VALARM が鳴るか)・V6(時刻付き due の VTIMEZONE)。
-  > **iOS 連携の天井が確定**(06 §D2/D3): フラグ・画像・サブタスク・タグは iOS が CalDAV
-  > アカウントでグレーアウト/CloudKit 限定で**不可**。優先度=1/5/9(緊急なし)。これらは
-  > 我々の chat 面でだけ CATEGORIES/RELATED-TO 拡張として将来持てるが iOS には映らない前提。
-  > **E-2(MCP App UI・ext-apps/SEP-1865)**: スライス②後。tdr-concierge 方式(registerAppResource/
-  > registerAppTool + 自己完結バンドル。esm.sh は Claude iOS で失敗する教訓)。OpenAI todo
-  > ウィジェットが参照。最大リスク=個人コネクタで UI 描画されるか(要実機。極小 ui:// スパイクで
-  > 先に潰す)。Task DTO は既に UI-ready で固定済み。
-  >
-  > **2026-07-13 更新: tdr-concierge 実装を調査 → 描画リスクはほぼ解消。** ユーザーが tdr-concierge
-  >   (`~/ghq/github.com/gigun-dev/tdr-concierge`)でカスタムコネクタに UI 描画済み。同じ Hono/CF Workers
-  >   構成なのでレシピをほぼそのまま移植可(詳細メモリ [[mcp-auth-and-generative-ui-strategy]] に追記)。
-  >   具体: `@modelcontextprotocol/ext-apps`(server + browser)/ `registerAppResource`(`ui://` HTML)+
-  >   `registerAppTool`(`_meta.ui.resourceUri` で紐付け)/ `@hono/mcp` StreamableHTTPTransport /
-  >   `@modelcontextprotocol/sdk ^1.29` / zod 3.25+(ext-apps が zod/v4 サブパス要求)。UI は
-  >   **自己完結 HTML に bun build で単一 ESM バンドル**して `<script type=module>` へインライン
-  >   (esm.sh 実行時 import は Claude iOS で壊れた実証教訓)。text 要約 + structuredContent の二本立てで
-  >   UI 非対応ホストでも会話が壊れない。`ontoolresult` で structuredContent を UI に push。
-  >   参照実装: tdr-concierge `src/mcp/server.ts`(registerApp* 呼び出し)/ `src/ui/*`(HTML+entry+bundle)/
-  >   `scripts/build-ui-bundle.ts` / `docs/research/connectors-and-generative-ui.md`。
-  >   **⚠️ caldav 固有の新論点(tdr-concierge では未検証)**: tdr は authless read-only だが caldav は
-  >   **書き込みあり + OAuth 保護**。UI からの `App.callServerTool` の**認可コンテキスト**をどう通すかは
-  >   要設計・要実機。→ 極小スパイクの目的を「描画されるか」から「**OAuth 保護 + 書き込み可サーバーで
-  >   UI から callServerTool が認可付きで通るか**」に更新する。実機は claude.ai Web の Connector 経由
-  >   (Claude Code では描画確認不可)。
-  >
-  > **2026-07-13 更新: E-2 スパイク スライス① 実装完了 ✅ `63b5d46`(実機描画は未確認)。**
-  >   `@modelcontextprotocol/ext-apps` を追加し `list-todos` を `registerAppTool` 化(_meta.ui.resourceUri
-  >   追加のみ=非破壊・可逆)+ `registerAppResource(ui://caldav/todos.html)`。UI は
-  >   `src/presentation/mcp/ui/`(entry→build-ui-bundle→bundle→app HTML インライン)。depcruise
-  >   `mcp-ui-is-terminal` で末端強制・`tsconfig.ui.json` で DOM 隔離・`typecheck:ui` を make check に。
-  >   make check green・Worker upload gzip 448 KiB。
-  >   **2026-07-13 追記: スライス① 描画検証 合格 ✅**。chrome-devtools で本番 MCP(OAuth 認証済み)を
-  >   MCP Inspector 経由で駆動 → Apps タブで list-todos を実行 → **サンドボックス iframe に UI が実データで
-  >   描画**(resources/list に "Todos View"・list-todos が _meta.ui.resourceUri で App 認識・
-  >   App.connect→ontoolresult→render が本番バンドルで動作)。**Inspector の Apps タブが mcp-app を
-  >   フル描画できる**ため claude.ai Web を待たず main 側で検証完了。気づき: 期日が UTC 整形で "00:00"
-  >   表示(list-todos を timeZone 未指定で呼んだため。UI は忠実。実運用は timeZone 渡し or UI 側ローカル
-  >   整形が要る=後続の詰め)。**次: スライス②(app 専用 `refresh-todos` + `App.callServerTool` で OAuth
-  >   認可コンテキスト検証)**。
-  >   **2026-07-13 追記: E-2 本実装スライス① 完了 `5197a1d`+`678526c`(実機好評)。** トリアージ UI:
-  >   セクション分け一覧(期限切れ/今日/今後/期日なし/完了折り畳み)+ 単発 complete/reopen を
-  >   callServerTool(update-todo)で + 自ゾーン due 整形(00:00 問題根治)。Fable デザイン+実装。
-  >   実機フィードバックで空バナー修正・手動再読込廃止・app 駆動 refetch(refetchOnWindowFocus 相当)。
-  >   **MCP Apps 仕様調査: ホスト自動更新は仕様保証されない=クライアント依存**(app 駆動 refetch が正)。
-  >   反復完了 D4 の確認 UX・スヌーズは②、優先度/編集/削除は③。実機で「会話復帰時の更新挙動」実測が残(任意)。
-  >
-  > **2026-07-13 更新: E-2 差分 UI ドクトリン確定(長い設計探索の収束・詳細は log.md)。** ステートレス・
-  >   アニメ無し・トースト無し。差分は「変化の中間状態(becoming)を静的に」見せる(色でなく form)。
-  >   completed=その場で塗り丸+同心リング+取消線 / deleted=破線ボックス+畳み(取消線は完了専用)/
-  >   added=左バー+wake / edited=インライン旧→新(欠落は編集済みバッジに degrade)。contract=
-  >   `{tasks,calendarId,timeZone, affected?:[{id,kind,changes?}], removed?:[{id,title,due?}]}`(additive)。
-  >   Fable が ③ refined を最終案として設計。**スライス②実装に着手**(フロント=Fable/③becoming・
-  >   サーバー=artisan/affected・changes・removed 同梱 + create/complete/update/delete を registerAppTool 化)。
-  >
-  > **⚠️ 新 CalDAV コア課題(E-2 と独立): iOS shake-undo × sync-collection。** iOS の振り削除取消が
-  >   CalDAV で「一瞬復活→sync で再削除」。RFC 6578 §3.5.1 分析より有力仮説 H-A=iOS の undo はローカル限定
-  >   (=我々のバグでない・§3.5.2 準拠)。Step0 コード確認済(削除後の同一UID再PUTは201・掃除漏れ否定)。
-  >   要実機キャプチャ(`make up DUMP=1` で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/
-  >   PUT+412 なら案A。tombstone(案B)は不採用。runbook は log.md/セッション参照。docs/modeling/06・05 記録待ち。
-  >   **2026-07-13 追記: スライス② 実装 + 検証 合格 ✅ `1961cd1`**。app 専用ツール `refresh-todos`
-  >   (`_meta.ui.visibility:["app"]`)を追加(handler は list-todos と同じ `runListTodos` 共通クロージャ=
-  >   認可経路を完全共有)。UI に「再読み込み」ボタン → `App.callServerTool({name:"refresh-todos"})` →
-  >   structuredContent.tasks で再描画。chrome-devtools で Inspector Apps タブから検証: ボタン押下で
-  >   **エラーなくカード再描画**=callServerTool がプロキシ経由でサーバーに届き **OAuth の principal
-  >   (admin)のタスクを返した**(認可コンテキストが callServerTool 経路でも AuthenticationPort→principal で
-  >   効くことを実証)。callServerTool は app プロキシ channel(:6277/sandbox)を通り Inspector 主 History とは
-  >   別経路=transcript 分離の機序も確認。**注意: visibility:["app"] でも tools/list には出る**(提示ヒントで
-  >   あってプロトコル除外ではない。テスト本数 8→9)。真の「会話 transcript 非出現」は claude.ai Web でのみ
-  >   最終確認可能だが機序は確認済み。**E-2 スパイク(描画 + callServerTool 認可)完了。次: E-2 本実装
-  >   (UI の作り込み・期日 timeZone 整形・複数ツール UI 化)or 別方向性へ。**
-  > **2026-07-12 更新: スライス②-a/②-b 完了 ✅**(`6798fdf` ②-a / `44c9f2f` ②-b)。
-  > - ②-a: 生成プロパティを vtodo-stamp.ts(stampCreate/stampUpdate)に一本化。X-APPLE-SORT-ORDER
-  >   = CFAbsoluteTime(unix秒 − 978307200・実測 805549710 固定値テスト)。list 既定順を sortOrder 昇順。
-  > - ②-b: UpdateTodo/CompleteTodo/DeleteTodo + lossless read→patch(vtodo-patch.ts)。既存 VCALENDAR の
-  >   対象 VTODO サブコンポーネントだけを差し替え、VALARM/VTIMEZONE/X-APPLE-* をバイト保持。reopen は
-  >   update-todo.status に集約、delete は無条件、反復完了は RecurringCompletionNotSupportedError で拒否。
-  > - **V2 実機受け入れ成功**(iOS 26.5・本番): update(title/due/priority)/ complete / reopen / delete が
-  >   すべて iOS リマインダーに反映。D1 実データで **VALARM が update 後もバイト保持されていること**を確認
-  >   (lossless の実証)。update で時刻付き due → 終日 due への変換も TZID を正しく除去。
-  > - **⚠️ 新タスク①【VALARM 追随・②-c とは別スライス】**: `update-todo` で `due` を動かしても、元の
-  >   絶対 VALARM トリガー(`TRIGGER;VALUE=DATE-TIME:...`)は取り残される(V2 で顕在化: due を 12-23 へ
-  >   動かしたのにアラームが旧 due 時刻 07-13 のまま → iOS がその通知時刻を表示する「取り残されアラーム」)。
-  >   lossless 保持自体は正しいが、意味論として「due 連動アラームは追随すべき」。方針(2026-07-12 ユーザー
-  >   確定=前者): **今は既知の制限として切り出し、②-c を先に進める**。将来の VALARM 管理スライスで
-  >   「旧 due 時刻と一致する絶対トリガーを新 due に移す」精密な追随を設計(V5 サーバー発 VALARM と同じ束)。
-  >   ヒューリスティック(due 連動 vs ユーザー設定の早期リマインダーの判別)を含むため独立テーマ。
-  > - **新タスク②完了 ✅**(`c7af31b`): VTODO occurrence bounds のバグ修正。computeVTodoBounds が
-  >   DTSTART/DUE/COMPLETED/CREATED の無条件 min/max だったのを RFC 4791 §9.9 表どおり行優先に(CREATED/
-  >   COMPLETED は DTSTART も DUE も無いときのみ)。単発 VTODO で first が CREATED まで巻き戻る取りこぼしリスクを解消。
-  > - **新エッジ(反復 due→DATE の I6)完了 ✅**(`c7af31b`): patchVTodoFields で due を DATE に patch する際
-  >   RRULE UNTIL が DATE-TIME なら日付を保って DATE 化(I6 回避)。iOS 発反復マスターの due 変更を救済。
-  > - **スライス②-c 完了 ✅**(`e9e47bc`): 反復完了を拒否せず D4 モデルで実装。vtodo-recurrence.ts の
-  >   純関数2つ(buildCompletionSnapshot = 新 UID・RRULE 除去・3点セット・DTSTART/DUE 継承・VALARM を
-  >   UID/X-WR-ALARMUID 新採番でコピー / advanceMasterToNextOccurrence = 次 occurrence へ前進・DUE−DTSTART
-  >   壁時計差保持・COUNT は §3.3.10 根拠で1減算・UNTIL inclusive・最終回は exhausted)+ recurring-completion.ts の
-  >   snapshot-first 非原子2PUT(a:新 UID must-not-exist → b:マスター前進 must-match、失敗モード明文化)。
-  >   最終 occurrence はスナップショット無しでマスター完了(実測未確定=06 §D4 に V8 として起票)。
-  >   RRULE 展開は既存 RecurrenceIterator へ委譲。bun 427 + vitest 13 green。
-  >   **VALARM 前進の追加修正 ✅**(`aca8193`): V3 実機で「マスターの表示日付が前進しない」→ iOS は表示時刻に
-  >   VALARM トリガーを使うため、前進時に絶対トリガーを据え置くとフリーズして見えると判明。本番 D1 で iOS
-  >   ネイティブ完了を実測(CAP-RRULE2: TRIGGER 20260712T160000Z→20260713T160000Z = DTSTART と同じ絶対時間差で
-  >   前進)し、advanceMasterToNextOccurrence に advanceAbsoluteAlarmTriggers を追加(triggerShiftMs=nextEpoch−currentEpoch、
-  >   TRIGGER;VALUE=DATE-TIME だけ前進・相対トリガー/X-APPLE-PROXIMITY は据え置き)。
-  >   **V3 合格 ✅**: 修正後、サーバー駆動の反復完了が iOS に正しく反映(前進後マスター DTSTART/VALARM が iOS
-  >   ネイティブ出力と構造完全一致)。当初「前進しない」と見えたのは iOS のキャッシュ/同期遅延で、強制再同期
-  >   (アプリ終了 or アカウント off/on)で解消。sync_changes・sync_counter は PUT で正しく進む(D1 実測)。
-  >   **残:** V8(最終回スナップショット有無の実測)。
-  >   **タスク①完了 ✅**(`1f4bec4`): update-todo の due 変更で VALARM 追随。②-c の前進プリミティブを
-  >   vtodo-patch.ts の `shiftAbsoluteAlarmTriggers` として共有化し、due 変更時に (新due−旧due) ぶん絶対
-  >   トリガーを shift(オフセット保存)。週末反復(BYDAY=SU,SA)の VALARM 前進を不揃い間隔(6日→1日)で
-  >   固定値検証=前進量が固定周期でなく iterator の実 occurrence 間隔である裏取り。V2 の取り残されアラーム解消。
-  >   **新エッジ【反復 todo の due→DATE 変更で I6 違反】**: 反復マスターの RRULE が `UNTIL=...Z`(DATE-TIME)の
-  >   とき、update-todo の due 変更は DTSTART を VALUE=DATE にするため UNTIL の値型と食い違い I6 事前条件で
-  >   エラー(サイレント破損ではなく明示エラー)。反復 todo の due 変更自体がレア(シリーズ anchor を動かす)
-  >   なので優先度低。直すなら due patch 時に UNTIL も DATE 化する等。要判断。
-  >   **タスク③完了 ✅**(`03540c0`): 反復付き create-todo。MCP create-todo に recurrence 入力
-  >   (frequency/interval/weekdays/count/until)を追加、buildVTodoCalendar が RecurrenceRule → RRULE 生成。
-  >   until は DTSTART の VALUE=DATE に合わせ DATE 型で出し I6 を構造的に回避(§3.3.10 原文根拠)。recurrence は
-  >   due 必須・count/until 排他(I5)・weekdays は weekly のみ、を専用エラーで明示。反復 create→complete が
-  >   ②-c の D4 経路で動くことを e2e 検証。chat から反復 todo をゼロから作れるように。
-  >   **V8 完了 ✅ + 設計修正**(`711d7c4`): 本番実機実測(FREQ=DAILY;UNTIL=20260714・07-13/07-14 完了)で
-  >   当初設計(最終回はスナップショット無し・その場完了)が**iOS と食い違うと判明**。iOS は最終回でも
-  >   ①スナップショット作成 ②マスターを UNTIL 越えの次ステップ(07-15)へ前進 + STATUS:COMPLETED(RRULE 維持)。
-  >   → advanceMasterToNextOccurrence を「常に次の生ステップへ前進し seriesEnded を返す」契約に変更・STATUS 決定を
-  >   completeRecurringTodo へ引き上げ・**常に snapshot-first の2PUT に均一化**。exhausted 特別扱いは廃止
-  >   (no-next-step の病的ケースのみ保険)。
-  >   **COUNT 宿題クローズ(2026-07-13 B-2 実測)**: iOS は「繰り返し N 回」を **COUNT でなく UNTIL** で保存する
-  >   ことが判明(iOS は RRULE に COUNT を一切出さない)。よって COUNT の iOS 実測基準は存在せず照合不能=
-  >   我々の COUNT 処理は自前機能(タスク③ create)の内部整合のみ守ればよい(テスト済み)。V8 は B-2 で再確認。
-  >   **小課題掃除完了(2026-07-13)**: 新タスク②(bounds)・新エッジ(due→DATE の I6)`c7af31b` / V5 前提の
-  >   create-todo アラーム生成 `8903a9f`。残る実機は **V5 発火**(下記)、据え置きは V6(VTIMEZONE・E-2 後)。
-  >   **E-1 スライス②系すべて完了。** agentic todo 入口(create/list/update/complete/delete・単発/反復・
-  >   VALARM 追随/生成・反復の D4 完全再現)が iOS 忠実に揃った。
-  >   **次の本線: E-2(MCP App UI・ext-apps/SEP-1865)**。Task DTO は UI-ready で固定済み。極小 ui:// スパイクで
-  >   「個人コネクタで UI 描画されるか」を先に潰してから本実装(tdr-concierge の registerAppResource/registerAppTool 方式)。
-  >
-  > **2026-07-13 更新: V6(時刻付き due 統合)完了 ✅ `5bb66dd` + Case E `47dd81d`。**
-  >   create-todo の due を判別 union 化し `"YYYY-MM-DDTHH:MM:SS"` + timeZone(IANA 名)を受理。
-  >   DTSTART;TZID/DUE;TZID を同値で立て、§3.6.5 の VTIMEZONE をサーバー生成して同梱
-  >   (timezone/vtimezone-write.ts 新設・Phase 1 = 固定オフセットゾーン限定。DST は
-  >   UnsupportedTimeZoneError で塞ぐ)。独立 alarm 入力は廃止し due に統合(時刻付き due には常に
-  >   VALARM 自動生成。V5 で「iOS はサーバー発 VALARM でも通知」確定)。offset 付き ISO8601 は拒否
-  >   (TZID を offset から一意逆引き不能)。RRULE UNTIL 値型を due に追従(I6)。
-  >   **Case E**: recurrence.frequency に `"none"`(繰り返さない)+ `.default("none")` を追加し
-  >   Inspector 手動フォームの `{frequency:""}` バグを presentation 層で吸収(application には漏らさない・
-  >   "none"+サブフィールド併用はエラー)。
-  >   **残る実機: V6 手順**(時刻付き due の iOS 表示・通知・往復 VTIMEZONE 保持)。据え置き: V6 Phase 2(DST ゾーン)。
-  >
-  > **2026-07-13 更新: V6 実機検証 合格 ✅。** 本番 MCP を chrome-devtools で駆動し時刻付き due を作成 →
-  >   本番 D1 の生 ICS で VTIMEZONE(`DTSTART:19700101T000000`・+0900)/ DTSTART;TZID=DUE;TZID /
-  >   VALARM 絶対 UTC TRIGGER(JST09:00=UTC00:00)/ UID==X-WR-ALARMUID / RRULE 無し(Case E)を確認。
-  >   **iOS 実機で時刻付き期限が正しく表示**(通知は V5 確定の同形 VALARM で確実)。**E-1 完全クローズ。
-  >   次の本線 = E-2(MCP App UI)**。据え置き: V6 Phase 2(DST ゾーン)。
+**完了済みの土台**(詳細は log.md 2026-07-12〜13 / git 履歴):
+
+- ~~OAuth-for-MCP~~ ✅: workers-oauth-provider(DCR→authorize→token)本番実機受け入れ済み
+  (Claude カスタムコネクタ接続 → 3 ツール動作)。静的 Bearer 経路併存。
+  **暗黙契約**: `completeAuthorization({props})` には必ず `{username}` 形(OAuthPrincipalProps)を
+  渡す(oauth-props-auth.ts が `ctx.props.username` で principal 解決。src/app.ts 参照)。
+  DCR は `token_endpoint_auth_method:"none"` 明示必須 / `/mcp` は Accept: text/event-stream 必須。
+- ~~deploy×migration 運用ギャップ~~ ✅: 本番ブランチ deploy command = `bun run deploy`
+  (migrate→deploy 自動)。非本番は versions upload のまま。規律は migrations/README.md。
+- ~~vitest-pool-workers ハイブリッド導入~~ ✅: test/worker/ 第2レーン(D1 実 SQL・OAuth E2E)。
+  bun test は無変更。振り分け基準は Makefile・vitest.config.ts のコメント。
+- ~~E-1: VTODO の MCP 完全対応~~ ✅(**完全クローズ**): create/list/update/complete/delete。
+  語彙は todo 統一・id=UID・共通 Task DTO(UI-ready)。lossless read→patch(VALARM/X-APPLE-* バイト
+  保持)・must-match PUT・SEQUENCE 据え置き。反復完了 = iOS D4 モデル(snapshot-first 2PUT・
+  マスター前進・VALARM 絶対トリガー同幅前進・最終回も snapshot 均一 = V8 実測)。due 変更で
+  VALARM 追随(オフセット保存 shift)。反復 create(frequency none/daily/weekly...・COUNT/UNTIL 排他)。
+  時刻付き due + VTIMEZONE サーバー生成(V6 ✅・Phase 1 = 固定オフセットゾーン限定)。
+  実機合格: D8・V2・V3・V5(サーバー発 VALARM 通知)・V6・V8。
+  **iOS 連携の天井**(06 §D2/D3): フラグ・画像・サブタスク・タグは CalDAV アカウント不可。優先度=1/5/9。
+
+**E-2(MCP App UI・ext-apps/SEP-1865)— 現在の本線**:
+
+- ~~スパイク(描画 + callServerTool 認可)~~ ✅: tdr-concierge レシピ移植(registerAppResource/
+  registerAppTool・自己完結バンドル=esm.sh は Claude iOS で壊れる教訓・text 要約 + structuredContent
+  二本立て)。Inspector Apps タブで描画・app 専用 `refresh-todos` の OAuth 認可(principal 解決)を検証。
+  **注意**: `_meta.ui.visibility:["app"]` でも tools/list には出る(提示ヒントでありプロトコル除外でない)。
+- ~~本実装スライス①(トリアージ UI)~~ ✅ `5197a1d`+`678526c`: セクション一覧(期限切れ/今日/今後/
+  期日なし/完了折り畳み)+ その場 complete/reopen + 自ゾーン due 整形 + app 駆動 refetch
+  (**MCP Apps 仕様はホスト自動更新を保証しない=クライアント依存**が調査確定。app 駆動が正)。実機好評。
+- ~~本実装スライス②(becoming 差分レンズ)~~ ✅ `8391f6c`+`d86766c`: **UI ドクトリン確定** —
+  ステートレス・アニメ無し・トースト無し。差分は「変化の中間状態(becoming)を静的に」
+  (completed=その場で塗り丸+同心リング+取消線 / deleted=破線+畳み / added=左バー+wake /
+  edited=インライン旧→新、欠落は編集済みバッジに degrade)。contract =
+  `{tasks,calendarId,timeZone, affected?, removed?}`(additive・後方互換)。
+- **スライス③(次)**: 優先度表示/編集/削除の UI 化、反復完了 D4 の確認 UX・スヌーズ。
+  **2026-07-14 ユーザーフィードバックで追加**:
+  - **バグ【view 状態の非保持】**: includeCompleted:true で Open App → 完了済みを reopen すると
+    完了済みが UI から全部消える。原因特定済み — refresh-todos は引数なし(既定 false)・mutate 系
+    buildTodosViewModel も既定 false 固定(server.ts のコメントが「親レビューの論点」と自認していた
+    まさにその点)。**設計**: contract に `view?`(includeCompleted 等)を additive に echo し、
+    UI が view を保持 → refresh-todos に listTodosInputShape を持たせて view 付きで再取得。
+    mutate 応答の tasks は既定ビュー固定のままにし、UI は view が既定と違うとき affected/removed
+    だけ使って一覧は refresh-todos で取り直す(モデル向け mutate スキーマは汚さない)。
+  - **対象リストの明示**: 「リマインダー」だけではどのリスト(コレクション)か不明。UI ヘッダに
+    calendarId(将来は displayname)を表示 + モデル向け text 要約にも対象リストを含める。
+  - **UI からのタスク追加**: create-todo は registerAppTool 済みなので UI に quick-add を足すだけで
+    callServerTool 経由で可能(スライス③の有力候補)。
+  - **カレンダー(リスト)作成の MCP 露出**: 現状 MCP に MKCALENDAR 相当ツールは無い(DAV のみ)。
+    application に CreateCollection/ListCollections UC は既存なので `list-calendars`/`create-calendar`
+    ツールは薄く足せる。対象リスト明示・複数リスト UX の前提としてスライス③〜④候補。
+  - **レイテンシ・チューニング(2026-07-14 起票)**: UI のトグル1回で
+    ① findTaskById = ListTodos 全件(before 取得)→ ② UpdateTodo(内部 read + PUT)→
+    ③ buildTodosViewModel = ListTodos 全件、が**直列**に走る(全件は毎回 ICS 全パース)。
+    UI 側は楽観確定しない設計なのでこの往復が体感そのもの。**手順: 計測が先**
+    (workers observability で D1 往復回数・CPU-ms を実測)→ 有力な削減案:
+    (a) findTaskById を UID 単発取得に(todo-lookup 流用)(b) UpdateTodo が If-Match 用に
+    読んだ before を戻り値に載せて presentation の再読込を消す(「UC を変えない方針」の再考)
+    (c) ②と③の間で並列化できるものを並列に。ホスト側プロキシ往復(callServerTool)は制御外。
+    F(運用・横断)の性能版として E-2 の仕上げ束に入れる。
+- **残る実機確認(任意・claude.ai 実クライアント依存)**: 会話復帰時の更新挙動 /
+  visibility:["app"] の transcript 非出現の実効性。
+- **据え置き**: V6 Phase 2(DST ゾーンの VTIMEZONE 生成)/ VALARM 管理スライス(due 連動 vs
+  ユーザー設定リマインダーの判別ヒューリスティック — 独立テーマ)/ 反復 todo の due→DATE 変更で
+  RRULE UNTIL が DATE-TIME だと I6 明示エラー(レアケース・優先度低・直すなら UNTIL も DATE 化)。
+
+**⚠️ 新 CalDAV コア課題(E-2 と独立): iOS shake-undo × sync-collection。** iOS の振り削除取消が
+「一瞬復活→sync で再削除」。RFC 6578 §3.5.1 分析より有力仮説 H-A = iOS の undo はローカル限定
+(=我々のバグでない・§3.5.2 準拠)。Step0 コード確認済(削除後の同一 UID 再 PUT は 201・掃除漏れ否定)。
+**要実機キャプチャ**(`make up DUMP=1` で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/
+PUT+412 なら案A。tombstone(案B)は不採用。runbook は log.md。docs/modeling/06・05 記録待ち。
+
+**E の残り(E-2 の先)**:
+- WebUI(独立した製品要素・ユーザー判断): tsdav 直 CalDAV か REST アダプタ経由かは設計時の論点
+  (直なら Worker に CORS + DAV メソッドの preflight 対応が必要)。WebMCP は WebUI が立った時点で実験。
+- メール起点のタスク追加(K-4)は K の文脈で。
+- H(外部カレンダー集約)は「CalDAV client for agent」として E の設計に吸収(下記 H 参照)。
 
 ## 方向性 H(購読カレンダー・外部データ集約)【E/A の後・優先度中】
 
 - 2026-07-12 起票(ユーザー着想)。iOS が PROPFIND する `source`/`subscribed-strip-*`/
   `apple:refreshrate` に対応 = 外部 .ics(webcal)を購読して読み取り専用で取り込む。
-- agentic ビジョンにも効く(外部カレンダーを取り込んでタスク提案の文脈に使う)= 単なる
-  iOS パリティ以上の価値。実装は自己完結で軽め(source URL を持つコレクション種別 + Worker
-  から定期 fetch + strip)。コア価値(CalDAV RFC + iOS **書き込み**)ではないので E/A の後。
+- agentic ビジョンにも効く(外部カレンダーを取り込んでタスク提案の文脈に使う)。実装は自己完結で
+  軽め(source URL を持つコレクション種別 + Worker から定期 fetch + strip)。コア価値ではないので E/A の後。
+- もう一つの本質(09 §3): 本作サーバー上のイベントだけの free-busy は生活が iCloud/Google に
+  分散しているユーザーには嘘の空き時間を返す。採用方向は **(c) agent 側横断** —
+  iCloud は CalDAV + app-specific password で外部からフルアクセス可(Apple 公式の正規手段)。
+  「CalDAV client for agent」を汎用クライアントにし、本作 + iCloud + Google を agent が横断合成。
+  **E の設計に吸収**(独立フェーズにしない)。
 
 ## 方向性 K: メール統合(iMIP・予定抽出・Apple マークアップ)
 
 - **発端**: 「メール ⇄ カレンダー」は agentic 管理と不可分(ユーザー判断)。
   一次資料は **docs/modeling/10**(Cloudflare メール基盤 / iMIP 仕様 / Apple 公式マークアップ)。
   B(招待の iMIP 送受信)と E(メール起点のタスク追加)の共通基盤にあたる。
-- **発見**: Cloudflare は送受信両方が揃った(受信 = Email Workers で ICS 添付まで読める・
-  GA 無料 / 送信 = Email Service が 2026-04 public beta、send_email binding、月 3,000 通込み)。
-  **sabre/dav ですら iMIP の受信側は外部ゲートウェイ任せ** → 「REPLY 受信 → iTIP 処理」を
-  キット内で完結できるのは OSS としての差別化点。
-- 予定抽出は3レベル(①ICS 添付 = `@caldav/ical` で決定的 ②schema.org HTML = 決定的
-  ③自然文 = LLM + 提案 inbox 承認制)。
-- **Apple の Siri Event Suggestions Markup は公式に存在するが予約8種限定 + 申請制**。
-  汎用の予定通知は iMIP(text/calendar 添付)が登録不要で確実 — こちらが正道。
+- **発見**: Cloudflare は送受信両方が揃った(受信 = Email Workers・GA 無料 / 送信 = Email Service
+  2026-04 public beta・月 3,000 通込み)。**sabre/dav ですら iMIP 受信側は外部ゲートウェイ任せ** →
+  「REPLY 受信 → iTIP 処理」をキット内で完結できるのは OSS としての差別化点。
+- 予定抽出は3レベル(①ICS 添付=決定的 ②schema.org HTML=決定的 ③自然文=LLM + 提案 inbox 承認制)。
+- Apple の Siri Event Suggestions Markup は予約8種限定 + 申請制。汎用は iMIP が正道。
 - タスクの種:
   - K-1: RFC 6047(iMIP)の原文スナップショットを docs/rfc/ に追加(B 着手前に必須)。
   - K-2: 送信ポート(SendEmail port + Cloudflare/Resend アダプタ。beta リスクのヘッジ)。
@@ -449,66 +216,75 @@ M1「足場固め」が完了した時点。検証フェーズは完了してお
 
 - RFC 6638/5546。schedule-inbox/outbox、calendar-user-address-set、iTIP 処理、auto-schedule。
   B9 実測どおり、これが無いと iOS は招待 UI を出さない。方向性 A + K-1/K-2 が前提。
-- サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。ドメインの輪郭は docs/modeling/03 §3 に定義済み。
+- サーバー内ユーザー間 → 外部宛は iMIP(RFC 6047、メール送信)。ドメインの輪郭は docs/modeling/03 §3。
 
 ## 方向性 C: M4 他クライアント対応
 
-- calendar-query REPORT + RecurrenceExpansion(iOS は sync-collection だけで足りるが
-  Thunderbird / tsdav 系は query を使う)。中核は G-3 に前倒し済み。
-- **tsdav は CI にも使える**: 探索→作成→同期→削除の互換性テストハーネスにすれば
-  iOS 実機なしで回帰検知できる。**G-3 完了時点で前倒し着手**(汎用テスト基盤は早いほど利く)。
+- 中核(calendar-query + 展開)は G-3 で完了、~~tsdav CI ハーネス~~ ✅ 前倒し完了
+  (test/integration/tsdav-harness.test.ts。Bun.serve で app.fetch をラップ + fake repo 注入。
+  探索→作成→time-range→sync→削除→free-busy の回帰保証)。
+- 残る広げ方(Thunderbird 等の追加クライアント・より広いプロパティ照合)は必要時に。
 
 ## 方向性 D: M5 共有・委任
 
 - caldav-proxy / calendarserver-sharing(非 RFC の Apple 拡張)。方向性 A が前提。
-- 先行準備: ①draft 原文を docs/specs/ に常備(docs/rfc と同じ思想)
-  ②権限表スキーマは A-1 に織り込み済み ③read-only privilege 時の iOS 挙動検証は単一ユーザーのままでも可能。
-
-## 方向性 H: フルカレンダーアクセス / 外部データ集約(構想段階 → E に吸収)
-
-- 本質は「**カレンダーを極める(free-busy を本気で提供する)なら、ユーザーの現実の
-  カレンダー全体へのアクセスが要る**」という製品上の現実的制約。本作サーバー上の
-  イベントだけの free-busy は、生活が iCloud/Google にも分散しているユーザーには
-  **嘘の空き時間**を返す。
-- 選択肢: (a) 完全移行前提(プロダクトでは高ハードル)/ (b) サーバー側集約
-  (calendarserver:source / subscribed — 06 B2 で iOS の問い合わせを実測済み)/
-  (c) **agent 側横断**(採用方向)。
-- (c) の裏付け(09 §3): web/PWA には標準カレンダー API が存在せず(W3C 提案は 2011 年頓挫)、
-  **iCloud は CalDAV + app-specific password で外部からフルアクセス可**(Apple 公式の正規手段)。
-  web/MCP から現実のカレンダー全体に届く汎用経路はプロトコルアクセスのみ。
-  → 「CalDAV client for agent」を任意のサーバーに向けられる汎用クライアントにし、
-  本作 + iCloud + Google を agent が横断して合成。**E の設計に吸収**(独立フェーズにしない)。
+- 先行準備: ①draft 原文を docs/specs/ に常備 ②権限表スキーマは A-1 に織り込み済み
+  ③read-only privilege 時の iOS 挙動検証は単一ユーザーのままでも可能。
 
 ## 方向性 I: CardDAV / 連絡先(構想段階)
 
-- 動機: ①マルチユーザー/スケジューリングで招待相手の解決に連絡先が欲しくなる
-  ②iOS は vCard の誕生日は自動でカレンダーに拾うが**記念日は拾わない** — CardDAV を
-  解釈できれば記念日も把握できる(vCard 解釈 → 仮想イベント生成は方向性 G の親戚)。
-- 追い風: CardDAV(RFC 6352)は WebDAV 基盤(4918/principal/sync 6578)を CalDAV と共有、
-  vCard は content-line 文法が iCalendar と同族 — structure 層・DAV XML はかなり流用可。
-  OSS キットの「DAV サーバーキット」への一般化と整合。
-- 論点: iOS の連絡先は Apple 拡張(X-ABDATE + X-ABLabel の記念日表現等)が濃い。
-- 位置づけ: 最後。着手前に 08 と同様の一次調査(RFC 6352 スナップショット +
-  iOS 実機の CardDAV 挙動観測)を行う。
+- 動機: ①招待相手の解決に連絡先 ②iOS は vCard の誕生日は拾うが記念日は拾わない —
+  CardDAV 解釈で記念日も把握(vCard 解釈 → 仮想イベント生成は G の親戚)。
+- 追い風: CardDAV(RFC 6352)は WebDAV 基盤を CalDAV と共有、vCard は content-line 同族 —
+  structure 層・DAV XML は流用可。「DAV サーバーキット」への一般化と整合。
+- 位置づけ: 最後。着手前に 08 と同様の一次調査(RFC 6352 スナップショット + iOS 実機観測)。
 
 ## 方向性 F: M7 運用(横断関心事)
 
 - 上限系 precondition(max-resource-size 等の ServerPolicy 実装)、監視、バックアップ、rate limit。
 - 独立フェーズにせず、各マイルストーンの Definition of Done に該当分を含める。
 
+## レビュー起票(2026-07-13 Codex 体系レビュー → Fable 設計判断)
+
+Codex(gpt-5.4)による6観点レビューの結果を Fable が裏取り・裁定したもの。原文照合済みの
+判断のみ記載(RFC 主張は docs/rfc/ 原文で確認)。
+
+**採用・即修正(バグ)**:
+- **R-1【high・回帰バグ】** `repositories.ts` の `parseSupported()` が VEVENT/VTODO しか許容せず、
+  J-2 で導入した VJOURNAL コレクションの hydrate が例外 → 500(実コード確認済み)。
+  `COMPONENT_KINDS` を唯一の許容集合に + `["VJOURNAL"]` 往復テスト。J-2 の取りこぼし。
+- **R-2【medium】** `If-Match: *` を hex ETag として `ETag.fromHex` に渡し 500。RFC 7232 §3.1 では
+  「存在すること」の意味。wildcard / ETag リスト / 単一 ETag を型分離して条件評価を是正。
+
+**採用・方向性に載せる(RFC 準拠)**:
+- **R-3【high → C/F 系】** RFC 6578 §5「Servers MUST support use of DAV:sync-token values in
+  If request headers」(原文確認済み)に未対応 = MUST 違反。ただし iOS は使わない(実測トラフィックに
+  出ていない)ため実害は他クライアント互換。**R-2 の条件評価の型分離と同じ束で設計**するのが得
+  (If ヘッダ解析 → コレクション sync-token 照合 precondition を application へ)。tsdav ハーネスに回帰を足す。
+- **R-4【medium】** `parseFreeBusyQuery` が time-range 複数/欠落を黙認(RFC 4791 §9.11 は exactly one)。
+  構造的に数えて 400。小粒。
+- **R-5【low】** `supported-report-set` に free-busy-query を広告 / allprop から sync-token を除外
+  (RFC 6578 §4 SHOULD NOT)。2点セットで小粒。
+
+**採用・タイミングを A に紐付け(設計判断)**:
+- **R-6【high → E の OAuth 仕上げ】** OAuth が `claudedav:read` 広告のまま write 5 ツールを実行可能・
+  props に scope 非保持。単一ユーザーの現在は実害限定だが、**スケール前提リリース方針
+  (メモリ参照)に照らし公開前必須**。read/write scope 分離 + props に scope 搭載 + ツール別強制 +
+  E2E。AuthenticationPort の seam 内で閉じる(ドメイン非依存)。
+- **R-7【high → A-1 と同時】** ETag/sync counter 検証が D1 batch の外で TOCTOU(同時 PUT が同じ
+  next token を生成し得る)。単一ユーザー+単一 agent の現在は顕在化しにくいが、マルチユーザー化で
+  現実化する。**A-1 のスキーマ改修と同時に UoW を CAS 型(`UPDATE ... WHERE sync_counter = ?` +
+  更新0件→412)へ**。vitest-pool-workers レーンに並行書込みテスト。
+
+**不採用(理由つき)**:
+- **R-8(反復完了の非原子 2PUT)** — 見送り。snapshot-first は iOS D4 忠実再現の設計判断で、失敗
+  モードは明文化済み(片割れ snapshot は「完了記録が残る」安全側)。D1 で2つの PUT UC を跨ぐ原子性は
+  UoW の大改修になり、R-7 の CAS 化のほうが先。将来 R-7 実装時に「deterministic snapshot UID
+  (UID = master UID + occurrence 日付由来)で再試行重複を防ぐ」だけ軽く入れる価値はある。
+
 ## 小粒の残タスク(方向性に属さない申し送り)
 
-(2026-07-11 の棚卸しで全消化 — proxy の Content-Length 反映 ✅ / iOS A7 決着 ✅。
-経緯は log.md と冒頭「完成しているもの」参照)
-
-## 方向性 C: tsdav CI ハーネス着手(2026-07-11)
-
-> **2026-07-11 更新:** C の中核(tsdav 互換性ハーネス)を G-3 完了で前倒し着手・完了 ✅。
-> `test/integration/tsdav-harness.test.ts`(tsdav@2.3.1 を devDep 追加)。**Bun.serve で
-> app.fetch をラップ + fake repo 注入**で bun test 内に本物の tsdav クライアントを走らせる
-> (workerd の MKCALENDAR 制約は Bun.serve が任意メソッドを受けるので回避 = ロジック回帰専用、
-> workerd トランスポートの癖は対象外でプロキシ/smoke の責務)。検証フロー: 探索 → VEVENT 作成 +
-> ETag → **RRULE + calendar-query time-range が窓内の回にヒット・窓外はミス(G-3 展開の回帰保証)**
-> → sync-collection 差分 → 削除 → free-busy-query VFREEBUSY(raw fetch)。プロダクションコード
-> 変更ゼロ(既存応答で tsdav を満たせた)。346 tests green。残る C の広げ方(Thunderbird 等の
-> 追加クライアント・より広いプロパティ照合)は必要時に。
+- **R-1・R-2(上記レビュー起票)— 次セッションの最有力候補**(R-1 は既存機能の回帰バグ)。
+- J-4: iOS 実機での calendar/tasks 非回帰 + VJOURNAL time-range(方向性 J 節参照)。
+- iOS shake-undo 実機キャプチャ(方向性 E 節の ⚠️ 参照)。
+- V6 Phase 2(DST ゾーン)/ VALARM 管理スライス / 反復 due→DATE の I6(いずれも E 節「据え置き」参照)。
