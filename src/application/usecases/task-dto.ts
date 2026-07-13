@@ -86,7 +86,31 @@ function formatCalDateAsIso(d: CalDate): string {
 /**
  * due(CalDate | CalDateTime)を Task.due の表現に変換する。
  * @param zoneOf zoned の TZID → IANA 名の解決(zoneResolverFor で組み立てたものを渡す)。
- * @param timeZone DATE-TIME を表示するゾーン(floating の既定解釈にも使う)。
+ * @param timeZone floating な DATE-TIME の既定解釈に使う応答基準ゾーン。zoned/utc の due には
+ *   使わない(下記「各 todo 自身のゾーンで整形する」判断を参照)。
+ *
+ * 【2026-07-13 E-2 スライス①: 時刻付き due は「その todo 自身のゾーン」で整形する(00:00 問題の根治)】
+ * 旧実装は time-of-day な due を常に引数 timeZone(list-todos の既定は UTC)で offset ISO に
+ * 整形していた。その結果「DTSTART;TZID=Asia/Tokyo の 09:00 タスク」が list-todos(timeZone 未指定)
+ * では UTC 整形されて "2026-07-14T00:00:00Z"(= JST 09:00 の UTC 表現)になり、UI が素直に描画すると
+ * 「00:00」に見える(= 00:00 問題)。
+ *
+ * 真実は「iOS 実機が壁時計 09:00 + TZID=Asia/Tokyo で持っているタスク」であり、iOS の表示も 09:00。
+ * サーバーが返す truth surface もこれに一致させるべき。zoned な due はそれ自身が TZID を持って
+ * いるのだから、応答基準の timeZone(表示の都合)ではなく、その todo 自身のゾーンで整形するのが
+ * ドメイン的に正しい(表示 TZ という presentation の都合と、UTC+TZID という真実を分離する)。
+ * よって zoned → zoneOf(tzid) の壁時計で offset ISO を組み立てる(例 "2026-07-14T09:00:00+09:00")。
+ *
+ * これは create-todo が既に返している形(自ゾーン offset ISO。create-todo は input.timeZone を
+ * そのまま渡していたので偶然一致していた)とも整合し、全 todo 系ユースケースで due 整形が一貫する。
+ *
+ * kind ごとの表示ゾーン:
+ *   - zoned : zoneOf(due.tzid)(その todo 自身の IANA ゾーン)。
+ *   - utc   : "UTC"(明示 UTC。"...Z" になる)。
+ *   - floating: 引数 timeZone(floating は自前のゾーンを持たないため、応答基準ゾーンで解釈する
+ *     しかない — resolver.ts の「floating は floatingTimeZone 明示で解釈、暗黙 UTC 禁止」原則に沿う。
+ *     list-todos が timeZone 未指定なら UTC になるが、floating な DATE-TIME を持つ VTODO は iOS では
+ *     生成されない[必ず TZID 付き]ので実運用ではほぼ通らない経路。ロスレスに UTC 明示で倒す)。
  */
 function formatDue(
 	due: CalDate | CalDateTime,
@@ -96,14 +120,23 @@ function formatDue(
 	if (!isCalDateTime(due)) {
 		return { due: formatCalDateAsIso(due), isAllDay: true };
 	}
+	// epoch への変換は従来どおり(floating の既定解釈にだけ timeZone を使う)。真実の瞬間は
+	// kind に関わらず一意に定まる。
 	const millis = calDateTimeToEpochMillis(due, { zoneOf, floatingTimeZone: timeZone });
-	return { due: epochToIsoLocal(millis, timeZone), isAllDay: false };
+	// 表示ゾーンは「その todo 自身のゾーン」を優先する(上記コメント参照)。zoned だけが自前の
+	// TZID を持つので、そこは zoneOf で IANA 名に解決する。utc/floating は自ゾーンが無いので
+	// それぞれ UTC / 応答基準 timeZone にフォールバックする。
+	const displayZone = due.kind === "zoned" ? zoneOf(due.tzid) : due.kind === "utc" ? "UTC" : timeZone;
+	return { due: epochToIsoLocal(millis, displayZone), isAllDay: false };
 }
 
 /**
  * VTodo レンズ(読み取り専用)から Task DTO を組み立てる。
  * @param zoneOf zoned な DUE の TZID 解決。呼び出し側が zoneResolverFor(icalendarObject) で作る。
- * @param timeZone due/completedAt を表示するゾーン。省略時は UTC。
+ * @param timeZone 応答基準ゾーン(list-todos の timeZone フィールド相当)。省略時は UTC。
+ *   time-of-day な zoned due は「その todo 自身の TZID」で整形するので、この引数は zoned due の
+ *   表示には使わない(floating due の既定解釈と、UI 側の相対判定[今日/期限切れ]の基準としてのみ
+ *   意味を持つ — formatDue のコメント参照)。completedAt は §3.8.2.1 で UTC MUST なので常に UTC 整形。
  */
 export function taskFromVTodo(
 	vtodo: VTodo,

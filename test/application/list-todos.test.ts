@@ -64,6 +64,35 @@ function vtodoWithSortOrder(uid: string, summary: string, sortOrder: number): st
 	].join("\r\n");
 }
 
+// 時刻付き(VALUE=DATE-TIME・TZID 付き)due の VTODO。iOS 実機が壁時計 + TZID で送ってくる形
+// (real-ios/vtodo-recurring-master.ics と同じ DTSTART;TZID=.../DUE;TZID=... 構造)を最小構成で再現。
+// VTIMEZONE を含めるのは、zoneResolverFor が TZID→IANA 名を解決するのに VTIMEZONE レンズを
+// 使うため(TZID がそのまま IANA 名でも解決できるが、実機に忠実な形にしておく)。
+function vtodoWithDueDateTime(uid: string, summary: string, tzid: string, dueLocalRaw: string): string {
+	return [
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Test//Test//EN",
+		"BEGIN:VTIMEZONE",
+		`TZID:${tzid}`,
+		"BEGIN:STANDARD",
+		"DTSTART:19700101T000000",
+		"TZOFFSETFROM:+0900",
+		"TZOFFSETTO:+0900",
+		"TZNAME:JST",
+		"END:STANDARD",
+		"END:VTIMEZONE",
+		"BEGIN:VTODO",
+		`UID:${uid}`,
+		"DTSTAMP:20260101T000000Z",
+		`DTSTART;TZID=${tzid}:${dueLocalRaw}`,
+		`DUE;TZID=${tzid}:${dueLocalRaw}`,
+		`SUMMARY:${summary}`,
+		"END:VTODO",
+		"END:VCALENDAR",
+	].join("\r\n");
+}
+
 // 反復(RRULE)付き VTODO。既存の反復 TODO も list-todos が壊さず一覧できることを確認する
 // (master を展開せず1件として返す、という仕様どおりの挙動)。
 function vtodoRecurring(uid: string, summary: string): string {
@@ -147,6 +176,28 @@ describe("ListTodos", () => {
 			dueAfter: "2026-07-15T00:00:00Z",
 		});
 		expect(after.map((t) => t.id)).toEqual(["late"]);
+	});
+
+	// 【E-2 スライス①: 00:00 問題の回帰防止】
+	// 時刻付き due は「その todo 自身の TZID」で offset ISO 整形して返す(応答基準 timeZone=UTC 既定に
+	// 引きずられて UTC 整形= "00:00" にならない)。iOS 実機の壁時計 09:00 表示と一致させる truth surface。
+	it("時刻付き due は timeZone 未指定でも自ゾーン(TZID)の offset ISO で返す(00:00 問題の回帰防止)", async () => {
+		// JST 09:00 のタスク。旧実装は UTC 整形で "2026-07-14T00:00:00Z" と返し UI が 00:00 と誤表示した。
+		await seed("jst", vtodoWithDueDateTime("jst", "朝のタスク", "Asia/Tokyo", "20260714T090000"));
+
+		const { tasks } = await usecase.execute({ owner: TEST_OWNER });
+		expect(tasks).toHaveLength(1);
+		expect(tasks[0]!.due).toBe("2026-07-14T09:00:00+09:00");
+		expect(tasks[0]!.isAllDay).toBe(false);
+	});
+
+	// 応答基準 timeZone を明示しても、zoned due の表示ゾーンは変わらない(自ゾーン優先の証明)。
+	// 表示 TZ(presentation の都合)と、UTC+TZID という真実を分離する設計の固定。
+	it("応答基準 timeZone を別ゾーンで指定しても zoned due は自ゾーンのまま整形する", async () => {
+		await seed("jst", vtodoWithDueDateTime("jst", "朝のタスク", "Asia/Tokyo", "20260714T090000"));
+
+		const { tasks } = await usecase.execute({ owner: TEST_OWNER, timeZone: "America/New_York" });
+		expect(tasks[0]!.due).toBe("2026-07-14T09:00:00+09:00");
 	});
 
 	it("calendarId を指定すればそのコレクションだけを見る", async () => {
