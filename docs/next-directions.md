@@ -156,7 +156,7 @@ E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD 
   - **カレンダー(リスト)作成の MCP 露出**: 現状 MCP に MKCALENDAR 相当ツールは無い(DAV のみ)。
     application に CreateCollection/ListCollections UC は既存なので `list-calendars`/`create-calendar`
     ツールは薄く足せる。対象リスト明示・複数リスト UX の前提としてスライス③〜④候補。
-  - **レイテンシ・チューニング(2026-07-14 起票)**: UI のトグル1回で
+  - **レイテンシ・チューニング(2026-07-14 起票)** → 第1弾 ✅(UC before/removed 化で全件読み 2→1・{mcpTool,ms} ログ導入。残: SQL レベル絞り込み=専用ポート): UI のトグル1回で
     ① findTaskById = ListTodos 全件(before 取得)→ ② UpdateTodo(内部 read + PUT)→
     ③ buildTodosViewModel = ListTodos 全件、が**直列**に走る(全件は毎回 ICS 全パース)。
     UI 側は楽観確定しない設計なのでこの往復が体感そのもの。**手順: 計測が先**
@@ -257,7 +257,7 @@ Codex(gpt-5.4)による6観点レビューの結果を Fable が裏取り・裁�
   「存在すること」の意味。wildcard / ETag リスト / 単一 ETag を型分離して条件評価を是正。
 
 **採用・方向性に載せる(RFC 準拠)**:
-- **R-3【high → C/F 系】** RFC 6578 §5「Servers MUST support use of DAV:sync-token values in
+- ~~**R-3【high → C/F 系】**~~ ✅(if-header.ts サブセット実装・未対応構文は fail open) RFC 6578 §5「Servers MUST support use of DAV:sync-token values in
   If request headers」(原文確認済み)に未対応 = MUST 違反。ただし iOS は使わない(実測トラフィックに
   出ていない)ため実害は他クライアント互換。**R-2 の条件評価の型分離と同じ束で設計**するのが得
   (If ヘッダ解析 → コレクション sync-token 照合 precondition を application へ)。tsdav ハーネスに回帰を足す。
