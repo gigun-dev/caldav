@@ -39,6 +39,30 @@ describe("parseFreeBusyQuery", () => {
 		const body = '<C:free-busy-query xmlns:C="urn:ietf:params:xml:ns:caldav"></C:free-busy-query>';
 		expect(parseFreeBusyQuery(body)).toBeNull();
 	});
+
+	// R-4: §9.11 の DTD `<!ELEMENT free-busy-query (time-range)>` は time-range が
+	// ちょうど1個であることを要求する。旧実装は最初の1個だけ拾って2個目以降を黙認していた。
+	it("time-range が複数あれば null(§9.11: ちょうど1個の構造制約違反)", () => {
+		const body = [
+			'<C:free-busy-query xmlns:C="urn:ietf:params:xml:ns:caldav">',
+			'<C:time-range start="20060104T140000Z" end="20060105T220000Z"/>',
+			'<C:time-range start="20060106T140000Z" end="20060107T220000Z"/>',
+			"</C:free-busy-query>",
+		].join("");
+		expect(parseFreeBusyQuery(body)).toBeNull();
+	});
+
+	// R-4: time-range 以外の余剰子要素が紛れ込んでいる場合も「time-range のみを含む」という
+	// DTD 制約に反するので拒否する(壊れた/想定外のリクエストを安全側に倒す)。
+	it("time-range 以外の余剰子要素があれば null", () => {
+		const body = [
+			'<C:free-busy-query xmlns:C="urn:ietf:params:xml:ns:caldav">',
+			'<C:time-range start="20060104T140000Z" end="20060105T220000Z"/>',
+			"<C:comp-filter/>",
+			"</C:free-busy-query>",
+		].join("");
+		expect(parseFreeBusyQuery(body)).toBeNull();
+	});
 });
 
 describe("serializeFreeBusyResponse", () => {

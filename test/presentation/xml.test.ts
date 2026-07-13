@@ -81,6 +81,41 @@ describe("DAV XML", () => {
 		});
 	});
 
+	// R-5a: free-busy-query REPORT(G-4 で実装済み)が supported-report-set の広告に無かった漏れの回帰。
+	it("supported-report-set は free-busy-query を含む(§7.10.2 の実装済み REPORT を広告する)", () => {
+		const col = new CalendarCollection({
+			id: collectionId("misc"),
+			owner: principalPath("/principals/users/alice/"),
+			displayName: "Misc",
+		});
+		const props = collectionProps(col, "https://example.com/sync/1");
+		expect(props["supported-report-set"]).toContain("<c:free-busy-query/>");
+	});
+
+	// R-5b: RFC 6578 §4 は DAV:sync-token を「PROPFIND allprop では SHOULD NOT 返す」と定める。
+	describe("responseXml: sync-token と allprop(R-5b)", () => {
+		const col = new CalendarCollection({
+			id: collectionId("misc"),
+			owner: principalPath("/principals/users/alice/"),
+			displayName: "Misc",
+		});
+		const props = collectionProps(col, "https://example.com/sync/1");
+
+		it("allprop 応答には sync-token を含めない", () => {
+			const filter = parsePropFilter(`<d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>`);
+			const xml = responseXml("/dav/cal/", props, filter);
+			expect(xml).not.toContain("<d:sync-token>");
+			// allprop でも他プロパティは通常どおり返る(除外は sync-token 限定であることの確認)。
+			expect(xml).toContain("<cs:getctag>");
+		});
+
+		it("<d:sync-token/> を明示要求した場合は返す", () => {
+			const filter = parsePropFilter(`<d:propfind xmlns:d="DAV:"><d:prop><d:sync-token/></d:prop></d:propfind>`);
+			const xml = responseXml("/dav/cal/", props, filter);
+			expect(xml).toContain("<d:sync-token>https://example.com/sync/1</d:sync-token>");
+		});
+	});
+
 	// =========================================================================
 	// G-3: parseCalendarQueryFilter
 	// =========================================================================

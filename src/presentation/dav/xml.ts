@@ -58,7 +58,14 @@ function propstat(props: string, status = "200 OK"): string {
 
 export function responseXml(href: string, props: Record<string, string>, filter: PropFilter): string {
 	const known = Object.keys(props);
-	const ok = known.filter((name) => requested(filter, name)).map((name) => props[name]).join("");
+	// R-5b: DAV:sync-token は RFC 6578 §4 で「PROPFIND allprop で SHOULD NOT 返す」と明記されている
+	// (sync-collection REPORT と同じ値を返す「同期用」プロパティであり、allprop の一般列挙に
+	// 紛れ込ませる想定ではない、という位置づけ)。collectionProps() は明示要求時に返せるよう
+	// 常に "sync-token" キーを props に含めているので、ここ(allprop 展開の唯一の集約点)で
+	// 名指しに除外する。iOS 実機は sync-collection REPORT 経由でしか sync-token を見ておらず
+	// allprop 応答中の sync-token には依存していない(既存の sync 系テストを参照して確認済み)。
+	const ok = known.filter((name) => requested(filter, name) && !(filter === "allprop" && name === "sync-token"))
+		.map((name) => props[name]).join("");
 	const missing = filter === "allprop" ? [] : [...filter].filter((name) => !known.includes(name));
 	return `<d:response><d:href>${escapeXml(href)}</d:href>${ok ? propstat(ok) : ""}${
 		missing.length ? propstat(missing.map((name) => `<d:${name}/>`).join(""), "404 Not Found") : ""
@@ -116,7 +123,11 @@ export function collectionProps(collection: CalendarCollection, syncTokenUri: st
 		displayname: `<d:displayname>${escapeXml(collection.displayName)}</d:displayname>`,
 		resourcetype: "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>",
 		"supported-calendar-component-set": `<c:supported-calendar-component-set>${components}</c:supported-calendar-component-set>`,
-		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report><d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report></d:supported-report-set>",
+		// R-5a: free-busy-query REPORT(G-4 で実装済み・§7.10.2)を supported-report-set の広告に
+		// 追加していなかった漏れ。実装はあるのに広告に無いと、広告ベースで対応 REPORT を判定する
+		// クライアント/ツールから「未対応」に見えてしまう(実装と宣言の不一致は他の J-2 是正
+		// (collectionProps 冒頭コメント参照)と同種の反省)。
+		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report><d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report><d:supported-report><d:report><c:free-busy-query/></d:report></d:supported-report></d:supported-report-set>",
 		"current-user-privilege-set": "<d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:write-content/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege></d:current-user-privilege-set>",
 		getctag: `<cs:getctag>${escapeXml(collection.ctag.toString())}</cs:getctag>`,
 		"sync-token": `<d:sync-token>${escapeXml(syncTokenUri)}</d:sync-token>`,
@@ -369,13 +380,44 @@ export function parseCalendarQueryFilter(body: string): CalendarQueryFilter {
  *   null を返す(parseCalendarQueryFilter が壊れた time-range を supported-filter 403 へ
  *   倒すのと同じ考え方だが、free-busy-query には対応する precondition 名が定義されていない
  *   ため、呼び出し側が「解析失敗」として扱えるよう null で統一する)。
+ *
+ * 【R-4: time-range はちょうど1個(§9.11 DTD `<!ELEMENT free-busy-query (time-range)>`)】
+ * DTD の `(time-range)` は「子要素は time-range 1個のみ」という構造制約であり、`(time-range*)`
+ * や `(time-range?)` ではない(0個や複数個を許す記法ではない)。旧実装は最初の time-range に
+ * `.match()` するだけで、0個(要素が無い)は弾いていたが複数個は最初の1個を黙って採用していた
+ * (末尾の余剰子要素も無視)。RFC の構造制約に忠実にするため、まず子要素の並びを
+ * extractBalancedElement で1個ずつ走査してタグ名を数え、「time-range がちょうど1個・
+ * それ以外の子要素が無い」ときだけ受理する。走査に extractBalancedElement を使うのは
+ * comp-filter と同様 time-range 自身は入れ子構造を持たない自己終端要素だが、free-busy-query
+ * の直下に想定外の要素(例: バグで comp-filter が紛れ込む等)が来た場合も「exactly one
+ * time-range」という契約から外れたことを検出できるようにするため。
  */
 export function parseFreeBusyQuery(body: string): { startMillis: number; endMillis: number } | null {
 	const fbEl = extractBalancedElement(body, "free-busy-query");
 	if (!fbEl) return null; // free-busy-query 要素自体が無い。
 
+	// fbEl.inner の直下子要素を先頭から1個ずつ切り出し、"time-range" 以外が混ざっていないか・
+	// time-range が複数無いかを数える。extractBalancedElement は「次に見つかった開始タグ」を
+	// 対象にするので、タグ名を指定せず走査するために生の開始タグ探索を先に行う。
+	const childTagRe = /<(?:[^:>\s/]+:)?([\w-]+)\b[^>]*?\/?>/g;
+	let childCount = 0;
+	let timeRangeCount = 0;
+	let cursor = 0;
+	while (cursor < fbEl.inner.length) {
+		childTagRe.lastIndex = cursor;
+		const tagMatch = childTagRe.exec(fbEl.inner);
+		if (!tagMatch) break;
+		const localName = tagMatch[1].toLowerCase();
+		const el = extractBalancedElement(fbEl.inner, localName, tagMatch.index);
+		if (!el) break; // 対応する終了タグが見つからない壊れた XML。下の exactly-one チェックで弾かれる。
+		childCount += 1;
+		if (localName === "time-range") timeRangeCount += 1;
+		cursor = el.afterIndex;
+	}
+	if (childCount !== 1 || timeRangeCount !== 1) return null; // exactly one time-range 以外は拒否 → 呼び出し側の 400 経路へ。
+
 	const trMatch = fbEl.inner.match(/<(?:[^:>]+:)?time-range\b([^>]*?)\/?>/i);
-	if (!trMatch) return null; // §9.11 の必須要素が無い(壊れたリクエスト)。
+	if (!trMatch) return null; // 上のチェックで通っていれば通常ここには来ないが、保険として残す。
 
 	const attrs = trMatch[1];
 	const startAttr = attrs.match(/\bstart=["']([^"']+)["']/i)?.[1];
