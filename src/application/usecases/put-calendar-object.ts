@@ -22,13 +22,16 @@ import {
 	checkPutPreconditions,
 	PreconditionViolation,
 	UNLIMITED_POLICY,
+	ETag,
 	type PutPreconditionInput,
 	type ServerPolicy,
 	resourceUri,
 	// firstUid は domain/caldav の内部ヘルパーで公開 API には含まれていないため、
 	// application 層では ICalendarObject のレンズ経由(events()[0]?.uid 等)で UID を取得する。
 } from "../../domain/caldav";
-import type { ETag } from "../../domain/caldav";
+// 2026-07-14 R-2: 以前は Step 3 の ETag 比較専用に `(await import("../../domain/caldav")).ETag`
+// という動的 import を都度呼んでいた(理由の記載なし)。evaluateMustMatch を同期関数に
+// できるよう ETag を上の value import に合流させ、type-only import は削除した。
 import type { CollectionId, PrincipalRef, ResourceUri } from "../../domain/caldav";
 import type {
 	CalendarCollectionRepository,
@@ -59,17 +62,84 @@ const OCCURRENCE_INDEX_MAX_OCCURRENCES = 3000;
  * ETag に基づく楽観ロック条件。HTTP の If-None-Match / If-Match を抽象化したもの。
  *
  * - { kind: "must-not-exist" }: If-None-Match:* に相当。新規作成専用。すでに存在すれば 412。
- * - { kind: "must-match"; etag: string }: If-Match:"<etag>" に相当。更新専用。ETag が一致しなければ 412。
+ * - { kind: "must-exist" }: If-Match:* に相当。RFC 7232 §3.1「field-value が "*" のとき、
+ *   条件はオリジンサーバーが対象リソースの current representation を『持っていない』場合に
+ *   false になる」— つまり ETag の値そのものは見ず「存在すること」だけが条件。存在すれば
+ *   常に通す(既存 ETag との値比較はしない)。存在しなければ 412。
+ * - { kind: "must-match"; etag: string }: If-Match:"<etag>"(カンマ区切りで複数可)に相当。
+ *   更新専用。RFC 7232 §3.1 ABNF は `If-Match = "*" / 1#entity-tag` — "*" 以外は
+ *   1個以上の entity-tag のリストで、リストのいずれか1つでも現在の ETag と一致すれば成立する
+ *   (同節「the condition is false if none of the listed tags match」)。この etag フィールドは
+ *   ヘッダの生の値(カンマ区切りかもしれない生文字列)をそのまま保持し、リスト分解と
+ *   個々の比較は execute() 内(evaluateMustMatch)で行う。
  * - { kind: "unconditional" }: 条件なし(If-None-Match / If-Match なし)。常に上書きする。
  *
  * 【なぜ型で分けるのか】
  * "unconditional" は iOS のリソース削除後の再作成など特殊なケースで使われる。
  * must-not-exist と must-match を混同すると重大な競合バグになるため、判別可能ユニオンで型安全を確保。
+ *
+ * 【2026-07-14 バグ修正(R-2)】以前は If-Match: * が If-None-Match: * と非対称に扱われ
+ * (presentation 層の rawEtagCondition が "*" 以外の if-match をすべて must-match の
+ * etag 値として素通ししていた)、must-match の evaluateMustMatch に "*" がそのまま渡って
+ * ETag.fromHex("*") が例外を投げ 500 になっていた。RFC 7232 §3.1 は If-Match: * を
+ * 「リソースが存在すること」の条件と定義しており ETag 値比較ではないため、must-exist を
+ * 独立した kind として切り出した。あわせてカンマ区切り複数 ETag(§3.1 の 1#entity-tag)にも
+ * 対応した(以前は先頭の1個としか比較しない実装ですらなかった — if-match ヘッダ全体を
+ * 1本の hex 文字列として fromHex に渡していたため、複数指定は必ず 500 になっていた)。
  */
 export type ETagCondition =
 	| { kind: "must-not-exist" }
+	| { kind: "must-exist" }
 	| { kind: "must-match"; etag: string }
 	| { kind: "unconditional" };
+
+/**
+ * If-Match ヘッダの値(カンマ区切りで複数の entity-tag を許す。RFC 7232 §3.1 ABNF
+ * `1#entity-tag`)を個々の候補文字列(quoted のまま)に分解する。
+ *
+ * 【delete-calendar-object.ts と共有する理由】DELETE の If-Match 評価でも全く同じ分解が
+ * 要る。delete 側は既に CollectionNotFoundError をこのファイルから import している実績が
+ * あり(同じ「2つの usecase が同じ小さな語彙を共有する」構図)、新規ファイルを立てるほどの
+ * 分量でもないためここに集約してエクスポートする。
+ *
+ * 【厳密な ABNF パーサにしない判断】entity-tag は理論上 quoted-string(引用符内にカンマを
+ * 含みうる)だが、このプロジェクトの ETag は SHA-256 hex 文字列のみ(etag.ts 参照)で
+ * カンマを含む値を生成しない。よって単純なカンマ split で実務上十分(YAGNI — 他実装の
+ * ETag と混在待受けする実需が出たら再検討)。
+ */
+export function splitEtagList(raw: string): string[] {
+	return raw
+		.split(",")
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0);
+}
+
+/**
+ * If-Match の候補リストの中に、現在の ETag と一致するものが1つでもあるかを判定する
+ * (RFC 7232 §3.1: いずれか一致すれば条件成立)。
+ *
+ * 【弱い ETag(W/ プレフィックス)の扱い】RFC 7232 §3.1「An origin server MUST use the
+ * strong comparison function when comparing entity-tags for If-Match」。弱い比較子付きの
+ * 候補は強い比較(バイト同一性)では絶対に一致しないため、hex 化を試みず即座に不一致として
+ * 扱う。iOS を含めこのプロジェクトで弱い ETag を送るクライアントは実質観測されていないが
+ * (etag.ts 冒頭コメント参照)、来た場合に 500 落ちさせないための安全側の分岐として残す。
+ *
+ * 【不正 hex を 412 側へ倒す判断】壊れたクライアントが不正な形式の ETag を送ってきた場合、
+ * ETag.fromHex は例外を投げる。ここで例外を伝播させると「壊れた If-Match で 500」という
+ * R-2 で修正した元のバグと同種の事故を再発させるため、catch して「一致しない」= 412 に倒す
+ * (500 より 412 の方がクライアントにとって解釈可能な応答)。
+ */
+function evaluateMustMatch(rawHeaderValue: string, existingETag: ETag): boolean {
+	return splitEtagList(rawHeaderValue).some((candidate) => {
+		if (candidate.startsWith("W/")) return false;
+		const hex = candidate.replace(/^"|"$/g, "");
+		try {
+			return existingETag.equals(ETag.fromHex(hex));
+		} catch {
+			return false;
+		}
+	});
+}
 
 /** PutCalendarObject の入力。 */
 export interface PutCalendarObjectInput {
@@ -121,7 +191,9 @@ export class ETagConditionError extends Error {
 		super(
 			condition.kind === "must-not-exist"
 				? "Resource already exists (If-None-Match: * failed)"
-				: `ETag mismatch: expected "${(condition as { kind: "must-match"; etag: string }).etag}"`,
+				: condition.kind === "must-exist"
+					? "Resource does not exist (If-Match: * failed)"
+					: `ETag mismatch: expected "${(condition as { kind: "must-match"; etag: string }).etag}"`,
 		);
 		this.name = "ETagConditionError";
 	}
@@ -204,20 +276,25 @@ export class PutCalendarObject {
 		const existing = await this.resourceRepo.findByUri(input.owner, input.collectionId, uri);
 
 		// --- Step 3: ETag 条件チェック(楽観ロック) ---
-		// RFC 7232 §6: If-None-Match:* は「存在しないこと」が条件。
-		//              If-Match:"<etag>" は「ETag が一致すること」が条件。
+		// RFC 7232 §3.1/§3.2 に沿って3種の条件をそれぞれ評価する:
+		//   - If-None-Match:*(must-not-exist)は「存在しないこと」が条件。
+		//   - If-Match:*(must-exist)は「(ETag の値によらず)存在すること」が条件
+		//     — §3.1「the condition is false if the origin server does not have a current
+		//     representation for the target resource」。ETag 値の比較はしない。
+		//   - If-Match:"<etag>"(must-match、カンマ区切りで複数可)は「候補のいずれか1つが
+		//     現在の ETag と一致すること」が条件(§3.1)。
 		if (condition.kind === "must-not-exist" && existing !== null) {
 			throw new ETagConditionError(condition, existing.etag);
 		}
-		if (condition.kind === "must-match") {
-			if (existing === null || !existing.etag.equals(
-				// 文字列で来た ETag を VO に変換して比較。
-				// 不正な形式の ETag は ETag.fromHex が例外を投げるが、presentation 層が
-				// HTTP ヘッダ形式(引用符あり)を除去してから渡す設計のため、ここでは生 hex が来る想定。
-				(await import("../../domain/caldav")).ETag.fromHex(condition.etag.replace(/^"|"$/g, ""))
-			)) {
-				throw new ETagConditionError(condition, existing?.etag ?? null);
-			}
+		if (condition.kind === "must-exist" && existing === null) {
+			// 2026-07-14 R-2 修正: 以前は If-Match: * が独立した kind を持たず must-match 側に
+			// 丸められ、"*" を hex として ETag.fromHex に渡して例外 → 500 になっていた
+			// (このファイル冒頭 ETagCondition コメント参照)。存在しない場合だけ 412、
+			// 存在すれば下の分岐に触れず素通りする。
+			throw new ETagConditionError(condition, null);
+		}
+		if (condition.kind === "must-match" && (existing === null || !evaluateMustMatch(condition.etag, existing.etag))) {
+			throw new ETagConditionError(condition, existing?.etag ?? null);
 		}
 
 		// --- Step 4: CalDAV precondition チェック(domain サービス委譲) ---

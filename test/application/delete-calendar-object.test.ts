@@ -116,6 +116,63 @@ describe("DeleteCalendarObject", () => {
 		).rejects.toBeInstanceOf(DeleteETagMismatchError);
 	});
 
+	// R-2: If-Match: *(存在すること条件)とカンマ区切り複数 ETag(RFC 7232 §3.1)。
+	it("If-Match: * — 対象が存在すれば削除できる(412 に誤爆しない)", async () => {
+		await put.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-del5.ics",
+			ics: makeVEventIcs("uid-del5"),
+		});
+
+		// R-2 修正前は "*" を hex として扱い ETag.fromHex が例外→不正 hex 扱いで
+		// 412(DeleteETagMismatchError)になっていた(existing は既に見つかっているのに)。
+		await expect(
+			del.execute({
+				owner: TEST_OWNER,
+				collectionId: TEST_COLLECTION_ID,
+				resourceUri: "uid-del5.ics",
+				ifMatchEtag: "*",
+			})
+		).resolves.toBeUndefined();
+	});
+
+	it("If-Match のカンマ区切りリスト — 現在の ETag を含んでいれば削除できる", async () => {
+		const r = await put.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-del6.ics",
+			ics: makeVEventIcs("uid-del6"),
+		});
+
+		await expect(
+			del.execute({
+				owner: TEST_OWNER,
+				collectionId: TEST_COLLECTION_ID,
+				resourceUri: "uid-del6.ics",
+				ifMatchEtag: `"${"0".repeat(64)}", "${r.etag.hex}"`,
+			})
+		).resolves.toBeUndefined();
+	});
+
+	it("If-Match のカンマ区切りリスト — どれとも一致しなければ DeleteETagMismatchError", async () => {
+		await put.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-del7.ics",
+			ics: makeVEventIcs("uid-del7"),
+		});
+
+		await expect(
+			del.execute({
+				owner: TEST_OWNER,
+				collectionId: TEST_COLLECTION_ID,
+				resourceUri: "uid-del7.ics",
+				ifMatchEtag: `"${"0".repeat(64)}", "${"1".repeat(64)}"`,
+			})
+		).rejects.toBeInstanceOf(DeleteETagMismatchError);
+	});
+
 	it("存在しないリソースの削除は DeleteTargetNotFoundError", async () => {
 		await expect(
 			del.execute({

@@ -282,4 +282,113 @@ describe("Worker app", () => {
 			expect(res.status).toBe(204);
 		});
 	});
+
+	// -------------------------------------------------------------------------
+	// R-2: RFC 7232 §3.1 の条件付きリクエスト是正
+	//   - If-Match: * は「存在すること」だけが条件(ETag 値比較ではない)。
+	//     以前は "*" を hex として ETag.fromHex に渡していたため:
+	//       PUT: 例外が catch されず 500(errorResponse の未捕捉 → Internal Server Error)。
+	//       DELETE: 不正 hex として catch され誤って 412(existing が既にある = 本来は通るべき)。
+	//     どちらも RFC 7232 §3.1 の「リソースが存在すれば通す」に反する退行だった。
+	//   - If-Match のカンマ区切り複数 ETag(§3.1 ABNF 1#entity-tag)対応。
+	// -------------------------------------------------------------------------
+	describe("R-2 If-Match: * とカンマ区切り複数 ETag(RFC 7232 §3.1)", () => {
+		beforeEach(() => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+		});
+
+		const RES = `/dav/calendars/${USERNAME}/calendar/r2.ics`;
+
+		async function seedResource(): Promise<string> {
+			const put = await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-r2"),
+			});
+			expect(put.status).toBe(201);
+			const etag = put.headers.get("etag");
+			expect(etag).not.toBeNull();
+			return etag as string;
+		}
+
+		it("PUT If-Match: * — リソースが存在すれば 500 にならず 204 で成立する", async () => {
+			await seedResource();
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-match": "*",
+				},
+				body: makeVEventIcs("uid-r2"),
+			});
+			expect(res.status).toBe(204);
+		});
+
+		it("PUT If-Match: * — リソースが存在しなければ 412(500 でも 404 でもない)", async () => {
+			// r2.ics はまだ作っていない状態で If-Match: * を送る。
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-match": "*",
+				},
+				body: makeVEventIcs("uid-r2"),
+			});
+			expect(res.status).toBe(412);
+		});
+
+		it("DELETE If-Match: * — リソースが存在すれば 204(412 に誤爆しない)", async () => {
+			await seedResource();
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: { authorization: authHeader(), "if-match": "*" },
+			});
+			expect(res.status).toBe(204);
+		});
+
+		it("PUT If-Match のカンマ区切りリスト — 現在の ETag を含んでいれば一致成立(204)", async () => {
+			const etag = await seedResource();
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					// 現在の ETag をリストの2番目に混ぜる。RFC 7232 §3.1「いずれか一致すれば成立」。
+					"if-match": `"${"0".repeat(64)}", ${etag}`,
+				},
+				body: makeVEventIcs("uid-r2"),
+			});
+			expect(res.status).toBe(204);
+		});
+
+		it("PUT If-Match のカンマ区切りリスト — どれとも一致しなければ 412", async () => {
+			await seedResource();
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: {
+					authorization: authHeader(),
+					"content-type": "text/calendar",
+					"if-match": `"${"0".repeat(64)}", "${"1".repeat(64)}"`,
+				},
+				body: makeVEventIcs("uid-r2"),
+			});
+			expect(res.status).toBe(412);
+		});
+
+		it("DELETE If-Match のカンマ区切りリスト — 現在の ETag を含んでいれば一致成立(204)", async () => {
+			const etag = await seedResource();
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: {
+					authorization: authHeader(),
+					"if-match": `"${"0".repeat(64)}", ${etag}`,
+				},
+			});
+			expect(res.status).toBe(204);
+		});
+	});
 });

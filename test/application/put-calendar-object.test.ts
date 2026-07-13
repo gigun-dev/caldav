@@ -168,6 +168,80 @@ describe("PutCalendarObject", () => {
 	});
 
 	// =========================================================================
+	// R-2: If-Match: * (must-exist) とカンマ区切り複数 ETag(RFC 7232 §3.1)
+	// =========================================================================
+
+	it("If-Match:* 条件 — リソースが存在すれば ETag 値によらず更新できる(500 に落ちない)", async () => {
+		await usecase.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-must-exist.ics",
+			ics: makeVEventIcs("uid-must-exist"),
+		});
+
+		// R-2 修正前は "*" が ETag.fromHex に渡り例外(64桁hex正規表現に不一致)を投げ、
+		// この Step 3 が例外を catch していなかったため 500 になっていた。
+		const result = await usecase.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-must-exist.ics",
+			ics: makeVEventIcs("uid-must-exist", "Updated"),
+			condition: { kind: "must-exist" },
+		});
+		expect(result.created).toBe(false);
+	});
+
+	it("If-Match:* 条件 — リソースが存在しなければ 412(ETagConditionError)", async () => {
+		await expect(
+			usecase.execute({
+				owner: TEST_OWNER,
+				collectionId: TEST_COLLECTION_ID,
+				resourceUri: "uid-must-exist-missing.ics",
+				ics: makeVEventIcs("uid-must-exist-missing"),
+				condition: { kind: "must-exist" },
+			})
+		).rejects.toBeInstanceOf(ETagConditionError);
+	});
+
+	it("If-Match 条件 — カンマ区切りリストのいずれかに一致すれば更新できる", async () => {
+		const r1 = await usecase.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-list-match.ics",
+			ics: makeVEventIcs("uid-list-match"),
+		});
+
+		// 現在の ETag をダミー ETag に混ぜたカンマ区切りリスト(RFC 7232 §3.1 ABNF 1#entity-tag)。
+		const result = await usecase.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-list-match.ics",
+			ics: makeVEventIcs("uid-list-match", "Updated"),
+			condition: { kind: "must-match", etag: `"${"0".repeat(64)}", "${r1.etag.hex}"` },
+		});
+		expect(result.created).toBe(false);
+	});
+
+	it("If-Match 条件 — カンマ区切りリストのどれとも一致しなければ 412(ETagConditionError)", async () => {
+		await usecase.execute({
+			owner: TEST_OWNER,
+			collectionId: TEST_COLLECTION_ID,
+			resourceUri: "uid-list-mismatch.ics",
+			ics: makeVEventIcs("uid-list-mismatch"),
+		});
+
+		await expect(
+			usecase.execute({
+				owner: TEST_OWNER,
+				collectionId: TEST_COLLECTION_ID,
+				resourceUri: "uid-list-mismatch.ics",
+				ics: makeVEventIcs("uid-list-mismatch", "Updated"),
+				condition: { kind: "must-match", etag: `"${"0".repeat(64)}", "${"1".repeat(64)}"` },
+			})
+		).rejects.toBeInstanceOf(ETagConditionError);
+	});
+
+	// =========================================================================
 	// CalDAV precondition テスト
 	// =========================================================================
 

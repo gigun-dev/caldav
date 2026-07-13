@@ -15,15 +15,16 @@
 // RFC 6578 §3.2 は削除リソースを 404 で応答するよう要求(前作の 410 は誤り — 05 参照)。
 // =============================================================================
 
-import { resourceUri } from "../../domain/caldav";
+import { ETag, resourceUri } from "../../domain/caldav";
 import type { CollectionId, PrincipalRef, ResourceUri } from "../../domain/caldav";
-import type { ETag } from "../../domain/caldav";
 import type {
 	CalendarCollectionRepository,
 	CalendarObjectResourceRepository,
 	CollectionUnitOfWork,
 } from "../ports";
-import { CollectionNotFoundError } from "./put-calendar-object";
+// 2026-07-14 R-2: splitEtagList を put-calendar-object.ts から共有する
+// (両 usecase で「If-Match ヘッダのカンマ区切り分解」ロジックが同一のため)。
+import { CollectionNotFoundError, splitEtagList } from "./put-calendar-object";
 
 // --- 入力 DTO ---
 
@@ -32,8 +33,16 @@ export interface DeleteCalendarObjectInput {
 	collectionId: CollectionId;
 	resourceUri: string;
 	/**
-	 * If-Match ヘッダの ETag 値(引用符なしの hex 文字列)。
-	 * null = If-Match なし(無条件削除)。
+	 * If-Match ヘッダの生の値(presentation 層でヘッダをそのまま渡す。引用符付き
+	 * `"hex"`・`*`・カンマ区切りの複数値 `"a", "b"` のいずれの形でも来うる — RFC 7232 §3.1
+	 * ABNF `If-Match = "*" / 1#entity-tag`)。
+	 * null/undefined = If-Match なし(無条件削除)。
+	 *
+	 * 【2026-07-14 R-2】以前はコメントで「引用符なしの hex 文字列」を要求していたが、実際には
+	 * PUT 側と非対称に app.ts から引用符付きのまま渡っていた(app.test.ts の
+	 * `"if-match": etag` — etag は toHeader() の引用符付き値)ため実態と乖離していた。
+	 * 実装側(execute 内)で "*" とカンマ区切りリストの両方を正しく扱うようにしたので、
+	 * このコメントも「生のヘッダ値をそのまま渡す」契約として書き直した。
 	 */
 	ifMatchEtag?: string | null;
 }
@@ -94,20 +103,32 @@ export class DeleteCalendarObject {
 			throw new DeleteTargetNotFoundError(uri);
 		}
 
-		// If-Match ETag 条件チェック。
+		// If-Match ETag 条件チェック(RFC 7232 §3.1)。
 		if (input.ifMatchEtag != null) {
-			// HTTP ヘッダは引用符付き('"hex"')または引用符なし("hex")で来る可能性がある。
-			// presentation 層で除去しておくことが望ましいが、ここでも strip する。
-			const rawHex = input.ifMatchEtag.replace(/^"|"$/g, "");
-			// 不正な hex 形式は ETag.fromHex が例外を投げる。その場合は ETag 不一致と同義。
-			let expectedEtag: ETag;
-			try {
-				const { ETag } = await import("../../domain/caldav");
-				expectedEtag = ETag.fromHex(rawHex);
-			} catch {
-				throw new DeleteETagMismatchError(uri, input.ifMatchEtag, existing.etag);
-			}
-			if (!existing.etag.equals(expectedEtag)) {
+			const raw = input.ifMatchEtag.trim();
+			if (raw === "*") {
+				// 2026-07-14 R-2 修正: 以前は If-Match: * が「"*" を hex として fromHex に渡す」
+				// 経路に丸め込まれ、必ず不正 hex 例外 → DeleteETagMismatchError(412)になっていた
+				// (existing が既に見つかっている = §3.1 の「存在すること」条件は本来満たされて
+				// いるのに、誤って 412 を返す不具合。500 ではなく 412 だったので発見が遅れやすい
+				// バグだった)。
+				// §3.1「If the field-value is "*", the condition is false if the origin server
+				// does not have a current representation for the target resource」— このスコープに
+				// 来た時点で existing は非 null(直前の findByUri チェックで 404 を弾き済み)なので、
+				// If-Match: * の条件は常に真。ETag 値の比較は不要で何もしない。
+			} else if (!splitEtagList(raw).some((candidate) => {
+				// 弱い比較子(W/ 接頭辞)は RFC 7232 §3.1「MUST use the strong comparison function」
+				// により If-Match では絶対に一致しない扱いとする(put-calendar-object.ts の
+				// evaluateMustMatch と同じ判断)。
+				if (candidate.startsWith("W/")) return false;
+				const hex = candidate.replace(/^"|"$/g, "");
+				try {
+					return existing.etag.equals(ETag.fromHex(hex));
+				} catch {
+					// 不正な hex 形式は「一致しない」として扱う(412 に倒す。500 にしない)。
+					return false;
+				}
+			})) {
 				throw new DeleteETagMismatchError(uri, input.ifMatchEtag, existing.etag);
 			}
 		}

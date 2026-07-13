@@ -135,10 +135,19 @@ async function readBody(request: Request): Promise<string> {
 	return body;
 }
 
+// 2026-07-14 R-2 修正: If-Match: * を If-None-Match: * と同じ扱いで「must-match の生値」に
+// 丸めていたのが誤り(RFC 7232 §3.1 の原文照合は docs/rfc/rfc7232.txt §3.1。詳細は
+// application/usecases/put-calendar-object.ts の ETagCondition コメント参照)。
+// If-Match: * は「リソース存在」だけが条件で ETag 値の比較ではないため、独立した
+// "must-exist" kind として presentation 層でここに切り出す(HTTP ヘッダ解析はここの仕事、
+// 条件の意味論の評価は application 層 — Put/Delete usecase 側 — に委ねる)。
+// カンマ区切りの複数 ETag(If-Match: "a", "b")はここでは分解せず生の値のまま
+// application 層に渡す(分解ロジックは put-calendar-object.ts の splitEtagList に集約)。
 function rawEtagCondition(request: Request) {
 	const ifNoneMatch = request.headers.get("if-none-match");
 	if (ifNoneMatch === "*") return { kind: "must-not-exist" as const };
 	const ifMatch = request.headers.get("if-match");
+	if (ifMatch === "*") return { kind: "must-exist" as const };
 	if (ifMatch) return { kind: "must-match" as const, etag: ifMatch };
 	return { kind: "unconditional" as const };
 }
