@@ -651,6 +651,18 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	// affected:{kind:"completed"} で id を載せるだけで tasks からは抜ける — UI は前回描画に残って
 	// いたその行を「抜けていく(becoming)」演出で消せる。この「completed は一覧から消え affected
 	// だけが残り香を伝える」形が UI 契約とズレないかは親レビューの論点。
+	//
+	// 【E-2 view 状態非保持バグ修正・2026-07-14: view echo を追加した経緯】
+	// 以前このコメントは「view 引数の引き継ぎ」を親レビューの論点として残していたが、
+	// 「list-todos includeCompleted:true で開いた後 reopen すると完了済みが全部消える」実害が
+	// 確定したため確定仕様にした。refresh-todos が引数なし(既定=未完了のみ)固定だったのが原因で、
+	// 初回ビューの引数が後続の再取得に引き継がれていなかった。対策:
+	//  (1) buildTodosViewModel は渡された view 引数(includeCompleted/dueBefore/dueAfter)のうち
+	//      非 undefined のものを vm.view に echo する(全部 undefined なら view 自体を省略=既定ビュー)。
+	//  (2) refresh-todos の inputSchema を list-todos と同じ listTodosInputShape にし、UI が保持した
+	//      currentView をそのまま渡せるようにする(下の refresh-todos 登録参照)。
+	// mutate 系(create/update/complete/delete)は view 引数を渡さない(確定一覧は未完了ビューのまま。
+	// モデル向けスキーマを view で汚さない判断=仕様3)ので、mutate 応答には view キーは載らない。
 	const buildTodosViewModel = async (opts: {
 		includeCompleted?: boolean;
 		dueBefore?: string;
@@ -674,6 +686,14 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;
+		// view echo(E-2 view 状態非保持バグ修正): 非 undefined の引数だけを載せる。全部 undefined
+		// (既定ビュー)なら view キー自体を省いて後方互換を保つ(旧 UI/旧テストは view 不在前提)。
+		// UI はこの view を currentView として保持し、focus refetch / mutation 後の再取得へ引き継ぐ。
+		const view: NonNullable<TodosViewModel["view"]> = {};
+		if (opts.includeCompleted !== undefined) view.includeCompleted = opts.includeCompleted;
+		if (opts.dueBefore !== undefined) view.dueBefore = opts.dueBefore;
+		if (opts.dueAfter !== undefined) view.dueAfter = opts.dueAfter;
+		if (Object.keys(view).length > 0) vm.view = view;
 		return vm;
 	};
 
@@ -742,24 +762,31 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	//   visibility は「ホストがモデルに見せるか」という描画/提示ヒントであって、MCP プロトコル
 	//   レベルの tools/list からツールを消す機構ではない。よって refresh-todos は tools/list に
 	//   出る(=既存の本数 assert が 8→9 に変わる)。テスト側の期待値はこの事実に合わせて更新した。
-	// 【inputSchema を空 object にする理由】スパイクなので引数は取らず、既定(未完了のみ・
-	//   tasks コレクション・UTC)で一覧を返す。listTodosInputShape を流用してもよいが、UI の
-	//   ボタンは常に「今の既定ビューを最新化する」用途しか無いため、余計な引数面を持たせない。
+	// 【inputSchema を listTodosInputShape に変えた理由(E-2 view 状態非保持バグ修正・2026-07-14)】
+	//   以前は inputSchema:{}(引数なし)で「常に既定ビュー(未完了のみ)」を返していた。だがそれだと
+	//   list-todos includeCompleted:true で開いた UI が focus refetch / mutation 後に refresh-todos を
+	//   引数なしで叩き、完了済みが一覧から全部消える不具合が起きていた(初回ビューが後続再取得へ
+	//   引き継がれない)。UI は描画に使った vm.view を currentView として保持し、それをこの refresh-todos に
+	//   渡す(todos-entry.ts の fetchLatest 参照)。よって inputSchema を list-todos と同じ
+	//   listTodosInputShape にし、引数をそのまま runListTodos に渡す — 「常に既定ビュー」の前提は撤回した。
+	//   handler の実行経路は list-todos と同一(runListTodos 共通クロージャ)のまま。
 	registerAppTool(
 		server,
 		"refresh-todos",
 		{
 			title: "Refresh todos",
 			description:
-				"UI(リマインダー一覧 App)専用の再読み込みツール。引数なしで既定ビュー(未完了のみ)を返す。" +
-				"モデルからは呼べない(visibility:[\"app\"])— UI の再読み込みボタンが callServerTool で叩く用。",
-			inputSchema: {},
+				"UI(リマインダー一覧 App)専用の再読み込みツール。UI が保持する現在ビュー(includeCompleted 等)を" +
+				"引数で受け取り、そのビューの最新一覧を返す(引数なしなら既定=未完了のみ)。" +
+				"モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得が callServerTool で叩く用。",
+			inputSchema: listTodosInputShape,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async () => runListTodos({}),
+		async ({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }) =>
+			runListTodos({ includeCompleted, dueBefore, dueAfter, calendarId, timeZone }),
 	);
 
 	// --- update-todo(E-1 スライス②-b / E-2 スライス②で ui:// + 差分レンズ化)------------

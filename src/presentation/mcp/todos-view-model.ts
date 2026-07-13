@@ -84,4 +84,24 @@ export interface TodosViewModel {
 	affected?: AffectedTask[];
 	/** delete のみ。TaskSnapshot に統一(旧 RemovedTask を廃止・案X)。 */
 	removed?: TaskSnapshot[];
+	/**
+	 * 【E-2 view 状態非保持バグ修正・2026-07-14】この一覧を生成した「ビュー引数」の echo。
+	 *
+	 * 【なぜ必要か(このフィールドが無いと起きていた不具合)】
+	 * MCP Apps はステートレス設計で、UI(todos-entry.ts)は自分が今どんなビュー(includeCompleted 等)
+	 * で一覧を開いたのかを保持していなかった。そのため list-todos includeCompleted:true で開いた後、
+	 * focus refetch(refresh-todos)や mutation 後の再取得が「引数なし=既定(未完了のみ)」で走り、
+	 * 完了済みタスクが UI から全部消える(reopen したら消える等)。サーバーが「今の一覧はどのビューか」を
+	 * echo し、UI がそれを currentView として保持することで、後続の再取得に同じビューを引き継げる。
+	 *
+	 * 【additive・後方互換】buildTodosViewModel は「非 undefined の引数があるときだけ」view を載せる。
+	 * 全部 undefined(既定ビュー)なら view キー自体を省く — 旧 UI/旧テストは view 不在でも壊れない
+	 * (mutate 系は現状 view 引数を取らないので view 無し=既定ビューのまま。仕様3の判断)。
+	 * dueBefore/dueAfter も echo するが、mutate 系は指定しないため実質 list/refresh でのみ載る。
+	 */
+	view?: {
+		includeCompleted?: boolean;
+		dueBefore?: string;
+		dueAfter?: string;
+	};
 }

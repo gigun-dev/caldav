@@ -504,4 +504,89 @@ describe("/mcp", () => {
 			expect(sc.tasks.some((t: { id: string }) => t.id === id)).toBe(false);
 		});
 	});
+
+	// 2026-07-14 E-2 view 状態非保持バグ修正: list-todos/refresh-todos が「この一覧はどのビューか」を
+	// vm.view として echo し、refresh-todos が list-todos と同じ listTodosInputShape を受け取ることの
+	// presentation テスト。症状は「list-todos includeCompleted:true で開いた後 reopen すると完了済みが
+	// UI から全部消える」で、根因は refresh-todos が引数なし(既定=未完了のみ)固定だった点。
+	// ここでは「view 引数が確定一覧と view echo に正しく反映されるか」「既定呼び出しでは view キーが
+	// 付かない(後方互換)か」をサーバー契約として固定する。
+	describe("view 状態非保持バグ修正(view echo / refresh-todos の引数引き継ぎ)", () => {
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+		async function createTodo(args: Record<string, unknown>): Promise<string> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-todo", arguments: args } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent.tasks.find((t: { title: string }) => t.title === args.title).id;
+		}
+		async function completeTodo(id: string): Promise<void> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "complete-todo", arguments: { id } } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+		}
+		async function call(name: string, args: Record<string, unknown>): Promise<any> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent;
+		}
+
+		it("refresh-todos includeCompleted:true は完了済みを含む tasks + view echo を返す", async () => {
+			seedTasksCollection();
+			const activeId = await createTodo({ title: "未完了タスク", due: "2026-07-15" });
+			const doneId = await createTodo({ title: "完了タスク", due: "2026-07-16" });
+			await completeTodo(doneId);
+
+			const sc = await call("refresh-todos", { includeCompleted: true });
+			// 完了済み(doneId)も未完了(activeId)も両方 tasks に含まれる(これが直っていなかった核心)。
+			expect(sc.tasks.some((t: { id: string }) => t.id === activeId)).toBe(true);
+			expect(sc.tasks.some((t: { id: string }) => t.id === doneId)).toBe(true);
+			// view echo: includeCompleted:true が返る(UI が currentView として保持する値)。
+			expect(sc.view).toEqual({ includeCompleted: true });
+		});
+
+		it("list-todos は指定した view 引数(includeCompleted/dueBefore/dueAfter)を echo する", async () => {
+			seedTasksCollection();
+			const sc = await call("list-todos", {
+				includeCompleted: true,
+				dueBefore: "2026-08-01T00:00:00Z",
+				dueAfter: "2026-07-01T00:00:00Z",
+			});
+			expect(sc.view).toEqual({
+				includeCompleted: true,
+				dueBefore: "2026-08-01T00:00:00Z",
+				dueAfter: "2026-07-01T00:00:00Z",
+			});
+		});
+
+		it("既定呼び出し(引数なし)では view キー自体が付かない(後方互換)", async () => {
+			seedTasksCollection();
+			const listSc = await call("list-todos", {});
+			expect("view" in listSc).toBe(false);
+			const refreshSc = await call("refresh-todos", {});
+			expect("view" in refreshSc).toBe(false);
+		});
+
+		it("includeCompleted:false を明示すると view.includeCompleted:false を echo する(既定省略との区別)", async () => {
+			// 【なぜこのケースを固定するか】buildTodosViewModel は「非 undefined の引数」を echo する。
+			// includeCompleted:false は「明示的な false」なので echo される(引数なし=undefined で
+			// view キーごと省くのとは別物)。UI が明示 false を保持しても既定と同じ挙動になるが、
+			// サーバー契約としては「渡した非 undefined 値をそのまま返す」を守ることを固定する。
+			seedTasksCollection();
+			const sc = await call("refresh-todos", { includeCompleted: false });
+			expect(sc.view).toEqual({ includeCompleted: false });
+		});
+
+		it("mutate 系(complete-todo)の応答には view キーが付かない(既定ビュー固定=仕様3)", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "支払い", due: "2026-07-15" });
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "complete-todo", arguments: { id } } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect("view" in rpc.result.structuredContent).toBe(false);
+		});
+	});
 });

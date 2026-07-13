@@ -44,7 +44,12 @@
 //       affected?: Array<{ id, kind: "added"|"completed"|"reopened"|"edited",
 //                          task?: TaskSnapshot,
 //                          changes?: Array<{ field, before?, after? }> }>,
-//       removed?: TaskSnapshot[] }
+//       removed?: TaskSnapshot[],
+//       view?: { includeCompleted?, dueBefore?, dueAfter? } }
+//   view は list-todos/refresh-todos が echo する「この一覧はどのビューか」(非既定ビューのときだけ載る。
+//   E-2 view 状態非保持バグ修正・2026-07-14)。UI は vm.view ?? {} を currentView として保持し、
+//   focus refetch / mutation 後の取り直しへ同じビューを引き継ぐ(引き継がないと includeCompleted:true で
+//   開いた後の再取得が既定=未完了のみに落ち、完了済みが全部消える不具合が起きていた)。
 //   tasks は常に「サーバー確定の全一覧」(ステートレス)。affected/removed は mutation 系
 //   だけが返す差分メタで、list/refresh には無い。UI は affected/removed が欠落していれば
 //   単に通常描画する(後方互換 degrade — 古いサーバー/list 応答でも壊れない)。
@@ -159,6 +164,30 @@ let completedOpen = false; // 完了済み <details> の開閉。再描画で閉
 // 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
 let affectedById = new Map<string, AffectedEntry>();
 let ghosts: TaskSnapshot[] = [];
+// currentView(E-2 view 状態非保持バグ修正・2026-07-14): この UI が「今どのビューで一覧を
+// 開いているか」。list-todos/refresh-todos の応答が echo する vm.view を保持し、後続の
+// 再取得(focus refetch / mutation 後の取り直し)へ同じビューを引き継ぐ。
+// 【なぜ必要か】以前 UI はビューを保持せず、refresh-todos を常に引数なし(既定=未完了のみ)で
+// 叩いていた。そのため list-todos includeCompleted:true で開いた後 reopen 等で再取得すると
+// 完了済みが一覧から全部消えた。currentView を保持して引き継ぐことで、開いたビューが維持される。
+// 【既定判定】includeCompleted が falsy かつ dueBefore/dueAfter が無ければ「既定ビュー」。
+// 既定ビューのときは mutation 後に mutate 応答 vm をそのまま描く(従来どおり)。非既定のときだけ
+// refresh-todos(currentView 付き)で一覧を取り直して合成する(下の toggleTask 参照)。
+interface CurrentView {
+	includeCompleted?: boolean;
+	dueBefore?: string;
+	dueAfter?: string;
+}
+let currentView: CurrentView = {};
+function isDefaultView(v: CurrentView): boolean {
+	return !v.includeCompleted && v.dueBefore === undefined && v.dueAfter === undefined;
+}
+/** currentView を callServerTool の arguments(index signature 必須の Record)へ渡す形に整える。
+ *  CurrentView は閉じた型で index signature を持たないため、境界の1点でだけ Record へ広げる
+ *  (server.ts の toTodosToolResponse の cast と同じ「閉じた型 vs SDK の index signature」対処)。 */
+function viewAsArgs(v: CurrentView): Record<string, unknown> {
+	return { ...v };
+}
 
 // --- 自動 refetch のガード用状態 -------------------------------------------------
 // connected: connect() 完了フラグ。初期化前の callServerTool を避ける既存規律のため、
@@ -778,6 +807,9 @@ interface TodosStructuredContent {
 	tasks?: TodoItem[];
 	affected?: AffectedEntry[];
 	removed?: TaskSnapshot[];
+	// view echo(E-2 view 状態非保持バグ修正)。list-todos/refresh-todos が「この一覧はどのビューか」を
+	// 返す(非既定ビューのときだけ載る)。mutate 系は view を載せない(既定ビューのまま=仕様3)。
+	view?: CurrentView;
 }
 
 /**
@@ -793,6 +825,12 @@ function applyStructuredContent(sc: unknown): void {
 		(structuredContent?.affected ?? []).map((a) => [a.id, a]),
 	);
 	ghosts = structuredContent?.removed ?? [];
+	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
+	// バグ修正の要。list-todos/refresh-todos 応答は view を echo するのでビューが維持され、
+	// mutate 応答(view 無し)を直接適用するのは既定ビューのときだけ(toggleTask の分岐参照)なので
+	// {} へ戻っても既に既定=無害。非既定ビューでの mutation は refresh-todos で view を保った
+	// 合成 vm を渡してくるため、ここで currentView が誤って既定に落ちることはない。
+	currentView = structuredContent?.view ?? {};
 	markUpdated();
 	announceBecoming();
 }
@@ -877,7 +915,11 @@ connected = true;
  * 出ない(tdr で claude.ai Web は確認済み)。
  */
 async function fetchLatest(): Promise<void> {
-	const result = await app.callServerTool({ name: "refresh-todos", arguments: {} });
+	// E-2 view 状態非保持バグ修正・2026-07-14: 引数に currentView を渡す。以前は空 object 固定で、
+	// includeCompleted:true 等で開いたビューでも既定(未完了のみ)に取り直してしまい完了済みが
+	// 消えていた。currentView(直近の list/refresh 応答が echo した vm.view)を渡すことで、開いた
+	// ビューのまま最新化する。currentView が既定 {} なら従来どおり既定ビューになる(後方互換)。
+	const result = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
 	if (result.isError) {
 		// ツール実行側のエラー(認可失敗・内部エラー等)。content の text を拾って投げ直す。
 		const first = result.content?.[0];
@@ -950,9 +992,46 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		// Why not 従来どおり refresh を挟む: refresh 応答には affected が無いので、
 		// せっかくの becoming(凍結リング)が届いた瞬間に消えてしまう。ネットワーク1往復の
 		// 節約にもなる。tasks が無い応答(旧サーバー等)のときだけ従来の refresh に degrade。
-		const structuredContent = result.structuredContent as { tasks?: unknown } | undefined;
+		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
 		if (structuredContent?.tasks !== undefined) {
-			applyStructuredContent(structuredContent);
+			if (isDefaultView(currentView)) {
+				// 既定ビュー(未完了のみ・期間絞りなし): mutate 応答の tasks は未完了ビュー固定で
+				// currentView と一致するため、そのまま確定描画に使う(従来どおり + becoming が乗る)。
+				applyStructuredContent(structuredContent);
+			} else {
+				// 【E-2 view 状態非保持バグ修正・2026-07-14】非既定ビュー(例 includeCompleted:true):
+				// mutate 応答の tasks は「未完了ビュー固定」で currentView と矛盾する(完了済みが
+				// 全部消える)。よって tasks は refresh-todos(currentView 付き)で取り直し、mutate 応答の
+				// affected/removed(becoming 演出用)だけを保持して合成する。
+				// 【becoming の見え方】completed の affected は includeCompleted:true ビューでは tasks に
+				// 実在するので、renderRow の inPlaceDone 判定でその場の行に取消線 becoming が乗る
+				// (未完了ビューでは snapshot 合成で描いていた行が、ここでは本物の tasks 行になる)— これが正しい。
+				try {
+					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+					if (refreshed.isError) {
+						const first = refreshed.content?.[0];
+						const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+						throw new Error(text);
+					}
+					const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+					// 合成 vm: 一覧 tasks + view は refresh(currentView)側、becoming メタ(affected/removed)は
+					// mutate 応答側。view を引き継ぐことで applyStructuredContent が currentView を維持する。
+					const composed: TodosStructuredContent = {
+						tasks: rsc?.tasks ?? [],
+						view: rsc?.view,
+						affected: structuredContent.affected,
+						removed: structuredContent.removed,
+					};
+					applyStructuredContent(composed);
+				} catch (e) {
+					// 取り直し失敗 → 既存の「再読み込み失敗」バナー経路へ degrade(mutate 自体は成功して
+					// いるので操作結果は失わない。再試行は fetchLatest のみ = update-todo は再送しない)。
+					showBanner(
+						`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+						() => void retryFetch(),
+					);
+				}
+			}
 		} else {
 			// degrade 経路。ここが失敗した場合、更新自体は成功している可能性が高いので
 			// 「再読み込み失敗」として出す(再試行 = fetchLatest のみ。update-todo を
