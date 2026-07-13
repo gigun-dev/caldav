@@ -219,6 +219,28 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 		).bind(owner, id, componentKind, rangeStartMillis, rangeEndMillis).all<ResourceRow>();
 		return Promise.all(rows.results.map(hydrateResource));
 	}
+
+	/**
+	 * E-1 レイテンシ改善(2026-07-14): ListTodos 向けの VTODO 限定取得。
+	 * ports/index.ts のコメントどおり、STATUS(完了状態)列が無いのでここでは component_kind
+	 * だけを SQL 側で絞る(完了状態は呼び出し側 UC がメモリで判定する)。
+	 *
+	 * 【索引が効くか】calendar_objects の PRIMARY KEY は (owner, collection_id, uri) なので
+	 * owner+collection_id の等値条件だけで対象行はすでに B-tree 上で連続範囲に絞られている
+	 * (findAllInCollection と同じ土台)。そこに component_kind = ? を additional filter として
+	 * 掛けても、絞り込み対象の行数自体は PK 検索の時点で「そのコレクション内の行」まで
+	 * 減っているため、component_kind 専用の複合索引を新設するほどの効果は見込みにくい
+	 * (calendar_objects_time_range 索引のような owner/collection_id 以降の追加列と違い、
+	 * component_kind は等値条件1つだけなのでフルスキャンでも対象行数は小さい)。よって今回は
+	 * 新規索引を追加せず、既存 PK の範囲内で WHERE 句フィルタするだけに留める。
+	 * 転送量削減(VEVENT/VJOURNAL の ICS 本文を D1→Worker 間で運ばない)が主目的。
+	 */
+	async findVTodosInCollection(owner: PrincipalRef, id: CollectionId): Promise<CalendarObjectResource[]> {
+		const rows = await this.db.prepare(
+			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND component_kind = 'VTODO' ORDER BY uri",
+		).bind(owner, id).all<ResourceRow>();
+		return Promise.all(rows.results.map(hydrateResource));
+	}
 }
 
 export class D1CollectionUnitOfWork implements CollectionUnitOfWork {

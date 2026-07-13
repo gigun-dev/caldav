@@ -202,6 +202,18 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		return result;
 	}
 
+	/**
+	 * E-1 レイテンシ改善(2026-07-14): D1CalendarObjectResourceRepository.findVTodosInCollection
+	 * のフェイク実装。componentKind==="VTODO" だけを返す(D1 実装の WHERE component_kind = 'VTODO'
+	 * と同じ絞り込みをインメモリで再現)。
+	 */
+	async findVTodosInCollection(owner: PrincipalRef, collectionId: CollectionId): Promise<CalendarObjectResource[]> {
+		const prefix = `${owner}::${collectionId}::`;
+		return [...this.store.entries()]
+			.filter(([k, v]) => k.startsWith(prefix) && v.componentKind === "VTODO")
+			.map(([, v]) => v);
+	}
+
 	/** テスト検証用: 保存されている bounds を直接読む。 */
 	boundsOf(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): OccurrenceBounds | undefined {
 		return this.boundsStore.get(resourceKey(owner, collectionId, uri));

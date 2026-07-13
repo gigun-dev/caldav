@@ -8,12 +8,15 @@
 // 「VTODO の反復インスタンス管理は iOS でも master 単位」という前提。展開が要る要件が
 // 出たら別 UC を足す。仕様の指示どおり、既存の反復 VTODO も壊さず一覧できることだけを担保する)。
 //
-// 【全件取得 + メモリフィルタである理由】
-// CalendarObjectResourceRepository.findAllInCollection は「コレクション内の全リソース」を返す
-// ポート(既存の設計。G-3 の time-range 専用索引 findInCollectionByTimeRange は VEVENT 想定の
-// occurrence bounds 前提で、VTODO の「単発 due」フィルタには過剰). iOS の Tasks コレクションは
-// 実運用で数千件未満(findAllInCollection のコメントと同じ前提)なので、component 種別・
-// STATUS・DUE のフィルタは呼び出し側(この UC)でメモリ上に行う設計にする。
+// 【kind 絞りは SQL、STATUS・DUE はメモリフィルタである理由(2026-07-14 更新)】
+// 当初は CalendarObjectResourceRepository.findAllInCollection(コレクション内の全リソースを
+// 返す既存ポート)で VEVENT/VJOURNAL も含めて全件を引き、component 種別・STATUS・DUE の
+// フィルタを全部この UC のメモリ上で行っていた。本番実測(list-todos avg 706ms)でこれが
+// 主因と判明したため、component_kind="VTODO" の絞り込みだけを findVTodosInCollection
+// (ports/index.ts のコメント参照)で SQL 側に押し出した。STATUS(完了状態)は D1 に列が
+// 無いため今回はメモリ判定のまま(理由は findVTodosInCollection 側のコメントに集約)。
+// G-3 の time-range 専用索引 findInCollectionByTimeRange は VEVENT 想定の occurrence bounds
+// 前提で VTODO の「単発 due」フィルタには過剰なため、DUE の絞り込みも引き続きメモリで行う。
 // =============================================================================
 
 import type { CollectionId, PrincipalRef } from "../../domain/caldav";
@@ -71,13 +74,12 @@ export class ListTodos {
 		const dueBeforeMillis = input.dueBefore !== undefined ? parseOffsetIso(input.dueBefore) : undefined;
 		const dueAfterMillis = input.dueAfter !== undefined ? parseOffsetIso(input.dueAfter) : undefined;
 
-		const resources = await this.resourceRepo.findAllInCollection(input.owner, collectionId);
+		// 2026-07-14: component_kind="VTODO" の絞り込みを SQL 側に押し出した(ファイル冒頭コメント)。
+		// findAllInCollection → メモリで componentKind==="VTODO" を判定、から置き換え。
+		const resources = await this.resourceRepo.findVTodosInCollection(input.owner, collectionId);
 
 		const tasks: Task[] = [];
 		for (const resource of resources) {
-			// componentKind==="VTODO" のみ対象(仕様どおり)。VEVENT/VJOURNAL は無視する。
-			if (resource.componentKind !== "VTODO") continue;
-
 			// master(RECURRENCE-ID 無し)を1件として扱う。反復展開はしない方針(ファイル冒頭)。
 			// todos() は同一 UID の master + オーバーライドを返しうるが、VTODO はこの実装では
 			// オーバーライドを想定していない(put-calendar-object.ts の VTODO bounds 計算コメント

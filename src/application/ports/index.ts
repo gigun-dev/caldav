@@ -177,6 +177,26 @@ export interface CalendarObjectResourceRepository {
 		rangeStartMillis: number,
 		rangeEndMillis: number,
 	): Promise<CalendarObjectResource[]>;
+
+	/**
+	 * E-1 レイテンシ改善(2026-07-14): ListTodos 向けに「コレクション内の VTODO のみ」を
+	 * SQL 側で絞り込んで返す。findAllInCollection だと VEVENT/VJOURNAL も含めて全件を
+	 * D1 から引いてから ICS を全パースしていた(本番実測で list-todos avg 706ms の主因)。
+	 *
+	 * 【完了状態(STATUS:COMPLETED)は SQL 化しなかった判断】
+	 * calendar_objects テーブルに STATUS 相当の列が無い(migrations/0001,0003 参照。
+	 * component_kind はあるが完了状態は無い)。列追加には SQLite の CHECK 制約の都合上
+	 * 0003_vjournal.sql と同じ「12-step テーブル再作成」が要り、かつ既存 ICS 全行への
+	 * バックフィル(PUT 時にしか STATUS を列へ複製できないので、既存行は再 PUT されるまで
+	 * NULL のまま)も必要になる。前方互換規律(migrations/README.md)の手続きコストに対して、
+	 * このタスクのスコープでは kind 絞りだけでも「カレンダーと同一コレクションに VEVENT が
+	 * 混在するケース」で十分効く(iOS の既定運用ではむしろ tasks コレクションは VTODO のみで
+	 * 均一なことが多く、その場合は kind 絞りの効果は薄いが、退行は起きない)。完了状態の
+	 * SQL 化は STATUS 列追加の migration を切ってから別スライスで行う。
+	 *
+	 * @param collectionId 対象コレクション。ListTodos の既定は "tasks" だが calendarId で変更可。
+	 */
+	findVTodosInCollection(owner: PrincipalRef, collectionId: CollectionId): Promise<CalendarObjectResource[]>;
 }
 
 // =============================================================================
