@@ -138,11 +138,18 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
   * { box-sizing: border-box; }
   /* HTML の hidden 属性を確実に効かせる。.banner/.status は display:flex/block を持つため、
-   * 要素セレクタの display 指定が hidden 属性(既定 display:none)を上書きしてしまい
-   * 「中身が空でも赤い長方形が常時出る」バグが起きていた(CSS の display が HTML hidden より
-   * 優先される古典的な罠)。属性セレクタ [hidden] を一枚効かせて「hidden なら常に消える」を
-   * 保証する(!important は使わず、属性セレクタは要素セレクタより詳細度が高いので素直に勝つ)。 */
-  [hidden] { display: none; }
+   * その display 指定が hidden 属性(既定 display:none)を上書きしてしまい「中身が空でも
+   * 赤い長方形が常時出る」バグが起きる(CSS の display が HTML hidden より優先される古典的な罠)。
+   *
+   * 【2026-07-13 再修正: 前回の [hidden]{display:none} は無効だった】
+   * 前コメントは「属性セレクタは要素セレクタより詳細度が高いので勝つ」としていたが誤り。
+   * 競合相手は要素セレクタではなく **クラスセレクタ** .banner(詳細度 0,1,0)で、[hidden] も
+   * 属性セレクタ=同じ 0,1,0。**詳細度が同着**のときはソース順で後方が勝つため、後ろにある
+   * .banner{display:flex} が前方の [hidden] を上書きし、hidden でも表示されてしまっていた
+   * (本番 Inspector で空の赤バナー残留を実測 → 特定)。!important で確実に優先させる —
+   * hidden ユーティリティの一枚上書きは !important の正当な用途(状態切替は JS の .hidden で行い、
+   * 表示/非表示の最終権限をこの1行に集約する)。 */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     /* 320px 幅からの崩れ防止: 固定 px の横幅指定を使わず padding も clamp() で
