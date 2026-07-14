@@ -20,7 +20,12 @@ quick-add 段階的開示・詳細編集・calendar 3 ツール・create-todos �
 > 左スワイプ。サーバー側は update-todo に recurrence/location、create に location、
 > **move-todo 新設**(rawIcs 無変更・PUT→DELETE 順・movedTo 契約)。recurrence zod strict 化
 > (小粒是正の後者)もここで解消。設計モックは scratchpad/todos-refined-v2.html(コミット外)。
-> **本番検証(UI 目視 + D1 生 ICS 照合)が未了。**
+> **本番検証 ✅(2026-07-15)**: ツールレベル全 PASS(D1 生 ICS バイト照合 — LOCATION/RRULE
+> 全置換/none+due:null 同時除去/strict 拒否/move のバイト一致移動+movedTo)。UI 目視も
+> 選択モデル・シート・リストページ・削除ボタン不在まで PASS(プリセットメニューの選択操作と
+> スワイプは automation 限界で未駆動 — 実機で要確認)。残 nit: ①recurrence+due を両方外すと
+> 孤立 VTIMEZONE が ICS に残る(無害・掃除余地)②claude.ai コネクタが旧ツール定義をキャッシュ
+> (move-todo 不可視・update の新パラメータ不可視)— **ユーザーがコネクタ再接続すれば解消**。
 
 **次の優先順位(2026-07-14 確定)**:
 1. 進行中タスクの検収 → deploy → 検証(E-2 はこれで一区切り宣言候補)
