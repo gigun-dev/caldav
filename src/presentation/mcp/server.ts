@@ -446,7 +446,14 @@ function toolError(message: string) {
  * (get-current-time / list-events-expanded / get-freebusy / create-todo / list-todos)を登録する
  * ファクトリ。principal をクロージャで束縛するため、認証成功後(ミドルウェア内)で呼ぶ。
  */
-function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
+// requestColo: リクエストが処理されている Cloudflare colo(request.cf.colo)。2026-07-14 追加。
+// 【なぜログに colo が要るか】console.log イベントには $workers.event.request.cf.colo が
+// 乗らない(observability で groupBy したら空だった実測)ため、リクエストイベントと突合できず
+// 「どの colo で実行されたツール呼び出しが遅いのか」を分解できなかった。D1 は APAC 固定なので
+// 実行 colo が遠い(例: claude.ai バックエンド発 = IAD)ほど D1 直列往復のペナルティが線形に
+// 効く仮説の検証と、Smart Placement(wrangler.jsonc)導入後に実行 colo が D1 側へ寄ったことの
+// 確認は、このフィールドが唯一の計器になる。
+function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?: string): McpServer {
 	const server = new McpServer({ name: "caldav-mcp", version: "1.0.0" });
 
 	// --- ツール別レイテンシ計測(2026-07-14 追加。POST /mcp wall p95≈1164ms 対策の効果測定用)-----
@@ -475,8 +482,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 			try {
 				return await cb(...args);
 			} finally {
-				// 1行 JSON(mcpTool 名 + ms のみ)。タスク内容等の個人データは決して載せない。
-				console.log(JSON.stringify({ mcpTool: name, ms: Date.now() - startedAtMs }));
+				// 1行 JSON(mcpTool 名 + ms + colo)。タスク内容等の個人データは決して載せない。
+				// colo は「実行場所 × ツール別レイテンシ」の分解用(buildMcpServer 冒頭コメント参照)。
+				console.log(JSON.stringify({ mcpTool: name, ms: Date.now() - startedAtMs, ...(requestColo !== undefined ? { colo: requestColo } : {}) }));
 			}
 		})) as typeof server.registerTool;
 
@@ -1420,7 +1428,10 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 		}
 
 		// --- 1リクエスト1インスタンス(クラスコメント参照) ---
-		const server = buildMcpServer(deps, authResult.principal);
+		// request.cf は Workers ランタイムでのみ存在(bun test の素の Request には無い)ため
+		// optional chain で安全に取る。colo は計測ログ専用(認可・応答内容には一切影響しない)。
+		const cf = (c.req.raw as { cf?: { colo?: string } }).cf;
+		const server = buildMcpServer(deps, authResult.principal, cf?.colo);
 		const transport = new StreamableHTTPTransport();
 		await server.connect(transport);
 		const response = await transport.handleRequest(c);
