@@ -85,6 +85,23 @@ export class VTodo {
 	}
 
 	/**
+	 * LOCATION(§3.8.1.7)。TEXT 値型。summary と同じ流儀(raw のまま返す。エスケープ解除は
+	 * 呼び出し側 — task-dto.ts の decodeText でまとめて行う。semantics 層のレンズは
+	 * 一貫して「生の Property.value をそのまま返す」方針なのでここでも踏襲する)。
+	 *
+	 * 【2026-07-14 E-2 追記: LOCATION は VTODO 標準プロパティだが「使われ方」に注意】
+	 * iOS リマインダーの「指定した場所で通知」機能(位置情報リマインダー)は CloudKit 独自の
+	 * 仕組みで実装されており、CalDAV 経由では同期されない見込み(docs/modeling/06 §D2/D3 で
+	 * 確認した「iOS 固有機能で CalDAV に写らない」天井群と同種)。したがって LOCATION が
+	 * 実際に立つのは主に他の CalDAV クライアント経由、または本サーバーの create-todo 等
+	 * 自前の書き込み経路からになる想定。VTODO 自体は §3.6.2 で LOCATION を許可しているので
+	 * レンズとしては素直に読めるようにしておく(iOS の制約とプロトコルの仕様は別レイヤーの話)。
+	 */
+	get location(): string | undefined {
+		return rawValue(this.component, "LOCATION");
+	}
+
+	/**
 	 * STATUS(§3.8.1.11)。列挙値は case-insensitive → 大文字化して返す。
 	 *
 	 * 【J-3 追記】RFC 5545 の4値(NEEDS-ACTION/COMPLETED/IN-PROCESS/CANCELLED)に加えて、
