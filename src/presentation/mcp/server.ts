@@ -268,7 +268,14 @@ const createTodoRecurrenceInputShape = z
 			"count と until は同時指定不可(RFC 5545 の UNTIL/COUNT 排他規則)。",
 	);
 
-const createTodoInputShape = {
+// 【create-todo / create-todos の共通 item フィールド(2026-07-14 バッチツール追加)】
+// title/notes/due/priority/recurrence は1件ずつの create-todo と、複数件をまとめて追加する
+// create-todos の「1 item」で完全に同じ語彙・同じ validation(due の形式、recurrence の判別
+// union 等)を使う。二重管理を避けるため shape オブジェクトをここに括り出し、両ツールの
+// inputSchema から spread する(createTodoInputShape は timeZone/calendarId を単発用に追加、
+// createTodosInputShape は items 配列の要素として使い、timeZone/calendarId はバッチ全体で
+// 共有する top-level フィールドにする — 下の createTodosInputShape のコメント参照)。
+const createTodoItemFieldsShape = {
 	title: z.string().describe("SUMMARY(タイトル)。"),
 	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
 	due: z.string().optional().describe(
@@ -278,21 +285,86 @@ const createTodoInputShape = {
 			"【2026-07-13 V6】時刻付き due には常にサーバーが VALARM(due 時刻の絶対 UTC 通知)を" +
 			"生成する(独立 alarm 入力は廃止 — due に統合した。iOS 実機はサーバー発 VALARM でも通知する[V5 実機検証で確定])。",
 	),
+	priority: z.number().int().min(0).max(9).optional().describe(
+		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
+	),
+	recurrence: createTodoRecurrenceInputShape.optional().describe(
+		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
+			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
+	),
+};
+
+const createTodoInputShape = {
+	...createTodoItemFieldsShape,
 	timeZone: z.string().optional().describe(
 		'due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須' +
 			"(省略時はエラー・暗黙 UTC フォールバックはしない)。DST ゾーン(例 America/New_York)は" +
 			"サーバー側 VTIMEZONE 生成が Phase 1 で未対応のためエラーになる — 固定オフセットゾーンのみ対応。" +
 			"due が終日または省略のときは無視する。",
 	),
-	priority: z.number().int().min(0).max(9).optional().describe(
-		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
-	),
 	calendarId: z.string().optional().describe('保存先コレクション ID。省略時は "tasks"。'),
-	recurrence: createTodoRecurrenceInputShape.optional().describe(
-		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
-			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
+};
+
+// --- create-todos(2026-07-14: 複数件を1呼び出しでまとめて追加するバッチツール)---------------
+// 【動機】実運用で「5冊追加して」のような複数件依頼に対し、ホストモデルが create-todo を
+// 5回呼び、1呼び出し=1カード仕様のホスト UI にフル一覧カードが5枚積まれる実害が発生した
+// (E-2 の becoming UI は「1回の mutate = 1カードに N 行が becoming-in」を前提にしており、
+// 複数件を複数呼び出しに分解すると前提が崩れる)。語彙の穴なのでバッチツールで塞ぐ。
+// 【timeZone/calendarId を items 配列の外(バッチ共通)にした理由】仕様どおり「5冊追加して」の
+// ような依頼は同一コレクション・同一タイムゾーンへの追加が大半で、item ごとに異なる
+// calendarId/timeZone を許すと入力が複雑になるわりに実運用の需要が薄い。将来 item ごとに
+// 分けたい要求が出たら、その時点で items 側にオーバーライド用の optional フィールドを足す
+// (今は shape を素朴に保つ)。
+const createTodosInputShape = {
+	items: z
+		.array(z.object(createTodoItemFieldsShape))
+		.min(1)
+		.max(25)
+		.describe(
+			"追加するリマインダーの配列(1〜25件)。各要素は create-todo と同じ語彙" +
+				"(title 必須、notes/due/priority/recurrence は省略可)。25件を超える場合は入力エラーになる" +
+				"(1回の呼び出しで大量投入して D1 書込みや sync token に負荷をかけないための上限)。",
+		),
+	calendarId: z.string().optional().describe('保存先コレクション ID(全 item 共通)。省略時は "tasks"。'),
+	timeZone: z.string().optional().describe(
+		"items[].due が時刻付き(\"YYYY-MM-DDTHH:MM:SS\")のときの IANA タイムゾーン名(全 item 共通)。" +
+			"create-todo と同じ制約(省略時エラー・DST ゾーン未対応)。",
 	),
 };
+
+/**
+ * recurrence 入力(frequency:"none" を含む presentation 限定の5値)を application 層の
+ * CreateTodoRecurrenceInput(4値のみ)へ正規化する共通ヘルパー。create-todo / create-todos の
+ * 両方から呼ぶ(recurrence の判別ロジックを二重管理しないため、上の createTodoRecurrenceInputShape
+ * コメント「Case E 採用」の吸収処理をここに1本化する)。
+ *
+ * 【エラーを戻り値ではなく throw にした理由】create-todo は1件だけなので早期 return で
+ * toolError を返せたが、create-todos は「1 item の失敗は他の item を止めない」仕様
+ * (下の create-todos handler 参照)。呼び出し側の item ループが try/catch で
+ * 個別に失敗を拾えるよう、他の検証エラー(InvalidDueError 等)と同じ「例外を投げる」流儀に揃える。
+ */
+function normalizeCreateTodoRecurrenceInput(
+	recurrence: z.infer<typeof createTodoRecurrenceInputShape> | undefined,
+): CreateTodoRecurrenceInput | undefined {
+	if (recurrence === undefined) return undefined;
+	if (recurrence.frequency === "none") {
+		const hasSubfields =
+			recurrence.interval !== undefined ||
+			recurrence.weekdays !== undefined ||
+			recurrence.count !== undefined ||
+			recurrence.until !== undefined;
+		if (hasSubfields) {
+			throw new RangeError(
+				'recurrence.frequency:"none"(繰り返さない)は interval/weekdays/count/until と併用できません。' +
+					"繰り返しを設定する場合は frequency に daily/weekly/monthly/yearly のいずれかを指定してください。",
+			);
+		}
+		return undefined;
+	}
+	// ここに来る時点で recurrence.frequency は "none" ではないと絞り込み済みなので、
+	// application 層の CreateTodoRecurrenceInput["frequency"](4値のみ)にそのまま代入できる。
+	return { ...recurrence, frequency: recurrence.frequency };
+}
 
 // --- update-todo / complete-todo / delete-todo(方向性 E-1 スライス②-b)-------------
 
@@ -770,7 +842,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					// E-2 スライス③: quick-add(UI のタイトル1行入力)や calendarId 省略の呼び出し経路が増えたため、
 					// 既定保存先を description 本文にも明示する(従来は inputSchema の calendarId フィールドの
 					// describe にだけ書いていたが、ツール選択・省略時挙動の判断材料として本文にも出す)。
-					' calendarId を省略した場合は "tasks" コレクションに作成する。',
+					' calendarId を省略した場合は "tasks" コレクションに作成する。' +
+					// 2026-07-14 create-todos バッチ追加: 「5冊追加して」のような複数件依頼で
+					// create-todo を繰り返し呼ぶと、1呼び出し=1カード仕様のホスト UI にフル一覧
+					// カードが N 枚積まれる実害があったため、複数件は create-todos へ誘導する。
+					"2件以上のリマインダーをまとめて追加する場合は create-todo を繰り返し呼ばず、必ず create-todos を使うこと。",
 			inputSchema: createTodoInputShape,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -782,29 +858,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				// recurrence 正規化(Case E): frequency:"none" は presentation 限定の語彙なので、
 				// application 層に渡す前にここで吸収する(上の createTodoRecurrenceInputShape
 				// コメント「Case E 採用」参照)。"none" + サブフィールド併用は黙殺せずエラーにする
-				// (ユーザー/LLM が意図した反復設定が静かに消えるのを防ぐ)。
-				let normalizedRecurrence: CreateTodoRecurrenceInput | undefined;
-				if (recurrence === undefined) {
-					normalizedRecurrence = undefined;
-				} else if (recurrence.frequency === "none") {
-					const hasSubfields =
-						recurrence.interval !== undefined ||
-						recurrence.weekdays !== undefined ||
-						recurrence.count !== undefined ||
-						recurrence.until !== undefined;
-					if (hasSubfields) {
-						return toolError(
-							'recurrence.frequency:"none"(繰り返さない)は interval/weekdays/count/until と併用できません。' +
-								"繰り返しを設定する場合は frequency に daily/weekly/monthly/yearly のいずれかを指定してください。",
-						);
-					}
-					normalizedRecurrence = undefined;
-				} else {
-					// ここに来る時点で recurrence.frequency は "none" ではないと TypeScript 上も
-					// 確定している(直前の else-if で絞り込み済み)ので、application 層の
-					// CreateTodoRecurrenceInput["frequency"](4値のみ)にそのまま代入できる。
-					normalizedRecurrence = { ...recurrence, frequency: recurrence.frequency };
-				}
+				// (ユーザー/LLM が意図した反復設定が静かに消えるのを防ぐ)。2026-07-14: create-todos
+				// バッチ追加に伴い normalizeCreateTodoRecurrenceInput 共通ヘルパーへ切り出した
+				// (throw する流儀になったので、ここでは try ブロック内から呼ぶだけでよい —
+				// 投げられた RangeError は下の catch の catch-all で toolError に変換される)。
+				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
 
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
@@ -853,6 +911,99 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				) {
 					return toolError(error.message);
 				}
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- create-todos(2026-07-14: 複数件バッチ追加ツール。create-todo 語彙の穴を塞ぐ) -------
+	// registerAppTool 化して create-todo と同じ TODOS_UI_URI を紐付ける。N 件の追加を「1回の
+	// mutate」として扱い、affected に N 件の {kind:"added"} を積んだ1つの TodosViewModel を
+	// 返すことで、1 呼び出し=1カードのホスト UI に N 行が becoming-in で入るようにする
+	// (create-todo を N 回呼ぶと N 枚のフル一覧カードが積まれる、という当初の実害の解消)。
+	registerAppTool(
+		server,
+		"create-todos",
+		{
+			title: "Create todos (batch)",
+			description:
+				"複数のリマインダー(VTODO)をまとめて追加する。2件以上の追加は必ずこちらを使うこと" +
+				"(1件ずつ create-todo を繰り返し呼ぶと、ホスト UI に一覧カードが呼び出し回数分積まれてしまう)。" +
+				"各 item は create-todo と同じ語彙(title 必須、notes/due/priority/recurrence は省略可)。" +
+				'calendarId/timeZone は全 item 共通。省略時の保存先は "tasks"。' +
+				"1件だけ追加する場合は create-todo を使ってよい(create-todos でも動くが単発なら簡潔な方を推奨)。",
+			inputSchema: createTodosInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
+		},
+		async ({ items, calendarId, timeZone }) => {
+			try {
+				// PutCalendarObject/CreateTodo は1回だけ合成して item ループ全体で使い回す
+				// (create-todo 単発と同じ構成。item ごとに作り直す必要は無い — 依存はステートレス)。
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const createTodo = new CreateTodo(putCalendarObject);
+
+				const succeeded: AffectedTask[] = [];
+				const failed: { title: string; reason: string }[] = [];
+
+				// 【なぜ並列化しないか(直列実行の理由)】D1 は1コレクション内の PUT が sync token を
+				// 単調増加させる書込みであり、並列に投げると書込み競合(同一コレクションへの
+				// 複数トランザクション)や sync token の順序保証が崩れるおそれがある。PutCalendarObject
+				// 内部で UoW を使うが、UoW 自体は「1回の PUT の原子性」しか保証せず「複数 PUT 間の
+				// 直列性」までは保証しない設計(collection-unit-of-work.ts 参照)。よってこの
+				// 呼び出し側(バッチの親)が for await で1件ずつ完了を待ってから次に進める。
+				for (const item of items) {
+					try {
+						const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(item.recurrence);
+						const { task } = await createTodo.execute({
+							owner: principal,
+							title: item.title,
+							notes: item.notes,
+							due: item.due,
+							timeZone,
+							priority: item.priority,
+							calendarId,
+							recurrence: normalizedRecurrence,
+						});
+						succeeded.push({ id: task.id, kind: "added", task: snapshotFromTask(task) });
+					} catch (error) {
+						// 【途中失敗時にロールバックしない理由】既に PUT 済みの成功分を取り消すと、
+						// 削除という「さらなる失敗面」を増やすだけ(削除自体も ETag/If-Match 等で
+						// 失敗しうる)。CalDAV の PUT は本来1リソース単位の操作であり、このバッチは
+						// あくまで presentation 層の利便機能(N 回の PUT を1呼び出しにまとめただけ)。
+						// よって「そこまでの成功分は残す」を基本方針にし、失敗した item だけを
+						// failed に積んで応答の text で明示する(部分成功を隠さない)。
+						failed.push({ title: item.title, reason: error instanceof Error ? error.message : String(error) });
+					}
+				}
+
+				// 確定一覧は成功分の affected を載せた1回の ListTodos 再実行(create-todo 単発と同じ
+				// buildTodosViewModel 経路)。affected が空(全滅)なら未定義のままにする既存の
+				// 「空配列を載せない」規約(buildTodosViewModel コメント参照)に合わせる。
+				const vm = await buildTodosViewModel({
+					calendarId,
+					timeZone,
+					affected: succeeded.length > 0 ? succeeded : undefined,
+				});
+
+				// content(text)側は「非 UI ホスト向けの後方互換」だが、create-todo 単発と違い
+				// 部分成功がありうるバッチなので、JSON.stringify(vm) だけでは成功/失敗の内訳が
+				// 埋もれる。成功 N 件・失敗タイトルと理由を明記したサマリ文にする(仕様どおり
+				// 「部分成功を隠さない」)。
+				const summaryLines = [`${succeeded.length}/${items.length} 件のリマインダーを作成しました。`];
+				if (failed.length > 0) {
+					summaryLines.push("失敗した項目:");
+					for (const f of failed) summaryLines.push(`- "${f.title}": ${f.reason}`);
+				}
+				return {
+					content: [{ type: "text" as const, text: summaryLines.join("\n") }],
+					structuredContent: vm as unknown as { [key: string]: unknown },
+				};
+			} catch (error) {
+				// items 配列の共通パラメータ(calendarId/timeZone)自体が不正など、ループに入る前/
+				// buildTodosViewModel(resolveTimeZone)で起きるバッチ全体のエラーはここで拾う。
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

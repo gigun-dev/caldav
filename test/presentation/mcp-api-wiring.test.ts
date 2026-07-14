@@ -124,10 +124,12 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// visibility:["app"] でも tools/list には出る(mcp-server.test.ts の同種コメント参照)。
 		// 2026-07-14: list-calendars / create-calendar(コレクション操作の MCP 露出)を追加。
 		// 2026-07-14 追記: delete-calendar(list-calendars/create-calendar の対)を追加。
+		// 2026-07-14 追記2: create-todos(複数件バッチ追加ツール)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
 			"create-todo",
+			"create-todos",
 			"delete-calendar",
 			"delete-todo",
 			"get-current-time",

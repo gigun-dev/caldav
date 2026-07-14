@@ -164,7 +164,9 @@ describe("/mcp", () => {
 	// 露出)を追加したため 9→11 に更新。
 	// 2026-07-14 追記: delete-calendar(list-calendars/create-calendar の対。DeleteCollection UC を
 	// MCP から露出)を追加したため 11→12 に更新。
-	it("正しい Bearer で tools/list に12ツールが並ぶ(delete-calendar 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
+	// 2026-07-14 追記2: create-todos(複数件バッチ追加。create-todo を N 回呼ぶとホスト UI に
+	// カードが N 枚積まれる語彙の穴を塞ぐ)を追加したため 12→13 に更新。
+	it("正しい Bearer で tools/list に13ツールが並ぶ(create-todos 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -173,6 +175,7 @@ describe("/mcp", () => {
 			"complete-todo",
 			"create-calendar",
 			"create-todo",
+			"create-todos",
 			"delete-calendar",
 			"delete-todo",
 			"get-current-time",
@@ -707,6 +710,110 @@ describe("/mcp", () => {
 			expect(sc.affected).toBeUndefined();
 			// 確定一覧からも消えている。
 			expect(sc.tasks.some((t: { id: string }) => t.id === id)).toBe(false);
+		});
+	});
+
+	// 2026-07-14: create-todos(複数件バッチ追加ツール)。1呼び出し=1カード仕様のホスト UI に
+	// 対して「5冊追加して」のような複数件依頼で create-todo が N 回呼ばれ N 枚のカードが積まれる
+	// 語彙の穴を塞ぐ。ここでは「N 件全成功」「途中失敗の部分成功(ロールバックしない)」
+	// 「items の件数上限(1〜25)を外れた入力は zod スキーマレベルで弾かれる」を最小に確認する。
+	describe("create-todos(複数件バッチ追加)", () => {
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+
+		it("3件とも成功: affected に3件の kind:'added'、確定一覧 tasks にも3件とも実在する", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todos",
+					arguments: {
+						items: [{ title: "牛乳" }, { title: "卵" }, { title: "パン" }],
+					},
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const sc = rpc.result.structuredContent;
+			expect(sc.calendarId).toBe("tasks");
+			expect(sc.affected).toHaveLength(3);
+			expect(sc.affected.map((a: { kind: string }) => a.kind)).toEqual(["added", "added", "added"]);
+			const titles = sc.affected.map((a: { task: { title: string } }) => a.task.title).sort();
+			expect(titles).toEqual(["パン", "卵", "牛乳"]);
+			// 確定一覧にも3件とも実在する(affected の id と突き合わせられる)。
+			for (const a of sc.affected) {
+				expect(sc.tasks.some((t: { id: string }) => t.id === a.id)).toBe(true);
+			}
+			// content(text)側にも成功件数のサマリが載る(部分成功を隠さない仕様の全成功ケース)。
+			expect(rpc.result.content[0].text).toContain("3/3 件のリマインダーを作成しました。");
+		});
+
+		it("途中失敗の部分成功: 不正な due を持つ item だけ失敗し、他は作成される(ロールバックしない)", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todos",
+					arguments: {
+						items: [
+							{ title: "有効1" },
+							// offset 付き ISO8601 は due として不正(InvalidDueError)。
+							{ title: "不正な期日", due: "2026-07-15T10:00:00+09:00" },
+							{ title: "有効2" },
+						],
+					},
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const sc = rpc.result.structuredContent;
+			// 成功2件分だけ affected/tasks に載る(失敗した1件はどちらにも出ない)。
+			expect(sc.affected).toHaveLength(2);
+			const titles = sc.affected.map((a: { task: { title: string } }) => a.task.title).sort();
+			expect(titles).toEqual(["有効1", "有効2"]);
+			expect(sc.tasks.some((t: { title: string }) => t.title === "不正な期日")).toBe(false);
+			// text 側に成功2件・失敗タイトルと理由が明記される。
+			const text = rpc.result.content[0].text as string;
+			expect(text).toContain("2/3 件のリマインダーを作成しました。");
+			expect(text).toContain("失敗した項目:");
+			expect(text).toContain("不正な期日");
+		});
+
+		// 【isError:true(JSON-RPC error ではない)になる理由】zod スキーマ違反は SDK 内部の
+		// validateToolInput が McpError(InvalidParams)を投げるが、この SDK バージョンは
+		// tools/call ハンドラの catch でそれを CallToolResult(content+isError:true)に変換して
+		// 返す実装になっている(mcp.js の catch ブロック参照。実測で確認済み — rpc.error では
+		// なく rpc.result.isError に出る)。よって他の入力エラー(toolError 経由)と同じ形で
+		// 検証する。
+		it("items 空配列は入力エラー(zod min(1))", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-todos", arguments: { items: [] } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("create-todos");
+		});
+
+		it("items 26件は入力エラー(zod max(25))", async () => {
+			const items = Array.from({ length: 26 }, (_, i) => ({ title: `item-${i}` }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-todos", arguments: { items } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("create-todos");
 		});
 	});
 
