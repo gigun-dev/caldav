@@ -88,15 +88,34 @@
 //     見て・完了を打つ」ことで、新規作成は自然言語(create-todo をモデルが呼ぶ)の方が
 //     速い。フォームを足すと入力検証・timeZone 選択など①の外の複雑さを一気に抱え込む。
 //
-// 【完了操作は「楽観 pending → サーバー確定 refresh」— 楽観確定はしない(重要な判断)】
-//   反復 VTODO の完了はサーバー側 D4 モデル(完了スナップショットを新 UID で切り出し、
-//   マスターの due を次回 occurrence へ前進)で処理される。つまり「完了後の一覧」は
-//   クライアントから予測不能(新 UID・次回 due・行の増減が起きる)。DTO に反復フラグも
-//   無いため、どの行が D4 対象かも UI からは判別できない。よって
-//     タップ → その行だけ pending 表示(spinner+disabled、他行は操作可)
-//     → update-todo 成功 → refresh-todos でサーバー確定値を取得して全体を再描画
-//   に倒す。楽観確定(即チェック塗り)をしないのは、D4 で行が変形した場合に
-//   「一瞬チェックされた行が消えて別の行が現れる」チラつきの方が有害だから。
+// 【完了操作は「楽観適用 → サーバー確定で重ね直し / 失敗ロールバック」(2026-07-14 ドクトリン改訂)】
+//   タップ即、ローカル state の該当行 status を書き換えて再描画する(becoming をその場で即時に
+//   乗せる: completed なら塗り丸+凍結リング+取消線)。裏で update-todo を fire し、成功したら
+//   確定 vm で通常再描画(楽観状態とほぼ一致するので視覚変化は最小)、失敗したら楽観変更を
+//   ロールバックしてエラーバナー(再試行付き)で告知する。連打二重送信は in-flight の id ガード
+//   (pendingIds)で防ぐが、UI はブロックしない(disabled もスピナーも出さない)。
+//
+//   【なぜ旧「楽観確定しない(pending スピナー→サーバー確定)」を覆したか(Why not 悲観 UI)】
+//   旧実装は反復 VTODO の完了がサーバー側 D4 モデル(完了スナップショットを新 UID で切り出し、
+//   マスターの due を次回 occurrence へ前進)で処理され「完了後の一覧」がクライアントから
+//   予測不能(新 UID・次回 due・行の増減)になることを理由に、タップ→その行だけ pending
+//   スピナー→ update-todo 成功→ refresh でサーバー確定値を全体再描画、に倒していた
+//   (「一瞬チェックされた行が消えて別の行が現れる」チラつきを嫌った)。しかし:
+//     ① 手本の iOS リマインダー自身が楽観更新であり、悲観 UI は「iOS 準拠」品質基準と矛盾する。
+//     ② 実測レイテンシ(update 約 600ms〜秒)で pending スピナーは「タップが効いていない/
+//        クラッシュした?」体験になると実機で確認した(悲観 UI の実害)。
+//     ③ 失敗は稀で、稀な失敗のために毎回を遅く見せるのは配分が逆。
+//   D4 変形のチラつき懸念は「楽観状態と確定 vm がほぼ一致する(完了は完了、追加は追加)」ため
+//   実害が小さく、確定 vm が来た瞬間の1回の差し替えで吸収できる。反復完了で行が変形しても、
+//   楽観の becoming-done が確定 vm の becoming-done(snapshot 合成)へ滑らかに引き継がれる。
+//
+// 【一貫性の要: 確定 vm(applyStructuredContent)が常に真実・楽観は「次の確定まで」の重ね物】
+//   楽観 state は confirmedTasks(直近のサーバー確定一覧)とは別に保持し(optimisticToggle /
+//   optimisticRows)、描画のたびに confirmedTasks へ重ね直す(rebuildDisplay)。確定 vm が
+//   届いても in-flight の楽観変更が失われないよう、applyStructuredContent は confirmedTasks を
+//   更新したうえで残っている in-flight 楽観を再度重ねる。差分レンズ(computeSyncDiff)は
+//   confirmedTasks(クリーン)だけを prev/next に使い、仮行(optimistic: prefix)と in-flight
+//   トグル(pendingIds)は差分計算から除外する(システム起因の誤検出を防ぐ)。
 // =============================================================================
 
 import { App } from "@modelcontextprotocol/ext-apps";
@@ -121,7 +140,9 @@ const liveEl = document.getElementById("live") as HTMLElement;
 const appTitleEl = document.getElementById("app-title") as HTMLElement;
 const quickAddForm = document.getElementById("quick-add") as HTMLFormElement;
 const quickAddInput = document.getElementById("quick-add-input") as HTMLInputElement;
-const quickAddBtn = document.getElementById("quick-add-btn") as HTMLButtonElement;
+// 追加ボタン(#quick-add-btn)への参照は廃止した(2026-07-14 楽観更新)。旧実装は送信中に
+// btn.disabled で二重送信を防いだが、楽観更新では送信中もボタンを押せるまま維持する
+// (連続投入を許す)ので JS から触る必要が無い。送信は form の submit ハンドラが拾う。
 
 /** structuredContent.tasks の要素。型 import をしない方針のためここでローカル定義する
  *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。 */
@@ -175,9 +196,37 @@ interface AffectedEntry {
 // フレームワークを入れない代わりに「状態はこの3つだけ・描画は renderAll() だけ」に
 // 絞って予測可能にする。行単位の部分更新はしない(タスク数は個人のリマインダー規模で
 // 高々数十件、全再描画で十分速い。差分更新の複雑さはバグの温床になるだけ)。
+// tasks = 「描画に使う表示用」一覧(confirmedTasks に in-flight の楽観変更を重ね直したもの)。
+// renderAll / sectionize / renderRow / announceBecoming はこの表示用 tasks だけを読む。
 let tasks: TodoItem[] | null = null; // null = まだ一度もデータを受け取っていない(skeleton 表示)
-const pendingIds = new Set<string>(); // update-todo 送信中の行(spinner+disabled 対象)
+// confirmedTasks = 直近のサーバー確定一覧(クリーン。楽観変更を一切含まない)。
+// 【なぜ tasks と別に持つか(2026-07-14 楽観更新)】差分レンズ(computeSyncDiff)の prev/next には
+// 楽観で汚れていない確定値だけを渡す必要があり、また確定 vm 到着時に「楽観を重ね直す土台」も
+// クリーンな確定値でなければならない。表示用 tasks(重ね物込み)を prev に使うと、仮行が
+// システム起因の removed に化けたり楽観トグルが edited に誤検出される。
+let confirmedTasks: TodoItem[] | null = null;
+// pendingIds = update-todo 送信中の行 id(in-flight の二重送信ガード)。2026-07-14 ドクトリン
+// 改訂で「見た目のブロック(disabled/スピナー)」の用途は廃止 — 純粋に「同じ行の連打を弾く」
+// ガード + 差分レンズの degrade(pending 行はシステム差分マークの対象外)にだけ使う。
+const pendingIds = new Set<string>();
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
+// --- 楽観更新の in-flight state(2026-07-14 ドクトリン改訂)---------------------------
+// optimisticToggle: update-todo 送信中のトグルの「楽観的な完了状態」。id → {completed,status}。
+//   rebuildDisplay が confirmedTasks の該当行にこれを重ね、becoming(completed/reopened)も付ける。
+//   成功/失敗のどちらでもこの Map から delete する(成功=確定 vm が真実に、失敗=元へ戻す)。
+const optimisticToggle = new Map<string, { completed: boolean; status: string | null }>();
+// optimisticRows: quick-add 送信中の仮タスク(id は "optimistic:<乱数>")。create-todo が
+//   採番する実 id が確定するまでの表示用。rebuildDisplay が confirmedTasks の末尾に重ね、
+//   becoming-in(追加)を付ける。成功時に該当仮行を除去してから確定 vm を適用する。
+interface OptimisticRow {
+	id: string;
+	title: string;
+}
+let optimisticRows: OptimisticRow[] = [];
+/** 仮行 id 判定(differ から除外・トグル禁止に使う)。 */
+function isOptimisticId(id: string): boolean {
+	return id.startsWith("optimistic:");
+}
 // currentCalendarId(E-2 スライス③): この一覧が今どのコレクションを表示しているか。
 // 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
 // ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
@@ -185,8 +234,15 @@ let currentCalendarId: string | null = null;
 // becoming(変化の中間状態)の元データ。応答を受け取るたびに丸ごと置き換える —
 // affected/removed の無い応答(list/refresh)が来れば空になり、becoming は自然に平常へ
 // 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
+// affectedById / ghosts は「表示用」の becoming メタ(サーバー由来 + sync 由来 + 楽観由来)。
+// rebuildDisplay がこの2つを組み立て、renderRow/announceBecoming が読む。
 let affectedById = new Map<string, AffectedEntry>();
 let ghosts: TaskSnapshot[] = [];
+// serverAffectedBase / serverGhostsBase = 直近の applyStructuredContent が確定した「サーバー
+// (+sync)由来の becoming 土台」。楽観アクション(トグル/quick-add)から rebuildDisplay を
+// 呼ぶとき、この土台の上に楽観 becoming を重ねる(確定 vm を通さない楽観だけの再描画のため)。
+let serverAffectedBase: AffectedEntry[] = [];
+let serverGhostsBase: TaskSnapshot[] = [];
 // currentView(E-2 view 状態非保持バグ修正・2026-07-14): この UI が「今どのビューで一覧を
 // 開いているか」。list-todos/refresh-todos の応答が echo する vm.view を保持し、後続の
 // 再取得(focus refetch / mutation 後の取り直し)へ同じビューを引き継ぐ。
@@ -484,13 +540,14 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	if (ghosts.some((g) => g.id === task.id)) return renderGhostRow(task, todayKey);
 
 	const li = document.createElement("li");
-	const isPending = pendingIds.has(task.id);
 	if (task.completed) li.classList.add("done");
-	if (isPending) li.classList.add("pending");
+	// 2026-07-14 ドクトリン改訂: pending でも見た目はブロックしない(li.pending クラス付与と
+	// スピナー・disabled を廃止)。in-flight の間は既に楽観状態が塗られており(optimisticToggle)、
+	// 二重送信は toggleTask 冒頭の pendingIds ガードで防ぐ。よって行/ボタンの見た目は通常のまま。
 
 	// becoming 装飾の決定。未知 kind は何も足さない(通常描画へ degrade)。
-	// pending と becoming は理論上共存し得る(becoming 表示中に再タップ)が、その場合も
-	// pending の spinner が circle 描画を上書きするだけで破綻しない。
+	// 2026-07-14 楽観更新: in-flight のトグルは optimisticToggle 由来の becoming(completed/reopened)を
+	// この affectedById 経由で受け取り、その場で塗り丸/破線に変わる(スピナーは無い)。
 	const aff = affectedById.get(task.id);
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
@@ -528,9 +585,8 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		"aria-label",
 		task.completed ? `「${task.title}」を未完了に戻す` : `「${task.title}」を完了にする`,
 	);
-	// pending 中はその行だけ disabled(spinner は CSS の li.pending .circle が描く)。
-	// 他の行は操作可のまま — 連続で複数件チェックを打てる体験を守る。
-	check.disabled = isPending;
+	// disabled にはしない(見た目のブロックはしない方針)。in-flight の再タップは toggleTask 冒頭の
+	// pendingIds ガードが無害に弾く。連続で複数件チェックを打てる体験も維持される。
 	const circle = document.createElement("span");
 	circle.className = "circle";
 	circle.setAttribute("aria-hidden", "true");
@@ -709,6 +765,73 @@ function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
 		notes: null,
 		sortOrder: null,
 	};
+}
+
+/** 仮タスク(quick-add 楽観行)→ 描画用 TodoItem。due 等の詳細はチャット領分なので持たない
+ *  (タイトルのみ・期日なしセクションに入る)。id は "optimistic:" prefix のまま(差分除外印)。 */
+function optimisticRowToItem(row: OptimisticRow): TodoItem {
+	return {
+		id: row.id,
+		title: row.title,
+		completed: false,
+		status: "NEEDS-ACTION",
+		due: null,
+		isAllDay: false,
+		priority: 0,
+		percentComplete: null,
+		completedAt: null,
+		notes: null,
+		sortOrder: null,
+	};
+}
+
+/**
+ * 表示用 state(tasks / affectedById / ghosts)を「確定土台 + in-flight 楽観」から組み立てる。
+ * 2026-07-14 ドクトリン改訂の中核 —「楽観は confirmedTasks へ重ね直す」を1箇所に集約する。
+ *   base 引数 = サーバー(+sync)由来の becoming 土台(applyStructuredContent が確定した値、
+ *   または楽観だけの再描画では直近の serverAffectedBase/serverGhostsBase)。
+ * 重ねる順:
+ *   1. confirmedTasks を土台にコピーし、optimisticToggle の該当行だけ completed/status を上書き
+ *      + becoming(completed/reopened)を付ける(在庫にある行だけ = 既に確定 vm から抜けた行は無視)。
+ *   2. optimisticRows(仮行)を末尾に足し、becoming-in(追加)を付ける。
+ * ghosts はサーバー由来の削除ゴーストのみ(楽観削除はこのスライスでは扱わない)。
+ */
+function rebuildDisplay(baseAffected: AffectedEntry[], baseGhosts: TaskSnapshot[]): void {
+	const affected = new Map<string, AffectedEntry>(baseAffected.map((a) => [a.id, a]));
+	// 確定土台(null なら空)。楽観トグルの重ねはシャローコピーした行にだけ行い、
+	// confirmedTasks(差分の土台)は決して破壊しない。
+	const displayTasks: TodoItem[] = (confirmedTasks ?? []).map((t) => {
+		const ov = optimisticToggle.get(t.id);
+		if (ov === undefined) return t;
+		return { ...t, completed: ov.completed, status: ov.status };
+	});
+	for (const [id, ov] of optimisticToggle) {
+		// 該当行が確定一覧に居るときだけ becoming を立てる(既に確定 vm から抜けた・成功直前の
+		// 過渡でも二重表示にならないよう在庫確認する)。
+		if (confirmedTasks?.some((t) => t.id === id)) {
+			affected.set(id, { id, kind: ov.completed ? "completed" : "reopened" });
+		}
+	}
+	for (const row of optimisticRows) {
+		displayTasks.push(optimisticRowToItem(row));
+		affected.set(row.id, { id: row.id, kind: "added" });
+	}
+	// confirmedTasks 未受領 かつ 仮行も無い = まだ一度も描くものが無い → skeleton を維持する
+	// (空配列を入れると「タスクはありません」が出て skeleton が消えてしまう)。
+	tasks = confirmedTasks === null && displayTasks.length === 0 ? null : displayTasks;
+	affectedById = affected;
+	ghosts = baseGhosts;
+}
+
+/** 確定 vm を通さず、直近のサーバー土台の上に現在の in-flight 楽観だけを重ね直して表示を作る。
+ *  楽観アクション(タップ直後 / quick-add 投入直後 / ロールバック)から呼ぶ。 */
+function rebuildFromConfirmed(): void {
+	rebuildDisplay(serverAffectedBase, serverGhostsBase);
+}
+
+/** 成功/失敗どちらでも仮行を1つ取り除く(id 一致・複数連続投入に対応)。 */
+function removeOptimisticRow(id: string): void {
+	optimisticRows = optimisticRows.filter((r) => r.id !== id);
 }
 
 /** セクション1つ(見出し + ul)を root に追加する。空セクションは描画しない
@@ -916,22 +1039,33 @@ function applyStructuredContent(sc: unknown): void {
 	// (装飾アニメは足さない)。行の移動を滑らかに見せる FLIP はやらない — 将来任意の加点で、
 	// reduced-motion 分岐と会話ログ内カードで動くノイズの検証がセットで要るため今回はスコープ外。
 	// reduced-motion は既存の抑制(spinner/skeleton の @media)にそのまま乗る(新規の動きが無い)。
+	// 差分レンズの prev/next はクリーンな確定値だけを使う(confirmedTasks)。表示用 tasks は
+	// 楽観の重ね物込みなので prev に使うと仮行が removed に化ける等の誤検出になる(2026-07-14)。
 	let syncDiff: SyncDiff = { added: [], completed: [], reopened: [], edited: [], removed: [] };
-	if (tasks !== null) {
+	if (confirmedTasks !== null) {
 		const explained = new Set<string>();
 		for (const a of serverAffected) explained.add(a.id);
 		for (const r of serverRemoved) explained.add(r.id);
-		for (const id of pendingIds) explained.add(id); // pending 行は触らない(degrade ガード)
-		syncDiff = computeSyncDiff(tasks, nextTasks, explained);
+		for (const id of pendingIds) explained.add(id); // in-flight トグル行は触らない(degrade ガード)
+		// 仮行(optimistic:)は confirmedTasks に元々入らないので prev/next のどちらにも現れず、
+		// 差分計算に混ざらない(仕様3「仮行は差分計算から除外」を state 分離で構造的に満たす)。
+		syncDiff = computeSyncDiff(confirmedTasks, nextTasks, explained);
 	}
 
-	tasks = nextTasks;
+	confirmedTasks = nextTasks;
 	// サーバー由来(ユーザー起因)+ システム由来(sync)の affected を統合。sync 側は sync:true を
 	// 立て、renderRow/announceBecoming が中立ラベル「同期(...)」で描く。
 	const combinedAffected: AffectedEntry[] = serverAffected.concat(syncDiffToAffected(syncDiff));
-	affectedById = new Map(combinedAffected.map((a) => [a.id, a]));
 	// removed も同様に統合。システム由来のゴーストは sync:true。
-	ghosts = serverRemoved.concat(syncDiff.removed.map((r): TaskSnapshot => ({ ...r, sync: true })));
+	const combinedGhosts: TaskSnapshot[] = serverRemoved.concat(
+		syncDiff.removed.map((r): TaskSnapshot => ({ ...r, sync: true })),
+	);
+	// サーバー土台を記録し、その上に in-flight 楽観を重ね直して表示用 state を作る
+	// (rebuildDisplay が tasks/affectedById/ghosts をまとめて設定する)。確定 vm が届いても
+	// in-flight の楽観トグル/仮行が失われないのは、この重ね直しがあるため(一貫性の要)。
+	serverAffectedBase = combinedAffected;
+	serverGhostsBase = combinedGhosts;
+	rebuildDisplay(combinedAffected, combinedGhosts);
 	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
 	// バグ修正の要。list-todos/refresh-todos 応答は view を echo するのでビューが維持され、
 	// mutate 応答(view 無し)を直接適用するのは既定ビューのときだけ(toggleTask の分岐参照)なので
@@ -1163,13 +1297,13 @@ async function retryFetch(): Promise<void> {
 }
 
 /**
- * 完了/再開のトグル本体。設計は「楽観 pending → サーバー確定 refresh」(冒頭コメント):
- *   1. その行だけ pending(spinner+disabled)にして再描画 — チェックの見た目は変えない
- *      (楽観確定しない。D4 反復完了で一覧が予測不能に変形するため)。
- *   2. update-todo で STATUS を遷移(完了→NEEDS-ACTION / 未完→COMPLETED)。
- *      反復 VTODO への COMPLETED はサーバーが D4 で処理する(UI は反復を判別しないし、
- *      判別する必要もない設計 — DTO に反復フラグが無い現契約への適応でもある)。
- *   3. 成功したら refresh-todos でサーバー確定値を取得し全体を再描画。
+ * 完了/再開のトグル本体(2026-07-14 楽観更新ドクトリン。冒頭コメント参照):
+ *   1. タップ即、optimisticToggle に楽観状態を積み、その場で再描画(becoming を即時に乗せる)。
+ *      pendingIds に id を積むが disabled もスピナーも出さない(見た目はブロックしない)。
+ *   2. 裏で update-todo を fire(完了→NEEDS-ACTION / 未完→COMPLETED)。反復 VTODO への
+ *      COMPLETED はサーバーが D4 で処理する(UI は反復を判別しない現契約への適応でもある)。
+ *   3. 成功: 楽観を解除し、確定 vm で通常再描画(楽観状態とほぼ一致するので視覚変化は最小)。
+ *      失敗: 楽観をロールバック(元の status へ戻して再描画)+ エラーバナー(再試行=同 mutation 再送)。
  *
  * 【update-todo は通常ツール(visibility 制限なし)である点】ext-apps の app.d.ts は
  * callServerTool を「originating MCP server のツールをホスト経由で呼ぶ」とだけ定義しており
@@ -1178,46 +1312,47 @@ async function retryFetch(): Promise<void> {
  * (set-todo-status 等)を足す判断になる — その場合もこの関数のツール名を差し替えるだけ。
  */
 async function toggleTask(task: TodoItem): Promise<void> {
-	// 二重タップ防御(disabled にしているが、描画反映前の連打はここで弾く)。
+	// 仮行(quick-add 未確定)はサーバー id が無いのでトグルできない(create 確定後に本物 id で操作)。
+	if (isOptimisticId(task.id)) return;
+	// 二重送信ガード: in-flight の同一行は弾く(UI はブロックしないので描画反映前の連打はここで止める)。
 	if (pendingIds.has(task.id)) return;
+
+	const nextCompleted = !task.completed;
+	const nextStatus = nextCompleted ? "COMPLETED" : "NEEDS-ACTION";
+	// 楽観適用: 表示を即トグルし becoming を即時に乗せる(塗り丸+凍結リング / 破線に戻る)。
+	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
 	pendingIds.add(task.id);
 	clearBanner();
-	renderAll(); // 当該行が spinner+disabled になる(他行は操作可のまま)
+	rebuildFromConfirmed();
+	renderAll();
+	announceBecoming(); // aria-live へ「〜を完了しました」等を即時通知(視覚 becoming と対)
 
 	try {
 		const result = await app.callServerTool({
 			name: "update-todo",
-			arguments: {
-				id: task.id,
-				status: task.completed ? "NEEDS-ACTION" : "COMPLETED",
-			},
+			arguments: { id: task.id, status: nextStatus },
 		});
 		if (result.isError) {
 			const first = result.content?.[0];
 			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
 			throw new Error(text);
 		}
-		// 成功 → サーバー確定値で置き換え(楽観確定はしない)。
-		// 【E-2 ② での変更】update-todo の structuredContent 自体が「サーバー確定の全一覧
-		// + affected(completed/reopened の becoming メタ)」を返す契約になったため、
-		// tasks が乗っていればそれをそのまま確定描画に使い、追加の refresh-todos は呼ばない。
-		// Why not 従来どおり refresh を挟む: refresh 応答には affected が無いので、
-		// せっかくの becoming(凍結リング)が届いた瞬間に消えてしまう。ネットワーク1往復の
-		// 節約にもなる。tasks が無い応答(旧サーバー等)のときだけ従来の refresh に degrade。
+		// 成功 → 楽観を解除してから確定 vm を適用する(解除前に applyStructuredContent すると
+		// rebuildDisplay が楽観を二重に重ねてしまうため、必ずここで先に落とす)。
+		optimisticToggle.delete(task.id);
+		pendingIds.delete(task.id);
+		// 【E-2 ② での方針】update-todo の structuredContent は「サーバー確定の全一覧 + affected
+		// (completed/reopened の becoming メタ)」を返す契約。tasks が乗っていればそれを確定描画に
+		// 使い、追加の refresh は呼ばない(refresh 応答には affected が無く becoming が消えるため)。
 		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
 		if (structuredContent?.tasks !== undefined) {
 			if (isDefaultView(currentView)) {
-				// 既定ビュー(未完了のみ・期間絞りなし): mutate 応答の tasks は未完了ビュー固定で
-				// currentView と一致するため、そのまま確定描画に使う(従来どおり + becoming が乗る)。
+				// 既定ビュー: mutate 応答の tasks は未完了ビュー固定で currentView と一致 → そのまま適用。
 				applyStructuredContent(structuredContent);
 			} else {
-				// 【E-2 view 状態非保持バグ修正・2026-07-14】非既定ビュー(例 includeCompleted:true):
-				// mutate 応答の tasks は「未完了ビュー固定」で currentView と矛盾する(完了済みが
-				// 全部消える)。よって tasks は refresh-todos(currentView 付き)で取り直し、mutate 応答の
-				// affected/removed(becoming 演出用)だけを保持して合成する。
-				// 【becoming の見え方】completed の affected は includeCompleted:true ビューでは tasks に
-				// 実在するので、renderRow の inPlaceDone 判定でその場の行に取消線 becoming が乗る
-				// (未完了ビューでは snapshot 合成で描いていた行が、ここでは本物の tasks 行になる)— これが正しい。
+				// 【view 状態非保持バグ修正・2026-07-14】非既定ビュー(例 includeCompleted:true):
+				// mutate 応答 tasks は未完了ビュー固定で currentView と矛盾するので、tasks は refresh-todos
+				// (currentView 付き)で取り直し、mutate 応答の becoming メタ(affected/removed)だけ合成する。
 				try {
 					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
 					if (refreshed.isError) {
@@ -1226,8 +1361,6 @@ async function toggleTask(task: TodoItem): Promise<void> {
 						throw new Error(text);
 					}
 					const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
-					// 合成 vm: 一覧 tasks + view は refresh(currentView)側、becoming メタ(affected/removed)は
-					// mutate 応答側。view を引き継ぐことで applyStructuredContent が currentView を維持する。
 					const composed: TodosStructuredContent = {
 						tasks: rsc?.tasks ?? [],
 						view: rsc?.view,
@@ -1236,8 +1369,11 @@ async function toggleTask(task: TodoItem): Promise<void> {
 					};
 					applyStructuredContent(composed);
 				} catch (e) {
-					// 取り直し失敗 → 既存の「再読み込み失敗」バナー経路へ degrade(mutate 自体は成功して
-					// いるので操作結果は失わない。再試行は fetchLatest のみ = update-todo は再送しない)。
+					// 取り直し失敗 → degrade。mutate 自体は成功しているので楽観解除済みの表示を維持し、
+					// 「再読み込み失敗」だけ告げる(再試行は fetchLatest のみ = update-todo は再送しない)。
+					// 楽観は既に解除済みなので、次の focus refetch がビューを正す(rebuildFromConfirmed で再描画)。
+					rebuildFromConfirmed();
+					renderAll();
 					showBanner(
 						`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
 						() => void retryFetch(),
@@ -1245,12 +1381,12 @@ async function toggleTask(task: TodoItem): Promise<void> {
 				}
 			}
 		} else {
-			// degrade 経路。ここが失敗した場合、更新自体は成功している可能性が高いので
-			// 「再読み込み失敗」として出す(再試行 = fetchLatest のみ。update-todo を
-			// 再送すると二重完了の恐れがある)。
+			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
 			try {
 				await fetchLatest();
 			} catch (e) {
+				rebuildFromConfirmed();
+				renderAll();
 				showBanner(
 					`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
 					() => void retryFetch(),
@@ -1258,42 +1394,49 @@ async function toggleTask(task: TodoItem): Promise<void> {
 			}
 		}
 	} catch (e) {
-		// update-todo 自体の失敗(transport / isError)。行は元の状態のまま残る
-		// (楽観確定していないので巻き戻し処理が不要 — この設計のもう一つの利点)。
-		showBanner(
-			`「${task.title}」の更新に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-		);
-	} finally {
+		// update-todo 自体の失敗(transport / isError)→ 楽観変更をロールバックして元の status に戻す。
+		optimisticToggle.delete(task.id);
 		pendingIds.delete(task.id);
+		rebuildFromConfirmed();
 		renderAll();
+		// 再試行は「同じ mutation を再送」= toggleTask をもう一度呼ぶ(task は元の状態のスナップショット
+		// なので nextCompleted も同じに解決する)。二重送信は先頭の pendingIds ガードが引き続き守る。
+		showBanner(
+			`「${task.title}」の完了を保存できませんでした`,
+			() => void toggleTask(task),
+		);
 	}
 }
 
-// --- quick-add(E-2 スライス③: タイトル1行の素早い追加)-----------------------------
-// フォーム送信(追加ボタン / Enter)で create-todo を叩く。設計は toggleTask と同じ
-// 「楽観確定しない」流儀: 送信中は入力とボタンを disabled にし、サーバー確定の vm
-// (affected:added が乗る)で再描画されるまで二重送信を防ぐ。楽観的に行を先出ししないのは、
-// サーバーが UID・ソート位置・due 整形を確定するまで「どこに何が入るか」を UI が予測できないため
-// (toggleTask の D4 と同じ理由 — 確定値だけを描く)。
-// 【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復の指定はチャット(create-todo を LLM が
-// 呼ぶ)の領分にする — フォームに詰め込むと timeZone 選択・日付ピッカー等の複雑さを一気に抱えるため
-// (todos-app.ts の quick-add コメントと対)。
-let quickAddBusy = false;
+// --- quick-add(E-2 スライス③ + 2026-07-14 楽観更新ドクトリン)-------------------------
+// フォーム送信(追加ボタン / Enter)で create-todo を叩く。楽観更新へ転換したので:
+//   送信即 → 入力をクリアして入力可能のまま維持し、仮タスク(id は "optimistic:<乱数>")を
+//   期日なしセクションへ即挿入(becoming-added を即時に乗せる)→ 裏で create-todo を fire。
+//   成功: 仮行を除去し確定 vm を適用(仮 id 行が消え、サーバー採番の実行が同位置に現れる)。
+//   失敗: 仮行を除去 + 入力欄にタイトルを復元 + バナー告知(再試行=同 mutation 再送)。
+// 複数連続投入(仮行が複数)も成立する — 各投入が独立した optimisticRows 要素と in-flight fire。
+// 二重送信ロック(旧 quickAddBusy / disabled)は廃止した(連続投入を許すため)。仮行は id が
+// 一意なので取り違えない。in-flight 中に確定 vm が届いても rebuildDisplay が残りの仮行を
+// 重ね直すので消えない(一貫性の要)。
+// 【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復はチャット(LLM の create-todo)の領分。
 
-async function submitQuickAdd(): Promise<void> {
-	// 二重送信防御(disabled にしているが、描画反映前の連打や多重イベントをここでも弾く)。
-	if (quickAddBusy) return;
-	// 空文字・空白のみは送信しない(iOS リマインダーで空行入力が無視される挙動に合わせる)。
-	const title = quickAddInput.value.trim();
-	if (title === "") return;
-
-	quickAddBusy = true;
-	quickAddInput.disabled = true;
-	quickAddBtn.disabled = true;
+/** 仮行を1つ積んで即描画し、裏で create-todo を fire する(送信・再試行の共通経路)。 */
+function enqueueQuickAdd(title: string): void {
+	// 仮 id は乱数で一意化(複数連続投入で衝突しないように)。差分レンズは optimistic: prefix で除外。
+	const optimisticId = `optimistic:${Math.random().toString(36).slice(2)}`;
+	optimisticRows.push({ id: optimisticId, title });
 	clearBanner();
+	rebuildFromConfirmed();
+	renderAll();
+	announceBecoming(); // 「〜を追加しました」を aria-live へ即時通知
+	void createTodoFor(optimisticId, title);
+}
+
+/** 仮行 optimisticId に対応する create-todo を裏で実行し、成功/失敗で仮行を回収する。 */
+async function createTodoFor(optimisticId: string, title: string): Promise<void> {
 	try {
 		// calendarId は今表示中のコレクション(currentCalendarId)に作る。未受領(null)なら引数を
-		// 省いて server 既定("tasks")に委ねる — ヘッダがプレースホルダ表示中に投入された場合の安全側。
+		// 省いて server 既定("tasks")に委ねる(ヘッダがプレースホルダ表示中に投入された場合の安全側)。
 		const args: Record<string, unknown> =
 			currentCalendarId !== null ? { title, calendarId: currentCalendarId } : { title };
 		const result = await app.callServerTool({ name: "create-todo", arguments: args });
@@ -1302,13 +1445,11 @@ async function submitQuickAdd(): Promise<void> {
 			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
 			throw new Error(text);
 		}
-		// 成功: 入力をクリアしてから確定描画する。view が既定なら mutate 応答 vm(affected:added)を
-		// そのまま描き、非既定なら refresh-todos(currentView)で取り直して affected を合成する
-		// (toggleTask と同じ view 引き継ぎ経路。currentView/currentCalendarId を壊さない)。
-		quickAddInput.value = "";
+		// 成功: まず仮行を除去(除去前に applyStructuredContent すると仮行+実行の二重表示になる)。
+		removeOptimisticRow(optimisticId);
 		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
 		if (structuredContent?.tasks !== undefined && !isDefaultView(currentView)) {
-			// 非既定ビュー: mutate 応答の tasks は未完了ビュー固定で currentView と矛盾しうるので、
+			// 非既定ビュー: mutate 応答 tasks は未完了ビュー固定で currentView と矛盾しうるので、
 			// tasks は refresh-todos(currentView 付き)で取り直し、becoming(affected:added)だけ合成する。
 			try {
 				const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
@@ -1318,7 +1459,6 @@ async function submitQuickAdd(): Promise<void> {
 					throw new Error(text);
 				}
 				const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
-				// 合成 vm: 一覧 tasks/calendarId/view は refresh(currentView)側、becoming メタは mutate 応答側。
 				const composed: TodosStructuredContent = {
 					tasks: rsc?.tasks ?? [],
 					calendarId: rsc?.calendarId,
@@ -1328,21 +1468,26 @@ async function submitQuickAdd(): Promise<void> {
 				};
 				applyStructuredContent(composed);
 			} catch (e) {
-				// 追加自体は成功しているので操作結果は失わない。「再読み込み失敗」として degrade
-				// (再試行 = fetchLatest のみ。create-todo は再送しない = 二重追加を避ける)。
+				// 追加自体は成功しているので操作結果は失わない(仮行は除去済み)。「再読み込み失敗」
+				// として degrade(再試行 = fetchLatest のみ。create-todo は再送しない = 二重追加を避ける)。
+				rebuildFromConfirmed();
+				renderAll();
 				showBanner(
 					`追加は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
 					() => void retryFetch(),
 				);
 			}
 		} else if (structuredContent?.tasks !== undefined) {
-			// 既定ビュー: mutate 応答 vm をそのまま確定描画に使う(affected:added が becoming-in を描く)。
+			// 既定ビュー: mutate 応答 vm をそのまま確定描画(affected:added が becoming-in を描く)。
+			// rebuildDisplay が他の in-flight 仮行を重ね直すので、同時投入した別の仮行は消えない。
 			applyStructuredContent(structuredContent);
 		} else {
 			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
 			try {
 				await fetchLatest();
 			} catch (e) {
+				rebuildFromConfirmed();
+				renderAll();
 				showBanner(
 					`追加は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
 					() => void retryFetch(),
@@ -1350,20 +1495,31 @@ async function submitQuickAdd(): Promise<void> {
 			}
 		}
 	} catch (e) {
-		// create-todo 自体の失敗(transport / isError)。入力値は消さずに残し、ユーザーが再送できるようにする。
-		showBanner(`「${title}」の追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
-	} finally {
-		quickAddBusy = false;
-		quickAddInput.disabled = false;
-		quickAddBtn.disabled = false;
+		// create-todo 自体の失敗(transport / isError)→ 仮行を除去してロールバックし、タイトルを復元。
+		removeOptimisticRow(optimisticId);
+		rebuildFromConfirmed();
 		renderAll();
+		// 入力欄が空のときだけタイトルを戻す(ユーザーが既に次の入力を打っていたら奪わない)。
+		if (quickAddInput.value.trim() === "") quickAddInput.value = title;
+		showBanner(
+			`「${title}」の追加に失敗しました`,
+			() => enqueueQuickAdd(title), // 再試行 = 同じ仮行を積み直して再送
+		);
 	}
+}
+
+function submitQuickAdd(): void {
+	// 空文字・空白のみは送信しない(iOS リマインダーで空行入力が無視される挙動に合わせる)。
+	const title = quickAddInput.value.trim();
+	if (title === "") return;
+	quickAddInput.value = ""; // 送信即クリア(入力可能のまま維持)
+	enqueueQuickAdd(title);
 }
 
 quickAddForm.addEventListener("submit", (e) => {
 	// フォーム送信は iframe 内のページ遷移(リロード)を伴うので必ず preventDefault する。
 	e.preventDefault();
-	void submitQuickAdd();
+	submitQuickAdd();
 });
 // IME 変換確定の Enter で誤送信しない。単一テキスト入力の form は Enter で暗黙送信されるが、
 // 日本語入力の「変換確定」Enter も submit を発火させてしまう。keydown は submit より先に走るので、

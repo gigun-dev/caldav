@@ -283,22 +283,17 @@ export const TODOS_APP_HTML = `<!doctype html>
     background: var(--accent);
     color: #fff;
   }
-  /* 操作中(pending): 円の上弧だけ accent にして回す = スピナー化。
-   * 楽観確定はしない設計(entry 側コメント参照)なので、pending の間チェックは
-   * 前の状態のまま・円だけ回るのが正しい表現(「送信したが確定していない」)。 */
-  li.pending .circle {
-    border-color: var(--border);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-    color: transparent;
-    background: none;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  /* reduced-motion では回転を止め、代わりに点滅なしの半透明で「処理中」を示す
-   * (動きの代替は透明度: WCAG の prefers-reduced-motion 対応の定石)。 */
-  @media (prefers-reduced-motion: reduce) {
-    li.pending .circle { animation: none; opacity: 0.4; border-top-color: var(--border); }
-  }
+  /* 【2026-07-14 ドクトリン改訂: pending スピナーを廃止】
+   * 旧実装はタップ〜サーバー確定の間、チェック円を「上弧だけ accent の回転スピナー」にして
+   * 「送信したが未確定」を悲観的に表現していた(楽観確定しない設計)。この li.pending .circle
+   * 回転 CSS と @keyframes spin・reduced-motion 分岐は削除した。
+   * 【なぜ覆したか(Why not 悲観 UI)】①手本の iOS リマインダー自身が楽観更新で、悲観 UI は
+   * 「iOS 準拠」基準と矛盾する ②実測レイテンシ(update 約 600ms〜)で回転スピナーは
+   * 「タップが効いていない/クラッシュした?」体験になると実機で確認した ③失敗は稀で、
+   * 稀な失敗のために毎回を遅く見せるのは配分が逆。以後トグルは楽観適用(その場で塗り丸/破線に
+   * becoming を即時に乗せる)し、失敗時だけロールバック+エラーバナーで告知する
+   * (entry 側 toggleTask のコメント参照)。pending 概念自体は entry の pendingIds に in-flight
+   * の二重送信ガードとして残すが、見た目のブロッキング(disabled・スピナー)はしない。 */
 
   /* --- 行テキスト --------------------------------------------------------------
    * 1行目: タイトル。2行目: 優先度 ! 記号 + due(あるものだけ)。
@@ -433,8 +428,11 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* --- quick-add(E-2 スライス③: タイトル1行の素早い追加)-------------------------
    * 一覧の末尾に常設する入力行。iOS リマインダーの「新規リマインダー」入力に語彙を寄せる
    * (プレースホルダ・末尾配置)。入力とボタンはどちらも 44px 高でタッチターゲットを確保する。
-   * 送信中(create-todo の応答待ち)は入力とボタンを disabled にする — 楽観確定はせず、
-   * サーバー確定の vm(affected:added)が返って再描画されるまで二重送信を防ぐ(既存 pending 流儀)。 */
+   * 【2026-07-14 ドクトリン改訂: 送信中も入力可能のまま維持】
+   * 旧実装は create-todo 応答待ちの間 input/button を disabled にして二重送信を防いでいた。
+   * 楽観更新へ転換したので、送信即・入力をクリアして入力可能のまま維持し、仮タスクを
+   * その場に挿入する(連続投入できる)。disabled による見た目のブロックはしない
+   * (:disabled スタイルは失敗ロールバック等の将来用途に残すが、通常フローでは当たらない)。 */
   .quick-add {
     display: flex;
     gap: 8px;
