@@ -88,6 +88,11 @@ export interface CreateTodoInput {
 	timeZone?: string;
 	/** PRIORITY(§3.8.1.9)。0-9。省略時はプロパティを立てない(未設定)。 */
 	priority?: number;
+	/**
+	 * LOCATION(§3.8.1.7)。省略可(2026-07-15 追加)。空文字は「未設定」と同義に扱い LOCATION を
+	 * 書かない(buildVTodoCalendar 側も空文字はスキップするが、意図を明示するため契約に記す)。
+	 */
+	location?: string;
 	/** 保存先コレクション ID。省略時は "tasks"(provision-default-collections.ts の既定 VTODO コレクション)。 */
 	calendarId?: string;
 	/**
@@ -294,7 +299,11 @@ const FREQUENCY_MAP: Record<CreateTodoRecurrenceInput["frequency"], Frequency> =
  *   規定していない[値型が一致してさえいればよい]ので、ここはこの実装のポリシー)。
  *   due が DATE(終日)のときは undefined を渡す(＝従来どおり RecurUntil{type:"date"})。
  */
-function buildRecurrenceRule(
+// export する理由(2026-07-15): update-todo.ts が recurrence の設定/変更で同じ「chat 語彙 →
+// RecurrenceRule + 不変条件検証(count/until 排他・weekdays は weekly 限定・UNTIL 値型を due に
+// 揃える)」を必要とする。判別ロジックを二重管理しないため create 側の実装をそのまま共有する
+// (index.ts 経由で公開)。dueTimeInfo の意味も同じ — anchor due が DATE-TIME のときの壁時計 + TZID。
+export function buildRecurrenceRule(
 	input: CreateTodoRecurrenceInput,
 	dueTimeInfo: { hour: number; minute: number; second: number; timeZone: string } | undefined,
 ): RecurrenceRule {
@@ -468,6 +477,7 @@ export class CreateTodo {
 			due,
 			vtimezone,
 			priority: input.priority,
+			location: input.location,
 			recurrence,
 			alarm,
 		};

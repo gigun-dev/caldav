@@ -82,8 +82,19 @@ export interface TodosViewModel {
 	timeZone: string;
 	/** mutate 系のみ。参照系(list-todos/refresh-todos)は付けない。 */
 	affected?: AffectedTask[];
-	/** delete のみ。TaskSnapshot に統一(旧 RemovedTask を廃止・案X)。 */
+	/** delete / move のみ。TaskSnapshot に統一(旧 RemovedTask を廃止・案X)。 */
 	removed?: TaskSnapshot[];
+	/**
+	 * move-todo のみ。移動先コレクション ID。
+	 *
+	 * 【なぜ必要か(delete と move のゴースト区別)】move-todo は「移動元から見れば削除」なので
+	 * removed の中身(TaskSnapshot)自体は delete-todo と同じ形で足りるが、UI(todos-entry.ts 側)は
+	 * 「消えた」ゴーストと「よそへ移った」ゴーストでラベル/演出を変えたい(親タスク仕様)。
+	 * movedTo が存在するかどうかだけを判別材料にする — removed 配列の各要素にフラグを持たせる
+	 * より、応答全体で「これは move 操作の結果である」ことを1箇所で表現する方が単純
+	 * (1回の move-todo 呼び出しは常に1件しか動かさないため、配列要素ごとの区別は不要)。
+	 */
+	movedTo?: string;
 	/**
 	 * 【E-2 view 状態非保持バグ修正・2026-07-14】この一覧を生成した「ビュー引数」の echo。
 	 *

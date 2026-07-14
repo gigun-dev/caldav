@@ -123,6 +123,8 @@ export { taskFromVTodo, type Task } from "./task-dto";
 // MCP create-todo(方向性 E-1 スライス①)
 export {
 	CreateTodo,
+	// buildRecurrenceRule は update-todo.ts と共有(recurrence 判別ロジックの二重管理を避ける)。
+	buildRecurrenceRule,
 	InvalidDueError,
 	DueTimeZoneRequiredError,
 	InvalidTimeZoneError,
@@ -180,3 +182,12 @@ export {
 	type DeleteTodoInput,
 	type DeleteTodoOutput,
 } from "./delete-todo";
+
+// MCP move-todo(VTODO のコレクション間移動。DAV MOVE 実装はスコープ外 — move-todo.ts 冒頭コメント参照)
+export {
+	MoveTodo,
+	MoveTodoSameCollectionError,
+	type MoveTodoInput,
+	type MoveTodoOutput,
+	type MoveTodoError,
+} from "./move-todo";

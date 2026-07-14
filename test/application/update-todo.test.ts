@@ -432,6 +432,133 @@ describe("UpdateTodo", () => {
 		expect(triggers).toContain("-PT15M"); // 相対トリガー: 不変。
 	});
 
+	// -----------------------------------------------------------------------
+	// recurrence の設定/変更/除去(2026-07-15。create-todo と対称化)
+	// -----------------------------------------------------------------------
+	// 保存された生 ICS の RRULE 行を1つ取り出すヘルパー(反復の設定/変更/除去の証跡を直接見る)。
+	async function savedRruleOf(uid: string): Promise<string | undefined> {
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), uid);
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		return saved!.payload.todos()[0]!.raw.properties.find((p) => p.name === "RRULE")?.value;
+	}
+
+	it("due を持つ非反復 VTODO に recurrence を設定すると RRULE が立つ(アンカーは既存 due)", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "反復にする", due: "2026-07-15" });
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: created.id,
+			recurrence: { frequency: "weekly", weekdays: ["MO", "WE"] },
+		});
+		// DTO(Task.recurrence)が新 RRULE を反映する。
+		expect(task.recurrence).toMatchObject({ frequency: "weekly", weekdays: ["MO", "WE"] });
+		expect(await savedRruleOf(created.id)).toBe("FREQ=WEEKLY;BYDAY=MO,WE");
+	});
+
+	it("既存の反復を別プリセットに全置換できる(部分マージしない)", async () => {
+		const { task: created } = await createTodo.execute({
+			owner: TEST_OWNER,
+			title: "毎日→毎週",
+			due: "2026-07-15",
+			recurrence: { frequency: "daily", interval: 2 },
+		});
+		expect(await savedRruleOf(created.id)).toBe("FREQ=DAILY;INTERVAL=2");
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: created.id,
+			recurrence: { frequency: "weekly", count: 3 },
+		});
+		// interval=2 は引き継がれない(全置換)。新しい FREQ=WEEKLY;COUNT=3 になる。
+		expect(task.recurrence).toMatchObject({ frequency: "weekly", count: 3 });
+		expect(await savedRruleOf(created.id)).toBe("FREQ=WEEKLY;COUNT=3");
+	});
+
+	it("recurrence:null で RRULE を除去できる(反復をやめる。due は残る)", async () => {
+		const { task: created } = await createTodo.execute({
+			owner: TEST_OWNER,
+			title: "反復やめる",
+			due: "2026-07-15",
+			recurrence: { frequency: "daily" },
+		});
+		expect(await savedRruleOf(created.id)).toBe("FREQ=DAILY");
+		const { task } = await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, recurrence: null });
+		expect(task.recurrence).toBeNull();
+		expect(await savedRruleOf(created.id)).toBeUndefined();
+		expect(task.due).toBe("2026-07-15"); // 期日は残る。
+	});
+
+	it("due が無い VTODO への recurrence 設定は RecurrenceRequiresDueError", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "due 無し" });
+		await expect(
+			updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, recurrence: { frequency: "weekly" } }),
+		).rejects.toMatchObject({ kind: "RecurrenceRequiresDueError" });
+	});
+
+	it("due と recurrence を同時に変更できる(新 due をアンカーに全置換)", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "due+反復同時", due: "2026-07-15" });
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: created.id,
+			due: "2026-08-01",
+			recurrence: { frequency: "weekly", weekdays: ["SA"], until: "2026-09-01" },
+		});
+		expect(task.due).toBe("2026-08-01");
+		expect(task.recurrence).toMatchObject({ frequency: "weekly", weekdays: ["SA"] });
+		// 終日 due(DATE)アンカーなので UNTIL も DATE(I6)。
+		expect(await savedRruleOf(created.id)).toBe("FREQ=WEEKLY;UNTIL=20260901;BYDAY=SA");
+	});
+
+	it("反復 VTODO で recurrence:null と due:null を同時に送ると、反復も期日も外れる(合法)", async () => {
+		const { task: created } = await createTodo.execute({
+			owner: TEST_OWNER,
+			title: "両方外す",
+			due: "2026-07-15",
+			recurrence: { frequency: "daily" },
+		});
+		const { task } = await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, recurrence: null, due: null });
+		expect(task.recurrence).toBeNull();
+		expect(task.due).toBeNull();
+		expect(await savedRruleOf(created.id)).toBeUndefined();
+	});
+
+	// -----------------------------------------------------------------------
+	// location の設定/差し替え/除去(2026-07-15。LOCATION §3.8.1.7)
+	// -----------------------------------------------------------------------
+	async function savedLocationOf(uid: string): Promise<string | undefined> {
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), uid);
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		return saved!.payload.todos()[0]!.location;
+	}
+
+	it("location を設定・差し替え・除去できる", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "場所つき", location: "渋谷" });
+		expect(created.location).toBe("渋谷");
+		expect(await savedLocationOf(created.id)).toBe("渋谷");
+
+		// 差し替え。
+		const { task: replaced } = await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, location: "新宿" });
+		expect(replaced.location).toBe("新宿");
+		expect(await savedLocationOf(created.id)).toBe("新宿");
+
+		// 除去(null)。
+		const { task: removed } = await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, location: null });
+		expect(removed.location).toBeNull();
+		expect(await savedLocationOf(created.id)).toBeUndefined();
+	});
+
+	it("location:undefined(省略)は既存の LOCATION を維持する(部分更新契約)", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "場所維持", location: "横浜" });
+		// title だけ更新。location は触らない。
+		const { task } = await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, title: "場所維持(改)" });
+		expect(task.title).toBe("場所維持(改)");
+		expect(task.location).toBe("横浜");
+	});
+
+	it("create-todo で location 空文字は未設定に倒れる(LOCATION を書かない)", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "空文字場所", location: "" });
+		expect(created.location).toBeNull();
+		expect(await savedLocationOf(created.id)).toBeUndefined();
+	});
+
 	it("更新後は resourceRepo 上の ETag も変わっている(must-match PUT が発行された証跡)", async () => {
 		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "etag確認" });
 		const before = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));

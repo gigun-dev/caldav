@@ -125,6 +125,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// 2026-07-14: list-calendars / create-calendar(コレクション操作の MCP 露出)を追加。
 		// 2026-07-14 追記: delete-calendar(list-calendars/create-calendar の対)を追加。
 		// 2026-07-14 追記2: create-todos(複数件バッチ追加ツール)を追加。
+		// 2026-07-15 追記: move-todo(VTODO のコレクション間移動)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
@@ -137,6 +138,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"list-calendars",
 			"list-events-expanded",
 			"list-todos",
+			"move-todo",
 			"refresh-todos",
 			"update-todo",
 		]);

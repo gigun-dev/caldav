@@ -66,6 +66,8 @@ import {
 	InvalidTimeZoneError,
 	ListOccurrences,
 	ListTodos,
+	MoveTodo,
+	MoveTodoSameCollectionError,
 	PutCalendarObject,
 	RecurrenceCountUntilConflictError,
 	RecurrenceRequiresDueError,
@@ -244,6 +246,17 @@ const deleteCalendarInputShape = {
 // 受理すると、ユーザー(または LLM)が意図した反復設定が黙って失われる。CalDAV/RFC 5545 の
 // 「曖昧な入力は拒否する」姿勢(他の recurrence 系エラー: RecurrenceCountUntilConflictError 等)
 // と同じく、ここでも明示的にエラーを返して気づかせる。
+// 【2026-07-15 strict 化(既知バグの是正)】本番検証で「create-todos に recurrence:{freq:...,
+// byDay:...}(誤キー)を渡すと zod が未知キーを黙って捨て、frequency は default("none")のまま =
+// 非反復で作られる」事故が起きた(反復するつもりが黙って反復しない todo になる)。z.object は
+// 既定で未知キーを strip する(黙殺)ため、誤キーが検知できなかった。.strict() にして未知キーを
+// **入力エラー**へ格上げし、誤った反復指定を静かに握りつぶさない。
+// 【strict 化で Inspector の空 recurrence 送信問題が悪化しないことの確認】
+// Inspector 手動フォームの問題は「optional object の未初期化 required サブフィールドを {frequency:""}
+// で埋めて送る」こと(冒頭 Why-not 参照)。これは *既知キー frequency に空文字* を入れる問題で、
+// enum バリデーションで既に弾かれる(strict の未知キー検査とは別レイヤー)。default("none") で
+// {} を送れば none に倒れる回避も従来どおり生きる。よって strict 追加はこの問題を悪化させない
+// (未知キー検査は「frequency 以外の余計なキー」だけに効くので、空 recurrence 経路には無関係)。
 const createTodoRecurrenceInputShape = z
 	.object({
 		frequency: z
@@ -263,6 +276,7 @@ const createTodoRecurrenceInputShape = z
 		count: z.number().int().min(1).optional().describe("回数指定(COUNT)。until と排他。"),
 		until: z.string().optional().describe('終了日("YYYY-MM-DD")。UNTIL に対応。count と排他。'),
 	})
+	.strict() // 未知キー(byDay/freq 等の誤キー)を黙殺せず入力エラーにする(上記コメント参照)。
 	.describe(
 		'反復指定。指定する場合 due が必須(RRULE は DTSTART をアンカーにするため)。' +
 			"count と until は同時指定不可(RFC 5545 の UNTIL/COUNT 排他規則)。",
@@ -287,6 +301,13 @@ const createTodoItemFieldsShape = {
 	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
+	),
+	// LOCATION(§3.8.1.7)。空文字は「未設定」と同義に扱い LOCATION を書かない(2026-07-15 追加)。
+	// iOS 標準アプリの位置情報リマインダー(ジオフェンス)とは別物 — こちらは素の TEXT な LOCATION
+	// (task-dto.ts の Task.location コメント参照)。
+	location: z.string().optional().describe(
+		"LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義(LOCATION を書かない)。" +
+			"iOS の位置情報通知(ジオフェンス)とは別の、単なる場所テキスト。",
 	),
 	recurrence: createTodoRecurrenceInputShape.optional().describe(
 		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
@@ -366,6 +387,52 @@ function normalizeCreateTodoRecurrenceInput(
 	return { ...recurrence, frequency: recurrence.frequency };
 }
 
+// update-todo 用の recurrence 入力 shape(2026-07-15。create と語彙は完全対称)。
+// 【create の shape をそのまま再利用し describe だけ差し替える理由】判別ロジック(頻度 enum・
+// count/until 排他・weekdays weekly 限定・.strict() の未知キー拒否)を二重管理しないため、
+// createTodoRecurrenceInputShape をベースに update 固有の意味(frequency:"none"=RRULE 除去)だけを
+// describe で上書きする。.describe() は ZodObject を保つので .strict()/フィールド/default("none")は
+// すべて引き継がれる。
+const updateTodoRecurrenceInputShape = createTodoRecurrenceInputShape.describe(
+	'反復の設定/変更/除去。frequency:"none"(または recurrence:{} の既定)=反復を除去(RRULE を消す)。' +
+		"daily/weekly/monthly/yearly=その反復に全置換する(部分マージしない — 常に完全なプリセットを送ること)。" +
+		"設定/変更時は due が必須(既存 due か、同時に指定する新 due をアンカーにする)。" +
+		"count と until は同時指定不可(RFC 5545 の排他規則)。",
+);
+
+/**
+ * update-todo の recurrence 入力(presentation 5値 + optional)を application の三値
+ * (undefined=据え置き / null=除去 / CreateTodoRecurrenceInput=全置換)へ正規化する(2026-07-15)。
+ *
+ * 【create の normalize と分ける理由】create では frequency:"none" も「recurrence 省略」も
+ * どちらも「RRULE を作らない」=undefined に畳めた。だが update では:
+ *   - recurrence 省略(undefined) = 既存 RRULE を据え置く
+ *   - frequency:"none"           = 既存 RRULE を**除去**する(null)
+ * と意味が分岐するため、none を undefined ではなく null に写す専用の正規化が要る。
+ * none + サブフィールド併用の拒否は create と同じ(黙って設定を捨てない)ので、その検査だけ共有する。
+ */
+function normalizeUpdateTodoRecurrenceInput(
+	recurrence: z.infer<typeof updateTodoRecurrenceInputShape> | undefined,
+): CreateTodoRecurrenceInput | null | undefined {
+	if (recurrence === undefined) return undefined; // 据え置き(RRULE を触らない)。
+	if (recurrence.frequency === "none") {
+		// none + サブフィールド併用は矛盾なのでエラー(create と同一の検査。意図した設定を黙殺しない)。
+		const hasSubfields =
+			recurrence.interval !== undefined ||
+			recurrence.weekdays !== undefined ||
+			recurrence.count !== undefined ||
+			recurrence.until !== undefined;
+		if (hasSubfields) {
+			throw new RangeError(
+				'recurrence.frequency:"none"(反復の除去)は interval/weekdays/count/until と併用できません。' +
+					"反復を設定する場合は frequency に daily/weekly/monthly/yearly のいずれかを指定してください。",
+			);
+		}
+		return null; // 除去。
+	}
+	return { ...recurrence, frequency: recurrence.frequency }; // 全置換(4値へ絞り込み済み)。
+}
+
 // --- update-todo / complete-todo / delete-todo(方向性 E-1 スライス②-b)-------------
 
 const updateTodoInputShape = {
@@ -389,6 +456,16 @@ const updateTodoInputShape = {
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
 	),
+	// LOCATION(§3.8.1.7)。due の三値と対称(2026-07-15 追加): 省略=変更しない / null=除去 / 文字列=差し替え。
+	location: z.string().nullable().optional().describe(
+		"LOCATION(場所)。三値: 省略=変更しない / null=場所を外す / 文字列=差し替え。" +
+			"iOS の位置情報通知(ジオフェンス)とは別の、単なる場所テキスト(§3.8.1.7 の TEXT)。",
+	),
+	// recurrence(2026-07-15 追加): 反復の設定/変更/除去。updateTodoRecurrenceInputShape 参照。
+	recurrence: updateTodoRecurrenceInputShape.optional().describe(
+		'反復リマインダーの設定/変更/除去。省略=変更しない / frequency:"none"=反復を除去 /' +
+			"daily/weekly/... =その反復に全置換。設定/変更時は due(既存 or 同時指定)が必須。",
+	),
 	status: z.enum(["COMPLETED", "NEEDS-ACTION"]).optional().describe(
 		"STATUS の遷移。COMPLETED で完了・NEEDS-ACTION で未完了に戻す。省略時は変更しない。" +
 			"反復 VTODO(RRULE あり)への COMPLETED 指定は complete-todo と同じ D4 モデル" +
@@ -404,6 +481,14 @@ const completeTodoInputShape = {
 const deleteTodoInputShape = {
 	id: z.string().describe("削除対象の VTODO UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+};
+
+// move-todo の入力(UI 詳細シート「リスト ›」からのコレクション間移動)。move-todo.ts 冒頭コメント
+// のとおり DAV MOVE(RFC 4918 §9.9)実装はスコープ外の MCP 専用ツール。
+const moveTodoInputShape = {
+	id: z.string().describe("移動対象の VTODO UID。"),
+	calendarId: z.string().optional().describe('移動元コレクション ID。省略時は "tasks"。'),
+	toCalendarId: z.string().describe("移動先コレクション ID(list-calendars/create-calendar が返す id)。"),
 };
 
 const listTodosInputShape = {
@@ -869,7 +954,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
+		async ({ title, notes, due, timeZone, priority, calendarId, recurrence, location }) => {
 			try {
 				// recurrence 正規化(Case E): frequency:"none" は presentation 限定の語彙なので、
 				// application 層に渡す前にここで吸収する(上の createTodoRecurrenceInputShape
@@ -892,6 +977,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					timeZone,
 					priority,
 					calendarId,
+					location, // 空文字は CreateTodo/buildVTodoCalendar 側で「未設定」に倒す(LOCATION を書かない)。
 					recurrence: normalizedRecurrence,
 				});
 				// affected: 新規作成 = "added"。新 UID は createTodo が返した task.id。確定一覧は
@@ -981,6 +1067,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 							timeZone,
 							priority: item.priority,
 							calendarId,
+							location: item.location, // create-todo と同じく空文字は未設定扱い。
 							recurrence: normalizedRecurrence,
 						});
 						succeeded.push({ id: task.id, kind: "added", task: snapshotFromTask(task) });
@@ -1094,6 +1181,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 		timeZone?: string;
 		affected?: AffectedTask[];
 		removed?: TaskSnapshot[];
+		/** move-todo のみ。TodosViewModel.movedTo の JSDoc 参照。 */
+		movedTo?: string;
 	}): Promise<TodosViewModel> => {
 		const zone = resolveTimeZone(opts.timeZone);
 		// 【次の伸びしろ(今回スコープ外)】この確定一覧は応答契約(TodosViewModel.tasks)上必要なので
@@ -1115,6 +1204,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;
+		if (opts.movedTo !== undefined) vm.movedTo = opts.movedTo;
 		// view echo(E-2 view 状態非保持バグ修正): 非 undefined の引数だけを載せる。全部 undefined
 		// (既定ビュー)なら view キー自体を省いて後方互換を保つ(旧 UI/旧テストは view 不在前提)。
 		// UI はこの view を currentView として保持し、focus refetch / mutation 後の再取得へ引き継ぐ。
@@ -1230,8 +1320,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, title, notes, due, timeZone, priority, status }) => {
+		async ({ id, calendarId, title, notes, due, timeZone, priority, status, location, recurrence }) => {
 			try {
+				// recurrence 正規化(2026-07-15): presentation 5値 + optional を application の三値
+				// (undefined=据え置き / null=除去 / 4値=全置換)へ写す。none + サブフィールド併用は
+				// ここで RangeError → catch-all で toolError に変換される(意図した設定を黙殺しない)。
+				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
 				// before 値: UpdateTodo UC が更新前スナップショットを返す(2026-07-14 レイテンシ改善で
 				// UC 側に移した。以前は presentation で findTaskById が別途 ListTodos 全件を読んでいたが、
 				// UC が If-Match 検証で内部 read する更新前状態を before として公開したことで、その
@@ -1249,6 +1343,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					due,
 					timeZone,
 					priority,
+					// location は三値(undefined=据え置き / null=除去 / 文字列=差し替え)をそのまま渡す
+					// (zod の .nullable().optional() で null と undefined が区別されて届く)。
+					location,
+					recurrence: normalizedRecurrence,
 					status,
 				});
 
@@ -1277,6 +1375,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					if (notes !== undefined) provided.add("notes");
 					if (due !== undefined) provided.add("due");
 					if (priority !== undefined) provided.add("priority");
+					// location/recurrence(2026-07-15)。どちらも buildEditedChanges では field のみ載せる
+					// (recurrence は「編集済み」バッジへ degrade する contract。location も最小は field のみ)。
+					if (location !== undefined) provided.add("location");
+					if (recurrence !== undefined) provided.add("recurrence");
 					const changes = before !== undefined ? buildEditedChanges(before, task, provided) : undefined;
 					affected = [{ id: task.id, kind: "edited", task: snapshotFromTask(task), ...(changes !== undefined ? { changes } : {}) }];
 				}
@@ -1374,6 +1476,62 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
 				if (error instanceof DeleteTargetNotFoundError) return toolError(error.message);
 				if (error instanceof DeleteETagMismatchError) return toolError(error.message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- move-todo(UI 詳細シート「リスト ›」からの VTODO コレクション間移動)-----------------
+	// 【move-todo.ts が既に MCP 専用 UC(DAV MOVE 実装はスコープ外)である前提を踏襲】
+	// このツールは move-todo.ts が返す removed(移動元から見た「削除直前」スナップショット)を
+	// delete-todo と同じ TaskSnapshot ゴーストとして載せつつ、structuredContent.movedTo に
+	// 移動先 calendarId を添えて「削除」ではなく「移動」であることを UI が判別できるようにする
+	// (todos-view-model.ts の TodosViewModel.movedTo JSDoc 参照)。
+	// 【応答のビューは移動元コレクション基準】タスク仕様どおり、確定一覧 tasks は移動元
+	// (calendarId 省略時 "tasks")の ListTodos を再実行して作る — 移動先ではなく「操作した場所の
+	// 一覧がどう変わったか」を見せるのが delete-todo 等と同じ mutate 系の一貫した契約。
+	registerAppTool(
+		server,
+		"move-todo",
+		{
+			title: "Move todo",
+			description:
+				"VTODO(リマインダー)を別のコレクション(リスト)へ移動する。ICS の内容は変更せず、" +
+				"移動先へそのまま複製 → 移動元を削除する(2段階。DAV の MOVE メソッドは対象外)。" +
+				"移動元=移動先の指定はエラーになる。移動先が VTODO を受け付けないコレクション" +
+				"(supported-calendar-component-set に VTODO が無い)もエラーになる。",
+			inputSchema: moveTodoInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
+		},
+		async ({ id, calendarId, toCalendarId }) => {
+			try {
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
+				const moveTodo = new MoveTodo(putCalendarObject, deleteCalendarObject, deps.resourceRepo);
+				const { removed: removedTask } = await moveTodo.execute({
+					owner: principal,
+					todoId: id,
+					calendarId,
+					toCalendarId,
+				});
+
+				// removed は delete-todo と同じ TaskSnapshot(案X)。movedTo を併せて載せることで
+				// UI は「消えた」ではなく「よそへ移った」ゴーストとして描き分けられる。
+				const removed: TaskSnapshot[] = [snapshotFromTask(removedTask)];
+				const vm = await buildTodosViewModel({ calendarId, removed, movedTo: toCalendarId });
+				return toTodosToolResponse(vm);
+			} catch (error) {
+				// MoveTodoSameCollectionError(no-op)/ TodoNotFoundError(移動元に UID 無し)/
+				// CollectionNotFoundError(移動先コレクション不在)/ CalDAVPreconditionError
+				// (移動先が VTODO を supported しない)/ ETagConditionError(移動先に同 UID の
+				// リソースが既存)いずれもメッセージが自己説明的なので、create-todo 等と同じ
+				// catch-all で toolError に変換する(instanceof 分岐で特別扱いする意味的な差は無い)。
+				if (error instanceof MoveTodoSameCollectionError) return toolError(error.message);
+				if (error instanceof TodoNotFoundError) return toolError(error.message);
+				if (error instanceof CollectionNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

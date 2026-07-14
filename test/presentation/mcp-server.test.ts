@@ -166,7 +166,9 @@ describe("/mcp", () => {
 	// MCP から露出)を追加したため 11→12 に更新。
 	// 2026-07-14 追記2: create-todos(複数件バッチ追加。create-todo を N 回呼ぶとホスト UI に
 	// カードが N 枚積まれる語彙の穴を塞ぐ)を追加したため 12→13 に更新。
-	it("正しい Bearer で tools/list に13ツールが並ぶ(create-todos 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
+	// 2026-07-15 追記: move-todo(UI 詳細シート「リスト ›」からの VTODO コレクション間移動。
+	// move-todo.ts 冒頭コメント参照)を追加したため 13→14 に更新。
+	it("正しい Bearer で tools/list に14ツールが並ぶ(move-todo 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -183,6 +185,7 @@ describe("/mcp", () => {
 			"list-calendars",
 			"list-events-expanded",
 			"list-todos",
+			"move-todo",
 			"refresh-todos",
 			"update-todo",
 		]);
@@ -543,6 +546,28 @@ describe("/mcp", () => {
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
+		});
+
+		// 2026-07-15 strict 化(既知バグの是正): recurrence に誤キー(byDay 等)を渡すと、旧実装は
+		// zod が黙って strip し frequency=default("none") のまま非反復で作ってしまった(反復するつもりが
+		// 黙って反復しない事故)。.strict() で未知キーを入力エラーへ格上げしたことを検証する。
+		it("recurrence に未知キー(byDay 等の誤キー)を渡すと isError(黙殺せず弾く)", async () => {
+			seedTasksCollection();
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "create-todo",
+					// 正しくは weekdays だが誤って byDay を渡す典型ミス。frequency:weekly なのに未知キーで弾かれる。
+					arguments: { title: "誤キー", due: "2026-07-18", recurrence: { frequency: "weekly", byDay: ["SA"] } },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			// 黙って非反復 todo が作られていない(strip されて保存された、が起きていない)ことも確認。
+			const saved = await repos.resources.findAllInCollection(OWNER, TASKS);
+			expect(saved).toHaveLength(0);
 		});
 
 		it("frequency:\"weekly\" は従来どおり RRULE を生成する(回帰確認)", async () => {

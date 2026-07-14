@@ -93,6 +93,13 @@ export interface VTodoFields {
 	/** PRIORITY(§3.8.1.9)。0-9。0(既定=未設定)を渡すとプロパティ自体を省略する。 */
 	priority?: number;
 	/**
+	 * LOCATION(§3.8.1.7)。省略可。SUMMARY/DESCRIPTION と同じくエスケープ前の意味的文字列を
+	 * 受け取り、ここで encodeText する。空文字("")は「未設定」と同義に扱い LOCATION を書かない
+	 * (呼び出し側 application 層 create-todo.ts が空文字→未設定の正規化を担うが、防御的に
+	 * ここでも空文字はプロパティを省略する — PRIORITY:0 を未設定扱いで省略するのと同じ発想)。
+	 */
+	location?: string;
+	/**
 	 * RRULE(§3.3.10 RECUR / §3.8.5.3 プロパティ)。タスク③(反復付き create-todo)で追加。
 	 * 【DTSTART が前提】RRULE は DTSTART を反復のアンカーにする(§3.8.5.3 の記載どおり
 	 * DTSTART が反復の起点)。よって recurrence を指定するなら due(→ DTSTART/DUE)も
@@ -166,6 +173,12 @@ export function buildVTodoCalendar(fields: VTodoFields): Component {
 		// の並び DTSTART, DUE, ..., RRULE に寄せる。upsertProperty の追加順で決まるだけで
 		// RFC 上は順序に意味は無いが、決定的な出力にして diff/テストを安定させる狙い)。
 		vtodo = upsertProperty(vtodo, "RRULE", formatRecurrenceRule(fields.recurrence));
+	}
+	if (fields.location !== undefined && fields.location !== "") {
+		// LOCATION(§3.8.1.7)。空文字は未設定と同義なので書かない(VTodoFields.location コメント)。
+		// DTSTART/DUE/RRULE の後・PRIORITY の前に置く(RFC 上は順序に意味は無いが、決定的な出力で
+		// diff/テストを安定させる既存方針に揃える)。
+		vtodo = upsertProperty(vtodo, "LOCATION", encodeText(fields.location));
 	}
 	if (fields.priority !== undefined && fields.priority !== 0) {
 		// PRIORITY:0 は「未設定」と等価(§3.8.1.9)なのでプロパティ自体を省略する

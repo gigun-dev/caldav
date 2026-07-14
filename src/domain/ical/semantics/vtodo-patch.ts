@@ -83,6 +83,34 @@ export interface VTodoPatchFields {
 	 * 意味論は同じ)。
 	 */
 	priority?: number;
+	/**
+	 * LOCATION(§3.8.1.7)への patch 指示(2026-07-15 追加)。due の三値と同じパターンで:
+	 *   - undefined     = 触らない
+	 *   - null または "" = LOCATION を除去する
+	 *   - 非空文字列     = LOCATION を差し替える(意味的文字列。ここで encodeText する)
+	 * 【空文字を除去に倒す理由】create-todo が空文字を「未設定」と同義に扱う(vtodo-write.ts の
+	 * location コメント)のと対称。空の LOCATION プロパティを立てても iOS/他クライアントの
+	 * 表示上は「未設定」と区別できず、空プロパティを書き残す方が驚きが大きいため、null と同じ
+	 * 「除去」に寄せる(呼び出し側 presentation は null=除去/undefined=据え置き の契約だが、
+	 * 万一空文字が届いてもここで除去に倒しておく)。
+	 */
+	location?: string | null;
+	/**
+	 * RRULE(§3.3.10 / §3.8.5.3)への patch 指示(2026-07-15 追加。update-todo の反復設定/変更/除去)。
+	 *   - undefined       = 触らない(既存 RRULE をそのまま残す)
+	 *   - null            = RRULE を除去する(反復をやめる。COUNT/UNTIL は RRULE 値の一部なので同時に消える)
+	 *   - RecurrenceRule  = RRULE を**全置換**する(部分マージはしない — UI は常に完全なプリセットを送る契約)
+	 * 【ドメイン型 RecurrenceRule を受け取る理由(chat 語彙の変換は application の責務)】
+	 * create-todo.ts の buildRecurrenceRule(chat 語彙 → RecurrenceRule + 不変条件検証)を
+	 * update-todo.ts も共有して呼び、検証済みのドメイン型をここに渡す。このプリミティブは
+	 * 「RRULE プロパティ文字列を upsert/remove する」だけに徹し、頻度/interval/UNTIL 値型の
+	 * 判別ロジックは持ち込まない(vtodo-write.ts が RecurrenceRule をそのまま formatRecurrenceRule
+	 * するのと同じ層分担)。
+	 * 【UNTIL 値型追従(I6)との関係】RecurrenceRule 全置換なので、application 側が新 due の値型に
+	 * 合わせて UNTIL を組んで渡す(followUntilValueType は「due だけ変えて RRULE は据え置き」の
+	 * ケース専用。recurrence を全置換するときは新 rule の UNTIL がそのまま出るので二重に触らない)。
+	 */
+	recurrence?: RecurrenceRule | null;
 }
 
 /**
@@ -100,6 +128,32 @@ export function patchVTodoFields(vtodo: Component, fields: VTodoPatchFields): Co
 	}
 	if (fields.description !== undefined) {
 		out = upsertProperty(out, "DESCRIPTION", encodeText(fields.description));
+	}
+	if (fields.location !== undefined) {
+		// null または空文字 = 除去。非空文字列 = 差し替え(VTodoPatchFields.location コメント)。
+		if (fields.location === null || fields.location === "") {
+			out = removeProperty(out, "LOCATION");
+		} else {
+			out = upsertProperty(out, "LOCATION", encodeText(fields.location));
+		}
+	}
+	// recurrence は due patch より**先**に適用する(順序が効く2ケースがある):
+	//  (1) recurrence:null(除去)+ due:remove(期日も外す)を同時に送るとき — 先に RRULE を消して
+	//      おかないと、下の applyDuePatch(remove) が「RRULE ありで DTSTART を消せない」防御 throw に
+	//      引っかかる。反復をやめて期日も外す、は自然な操作なので先に RRULE を消して合法化する。
+	//  (2) recurrence 全置換 + due 変更を同時に送るとき — applyDuePatch は既存 RRULE の UNTIL 値型を
+	//      新 due に追従させる(followUntilValueType)。先に新 rule を upsert しておいても、application は
+	//      新 due の値型に合わせて UNTIL を組んで渡す契約なので follow は no-op になり二重調整は起きない。
+	if (fields.recurrence !== undefined) {
+		if (fields.recurrence === null) {
+			// RRULE 除去(反復をやめる)。COUNT/UNTIL は RRULE 値の一部なので同時に消える。
+			// iOS が付ける X-APPLE-* 等の他プロパティには触れない(ロスレス方針 — 反復に紐づく
+			// 独立した X-APPLE プロパティは我々のモデルには存在せず、反復情報は RRULE 値に閉じている)。
+			out = removeProperty(out, "RRULE");
+		} else {
+			// RRULE 全置換(部分マージしない)。formatRecurrenceRule でドメイン型を RRULE 文字列に。
+			out = upsertProperty(out, "RRULE", formatRecurrenceRule(fields.recurrence));
+		}
 	}
 	if (fields.due !== undefined) {
 		out = applyDuePatch(out, fields.due);

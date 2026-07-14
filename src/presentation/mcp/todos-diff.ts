@@ -120,5 +120,18 @@ export function buildEditedChanges(before: Task, after: Task, provided: Readonly
 		changes.push({ field: "notes" });
 	}
 
+	if (provided.has("location")) {
+		// location(2026-07-15)。最小は field のみ(タスク指示どおり — before/after 付きも許容だが、
+		// 場所は住所等で長くなりうるので notes と同じく field のみに倒し、UI は「編集済み」バッジへ degrade)。
+		changes.push({ field: "location" });
+	}
+
+	if (provided.has("recurrence")) {
+		// recurrence(2026-07-15)。RRULE の要約(頻度/曜日/回数/終了日)を短文へ整形するのは
+		// 情報量が多く UI 表現も割れるため、contract どおり field 名のみに載せる(UI は「編集済み」
+		// バッジへ degrade)。「繰り返しを変えた/外した」の詳細は確定一覧 tasks の recurrence 差で見える。
+		changes.push({ field: "recurrence" });
+	}
+
 	return changes.length > 0 ? changes : undefined;
 }

@@ -33,6 +33,7 @@ import {
 	serialize,
 	UnsupportedTimeZoneError as DomainUnsupportedTimeZoneError,
 	type Component,
+	type RecurrenceRule,
 } from "../../domain/ical";
 import {
 	applyCompletion,
@@ -48,12 +49,20 @@ import { zoneResolverFor, type RecurrenceIterator } from "../../domain/ical/recu
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
 import { parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
 import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
-import { lookupTodo, TodoNotFoundError } from "./todo-lookup";
+import { lookupTodo, TodoNotFoundError, type LookedUpTodo } from "./todo-lookup";
 import {
+	// buildRecurrenceRule と recurrence 3エラーは create-todo と共有する(2026-07-15 recurrence 対称化。
+	// chat 語彙 → RecurrenceRule 変換 + count/until 排他・weekdays は weekly 限定・UNTIL 値型追従の
+	// 判別ロジックを二重管理しない — create-todo.ts の buildRecurrenceRule export コメント参照)。
+	buildRecurrenceRule,
 	DueTimeZoneRequiredError,
 	InvalidDueError,
 	InvalidTimeZoneError,
+	RecurrenceCountUntilConflictError,
+	RecurrenceRequiresDueError,
+	RecurrenceWeekdaysRequireWeeklyError,
 	UnsupportedTimeZoneError,
+	type CreateTodoRecurrenceInput,
 } from "./create-todo";
 import { completeRecurringTodo } from "./recurring-completion";
 import { nowStampFromDate } from "./now-stamp";
@@ -122,6 +131,25 @@ function dueShiftMillis(
 	return newDueEpoch - oldEpoch;
 }
 
+/**
+ * 既存 due(CalDate | CalDateTime)から buildRecurrenceRule 用の dueTimeInfo(壁時計 + TZID)を導く
+ * (2026-07-15。recurrence を「due 据え置きのまま」設定/変更するとき、既存 due をアンカーにするため)。
+ *
+ * @returns 終日(CalDate)は undefined(create 側 buildRecurrenceRule が「dueTimeInfo undefined = DATE
+ *   アンカー = UNTIL も DATE」と解釈する)。時刻付き(CalDateTime)は zoned なら TZID→IANA を zoneOf で
+ *   解決、utc/floating は "UTC" を timeZone に採る(UNTIL の壁時計時刻を組む素材にする)。
+ */
+function dueTimeInfoFromInstance(
+	instance: CalDate | CalDateTime,
+	zoneOf: (tzid: string) => string,
+): { hour: number; minute: number; second: number; timeZone: string } | undefined {
+	if (!isCalDateTime(instance)) return undefined; // 終日: DATE アンカー。
+	// zoned は自前 TZID を IANA へ解決、utc/floating は自ゾーンを持たないので UTC に倒す
+	// (dueShiftMillis の floatingTimeZone="UTC" 規約・formatDue の floating 既定と揃える)。
+	const timeZone = instance.kind === "zoned" ? zoneOf(instance.tzid) : "UTC";
+	return { hour: instance.hour, minute: instance.minute, second: instance.second, timeZone };
+}
+
 // --- 入力 DTO ---
 
 export interface UpdateTodoInput {
@@ -150,6 +178,25 @@ export interface UpdateTodoInput {
 	timeZone?: string;
 	/** PRIORITY(0-9)。0 は「未設定に戻す」(vtodo-patch.ts 参照)。省略時は変更しない。 */
 	priority?: number;
+	/**
+	 * LOCATION(§3.8.1.7)。due の三値と同じパターン(2026-07-15 追加):
+	 *   - undefined = 変更しない
+	 *   - null      = LOCATION を除去する
+	 *   - 文字列     = LOCATION を差し替える(空文字は vtodo-patch 側で除去に倒す)
+	 */
+	location?: string | null;
+	/**
+	 * RRULE(反復)の設定/変更/除去(2026-07-15 追加。create-todo と対称の chat 語彙)。
+	 *   - undefined                 = 変更しない(既存 RRULE を残す)
+	 *   - null                      = RRULE を除去する(反復をやめる)
+	 *   - CreateTodoRecurrenceInput  = RRULE を**全置換**する(部分マージしない)
+	 * 【アンカーは due(§3.8.5.3)】設定/変更時は due が必須。新 due を同時に指定していればそれを、
+	 * 指定していなければ既存 due をアンカーにする。どちらも無ければ RecurrenceRequiresDueError。
+	 * due と recurrence を同時に変更するリクエストは許可する(新 due をアンカーに全置換)。
+	 * 【due:null(除去)と同時の recurrence:null は合法】反復をやめて期日も外す、は自然な操作
+	 * (RecurringDueRemovalError は「RRULE を残したまま due だけ外す」場合のみ拒否する)。
+	 */
+	recurrence?: CreateTodoRecurrenceInput | null;
 	/**
 	 * STATUS の遷移。"COMPLETED" で完了・"NEEDS-ACTION" で未完了に戻す。省略時は変更しない。
 	 * 【CompleteTodo と同じガードを status:"COMPLETED" にも適用する(2026-07-12 レビューで確定)】
@@ -222,6 +269,10 @@ export type UpdateTodoError =
 	| InvalidTimeZoneError
 	| UnsupportedTimeZoneError
 	| RecurringDueRemovalError
+	// recurrence 設定/変更(2026-07-15)で create-todo と同じ3エラーを投げうる。
+	| RecurrenceRequiresDueError
+	| RecurrenceCountUntilConflictError
+	| RecurrenceWeekdaysRequireWeeklyError
 	| TodoNotFoundError
 	| PutCalendarObjectError;
 
@@ -258,7 +309,12 @@ export class UpdateTodo {
 		// 反復 VTODO(RRULE あり)の due 除去はサイレント破壊せず拒否する(RecurringDueRemovalError の
 		// JSDoc 参照。DTSTART が反復アンカー §3.8.5.3 なので消せない)。patchVTodoFields も同じ不変条件を
 		// 防御的に throw するが、ここでは呼び出し側がわかる kind タグ付きエラーで先に弾く。
-		if (duePatch?.kind === "remove" && looked.vtodo.rrule !== undefined) {
+		// 【例外: recurrence:null(反復も同時に外す)なら許可する】「反復をやめて期日も外す」は自然な
+		// 操作なので、RRULE を同時に除去するリクエストでは due 除去を拒否しない(input.recurrence の
+		// JSDoc 参照。patchVTodoFields も recurrence を due より先に適用して RRULE を消してから
+		// due 除去するので、あちらの防御 throw にも引っかからない)。
+		const removingRecurrence = input.recurrence === null;
+		if (duePatch?.kind === "remove" && looked.vtodo.rrule !== undefined && !removingRecurrence) {
 			throw new RecurringDueRemovalError(input.todoId);
 		}
 
@@ -267,11 +323,19 @@ export class UpdateTodo {
 		// これを edited の changes.before に使う(UpdateTodoOutput.before の JSDoc 参照)。
 		const before = taskFromVTodo(looked.vtodo);
 
+		// --- recurrence patch の組み立て(2026-07-15。設定/変更/除去)---------------------------
+		// undefined=据え置き / null=除去 / CreateTodoRecurrenceInput=全置換。全置換時は due(新 or 既存)を
+		// アンカーに buildRecurrenceRule で RecurrenceRule を作る(chat 語彙 → ドメイン型 + 不変条件検証は
+		// create-todo と完全共有 — 判別ロジックの二重管理をしない)。
+		const recurrencePatch = this.buildRecurrencePatch(input, duePatch, parsed.dueTimeInfo, looked);
+
 		let patched: Component = patchVTodoFields(looked.vtodo.raw, {
 			summary: input.title,
 			description: input.notes,
+			location: input.location,
 			due: duePatch,
 			priority: input.priority,
+			recurrence: recurrencePatch,
 		});
 
 		// --- due 変更時の VALARM 追随(2026-07-13 追加。V2 実機で判明した欠落。V6 で3形態に拡張)-----
@@ -397,6 +461,47 @@ export class UpdateTodo {
 	}
 
 	/**
+	 * recurrence patch(RRULE の据え置き/除去/全置換)を組み立てる(2026-07-15)。
+	 *   - input.recurrence undefined → undefined(RRULE を触らない)
+	 *   - input.recurrence null      → null(RRULE 除去。vtodo-patch が removeProperty する)
+	 *   - CreateTodoRecurrenceInput  → RecurrenceRule(全置換。buildRecurrenceRule で chat 語彙を変換)
+	 *
+	 * 【アンカー due の決定(§3.8.5.3 RRULE は DTSTART をアンカーにする)】
+	 * 全置換時は「新 due(同時変更)> 既存 due」の優先で anchor を選ぶ。anchor が終日なら UNTIL も
+	 * DATE、時刻付きなら UNTIL も DATE-TIME(UTC)になるよう buildRecurrenceRule に dueTimeInfo を渡す
+	 * (I6 §3.3.10: UNTIL の値型は DTSTART に従う MUST)。
+	 *   - duePatch remove: 期日を外しながら反復を設定するのは矛盾 → RecurrenceRequiresDueError。
+	 *   - duePatch date: 新終日 due がアンカー(dueTimeInfo=undefined)。
+	 *   - duePatch date-time: 新時刻付き due がアンカー(parseDuePatch が算出した dueTimeInfo)。
+	 *   - duePatch undefined: 既存 due がアンカー。既存 due も無ければ RecurrenceRequiresDueError。
+	 */
+	private buildRecurrencePatch(
+		input: UpdateTodoInput,
+		duePatch: VTodoDuePatch | undefined,
+		newDueTimeInfo: { hour: number; minute: number; second: number; timeZone: string } | undefined,
+		looked: LookedUpTodo,
+	): RecurrenceRule | null | undefined {
+		if (input.recurrence === undefined) return undefined; // 据え置き。
+		if (input.recurrence === null) return null; // 除去。
+
+		let anchorTimeInfo: { hour: number; minute: number; second: number; timeZone: string } | undefined;
+		if (duePatch === undefined) {
+			// due 据え置き: 既存 due をアンカーにする(無ければアンカー不在エラー)。
+			const existing = looked.vtodo.due;
+			if (existing === undefined) throw new RecurrenceRequiresDueError();
+			anchorTimeInfo = dueTimeInfoFromInstance(existing, zoneResolverFor(looked.resource.payload));
+		} else if (duePatch.kind === "remove") {
+			// 期日を外しながら反復を設定するのは不整合(アンカー不在)。create の due 無し反復と同じ拒否。
+			throw new RecurrenceRequiresDueError();
+		} else if (duePatch.kind === "date") {
+			anchorTimeInfo = undefined; // 新終日 due アンカー(UNTIL も DATE)。
+		} else {
+			anchorTimeInfo = newDueTimeInfo; // 新時刻付き due アンカー(parseDuePatch 算出済み)。
+		}
+		return buildRecurrenceRule(input.recurrence, anchorTimeInfo);
+	}
+
+	/**
 	 * input.due(三値 + 2形態)を VTodoDuePatch へ解析し、時刻付きなら VTIMEZONE と新 due epoch も
 	 * 併せて返す(create-todo.ts の execute 前半の due 解析と対称。フォーマット/timeZone/DST の各
 	 * エラーはここで投げる)。
@@ -409,19 +514,23 @@ export class UpdateTodo {
 		duePatch: VTodoDuePatch | undefined;
 		dueVTimezone: Component | undefined;
 		newDueEpoch: number | undefined;
+		// dueTimeInfo(2026-07-15 追加): 新 due が時刻付き(date-time)のときの壁時計 + TZID。
+		// recurrence 全置換で新 due をアンカーにするとき、UNTIL の値型/時刻を組む素材として
+		// buildRecurrencePatch → buildRecurrenceRule に渡す(create-todo.ts の dueTimeInfo と同じ)。
+		dueTimeInfo: { hour: number; minute: number; second: number; timeZone: string } | undefined;
 	} {
 		if (input.due === undefined) {
-			return { duePatch: undefined, dueVTimezone: undefined, newDueEpoch: undefined };
+			return { duePatch: undefined, dueVTimezone: undefined, newDueEpoch: undefined, dueTimeInfo: undefined };
 		}
 		if (input.due === null) {
 			// 期日を外す(反復 VTODO の拒否は lookup 後に execute 側で行う — ここでは rrule を知らない)。
-			return { duePatch: { kind: "remove" }, dueVTimezone: undefined, newDueEpoch: undefined };
+			return { duePatch: { kind: "remove" }, dueVTimezone: undefined, newDueEpoch: undefined, dueTimeInfo: undefined };
 		}
 		if (DATE_ONLY_RE.test(input.due)) {
 			const raw = input.due.replace(/-/g, ""); // YYYYMMDD(VALUE=DATE の値構文)。
 			// 終日 due の「新インスタンス」は start-of-day を UTC で採る(既存 dueShiftMillis と同じ規約)。
 			const newDueEpoch = calDateStartEpochMillis(parseCalDate(raw), "UTC");
-			return { duePatch: { kind: "date", raw }, dueVTimezone: undefined, newDueEpoch };
+			return { duePatch: { kind: "date", raw }, dueVTimezone: undefined, newDueEpoch, dueTimeInfo: undefined };
 		}
 		// 時刻付き("YYYY-MM-DDTHH:MM:SS")。create-todo.ts と同じ検証(offset ISO 拒否・timeZone 必須・
 		// 暗黙 UTC 禁止・DST ゾーン未対応)。
@@ -457,6 +566,8 @@ export class UpdateTodo {
 			throw error;
 		}
 		const raw = `${y}${mo}${d}T${h}${mi}${s}`; // YYYYMMDDTHHMMSS(DATE-TIME の値構文)。
-		return { duePatch: { kind: "date-time", raw, tzid: input.timeZone }, dueVTimezone, newDueEpoch };
+		// dueTimeInfo: recurrence 全置換で新時刻付き due をアンカーにするときの UNTIL 素材(壁時計 + TZID)。
+		const dueTimeInfo = { hour: Number(h), minute: Number(mi), second: Number(s), timeZone: input.timeZone };
+		return { duePatch: { kind: "date-time", raw, tzid: input.timeZone }, dueVTimezone, newDueEpoch, dueTimeInfo };
 	}
 }
