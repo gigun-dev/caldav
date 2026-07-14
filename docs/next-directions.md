@@ -215,6 +215,13 @@ reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で�
 > よって楽観は続行し、Smart Placement 学習後の再計測で p95 が数百 ms 圏なら悲観回帰も
 > 安価な選択肢として残す(ロールバック機構は失敗処理としてどのみち必要)。
 
+**スライス⑤(表示の拡充・2026-07-14 ユーザー指摘「表示が圧倒的に足りない」)**:
+- サーバー: Task DTO に recurrence(RRULE 要約・create-todo の recurrence 入力と同語彙)+
+  location を additive 追加(実装中)。location は iOS の CloudKit 天井に注意(CalDAV 非同期の見込み)。
+- UI: 行の詳細展開(メモ全文・繰り返しバッジ「毎週 月・水」等の人間可読整形・完了時刻)/
+  **削除ボタン**(delete-todo は既にツールあり・UI から呼べないだけ。becoming-gone + 楽観削除)/
+  メモ有りインジケータ。楽観更新実装(進行中)の完了後に着手(同じ ui/ ファイルのため)。
+
 → ~~差分レンズ~~ ✅ `5d5378e`(本番検証 PASS: 同期(追加/編集/削除)ラベル・破線ゴースト・aria-live)。
 **検証で発見した契約上の穴(要対応・防御実装中)**: ホストが同一 resourceUri の他ツール結果を
 開いている App に push すると(Inspector で実測・claude.ai でも起こりうる)、mutate 応答は view を
