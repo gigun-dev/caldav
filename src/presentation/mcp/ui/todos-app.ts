@@ -481,6 +481,77 @@ export const TODOS_APP_HTML = `<!doctype html>
     letter-spacing: 1px;
     margin-right: 4px;
   }
+
+  /* --- 繰り返しバッジ / メモ有りインジケータ(E-2 スライス⑤)---------------------------
+   * どちらも「一覧の走査を妨げない控えめな記号」を狙う(iOS リマインダーのサブ情報の密度に寄せる)。
+   * 繰り返しは meta 行(due の隣)に ⟳ + 短い日本語。メモ有りはタイトル末尾に ≡ を薄く。 */
+  .recur { color: var(--muted); white-space: nowrap; }
+  /* メモ有り記号「≡」。タイトル本文と隣接するので少し間を空け、色を落として主張を抑える。 */
+  .note-mark {
+    margin-left: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    /* 記号だけがベースラインで浮かないよう、行の他要素と縦位置を揃える。 */
+    vertical-align: baseline;
+  }
+
+  /* --- 行タイトルのタップ開閉領域(E-2 スライス⑤・詳細展開)-----------------------------
+   * texts(flex:1 の縦積み)の中の header がタップ対象。align-self:stretch で li の高さ
+   * (チェックボタン 44px)まで伸ばし、タイトルが短くてもタップ面が 44px 確保される
+   * (44px タッチターゲット維持の要件)。cursor:pointer で押せることを示す。 */
+  .texts { align-self: stretch; }
+  .row-head {
+    cursor: pointer;
+    /* header 自身も最低限の高さを持たせる(texts が stretch しない特殊ケースの保険)。 */
+    min-height: 44px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  /* フォーカスリングはブラウザ既定を残す(role=button のキーボード操作可視化。outline:none は書かない)。 */
+
+  /* --- 詳細展開パネル(E-2 スライス⑤)--------------------------------------------------
+   * header の下(texts 内)に開くインライン詳細。開閉アニメは無し(ドクトリン)= DOM の
+   * 有無だけで表現する。左に薄い罫線を引いて「この行に属する詳細」であることを示す。 */
+  .detail {
+    margin: 4px 0 8px;
+    padding: 8px 0 4px 10px;
+    border-left: 2px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--fg);
+  }
+  /* メモ全文: 改行を保持(pre-wrap)し、長文は max-height + 縦スクロールで畳む
+   * (カード全体が長大化してホストの会話スクロールを圧迫しないため)。 */
+  .detail-notes {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--muted);
+  }
+  .detail-row { color: var(--muted); overflow-wrap: anywhere; }
+  .detail-label { color: var(--fg); }
+  /* 削除ボタン: danger 系。展開内のみに置くこと自体が確認段階(confirm ダイアログは出さない)。
+   * 幅は内容ぴったり(align-self:flex-start)にして、行いっぱいの赤帯で威圧しない。44px 高で
+   * タッチターゲットを確保する。塗りつぶしではなく danger 枠 + danger 文字にして、破壊操作だが
+   * 「一段深い場所に自分で降りてきて押す」前提の落ち着いた見た目にする。 */
+  .detail-delete {
+    align-self: flex-start;
+    min-height: 44px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .detail-delete:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>

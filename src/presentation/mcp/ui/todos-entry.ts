@@ -144,8 +144,22 @@ const quickAddInput = document.getElementById("quick-add-input") as HTMLInputEle
 // btn.disabled で二重送信を防いだが、楽観更新では送信中もボタンを押せるまま維持する
 // (連続投入を許す)ので JS から触る必要が無い。送信は form の submit ハンドラが拾う。
 
+/** RRULE 要約(task-dto.ts の Task.recurrence と同型を写経)。frequency は通常 chat 語彙
+ *  (daily/weekly/monthly/yearly)だが、degrade 時は生 RRULE / 生 FREQ が入りうる
+ *  (task-dto.ts の degrade 方針参照)。UI の formatRecurrence がその degrade を吸収する。 */
+interface TodoRecurrence {
+	frequency: string;
+	interval: number;
+	weekdays: string[] | null;
+	count: number | null;
+	until: string | null;
+}
+
 /** structuredContent.tasks の要素。型 import をしない方針のためここでローカル定義する
- *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。 */
+ *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。
+ *  【E-2 スライス⑤】location / recurrence を additive 追加(task-dto.ts に a3df4a3 で追加済み)。
+ *  DiffTask(todos-diff-client)は TodoItem の構造的部分型なので、フィールドが増えても
+ *  差分レンズの受け渡し(confirmedTasks を DiffTask[] として渡す)は壊れない(構造的部分型)。 */
 interface TodoItem {
 	id: string;
 	title: string;
@@ -158,6 +172,10 @@ interface TodoItem {
 	completedAt: string | null;
 	notes: string | null;
 	sortOrder: number | null;
+	// LOCATION(§3.8.1.7)。未設定は null。詳細展開でのみ表示する(一覧行には出さない)。
+	location: string | null;
+	// RRULE 要約。未設定(非反復)は null。一覧行に繰り返しバッジ、詳細展開に完全表記を出す。
+	recurrence: TodoRecurrence | null;
 }
 
 /** 差分レンズ用の自己完結スナップショット(案X・2026-07-13。server.ts の TaskSnapshot と同型)。
@@ -227,6 +245,54 @@ let optimisticRows: OptimisticRow[] = [];
 function isOptimisticId(id: string): boolean {
 	return id.startsWith("optimistic:");
 }
+// expandedId(E-2 スライス⑤): 詳細を開いている行の id。単一値なので「同時に開くのは1行だけ」
+// (別の行を開くと前の行は自動で閉じる)が状態設計だけで満たされる。再描画(refetch/mutation)を
+// 跨いで展開を保持する(completedOpen と同じ発想 — 見ていた展開が勝手に閉じるのを防ぐ)。null=全閉。
+let expandedId: string | null = null;
+// optimisticDeletes(E-2 スライス⑤・楽観削除): delete-todo 送信中の行 id。rebuildDisplay が
+// 表示から即除去する(楽観適用)。成功で確定 vm に置き換わり、失敗でこの Set から抜いて行が復活する。
+// 【becoming-gone を1描画見せてから消す演出は省略した(判断)】仕様が許容する省略。楽観削除で
+// ghost(破線+畳み)を出すには「行を消す前に snapshot を ghost として1フレーム描き、次の描画で
+// 除去」という2段階のタイマー/フレーム管理が要り、ステートレス&アニメ無しのドクトリンと相性が悪い
+// (中間フレームをどれだけ見せるかは実質アニメの尺調整になる)。代わりに、サーバー確定後の
+// delete-todo 応答が removed(ghost)を載せてくるので、成功時に applyStructuredContent 経由で
+// becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
+const optimisticDeletes = new Set<string>();
+// --- 並び順安定性(位置記憶。2026-07-14 ユーザー確定の仕様変更)---------------------------
+// 【なぜ位置記憶を持つか】完了操作でタスクが下(完了済みセクション)へ即移動するのは違和感がある、
+// becoming で「その場に留める」と決めたのに次の確定描画で再セクショニングされて結局落ちるのは
+// 裏切り、というユーザー判断。よってカードインスタンスの生存中は「一度現れた行はその場に留め、
+// 状態(完了/未完了)だけ更新する」。クリーンな再セクショニング(完了が完了欄へ移る)は次の
+// カードインスタンス(fresh render = ページ再ロードで module state が新品)か、実質別ビュー
+// (calendarId 変更・view 変更)への切り替え時のリセットでだけ起きる。
+// 【confirmedTasks / 楽観設計との分離(要件5)】位置記憶は「表示層(renderAll の並べ替え段)だけの
+// 関心」。confirmedTasks(差分レンズの土台・クリーン)も optimisticToggle/optimisticRows(in-flight
+// 楽観)も一切汚さない。位置記憶と stickyData は renderAll でのみ読み書きする。
+type SectionKey = "overdue" | "today" | "upcoming" | "noDue" | "completed";
+const SECTION_ORDER: readonly SectionKey[] = ["overdue", "today", "upcoming", "noDue", "completed"];
+// positionMemory: id → 記憶した表示位置(どのセクションの、何番目か)。order は単調増加の絶対値で、
+// セクション内はこの order 昇順に並べる(新規行は positionSeq を進めて末尾に付く)。
+const positionMemory = new Map<string, { section: SectionKey; order: number }>();
+// stickyData: id → 最後に見たフル TodoItem。既定ビューで完了した行は確定 vm(未完了ビュー)から
+// 抜けるが、位置記憶にある間はこの last-known データでその場に描き続ける(=「操作履歴を残す UI」の本体)。
+const stickyData = new Map<string, TodoItem>();
+let positionSeq = 0; // order の採番カウンタ(単調増加)。リセットで 0 に戻す。
+/** 位置記憶を破棄して次の renderAll をクリーン描画にする(実質別ビューへの切り替え時)。 */
+function resetPositionMemory(): void {
+	positionMemory.clear();
+	stickyData.clear();
+	positionSeq = 0;
+}
+/** 位置記憶に無い新規行の自然セクション(due/completed 規則)。sectionize の per-item ロジックと
+ *  揃える(becoming-done の in-place は位置記憶が担うのでここでは completed→"completed" で素直に)。 */
+function naturalSection(task: TodoItem, todayKey: string): SectionKey {
+	if (task.completed) return "completed";
+	if (task.due === null) return "noDue";
+	const diff = dayDiff(wallDatePart(task.due), todayKey);
+	if (diff < 0) return "overdue";
+	if (diff === 0) return "today";
+	return "upcoming";
+}
 // currentCalendarId(E-2 スライス③): この一覧が今どのコレクションを表示しているか。
 // 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
 // ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
@@ -266,6 +332,19 @@ function isDefaultView(v: CurrentView): boolean {
  *  (server.ts の toTodosToolResponse の cast と同じ「閉じた型 vs SDK の index signature」対処)。 */
 function viewAsArgs(v: CurrentView): Record<string, unknown> {
 	return { ...v };
+}
+
+/** refresh-todos / list-todos 系を呼ぶときの arguments。currentView に加えて currentCalendarId を
+ *  必ず載せる(2026-07-14 実機バグ修正)。
+ *  【なぜ calendarId を必ず載せるか(重大バグの根治)】focus refetch が calendarId を渡さないと
+ *  server 既定 "tasks" を取得してしまい、reading-list 等の別コレクションで開いたカードが
+ *  ダブルクリック(iframe フォーカス)のたびに tasks コレクションの内容へ化ける
+ *  (→ 差分レンズが全行「同期(追加)」+ 消えた行のゴーストまみれになる)実機事故があった。
+ *  currentCalendarId が null(初回応答前)のときは省略して従来どおり server 既定に委ねる。 */
+function refreshArgs(): Record<string, unknown> {
+	const args = viewAsArgs(currentView);
+	if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+	return args;
 }
 
 // --- 自動 refetch のガード用状態 -------------------------------------------------
@@ -410,6 +489,75 @@ function priorityMarks(priority: number): string {
 	if (priority <= 4) return "!!!";
 	if (priority === 5) return "!!";
 	return "!";
+}
+
+// =============================================================================
+// 繰り返し(RRULE 要約)の人間可読整形(E-2 スライス⑤)
+// =============================================================================
+// 【なぜ UI 側の純関数か】人間可読文への整形(「毎週 月・水」等)は表示層の仕事、という
+// task-dto.ts の判断と対になる。DTO は chat 語彙(daily/weekly...)+ 構造化フィールドを
+// ロスレスに渡し、UI が閲覧者の言語(日本語)へ整形する。整形ルールが変わっても DTO は不変。
+
+/** BYDAY の weekday コード → 日本語1文字。序数付き("2MO" 等)はここに無い = degrade シグナル。 */
+const WEEKDAY_JA: Record<string, string> = { SU: "日", MO: "月", TU: "火", WE: "水", TH: "木", FR: "金", SA: "土" };
+/** frequency(chat 語彙)→ 「毎日/毎週/毎月/毎年」。語彙外(生 RRULE/生 FREQ)はここに無い。 */
+const RECUR_EVERY: Record<string, string> = { daily: "毎日", weekly: "毎週", monthly: "毎月", yearly: "毎年" };
+/** interval>1 のときの単位。「2週ごと」の「週」等。monthly は「か月」。 */
+const RECUR_UNIT: Record<string, string> = { daily: "日", weekly: "週", monthly: "か月", yearly: "年" };
+
+/**
+ * 繰り返しバッジのテキスト部分(⟳ アイコンは呼び出し側が前置する)を返す。
+ * 返り値 "" = アイコンのみに degrade(テキストは出さない)。仕様(E-2 スライス⑤):
+ *   - daily → 毎日 / weekly+weekdays → 毎週 月・水 / monthly → 毎月 / yearly → 毎年
+ *   - interval>1 → 「2週ごと」等(単位は RECUR_UNIT)
+ *   - 語彙外 frequency(生 RRULE / 生 FREQ degrade)→ "" (アイコンのみ)
+ *   - 序数付き BYDAY("2MO" 等・月/週の複雑形)→ "" (アイコンのみ)
+ * 【なぜ複雑形をアイコンのみに degrade するか】序数付き BYDAY や語彙外 FREQ を無理に日本語化
+ * すると誤訳(「第2月曜」を「月」と誤読)や語彙のでっち上げになる。バッジは「反復がある」ことを
+ * ⟳ で最小限に示し、詳細(完全表記)は formatRecurrenceFull と展開 UI に委ねる安全側 degrade。
+ */
+function formatRecurrence(rec: TodoRecurrence): string {
+	// 語彙外 frequency(task-dto.ts の degrade ケース1/2: 生 RRULE 全体 or 生 FREQ)→ アイコンのみ。
+	if (!(rec.frequency in RECUR_EVERY)) return "";
+	// 序数付き BYDAY(例 "2MO")が1つでも混ざる = 月/週の複雑形 → アイコンのみに degrade。
+	if (rec.weekdays !== null && rec.weekdays.some((w) => !(w in WEEKDAY_JA))) return "";
+	// INTERVAL>1 は曜日より先に「N単位ごと」で丸める(バッジは短さ優先。完全表記は展開 UI が担う)。
+	if (rec.interval > 1) {
+		return `${rec.interval}${RECUR_UNIT[rec.frequency] ?? ""}ごと`;
+	}
+	// weekly + 曜日指定 → 「毎週 月・水」。曜日は WEEKDAY_JA 順ではなく RRULE の並び順を尊重する。
+	if (rec.frequency === "weekly" && rec.weekdays !== null && rec.weekdays.length > 0) {
+		const days = rec.weekdays.map((w) => WEEKDAY_JA[w]).join("・");
+		return `${RECUR_EVERY[rec.frequency]} ${days}`;
+	}
+	return RECUR_EVERY[rec.frequency] ?? "";
+}
+
+/** until("YYYY-MM-DD" or offset ISO)→ 表示用日付(時刻付きなら " HH:MM" を添える)。
+ *  完全表記の終了条件「〜まで」に使う。相対化(今日/明日)はしない — 遠い未来の終了日が
+ *  多く、絶対日付の方が確認しやすい(バッジの due 相対表現とは役割が違う)。 */
+function formatUntilDate(until: string): string {
+	const datePart = until.slice(0, 10);
+	const hasTime = until.includes("T");
+	if (!hasTime) return datePart;
+	const time = until.split("T")[1]?.slice(0, 5) ?? "";
+	return time === "" ? datePart : `${datePart} ${time}`;
+}
+
+/**
+ * 繰り返しの完全表記(詳細展開用)。終了条件(count/until)込みで1文にする。
+ * 例: 「毎週 月・水・10回まで」「毎日・2026-07-31 まで」。
+ * バッジがアイコンのみに degrade する複雑形(語彙外 FREQ・序数 BYDAY)では、基部を
+ * 「繰り返し(生値)」にして情報を失わない(バッジは黙るが詳細は生値を見せる)。
+ */
+function formatRecurrenceFull(rec: TodoRecurrence): string {
+	const badge = formatRecurrence(rec);
+	// 基部: バッジが出せるならそれを使い、degrade なら生値を括弧付きで見せる(何も分からないより良い)。
+	const base = badge !== "" ? badge : `繰り返し(${rec.frequency})`;
+	const parts = [base];
+	if (rec.count !== null) parts.push(`${rec.count}回まで`);
+	if (rec.until !== null) parts.push(`${formatUntilDate(rec.until)} まで`);
+	return parts.join("・");
 }
 
 // =============================================================================
@@ -597,6 +745,29 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 	const texts = document.createElement("div");
 	texts.className = "texts";
+	// row-head(E-2 スライス⑤): タイトル + meta を包むタップ開閉領域。詳細(削除ボタンを含む)は
+	// この header の内側ではなく texts 直下の兄弟に置く — role="button" の中に <button> をネストすると
+	// ARIA 違反(インタラクティブ入れ子)になるため、クリック領域は header に限定する。
+	// チェック円(check button)は header の外(li 直下の別 flex 子)なので、円のタップは開閉と干渉しない。
+	const isExpanded = expandedId === task.id;
+	const header = document.createElement("div");
+	header.className = "row-head";
+	header.setAttribute("role", "button");
+	header.setAttribute("tabindex", "0");
+	header.setAttribute("aria-expanded", String(isExpanded));
+	// 開閉トグル: 同時に開くのは1行だけ(expandedId は単一値なので別行を開くと前行は自動で閉じる)。
+	const toggleExpand = (): void => {
+		expandedId = isExpanded ? null : task.id;
+		renderAll();
+	};
+	header.addEventListener("click", toggleExpand);
+	// キーボード操作(role=button は Enter/Space での起動を自前で配線する必要がある)。
+	header.addEventListener("keydown", (e) => {
+		if (e.key === "Enter" || e.key === " ") {
+			e.preventDefault(); // Space のページスクロール抑止 + Enter の暗黙送信抑止
+			toggleExpand();
+		}
+	});
 	const title = document.createElement("div");
 	title.className = "title";
 	// 優先度 ! 記号(E-2 スライス③): iOS リマインダーに合わせてタイトルの左に小さく置く。以前は
@@ -617,7 +788,17 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	}
 	// タイトル本文はテキストノードで追加する(pri-inline span の後ろに置くため textContent 代入は使わない)。
 	title.appendChild(document.createTextNode(task.title));
-	texts.appendChild(title);
+	// メモ有りインジケータ(E-2 スライス⑤): notes が非 null かつ非空なら控えめな「≡」をタイトル末尾に。
+	// 中身は詳細展開で見せるので、一覧では「メモがある」ことだけを最小の記号で示す(iOS リマインダーの
+	// サブタイトル行に相当する情報を、走査性を損なわないアイコン1つに畳む)。
+	if (task.notes !== null && task.notes.trim() !== "") {
+		const noteMark = document.createElement("span");
+		noteMark.className = "note-mark";
+		noteMark.textContent = "≡";
+		noteMark.setAttribute("aria-label", "メモあり");
+		title.appendChild(noteMark);
+	}
+	header.appendChild(title);
 
 	// メタ行: due 相対表現(あるものだけ)。優先度の常時表示は title 先頭へ移した(上記)。notes は行内に出さない
 	// (①の情報設計 — カード幅で notes まで出すと一覧の走査性が落ちる。展開 UI は②以降)。
@@ -629,7 +810,12 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	const dueInfo = formatDue(task, todayKey);
 	const hasInline = editPlan !== null && (editPlan.dueChange !== null || editPlan.priChange !== null);
 	const hasMore = editPlan !== null && editPlan.moreCount > 0;
-	if (dueInfo.text !== "" || hasInline || hasMore) {
+	// 繰り返しバッジ(E-2 スライス⑤): recurrence があれば due の隣に「⟳ 毎週 月・水」等を出す。
+	// 語彙外/複雑形はテキスト "" で ⟳ アイコンのみ(formatRecurrence 参照)。becoming-edit の
+	// 期日差分表示中(dueChange インライン)は一過性の差分表示に専念させ、常時バッジは抑止する
+	// (差分は差分の言語で語る、という meta 行の既存方針)。それ以外では常に出す。
+	const hasRecur = task.recurrence !== null && editPlan?.dueChange == null;
+	if (dueInfo.text !== "" || hasInline || hasMore || hasRecur) {
 		const meta = document.createElement("div");
 		meta.className = "meta";
 
@@ -687,7 +873,23 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			more.textContent = `他${editPlan.moreCount}件`;
 			meta.appendChild(more);
 		}
-		texts.appendChild(meta);
+		// 繰り返しバッジ(E-2 スライス⑤)。due の後ろに置く(iOS リマインダーの並びに寄せる)。
+		if (hasRecur && task.recurrence !== null) {
+			const recurText = formatRecurrence(task.recurrence);
+			const recur = document.createElement("span");
+			recur.className = "recur";
+			// テキスト "" のとき(語彙外/複雑形 degrade)は ⟳ アイコンのみ。テキストありは「⟳ 毎週 月・水」。
+			recur.textContent = recurText === "" ? "⟳" : `⟳ ${recurText}`;
+			recur.setAttribute("aria-label", recurText === "" ? "繰り返し" : `繰り返し ${recurText}`);
+			meta.appendChild(recur);
+		}
+		header.appendChild(meta);
+	}
+	texts.appendChild(header);
+	// 詳細展開(E-2 スライス⑤): 開いている行だけ header の下に詳細パネルを差し込む。開閉は
+	// アニメ無し(ドクトリン)= 単に DOM の有無で表現する(再描画のたび作り直す一方向データフロー)。
+	if (isExpanded) {
+		texts.appendChild(renderDetail(task, todayKey));
 	}
 	li.appendChild(texts);
 
@@ -700,6 +902,76 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		li.appendChild(tag);
 	}
 	return li;
+}
+
+/** completedAt(§3.8.2.1 で UTC ISO "...Z")→ 閲覧者ローカルの "YYYY/M/D HH:MM"。
+ *  完了時刻は「いつ済ませたか」の確認情報なので、due と違い相対化(今日/昨日)はせず絶対時刻で出す
+ *  (過去の記録は絶対日時の方が読みやすい)。 */
+function formatCompletedAt(iso: string): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return iso; // パース不能はロスレスに生値を出す(握りつぶさない)
+	const hh = String(d.getHours()).padStart(2, "0");
+	const mm = String(d.getMinutes()).padStart(2, "0");
+	return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+}
+
+/**
+ * 詳細展開パネル(E-2 スライス⑤)。行の header タップで開き、行下にインライン表示する。
+ * 内容: メモ全文(改行保持・長文はスクロール)/ 繰り返しの完全表記(終了条件込み)/ 場所 /
+ * 完了時刻(完了済みのみ)/ 削除ボタン。存在する情報だけ出す(空の行は作らない)。
+ * 削除ボタンは「展開内のみに配置=それ自体が確認段階」という設計(confirm ダイアログは出さない。
+ * 一覧の行には出さず、意図的に一段深い場所に置くことで誤タップを防ぐ)。
+ */
+function renderDetail(task: TodoItem, _todayKey: string): HTMLElement {
+	const detail = document.createElement("div");
+	detail.className = "detail";
+
+	// メモ全文。改行を保持(white-space: pre-wrap)し、長文は max-height + スクロールで畳む(CSS 側)。
+	if (task.notes !== null && task.notes.trim() !== "") {
+		const notes = document.createElement("div");
+		notes.className = "detail-notes";
+		notes.textContent = task.notes; // textContent = XSS 安全(HTML として解釈されない)
+		detail.appendChild(notes);
+	}
+
+	/** ラベル付き1行(「繰り返し: 毎週 月・水」等)を作る小ヘルパー。 */
+	const addRow = (label: string, value: string): void => {
+		const row = document.createElement("div");
+		row.className = "detail-row";
+		const l = document.createElement("span");
+		l.className = "detail-label";
+		l.textContent = `${label}: `;
+		row.appendChild(l);
+		row.appendChild(document.createTextNode(value));
+		detail.appendChild(row);
+	};
+
+	// 繰り返しの完全表記(終了条件込み)。バッジ(一覧行)より詳しい情報を出す唯一の場所。
+	if (task.recurrence !== null) {
+		addRow("繰り返し", formatRecurrenceFull(task.recurrence));
+	}
+	// 場所(LOCATION)。iOS のジオフェンス通知とは別物(task-dto.ts の location JSDoc 参照)だが、
+	// 他クライアント/自前書き込みの LOCATION は素直に見せる。
+	if (task.location !== null && task.location.trim() !== "") {
+		addRow("場所", task.location);
+	}
+	// 完了時刻は完了済みのときだけ(未完了行に「完了: —」を出しても意味がない)。
+	if (task.completed && task.completedAt !== null) {
+		addRow("完了", formatCompletedAt(task.completedAt));
+	}
+
+	// 削除ボタン(赤系・展開内のみ)。header の外(兄弟)なので role=button の入れ子にはならない。
+	const del = document.createElement("button");
+	del.type = "button";
+	del.className = "detail-delete";
+	del.textContent = "削除";
+	del.setAttribute("aria-label", `「${task.title}」を削除`);
+	// 楽観削除(deleteTask)。仮行(create 未確定)は本物 id が無いので押せないようにする。
+	if (isOptimisticId(task.id)) del.disabled = true;
+	del.addEventListener("click", () => void deleteTask(task));
+	detail.appendChild(del);
+
+	return detail;
 }
 
 /** 削除ゴースト行(becoming-gone)。removed:[{id,title,due?}] 由来の擬似 TodoItem を
@@ -764,6 +1036,10 @@ function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
 		completedAt: null,
 		notes: null,
 		sortOrder: null,
+		// location/recurrence は snapshot(差分メタ)には無い一過性フレーム用の情報なので null。
+		// 次応答で通常経路(taskFromVTodo 由来の実 tasks 行)に戻れば本来の値が乗る。
+		location: null,
+		recurrence: null,
 	};
 }
 
@@ -782,6 +1058,9 @@ function optimisticRowToItem(row: OptimisticRow): TodoItem {
 		completedAt: null,
 		notes: null,
 		sortOrder: null,
+		// 仮行はタイトルのみ(due/場所/繰り返しはチャット領分)。
+		location: null,
+		recurrence: null,
 	};
 }
 
@@ -800,11 +1079,15 @@ function rebuildDisplay(baseAffected: AffectedEntry[], baseGhosts: TaskSnapshot[
 	const affected = new Map<string, AffectedEntry>(baseAffected.map((a) => [a.id, a]));
 	// 確定土台(null なら空)。楽観トグルの重ねはシャローコピーした行にだけ行い、
 	// confirmedTasks(差分の土台)は決して破壊しない。
-	const displayTasks: TodoItem[] = (confirmedTasks ?? []).map((t) => {
-		const ov = optimisticToggle.get(t.id);
-		if (ov === undefined) return t;
-		return { ...t, completed: ov.completed, status: ov.status };
-	});
+	// 楽観削除(optimisticDeletes)中の行はここで即除去する = 削除ボタンを押した瞬間に行が消える
+	// (楽観適用)。確定土台 confirmedTasks 自体は消さない(失敗時のロールバックで復活させるため)。
+	const displayTasks: TodoItem[] = (confirmedTasks ?? [])
+		.filter((t) => !optimisticDeletes.has(t.id))
+		.map((t) => {
+			const ov = optimisticToggle.get(t.id);
+			if (ov === undefined) return t;
+			return { ...t, completed: ov.completed, status: ov.status };
+		});
 	for (const [id, ov] of optimisticToggle) {
 		// 該当行が確定一覧に居るときだけ becoming を立てる(既に確定 vm から抜けた・成功直前の
 		// 過渡でも二重表示にならないよう在庫確認する)。
@@ -884,6 +1167,9 @@ function renderAll(): void {
 			completedAt: null,
 			notes: null,
 			sortOrder: null,
+			// ghost(削除済み)は最小情報だけ描くので location/recurrence は持たない。
+			location: null,
+			recurrence: null,
 		};
 	});
 	// affected の completed 合成(案X)。completed は tasks の未完了ビューから抜けるので、
@@ -1041,8 +1327,25 @@ function applyStructuredContent(sc: unknown): void {
 	// reduced-motion は既存の抑制(spinner/skeleton の @media)にそのまま乗る(新規の動きが無い)。
 	// 差分レンズの prev/next はクリーンな確定値だけを使う(confirmedTasks)。表示用 tasks は
 	// 楽観の重ね物込みなので prev に使うと仮行が removed に化ける等の誤検出になる(2026-07-14)。
+	// calendarId が変わった描画では差分レンズを回さない(2026-07-14 実機バグ修正の保険)。
+	// reconcile が失敗して別コレクションの vm を degrade 適用した場合、prev(前コレクションの tasks)と
+	// next(別コレクションの tasks)を突き合わせると「全行が追加+全行が削除」の全差分ノイズになる。
+	// コレクションが違う描画は「差分」ではなく「別物への切り替え」なので、静かに置き換える(sync 差分ゼロ)。
+	// currentCalendarId はこの時点でまだ前回値(更新は関数末尾)なので旧コレクションとの比較になる。
+	const incomingCalendarId = structuredContent?.calendarId;
+	const calendarChanged =
+		currentCalendarId !== null && incomingCalendarId !== undefined && incomingCalendarId !== currentCalendarId;
+	// view 変更(実質別ビュー)判定。mutate 応答は view を持たない(undefined)ので誤検出しないよう、
+	// sc.view が明示されていて currentView と中身が違うときだけ「別ビュー」とみなす(2026-07-14 並び順安定性)。
+	const viewChanged =
+		structuredContent?.view !== undefined && JSON.stringify(structuredContent.view) !== JSON.stringify(currentView);
+	// 実質別ビュー(コレクション切り替え or ビュー切り替え)への遷移では位置記憶をリセットし、
+	// 次の renderAll をクリーン描画にする(要件4: クリーン再セクショニングはリセット時 or fresh render のみ)。
+	if (calendarChanged || viewChanged) resetPositionMemory();
 	let syncDiff: SyncDiff = { added: [], completed: [], reopened: [], edited: [], removed: [] };
-	if (confirmedTasks !== null) {
+	// viewChanged も差分レンズをスキップする(default→includeCompleted で prev/next の件数が
+	// 大きく変わり全件が「追加/削除」に誤検出されるのを防ぐ。calendarChanged と同じ理由)。
+	if (confirmedTasks !== null && !calendarChanged && !viewChanged) {
 		const explained = new Set<string>();
 		for (const a of serverAffected) explained.add(a.id);
 		for (const r of serverRemoved) explained.add(r.id);
@@ -1065,6 +1368,13 @@ function applyStructuredContent(sc: unknown): void {
 	// in-flight の楽観トグル/仮行が失われないのは、この重ね直しがあるため(一貫性の要)。
 	serverAffectedBase = combinedAffected;
 	serverGhostsBase = combinedGhosts;
+	// 削除された id は位置記憶 / sticky から追い出す(2026-07-14 並び順安定性)。これをしないと、
+	// 削除で消えた行が stickyData の last-known データを頼りに「幽霊住人」として復活してしまう
+	// (ghost の becoming-gone は1描画で消えるが、位置記憶が残っていると次描画で sticky 経路が拾う)。
+	for (const g of combinedGhosts) {
+		positionMemory.delete(g.id);
+		stickyData.delete(g.id);
+	}
 	rebuildDisplay(combinedAffected, combinedGhosts);
 	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
 	// バグ修正の要。list-todos/refresh-todos 応答は view を echo するのでビューが維持され、
@@ -1189,7 +1499,16 @@ connected = true;
  *  確実なシグナルとして使える。既定ビュー({})のときは常に false(素通り)— 既定ビューでは
  *  mutate 応答をそのまま適用する従来挙動を壊さない。 */
 function needsViewReconcile(view: CurrentView, sc: TodosStructuredContent): boolean {
-	return !isDefaultView(view) && sc.view === undefined;
+	// (a) 非既定ビューで view echo の無い vm(mutate 応答 or 無関係な他ツールの push)→ そのまま
+	//     適用すると currentView が黙って {} へ縮む(完了済みセクションが消える)ので refetch に差し替える。
+	if (!isDefaultView(view) && sc.view === undefined) return true;
+	// (b) calendarId 不一致(2026-07-14 実機バグ修正の最後の砦)。ホストが別コレクションの結果を
+	//     同一 App へ push しても、届いた vm の calendarId が現在のカードのコレクションと違えば直接
+	//     適用しない(カードが tasks コレクションの内容へ化ける事故の防御)。refetch(currentCalendarId
+	//     付き)で自分のコレクションを取り直す。currentCalendarId が null(初回応答前)は自分の
+	//     コレクションが未確定なので判定しない(初回 vm をそのまま受け入れて currentCalendarId を確立する)。
+	if (currentCalendarId !== null && sc.calendarId !== undefined && sc.calendarId !== currentCalendarId) return true;
+	return false;
 }
 
 /**
@@ -1210,7 +1529,7 @@ function needsViewReconcile(view: CurrentView, sc: TodosStructuredContent): bool
  */
 async function reconcileViewAndCompose(sc: TodosStructuredContent): Promise<TodosStructuredContent> {
 	try {
-		const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+		const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
 		if (refreshed.isError) {
 			const first = refreshed.content?.[0];
 			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
@@ -1265,7 +1584,7 @@ async function fetchLatest(): Promise<void> {
 	// includeCompleted:true 等で開いたビューでも既定(未完了のみ)に取り直してしまい完了済みが
 	// 消えていた。currentView(直近の list/refresh 応答が echo した vm.view)を渡すことで、開いた
 	// ビューのまま最新化する。currentView が既定 {} なら従来どおり既定ビューになる(後方互換)。
-	const result = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+	const result = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
 	if (result.isError) {
 		// ツール実行側のエラー(認可失敗・内部エラー等)。content の text を拾って投げ直す。
 		const first = result.content?.[0];
@@ -1328,9 +1647,14 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	announceBecoming(); // aria-live へ「〜を完了しました」等を即時通知(視覚 becoming と対)
 
 	try {
+		// calendarId は今表示中のコレクション(currentCalendarId)を必ず渡す(2026-07-14 実機バグ修正)。
+		// 渡さないと server 既定 "tasks" を探して reading-list 等のカードからの操作が TodoNotFound になる。
+		// null(初回応答前)のときだけ省略して server 既定に委ねる(その状態では実質 tasks を見ている)。
+		const updateArgs: Record<string, unknown> = { id: task.id, status: nextStatus };
+		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
 		const result = await app.callServerTool({
 			name: "update-todo",
-			arguments: { id: task.id, status: nextStatus },
+			arguments: updateArgs,
 		});
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -1354,7 +1678,7 @@ async function toggleTask(task: TodoItem): Promise<void> {
 				// mutate 応答 tasks は未完了ビュー固定で currentView と矛盾するので、tasks は refresh-todos
 				// (currentView 付き)で取り直し、mutate 応答の becoming メタ(affected/removed)だけ合成する。
 				try {
-					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
 					if (refreshed.isError) {
 						const first = refreshed.content?.[0];
 						const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
@@ -1401,9 +1725,113 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		renderAll();
 		// 再試行は「同じ mutation を再送」= toggleTask をもう一度呼ぶ(task は元の状態のスナップショット
 		// なので nextCompleted も同じに解決する)。二重送信は先頭の pendingIds ガードが引き続き守る。
+		// 文言の出し分け(E-2 スライス⑤・小修正): 完了操作(→COMPLETED)と再開操作(→NEEDS-ACTION)で
+		// 語を変える。以前は両方「完了を保存できませんでした」で、再開失敗時に文言が実態とズレていた。
+		const verb = nextCompleted ? "完了" : "再開";
 		showBanner(
-			`「${task.title}」の完了を保存できませんでした`,
+			`「${task.title}」の${verb}を保存できませんでした`,
 			() => void toggleTask(task),
+		);
+	}
+}
+
+/**
+ * 削除の楽観適用(E-2 スライス⑤・deleteTask):
+ *   1. optimisticDeletes に id を積み、その場で行を除去して再描画(楽観削除。becoming-gone の
+ *      中間演出は省略 — 判断理由は optimisticDeletes の宣言コメント参照)。
+ *   2. 裏で delete-todo を fire(calendarId は currentCalendarId を必ず渡す — バグ修正の監査対象)。
+ *   3. 成功: 楽観を解除し、delete-todo 応答(tasks + removed ゴースト)を確定描画に使う
+ *      (removed により becoming-gone がサーバー由来で1描画だけ自然に出る)。
+ *      失敗: 楽観をロールバック(行を復活)+ エラーバナー(再試行=同 delete 再送)。
+ * toggleTask と同じ in-flight 隔離 state(optimisticDeletes)で confirmedTasks を汚さない。
+ */
+async function deleteTask(task: TodoItem): Promise<void> {
+	// 仮行(quick-add 未確定)はサーバー id が無いので削除できない(create 確定後に本物 id で操作)。
+	if (isOptimisticId(task.id)) return;
+	// 二重送信ガード。
+	if (optimisticDeletes.has(task.id)) return;
+
+	optimisticDeletes.add(task.id);
+	pendingIds.add(task.id); // maybeRefetch の抑止 + 差分レンズの degrade ガードに乗せる
+	// 展開中の行を消すので展開状態も閉じる(消えた行の詳細パネルが宙に浮かないように)。
+	if (expandedId === task.id) expandedId = null;
+	clearBanner();
+	rebuildFromConfirmed();
+	renderAll();
+	liveEl.textContent = `「${task.title}」を削除しました`; // aria-live(視覚の行除去と対の音声版)
+
+	try {
+		// calendarId は必ず渡す(2026-07-14 実機バグ修正の監査対象。null のときだけ省略)。
+		const deleteArgs: Record<string, unknown> = { id: task.id };
+		if (currentCalendarId !== null) deleteArgs.calendarId = currentCalendarId;
+		const result = await app.callServerTool({ name: "delete-todo", arguments: deleteArgs });
+		if (result.isError) {
+			const first = result.content?.[0];
+			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+			throw new Error(text);
+		}
+		// 成功 → 楽観削除を解除してから確定 vm を適用する(解除前に applyStructuredContent すると
+		// rebuildDisplay が「もう確定一覧に居ない行」を optimisticDeletes で二度引きしようとするだけで
+		// 無害だが、意味を明確にするため先に落とす)。
+		optimisticDeletes.delete(task.id);
+		pendingIds.delete(task.id);
+		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
+		if (structuredContent?.tasks !== undefined) {
+			if (isDefaultView(currentView)) {
+				// 既定ビュー: mutate 応答 tasks(未完了ビュー固定)は currentView と一致 → そのまま適用。
+				// removed ゴーストが becoming-gone を1描画だけ描く(サーバー由来の静的マーキング)。
+				applyStructuredContent(structuredContent);
+			} else {
+				// 非既定ビュー: tasks は refresh-todos(currentView + calendarId 付き)で取り直し、
+				// delete 応答の removed(ゴースト)だけ合成する(toggleTask の非既定経路と同型)。
+				try {
+					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
+					if (refreshed.isError) {
+						const first = refreshed.content?.[0];
+						const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+						throw new Error(text);
+					}
+					const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+					const composed: TodosStructuredContent = {
+						tasks: rsc?.tasks ?? [],
+						calendarId: rsc?.calendarId,
+						view: rsc?.view,
+						removed: structuredContent.removed,
+					};
+					applyStructuredContent(composed);
+				} catch (e) {
+					// 削除自体は成功。行は既に消えている(optimisticDeletes 解除後も confirmedTasks から
+					// 抜けている)ので操作結果は失わない。「再読み込み失敗」として degrade。
+					rebuildFromConfirmed();
+					renderAll();
+					showBanner(
+						`削除は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+						() => void retryFetch(),
+					);
+				}
+			}
+		} else {
+			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
+			try {
+				await fetchLatest();
+			} catch (e) {
+				rebuildFromConfirmed();
+				renderAll();
+				showBanner(
+					`削除は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+					() => void retryFetch(),
+				);
+			}
+		}
+	} catch (e) {
+		// delete-todo 自体の失敗(transport / isError)→ 楽観削除をロールバックして行を復活させる。
+		optimisticDeletes.delete(task.id);
+		pendingIds.delete(task.id);
+		rebuildFromConfirmed();
+		renderAll();
+		showBanner(
+			`「${task.title}」の削除に失敗しました`,
+			() => void deleteTask(task), // 再試行 = 同じ削除を再送(二重削除は先頭の optimisticDeletes ガードが守る)
 		);
 	}
 }
@@ -1452,7 +1880,7 @@ async function createTodoFor(optimisticId: string, title: string): Promise<void>
 			// 非既定ビュー: mutate 応答 tasks は未完了ビュー固定で currentView と矛盾しうるので、
 			// tasks は refresh-todos(currentView 付き)で取り直し、becoming(affected:added)だけ合成する。
 			try {
-				const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: viewAsArgs(currentView) });
+				const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
 				if (refreshed.isError) {
 					const first = refreshed.content?.[0];
 					const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";

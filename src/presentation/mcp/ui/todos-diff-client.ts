@@ -34,6 +34,12 @@ export interface DiffTask {
 	isAllDay: boolean;
 	// PRIORITY 0-9(0=未設定)。表示語("高/中/低/なし")への正規化は下記 priorityWord が行う。
 	priority: number;
+	// E-2 スライス⑤: notes/recurrence の外部編集も becoming(編集済み)として拾えるようにする。
+	// これらは before/after を載せない(長文・構造化値なので planEdit が「編集済み」バッジへ degrade)。
+	// notes は string|null、recurrence は等価判定を JSON 文字列化で行うため詳細型は問わず unknown。
+	// TodoItem はこの2フィールドを持つので構造的部分型は保たれる(entry の confirmedTasks を渡せる)。
+	notes: string | null;
+	recurrence: unknown;
 }
 
 /** edited の1フィールド変化。before/after は「UI 表示用の短い文字列」(サーバー todos-diff.ts の
@@ -169,6 +175,18 @@ function fieldChanges(p: DiffTask, n: DiffTask): DiffChange[] {
 	const nw = priorityWord(n.priority);
 	if (pw !== nw) {
 		changes.push({ field: "priority", before: pw, after: nw });
+	}
+	// notes(E-2 スライス⑤): 外部でメモが編集/追加/削除されたら「編集済み」として拾う。before/after は
+	// 載せない — メモは長文で meta 行のインライン差分に収まらないため、entry の planEdit が field だけの
+	// 変更を「編集済み」バッジ + 「他N件」に degrade する(既存の title-only 編集と同じ扱い)。
+	if (p.notes !== n.notes) {
+		changes.push({ field: "notes" });
+	}
+	// recurrence(E-2 スライス⑤): 反復設定の外部変更も同様に拾う。構造化オブジェクトなので等価判定は
+	// JSON 文字列化で行う(サーバー由来で両者のキー順は同一 = 安定比較。null 同士は "null" で一致)。
+	// before/after は載せない(繰り返しの整形は表示層依存で meta インラインに乗らない)→ 「編集済み」degrade。
+	if (JSON.stringify(p.recurrence) !== JSON.stringify(n.recurrence)) {
+		changes.push({ field: "recurrence" });
 	}
 	return changes;
 }
