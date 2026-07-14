@@ -155,6 +155,9 @@ export const TODOS_APP_HTML = `<!doctype html>
     /* 320px 幅からの崩れ防止: 固定 px の横幅指定を使わず padding も clamp() で
      * コンテナ幅に自然フィットさせる。 */
     padding: clamp(8px, 3vw, 16px);
+    /* 2026-07-14 UI フィードバック対応: 右下固定 FAB(56px + 余白)が最終行に被らないよう下余白を確保
+     * (FAB は position:fixed で通常フローに場所を取らないため、body 側で退避スペースを空ける)。 */
+    padding-bottom: 88px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     font-size: 14px;
     color: var(--fg);
@@ -237,14 +240,44 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
 
   ul { list-style: none; margin: 0; padding: 0; }
+  /* 【2026-07-14 UI フィードバック対応: li を縦積みに】row-main(横並び: check + header + ⓘ)を
+   * 1つ目の子、詳細展開パネル(.detail)を2つ目の子にする。以前は li 自身が横 flex で check と
+   * texts を並べ、detail は texts 内にあったため、チェック円が texts 全体(header + detail)基準で
+   * 垂直配置されてタイトル行とズレていた。row-main に横並びを閉じ込めることで円がタイトル行と
+   * センタリングされ、detail は下に素直に開く。 */
   li {
     display: flex;
-    align-items: flex-start;
-    gap: 4px;
+    flex-direction: column;
     padding: 2px 0;
     border-bottom: 1px solid var(--border);
   }
   li:last-child { border-bottom: none; }
+  /* 行の主部(チェック円・タイトル/メタ・ⓘ・becoming タグ)。align-items:center でチェック円が
+   * タイトル行に対して垂直センタリングされる(フィードバック①の修正。detail は li 直下の別の子なので
+   * この centering には巻き込まれない)。 */
+  .row-main {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  /* ⓘ(info)アイコン: 詳細展開の主 affordance(フィードバック②)。44px 平方でタップ領域を確保
+   * (見た目の字は小さめ・muted)。塗り無し・枠無しで控えめに置き、押下・展開中は fg 色にする。 */
+  button.info {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  button.info[aria-expanded="true"] { color: var(--fg); }
 
   /* --- チェックボタン(実 <button> + aria-pressed)------------------------------
    * 見た目は 22px の丸(iOS リマインダーの円形チェックの語彙)だが、ボタン自体は
@@ -299,7 +332,8 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 1行目: タイトル。2行目: 優先度 ! 記号 + due(あるものだけ)。
    * meta を右端に寄せず title の下に置くのは、320px 幅で右カラム型にすると
    * タイトルの折り返し余地が消えて窮屈になるため(スパイク実装からの変更点)。 */
-  .texts { min-width: 0; flex: 1; padding: 10px 0; }
+  /* 旧 .texts(check の隣の縦積みラッパ)は 2026-07-14 UI フィードバック対応で廃止し、header を
+   * row-main 直下に置いた(flex:1/min-width:0/padding は .row-head へ移設)。 */
   .title { overflow-wrap: break-word; line-height: 1.35; }
   li.done .title {
     text-decoration: line-through;
@@ -433,7 +467,8 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* ゴーストはチェックボタン(44px)を持たないため、丸の水平位置を通常行に揃える
    * (44px ボタン内の 22px 円は左から 11px。8px はボックス内 padding で消化済み)。 */
   li.becoming-gone .circle { border-style: dashed; opacity: 0.45; margin: 0 4px 0 3px; }
-  li.becoming-gone .texts { opacity: 0.45; padding: 6px 0; }
+  /* ゴースト行は row-main 直下の row-head を減光する(2026-07-14 UI フィードバック対応で .texts 廃止)。 */
+  li.becoming-gone .row-head { opacity: 0.45; padding: 6px 0; }
 
   /* --- 操作結果の読み上げ(視覚非表示の aria-live)-------------------------------
    * becoming は視覚専用の表現なので、スクリーンリーダー向けには #live に
@@ -476,15 +511,48 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* 【E-2 スライス⑥前半: 段階的開示】1行目(入力+詳細トグル+追加)を .quick-add-row に包み、
    * その下に詳細パネル(#quick-add-detail)を縦に積む構造へ変えた。既定は1行目だけ表示=高速パス。
    * 詳細を開いても入力欄の位置(会話に一番近い操作面)は動かない。 */
+  /* 2026-07-14 UI フィードバック対応: quick-add をボトムシート化(FAB で開閉)。以前はカード下端に
+   * 常時インラインで置いていた(margin-top/border-top)。常時表示の「詳細」トグルが行の詳細表示と
+   * 誤認される原因だったため、既定 hidden にして FAB タップ時だけ position:fixed の下部シートとして
+   * 開く。開閉アニメは無し(ドクトリン)= hidden 属性の有無だけ。z-index はシート 40 / FAB 50 で、
+   * becoming 装飾や詳細展開(#root 内の通常フロー)より前面に出す。 */
   .quick-add {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    margin-top: 12px;
-    padding-top: 8px;
+    padding: 12px;
+    background: var(--surface);
     border-top: 1px solid var(--border);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
   }
   .quick-add-row { display: flex; gap: 8px; }
+  /* 追加 FAB。56px 円(≥44px タップ)。カード右下固定。開いている間は entry が hidden にする。 */
+  .fab {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 50;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-family: inherit;
+    font-size: 30px;
+    line-height: 1;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 50%;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+  }
   .quick-add-input {
     flex: 1;
     min-width: 0;
@@ -544,11 +612,15 @@ export const TODOS_APP_HTML = `<!doctype html>
    * texts(flex:1 の縦積み)の中の header がタップ対象。align-self:stretch で li の高さ
    * (チェックボタン 44px)まで伸ばし、タイトルが短くてもタップ面が 44px 確保される
    * (44px タッチターゲット維持の要件)。cursor:pointer で押せることを示す。 */
-  .texts { align-self: stretch; }
+  /* row-head(タイトル+メタのタップ開閉領域)。2026-07-14 UI フィードバック対応で texts ラッパを
+   * 廃し header を row-main 直下に置いたので、旧 .texts が持っていた flex:1 / min-width:0 をここへ移す
+   * (行の余白いっぱいにタイトルを広げ、長文が check/ⓘ を押し出さないよう min-width:0 で縮小を許可)。 */
   .row-head {
+    flex: 1;
+    min-width: 0;
     cursor: pointer;
-    /* header 自身も最低限の高さを持たせる(texts が stretch しない特殊ケースの保険)。 */
     min-height: 44px;
+    padding: 8px 0;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -559,7 +631,10 @@ export const TODOS_APP_HTML = `<!doctype html>
    * header の下(texts 内)に開くインライン詳細。開閉アニメは無し(ドクトリン)= DOM の
    * 有無だけで表現する。左に薄い罫線を引いて「この行に属する詳細」であることを示す。 */
   .detail {
-    margin: 4px 0 8px;
+    /* 2026-07-14 UI フィードバック対応: detail は li 直下(row-main の下)に移ったので、check の幅
+     * (44px)ぶん左インデントして「タイトルに属する詳細」であることを示す(以前は texts 内にあり
+     * 自然に字下げされていた)。 */
+    margin: 4px 0 8px 44px;
     padding: 8px 0 4px 10px;
     border-left: 2px solid var(--border);
     display: flex;
@@ -742,7 +817,12 @@ export const TODOS_APP_HTML = `<!doctype html>
        するのは、日付 input の type 切替(date⇄datetime-local)や優先度セグメントの選択状態を
        素直に扱うため。#quick-add は #root の外なので再描画に巻き込まれず、組み立てた部品の
        入力値・展開状態は list 再描画で消えない(ヘッダと同じ理由)。 -->
-  <form id="quick-add" class="quick-add">
+  <!-- 2026-07-14 UI フィードバック対応: quick-add を FAB 化。フォームは既定で hidden の「ボトムシート」。
+       カード右下固定の ＋ FAB(#quick-add-fab)をタップしたときだけ開き(入力へ自動フォーカス)、
+       送信 or 外側タップで閉じる(iOS リマインダーの作法)。仮行の楽観挿入・シマー・IME ガード等の
+       既存挙動は不変(submitQuickAdd はそのまま)。「詳細」トグルはフォーム内に残す(常時表示だった
+       ことが「quick-add の詳細ボタン=行の詳細表示」との誤認の原因だったので、開いたときだけ見える)。 -->
+  <form id="quick-add" class="quick-add" hidden>
     <div class="quick-add-row">
       <input
         id="quick-add-input"
@@ -765,6 +845,9 @@ export const TODOS_APP_HTML = `<!doctype html>
     <!-- 詳細パネル(既定 hidden)。中身は entry の buildQuickAddDetail() が append する。 -->
     <div id="quick-add-detail" class="qa-detail" hidden></div>
   </form>
+  <!-- 追加 FAB(2026-07-14 UI フィードバック対応)。カード右下固定。タップで上の quick-add シート
+       を開く。開いている間は entry が hidden にして重なりを避ける。type="button" で暗黙 submit を防ぐ。 -->
+  <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加">＋</button>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->

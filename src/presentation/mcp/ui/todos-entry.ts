@@ -145,6 +145,8 @@ const quickAddInput = document.getElementById("quick-add-input") as HTMLInputEle
 // この container に append する(静的 HTML に書かない理由は todos-app.ts の form コメント参照)。
 const quickAddDetailToggle = document.getElementById("quick-add-detail-toggle") as HTMLButtonElement;
 const quickAddDetail = document.getElementById("quick-add-detail") as HTMLElement;
+// 追加 FAB(2026-07-14 UI フィードバック対応)。タップで quick-add シートを開く。
+const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElement;
 // 追加ボタン(#quick-add-btn)への参照は廃止した(2026-07-14 楽観更新)。旧実装は送信中に
 // btn.disabled で二重送信を防いだが、楽観更新では送信中もボタンを押せるまま維持する
 // (連続投入を許す)ので JS から触る必要が無い。送信は form の submit ハンドラが拾う。
@@ -572,13 +574,18 @@ function createPrioritySegment(initial: number): { el: HTMLElement; get: () => n
 	return { el: seg, get: () => value, reset: () => { value = initial; sync(); } };
 }
 
-/** ネイティブ日付フィールド部品。withTimeToggle=true(quick-add)のときだけ「時刻を指定」トグルを
- *  出し、押すと input type を date⇄datetime-local で切り替える(カスタムピッカーは作らない)。
+/** ネイティブ日付フィールド部品。withTimeToggle=true のとき「時刻を指定」トグルを出し、押すと
+ *  input type を date⇄datetime-local で切り替える(カスタムピッカーは作らない)。withClear=true の
+ *  ときは「期日を外す」ボタンも出す(入力を空にする = getValue() が null を返す)。
  *  getValue() は未入力なら null、終日なら {due:"YYYY-MM-DD",isAllDay:true}、時刻付きなら
- *  {due:"YYYY-MM-DDTHH:MM:SS",isAllDay:false} を返す(create-todo の due 判別 union の形に合わせる)。
- *  initialDate は "YYYY-MM-DD"(既存タスクの日付部分)。編集フォーム(仕様B)は date-only で使う
- *  — update-todo の due が終日のみ対応で時刻/除去を受け付けないため(親への論点。ファイル末尾報告)。 */
-function createDueField(opts: { withTimeToggle: boolean; initialDate?: string }): {
+ *  {due:"YYYY-MM-DDTHH:MM:SS",isAllDay:false} を返す(create-todo/update-todo の due 形に合わせる)。
+ *  initialDate は "YYYY-MM-DD"(既存タスクの日付部分)。initialTime="HH:MM" を渡すと時刻付きモードで
+ *  初期化する(既存の時刻付きタスクを編集フォームで開くとき)。
+ *  【2026-07-14 V6 フォローアップ: 編集フォームでも時刻/除去を解放】以前は編集フォームを date-only
+ *  (時刻トグル無し・除去ボタン無し)に degrade していた — update-todo が終日 due しか受け付けず、
+ *  空文字送信も InvalidDueError になっていたため。update-todo が create-todo と対称(時刻付き +
+ *  due:null 除去)になったので degrade を解いて quick-add と同じ部品を編集でも使えるようにした。 */
+function createDueField(opts: { withTimeToggle: boolean; withClear?: boolean; initialDate?: string; initialTime?: string }): {
 	el: HTMLElement;
 	getValue: () => { due: string; isAllDay: boolean } | null;
 	reset: () => void;
@@ -586,19 +593,26 @@ function createDueField(opts: { withTimeToggle: boolean; initialDate?: string })
 	const row = document.createElement("div");
 	row.className = "due-field-row";
 	const input = document.createElement("input");
-	input.type = "date";
 	input.className = "field-date";
 	input.setAttribute("aria-label", "期日");
-	if (opts.initialDate !== undefined && opts.initialDate !== "") input.value = opts.initialDate;
+
+	// 初期値。initialTime があれば時刻付き(datetime-local)モードで開く。無ければ終日(date)。
+	let withTime = opts.initialTime !== undefined && opts.initialDate !== undefined && opts.initialDate !== "";
+	if (withTime) {
+		input.type = "datetime-local";
+		input.value = `${opts.initialDate}T${opts.initialTime}`;
+	} else {
+		input.type = "date";
+		if (opts.initialDate !== undefined && opts.initialDate !== "") input.value = opts.initialDate;
+	}
 	row.appendChild(input);
 
-	let withTime = false;
 	if (opts.withTimeToggle) {
 		const toggle = document.createElement("button");
 		toggle.type = "button";
 		toggle.className = "mini-toggle";
-		toggle.textContent = "時刻を指定";
-		toggle.setAttribute("aria-pressed", "false");
+		toggle.textContent = withTime ? "終日にする" : "時刻を指定";
+		toggle.setAttribute("aria-pressed", String(withTime));
 		toggle.addEventListener("click", () => {
 			withTime = !withTime;
 			toggle.setAttribute("aria-pressed", String(withTime));
@@ -618,12 +632,26 @@ function createDueField(opts: { withTimeToggle: boolean; initialDate?: string })
 		row.appendChild(toggle);
 	}
 
+	if (opts.withClear === true) {
+		// 「期日を外す」= 入力を空にする(getValue()→null)。編集フォームでは save 側が「元は due 有り
+		// かつ入力が空」を検知して update-todo に due:null(除去)を送る。ネイティブ date input の
+		// クリア UI がホスト/OS でまちまち(iOS WebView は特に分かりにくい)なので明示ボタンを置く。
+		const clear = document.createElement("button");
+		clear.type = "button";
+		clear.className = "mini-toggle";
+		clear.textContent = "期日を外す";
+		clear.addEventListener("click", () => {
+			input.value = "";
+		});
+		row.appendChild(clear);
+	}
+
 	return {
 		el: row,
 		getValue: () => {
 			if (input.value === "") return null;
 			if (withTime) {
-				// datetime-local は "YYYY-MM-DDTHH:MM"(秒なし)。create-todo の期待形へ秒を補う。
+				// datetime-local は "YYYY-MM-DDTHH:MM"(秒なし)。create-todo/update-todo の期待形へ秒を補う。
 				const v = input.value.length === 16 ? `${input.value}:00` : input.value;
 				return { due: v, isAllDay: false };
 			}
@@ -893,14 +921,22 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	circle.textContent = "✓"; // 未完/pending 時は CSS が color:transparent で隠す
 	check.appendChild(circle);
 	check.addEventListener("click", () => void toggleTask(task));
-	li.appendChild(check);
 
-	const texts = document.createElement("div");
-	texts.className = "texts";
+	// 【2026-07-14 UI フィードバック対応: 行構造を row-main(横) + detail(縦) に分離】
+	// 以前は li(横 flex)直下に check と texts を並べ、detail は texts 内(header の下)にあった。
+	// これだと ①チェック円を texts 全体(header + detail)に対して垂直配置するため、タイトル行との
+	// 上下位置が合わない(円が上に寄って見える)②展開の affordance が「タイトルタップ」だけで
+	// 見えない、という2つのフィードバックがあった。row-main(check + header + ⓘ を align-items:center で
+	// 横並び)に畳むことで円がタイトル行と垂直センタリングされ、detail は row-main の「下」に
+	// li 直下で開く(centering に巻き込まれない)。ⓘ(info)アイコンを右端に足して展開の主 affordance にする。
+	const rowMain = document.createElement("div");
+	rowMain.className = "row-main";
+	rowMain.appendChild(check);
+
 	// row-head(E-2 スライス⑤): タイトル + meta を包むタップ開閉領域。詳細(削除ボタンを含む)は
-	// この header の内側ではなく texts 直下の兄弟に置く — role="button" の中に <button> をネストすると
-	// ARIA 違反(インタラクティブ入れ子)になるため、クリック領域は header に限定する。
-	// チェック円(check button)は header の外(li 直下の別 flex 子)なので、円のタップは開閉と干渉しない。
+	// この header の内側ではなく row-main の外(li 直下)に置く — role="button" の中に <button> を
+	// ネストすると ARIA 違反(インタラクティブ入れ子)になるため、クリック領域は header に限定する。
+	// チェック円(check button)は header の外(row-main の別 flex 子)なので、円のタップは開閉と干渉しない。
 	const isExpanded = expandedId === task.id;
 	const header = document.createElement("div");
 	header.className = "row-head";
@@ -1037,21 +1073,42 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		}
 		header.appendChild(meta);
 	}
-	texts.appendChild(header);
-	// 詳細展開(E-2 スライス⑤): 開いている行だけ header の下に詳細パネルを差し込む。開閉は
-	// アニメ無し(ドクトリン)= 単に DOM の有無で表現する(再描画のたび作り直す一方向データフロー)。
-	if (isExpanded) {
-		texts.appendChild(renderDetail(task, todayKey));
-	}
-	li.appendChild(texts);
+	rowMain.appendChild(header);
 
-	// becoming マイクロラベル(行右端)。装飾(リング・バー等)は支援技術に届かないが、
+	// ⓘ(info)アイコン(2026-07-14 UI フィードバック対応: 詳細展開の主 affordance)。
+	// 以前はタイトルタップだけが展開トリガーで、見えない affordance だったためユーザーが気づかず、
+	// quick-add 側の「詳細」ボタンを詳細表示と誤認していた。行右端に明示的な ⓘ を置き、それをタップで
+	// 展開する(タイトルタップでの開閉も header に残すが、ⓘ が視認できる主導線)。toggleExpand を共有。
+	// role/aria: 実 <button> なので role 不要。aria-expanded で開閉状態を、aria-label で用途を伝える。
+	const info = document.createElement("button");
+	info.type = "button";
+	info.className = "info";
+	info.setAttribute("aria-expanded", String(isExpanded));
+	info.setAttribute("aria-label", isExpanded ? `「${task.title}」の詳細を閉じる` : `「${task.title}」の詳細を開く`);
+	info.textContent = "ⓘ";
+	info.addEventListener("click", (e) => {
+		e.stopPropagation(); // header クリックとの二重発火を防ぐ(row-main 内の別ボタン)。
+		toggleExpand();
+	});
+	rowMain.appendChild(info);
+
+	// becoming マイクロラベル(行右端、ⓘ の外側)。装飾(リング・バー等)は支援技術に届かないが、
 	// こちらは読み上げ対象のテキスト — さらに操作直後の要約は #live(aria-live)にも流す。
 	if (tagText !== null) {
 		const tag = document.createElement("span");
 		tag.className = "tag";
 		tag.textContent = tagText;
-		li.appendChild(tag);
+		rowMain.appendChild(tag);
+	}
+
+	li.appendChild(rowMain);
+
+	// 詳細展開(E-2 スライス⑤): 開いている行だけ row-main の「下」に詳細パネルを差し込む(li 直下 =
+	// row-main の垂直センタリングに巻き込まれない)。開閉はアニメ無し(ドクトリン)= 単に DOM の
+	// 有無で表現する(再描画のたび作り直す一方向データフロー)。detail は check の幅ぶんインデントして
+	// 「この行に属する詳細」であることを示す(CSS .detail の margin-left)。
+	if (isExpanded) {
+		li.appendChild(renderDetail(task, todayKey));
 	}
 	return li;
 }
@@ -1109,12 +1166,15 @@ function renderDetail(task: TodoItem, _todayKey: string): HTMLElement {
 		titleInput.setAttribute("aria-label", "タイトル");
 		addField("タイトル", titleInput);
 
-		// 期日(date-only)。既存 due の日付部分を初期値に。時刻トグルは出さない(update-todo が終日のみ対応)。
-		// 「期日を外す」ボタンも置かない(update-todo が due 除去を受け付けない=空文字は InvalidDueError)。
-		// どちらもサーバー未対応のための degrade(親への論点。ファイル末尾報告)。
+		// 期日。既存 due の日付(+ 時刻付きなら時刻)を初期値に。update-todo が create-todo と対称に
+		// なった(2026-07-14 V6 フォローアップ: 時刻付き due + due:null 除去)ので、quick-add と同じ部品で
+		// 「時刻を指定」トグルと「期日を外す」ボタンを出す(以前は date-only に degrade していた)。
 		const dueField = createDueField({
-			withTimeToggle: false,
+			withTimeToggle: true,
+			withClear: task.due !== null, // 元々 due があるときだけ「期日を外す」を出す(無いものは外せない)。
 			initialDate: task.due !== null ? wallDatePart(task.due) : "",
+			// 時刻付きタスクは時刻付きモードで開く(offset ISO の "HH:MM"。wallTimePart 参照)。終日は undefined。
+			initialTime: task.due !== null && !task.isAllDay && task.due.includes("T") ? wallTimePart(task.due) : undefined,
 		});
 		addField("期日", dueField.el);
 
@@ -1141,11 +1201,19 @@ function renderDetail(task: TodoItem, _todayKey: string): HTMLElement {
 			// タイトル: 空文字は送らない(iOS リマインダーが空タイトルを無視するのに合わせる)。変更時のみ。
 			const nextTitle = titleInput.value.trim();
 			if (nextTitle !== "" && nextTitle !== task.title) changes.title = nextTitle;
-			// 期日: date-only。入力があり かつ 既存の日付部分と違えば送る。空にした場合は「期日を外す」
-			// 扱いだが update-todo が除去非対応なので送らない(degrade。上記コメント/末尾報告)。
+			// 期日(V6 フォローアップ: 時刻付き + 除去に対応)。現在値の「壁時計表現」を作って比較する:
+			//   終日 → "YYYY-MM-DD" / 時刻付き → "YYYY-MM-DDTHH:MM:SS"(offset ISO の先頭19文字 = 壁時計)。
+			// getValue() は 空=null / 終日 "YYYY-MM-DD" / 時刻付き "YYYY-MM-DDTHH:MM:SS" を返す。
+			//   - 入力を空にした & 元は due 有り → 期日を外す(due:null を送る)。
+			//   - 元も空で今も空 → 変更なし(送らない)。
+			//   - 値が現在の壁時計表現と違う → 送る(終日⇄時刻付きの遷移・時刻変更も「違う」に含まれる)。
 			const dueVal = dueField.getValue();
-			const curDate = task.due !== null ? wallDatePart(task.due) : "";
-			if (dueVal !== null && dueVal.due !== curDate) changes.due = dueVal.due;
+			const curWall = task.due === null ? "" : task.due.includes("T") ? task.due.slice(0, 19) : task.due;
+			if (dueVal === null) {
+				if (curWall !== "") changes.due = null; // 期日を外す。
+			} else if (dueVal.due !== curWall) {
+				changes.due = dueVal.due;
+			}
 			// 優先度: 見た目のバケット(代表値)が変わったときだけ送る(priority=3 の行をそのまま保存しても
 			// 3→1 の無用な変更を送らないため、priorityToSegment どうしで比較する)。
 			const nextPriSeg = prioritySeg.get();
@@ -1208,17 +1276,22 @@ function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	const li = document.createElement("li");
 	li.className = "becoming-gone";
 
+	// li が縦積み(2026-07-14 フィードバック対応)になったので、ghost 行も row-main で横並びに包む
+	// (通常行と同じ構造 = 破線丸・タイトル・タグが横一列に並ぶ)。detail は持たない。
+	const rowMain = document.createElement("div");
+	rowMain.className = "row-main";
+
 	const circle = document.createElement("span");
 	circle.className = "circle";
 	circle.setAttribute("aria-hidden", "true");
-	li.appendChild(circle);
+	rowMain.appendChild(circle);
 
-	const texts = document.createElement("div");
-	texts.className = "texts";
+	const header = document.createElement("div");
+	header.className = "row-head";
 	const title = document.createElement("div");
 	title.className = "title";
 	title.textContent = task.title;
-	texts.appendChild(title);
+	header.appendChild(title);
 	const dueInfo = formatDue(task, todayKey);
 	if (dueInfo.text !== "") {
 		const meta = document.createElement("div");
@@ -1228,9 +1301,9 @@ function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		// overdue の赤は付けない — 削除済みタスクに警告色は無意味(もうやらなくてよい)。
 		due.textContent = dueInfo.text;
 		meta.appendChild(due);
-		texts.appendChild(meta);
+		header.appendChild(meta);
 	}
-	li.appendChild(texts);
+	rowMain.appendChild(header);
 
 	const tag = document.createElement("span");
 	tag.className = "tag";
@@ -1238,7 +1311,9 @@ function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 削除(server の removed)は従来どおり「削除」。ghosts の該当スナップショットの sync 印で分岐する。
 	const isSyncGhost = ghosts.find((g) => g.id === task.id)?.sync === true;
 	tag.textContent = isSyncGhost ? "同期(削除)" : "削除";
-	li.appendChild(tag);
+	rowMain.appendChild(tag);
+
+	li.appendChild(rowMain);
 	return li;
 }
 
@@ -2080,7 +2155,10 @@ async function deleteTask(task: TodoItem): Promise<void> {
  *  この編集フォームの対象外なので持たない(トグルの領分・表示のみ維持)。 */
 interface UpdateTodoChanges {
 	title?: string;
-	due?: string; // date-only "YYYY-MM-DD"(update-todo の due 制約)
+	// due: "YYYY-MM-DD"(終日)/ "YYYY-MM-DDTHH:MM:SS"(時刻付き)/ null(期日を外す)。
+	// V6 フォローアップで update-todo が create-todo と対称になったので3値すべて送れる
+	// (キー自体を入れない = 変更しない。null = 除去)。時刻付きのときは saveEdit が timeZone も添える。
+	due?: string | null;
 	priority?: number; // 0/1/5/9(セグメント代表値。0=未設定に戻す)
 	notes?: string; // "" でメモをクリア
 }
@@ -2109,12 +2187,18 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 	// 二重送信ガード(in-flight の同一行は弾く)。
 	if (pendingIds.has(task.id)) return;
 
-	// 楽観上書きを組み立てる(due を変えたら isAllDay=true も併せて上書き=編集は date-only のため)。
+	// 楽観上書きを組み立てる。due は3値(V6 フォローアップ):
+	//   null=期日を外す(overrides.due=null, isAllDay=false)/ 時刻付き(T を含む)/ 終日。
 	const overrides: OptimisticEdit = {};
 	if (changes.title !== undefined) overrides.title = changes.title;
 	if (changes.due !== undefined) {
-		overrides.due = changes.due;
-		overrides.isAllDay = true; // update-todo の due は終日のみ(時刻付きは未対応)
+		if (changes.due === null) {
+			overrides.due = null;
+			overrides.isAllDay = false;
+		} else {
+			overrides.due = changes.due;
+			overrides.isAllDay = !changes.due.includes("T"); // 時刻付き("...T...")なら終日でない。
+		}
 	}
 	if (changes.priority !== undefined) overrides.priority = changes.priority;
 	if (changes.notes !== undefined) overrides.notes = changes.notes === "" ? null : changes.notes;
@@ -2132,7 +2216,15 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 		const updateArgs: Record<string, unknown> = { id: task.id };
 		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
 		if (changes.title !== undefined) updateArgs.title = changes.title;
-		if (changes.due !== undefined) updateArgs.due = changes.due;
+		if (changes.due !== undefined) {
+			// null(除去)/ 終日 / 時刻付き をそのまま送る(update-todo の due は三値。V6 フォローアップ)。
+			// 時刻付き("...T...")のときは create-todo と同じく timeZone(閲覧デバイスの IANA ゾーン)が
+			// 必須なので併せて送る(update-todo が DTSTART;TZID/DUE;TZID + VTIMEZONE を組む)。
+			updateArgs.due = changes.due;
+			if (changes.due !== null && changes.due.includes("T")) {
+				updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			}
+		}
 		if (changes.priority !== undefined) updateArgs.priority = changes.priority;
 		if (changes.notes !== undefined) updateArgs.notes = changes.notes;
 		const result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
@@ -2350,7 +2442,31 @@ function submitQuickAdd(): void {
 	quickAddNotes.value = "";
 	setQuickDetailOpen(false);
 	enqueueQuickAdd(title, details);
+	// 2026-07-14 UI フィードバック対応: 送信したらシートを閉じて FAB に戻す(iOS の追加シート作法)。
+	closeQuickAddSheet();
 }
+
+// --- quick-add FAB シートの開閉(2026-07-14 UI フィードバック対応)---------------------------
+// フォームは既定 hidden。FAB タップで開き入力へフォーカス、送信 or 外側タップで閉じる。開閉アニメは
+// 無し(ドクトリン)= hidden 属性の有無だけ。仮行の楽観挿入・IME ガード等の既存挙動は不変。
+function openQuickAddSheet(): void {
+	quickAddForm.hidden = false;
+	quickAddFab.hidden = true; // 開いている間は FAB を隠して重なりを避ける。
+	quickAddInput.focus();
+}
+function closeQuickAddSheet(): void {
+	quickAddForm.hidden = true;
+	quickAddFab.hidden = false;
+}
+quickAddFab.addEventListener("click", openQuickAddSheet);
+// 外側タップで閉じる。シート内・FAB 上のタップは無視する(FAB の open クリックがこの listener にも
+// 伝播するが、その時点では既に form.hidden=false かつ target=FAB なので下の contains で弾かれる)。
+document.addEventListener("click", (e) => {
+	if (quickAddForm.hidden !== false) return; // 閉じているときは何もしない。
+	const target = e.target as Node;
+	if (quickAddForm.contains(target) || quickAddFab.contains(target)) return;
+	closeQuickAddSheet();
+});
 
 // --- quick-add 詳細パネルの組み立て(E-2 スライス⑥前半・段階的開示)-----------------------
 // 期日(時刻トグル付き)・優先度セグメント・メモ textarea を JS で1回だけ組み立てて #quick-add-detail
