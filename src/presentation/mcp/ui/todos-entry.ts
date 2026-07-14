@@ -140,6 +140,11 @@ const liveEl = document.getElementById("live") as HTMLElement;
 const appTitleEl = document.getElementById("app-title") as HTMLElement;
 const quickAddForm = document.getElementById("quick-add") as HTMLFormElement;
 const quickAddInput = document.getElementById("quick-add-input") as HTMLInputElement;
+// E-2 スライス⑥前半: quick-add の段階的開示。詳細トグル(disclosure)と詳細パネルの静的要素。
+// パネルの中身(期日/優先度/メモの入力部品)は buildQuickAddDetail() が JS で1回だけ組み立てて
+// この container に append する(静的 HTML に書かない理由は todos-app.ts の form コメント参照)。
+const quickAddDetailToggle = document.getElementById("quick-add-detail-toggle") as HTMLButtonElement;
+const quickAddDetail = document.getElementById("quick-add-detail") as HTMLElement;
 // 追加ボタン(#quick-add-btn)への参照は廃止した(2026-07-14 楽観更新)。旧実装は送信中に
 // btn.disabled で二重送信を防いだが、楽観更新では送信中もボタンを押せるまま維持する
 // (連続投入を許す)ので JS から触る必要が無い。送信は form の submit ハンドラが拾う。
@@ -236,11 +241,28 @@ const optimisticToggle = new Map<string, { completed: boolean; status: string | 
 // optimisticRows: quick-add 送信中の仮タスク(id は "optimistic:<乱数>")。create-todo が
 //   採番する実 id が確定するまでの表示用。rebuildDisplay が confirmedTasks の末尾に重ね、
 //   becoming-in(追加)を付ける。成功時に該当仮行を除去してから確定 vm を適用する。
+// 【E-2 スライス⑥前半】仮行に due/priority/notes を持たせる。quick-add の段階的開示で期日/優先度/
+// メモを付けて追加できるようになったので、仮行にもそれを反映する(セクション配置は due に従う=
+// 期日を付けた追加は期日なしセクションではなく該当セクションに仮行が出る)。タイトルのみの高速パス
+// では due=null / priority=0 / notes=null(従来と同じ挙動)。
 interface OptimisticRow {
 	id: string;
 	title: string;
+	// due は表示用 TodoItem と同じ形(終日 "YYYY-MM-DD" / 時刻付き "YYYY-MM-DDTHH:MM:SS")。null=期日なし。
+	// 仮行は offset を持たない(create-todo へ送る文字列そのまま)が、formatDue/dueEpoch は wall 部分と
+	// ローカル解釈で足りるので表示・ソートに支障はない(次の確定 vm で実 tasks 行の offset ISO に戻る)。
+	due: string | null;
+	isAllDay: boolean;
+	priority: number;
+	notes: string | null;
 }
 let optimisticRows: OptimisticRow[] = [];
+// optimisticEdits(E-2 スライス⑥前半・仕様B): 詳細編集の保存が in-flight の間の楽観的なフィールド
+// 上書き。id → 変更したフィールドだけの部分上書き。rebuildDisplay が confirmedTasks の該当行へ
+// この値を重ねる(値だけ差し替え = becoming-edit のインライン旧→新はサーバー応答の changes に任せる、
+// という仕様B-2)。成功で確定 vm に置き換わり、失敗でこの Map から抜いて元値へ戻す(ロールバック)。
+type OptimisticEdit = Partial<Pick<TodoItem, "title" | "due" | "isAllDay" | "priority" | "notes">>;
+const optimisticEdits = new Map<string, OptimisticEdit>();
 /** 仮行 id 判定(differ から除外・トグル禁止に使う)。 */
 function isOptimisticId(id: string): boolean {
 	return id.startsWith("optimistic:");
@@ -489,6 +511,130 @@ function priorityMarks(priority: number): string {
 	if (priority <= 4) return "!!!";
 	if (priority === 5) return "!!";
 	return "!";
+}
+
+// =============================================================================
+// 入力フォーム部品(E-2 スライス⑥前半・quick-add 詳細 / 詳細編集で共用)
+// =============================================================================
+// quick-add の段階的開示パネルと詳細展開の編集フォームで、期日(ネイティブ input)・優先度
+// セグメント・メモ textarea の3部品を使い回す。iOS リマインダーの新規/編集フォームが同じ語彙で
+// 出す語彙に寄せる(2つの入口で見た目が割れないように部品を1本化)。
+
+/** 優先度セグメントの4値。value は create-todo/update-todo へ送る PRIORITY 数値(iOS 準拠:
+ *  高=1 / 中=5 / 低=9 / なし=0)。priorityMarks(表示側の 1-4→!!!, 5→!!, 6-9→!)の逆写像で、
+ *  ユーザーが選んだ ! の段階を代表値 1/5/9 に落とす(iOS が書く実測値。docs/modeling/06)。 */
+const PRIORITY_SEGMENTS: ReadonlyArray<{ label: string; value: number; aria: string; pri: boolean }> = [
+	{ label: "なし", value: 0, aria: "優先度なし", pri: false },
+	{ label: "!", value: 9, aria: "優先度 低", pri: true },
+	{ label: "!!", value: 5, aria: "優先度 中", pri: true },
+	{ label: "!!!", value: 1, aria: "優先度 高", pri: true },
+];
+
+/** 既存タスクの PRIORITY(0-9)を「どのセグメントが選ばれている状態か」の代表値(0/1/5/9)へ丸める。
+ *  priorityMarks と同じ区分(1-4=高, 5=中, 6-9=低)を使う。編集時に「見た目のバケットが変わったか」で
+ *  変更判定するため(例 priority=3 の行はセグメント「!!!」= 代表値1 が選択状態、そのまま保存しても
+ *  3→1 の無用な変更を送らないよう、代表値どうしで比較する)。 */
+function priorityToSegment(priority: number): number {
+	if (priority <= 0) return 0;
+	if (priority <= 4) return 1;
+	if (priority === 5) return 5;
+	return 9;
+}
+
+/** 優先度セグメント部品。initial は代表値(0/1/5/9)。get() で現在の選択値を返す。 */
+function createPrioritySegment(initial: number): { el: HTMLElement; get: () => number; reset: () => void } {
+	const seg = document.createElement("div");
+	seg.className = "seg";
+	seg.setAttribute("role", "group");
+	seg.setAttribute("aria-label", "優先度");
+	let value = initial;
+	const buttons: HTMLButtonElement[] = [];
+	const sync = (): void => {
+		for (const [i, b] of buttons.entries()) {
+			b.setAttribute("aria-pressed", String(PRIORITY_SEGMENTS[i]?.value === value));
+		}
+	};
+	for (const opt of PRIORITY_SEGMENTS) {
+		const b = document.createElement("button");
+		b.type = "button"; // form 内なので暗黙 submit を避ける
+		b.textContent = opt.label;
+		// ! 系はオレンジ文字(優先度=オレンジの語彙)。記号だけだと支援技術に読まれないので aria-label を添える。
+		if (opt.pri) b.classList.add("seg-pri");
+		b.setAttribute("aria-label", opt.aria);
+		b.addEventListener("click", () => {
+			value = opt.value;
+			sync();
+		});
+		buttons.push(b);
+		seg.appendChild(b);
+	}
+	sync();
+	return { el: seg, get: () => value, reset: () => { value = initial; sync(); } };
+}
+
+/** ネイティブ日付フィールド部品。withTimeToggle=true(quick-add)のときだけ「時刻を指定」トグルを
+ *  出し、押すと input type を date⇄datetime-local で切り替える(カスタムピッカーは作らない)。
+ *  getValue() は未入力なら null、終日なら {due:"YYYY-MM-DD",isAllDay:true}、時刻付きなら
+ *  {due:"YYYY-MM-DDTHH:MM:SS",isAllDay:false} を返す(create-todo の due 判別 union の形に合わせる)。
+ *  initialDate は "YYYY-MM-DD"(既存タスクの日付部分)。編集フォーム(仕様B)は date-only で使う
+ *  — update-todo の due が終日のみ対応で時刻/除去を受け付けないため(親への論点。ファイル末尾報告)。 */
+function createDueField(opts: { withTimeToggle: boolean; initialDate?: string }): {
+	el: HTMLElement;
+	getValue: () => { due: string; isAllDay: boolean } | null;
+	reset: () => void;
+} {
+	const row = document.createElement("div");
+	row.className = "due-field-row";
+	const input = document.createElement("input");
+	input.type = "date";
+	input.className = "field-date";
+	input.setAttribute("aria-label", "期日");
+	if (opts.initialDate !== undefined && opts.initialDate !== "") input.value = opts.initialDate;
+	row.appendChild(input);
+
+	let withTime = false;
+	if (opts.withTimeToggle) {
+		const toggle = document.createElement("button");
+		toggle.type = "button";
+		toggle.className = "mini-toggle";
+		toggle.textContent = "時刻を指定";
+		toggle.setAttribute("aria-pressed", "false");
+		toggle.addEventListener("click", () => {
+			withTime = !withTime;
+			toggle.setAttribute("aria-pressed", String(withTime));
+			toggle.textContent = withTime ? "終日にする" : "時刻を指定";
+			// type 切替で value がブラウザにクリアされる/形式不一致になるのを防ぐため、日付部分を手で引き継ぐ。
+			// date "YYYY-MM-DD" ⇔ datetime-local "YYYY-MM-DDTHH:MM"。時刻付きへ移るときは既定 09:00 を補う
+			// (0:00 だと「終日と同じ?」と誤読されやすい。iOS の新規時刻付きも朝寄りの既定)。
+			const cur = input.value;
+			if (withTime) {
+				input.type = "datetime-local";
+				input.value = cur !== "" ? `${cur.slice(0, 10)}T09:00` : "";
+			} else {
+				input.type = "date";
+				input.value = cur !== "" ? cur.slice(0, 10) : "";
+			}
+		});
+		row.appendChild(toggle);
+	}
+
+	return {
+		el: row,
+		getValue: () => {
+			if (input.value === "") return null;
+			if (withTime) {
+				// datetime-local は "YYYY-MM-DDTHH:MM"(秒なし)。create-todo の期待形へ秒を補う。
+				const v = input.value.length === 16 ? `${input.value}:00` : input.value;
+				return { due: v, isAllDay: false };
+			}
+			return { due: input.value, isAllDay: true };
+		},
+		reset: () => {
+			withTime = false;
+			input.type = "date";
+			input.value = "";
+		},
+	};
 }
 
 // =============================================================================
@@ -932,12 +1078,86 @@ function renderDetail(task: TodoItem, _todayKey: string): HTMLElement {
 	const detail = document.createElement("div");
 	detail.className = "detail";
 
-	// メモ全文。改行を保持(white-space: pre-wrap)し、長文は max-height + スクロールで畳む(CSS 側)。
-	if (task.notes !== null && task.notes.trim() !== "") {
-		const notes = document.createElement("div");
-		notes.className = "detail-notes";
-		notes.textContent = task.notes; // textContent = XSS 安全(HTML として解釈されない)
-		detail.appendChild(notes);
+	// --- 編集フォーム(E-2 スライス⑥前半・仕様B)----------------------------------------
+	// タイトル(インライン text)・期日(ネイティブ date input・date-only)・優先度(セグメント)・
+	// メモ(textarea)を編集し、保存ボタン1つで「変更したフィールドだけ」を update-todo に渡す
+	// (undefined は送らない=部分更新の契約。仕様B-1)。仮行(create 未確定)は本物 id が無いので
+	// 編集不可(保存を無効化)。繰り返し/status の編集は置かない(表示のみ維持・トグルの領分。仕様B-3)。
+	// 【なぜ read-only の notes 全文表示を廃してこの textarea に統合したか】展開を開くたび notes を
+	// 二重(読み取り+編集)に出すと冗長。textarea が既に全文を改行保持で見せるので、これが表示も兼ねる。
+	if (!isOptimisticId(task.id)) {
+		const edit = document.createElement("div");
+		edit.className = "detail-edit";
+
+		/** ラベル付きフィールド(縦積み)を作る小ヘルパー。 */
+		const addField = (labelText: string, control: HTMLElement): void => {
+			const field = document.createElement("div");
+			field.className = "field";
+			const label = document.createElement("span");
+			label.className = "field-label";
+			label.textContent = labelText;
+			field.appendChild(label);
+			field.appendChild(control);
+			edit.appendChild(field);
+		};
+
+		// タイトル(インライン text)。
+		const titleInput = document.createElement("input");
+		titleInput.type = "text";
+		titleInput.className = "field-text";
+		titleInput.value = task.title;
+		titleInput.setAttribute("aria-label", "タイトル");
+		addField("タイトル", titleInput);
+
+		// 期日(date-only)。既存 due の日付部分を初期値に。時刻トグルは出さない(update-todo が終日のみ対応)。
+		// 「期日を外す」ボタンも置かない(update-todo が due 除去を受け付けない=空文字は InvalidDueError)。
+		// どちらもサーバー未対応のための degrade(親への論点。ファイル末尾報告)。
+		const dueField = createDueField({
+			withTimeToggle: false,
+			initialDate: task.due !== null ? wallDatePart(task.due) : "",
+		});
+		addField("期日", dueField.el);
+
+		// 優先度(セグメント)。既存 priority を代表値へ丸めて初期選択にする。
+		const prioritySeg = createPrioritySegment(priorityToSegment(task.priority));
+		addField("優先度", prioritySeg.el);
+
+		// メモ(textarea)。表示も兼ねる(上記コメント)。改行はそのまま value に入る。
+		const notesArea = document.createElement("textarea");
+		notesArea.className = "field-textarea";
+		notesArea.value = task.notes ?? "";
+		notesArea.setAttribute("aria-label", "メモ");
+		addField("メモ", notesArea);
+
+		// 保存ボタン。押下時に「元値と違うフィールドだけ」を集めて saveEdit に渡す(部分更新)。
+		const save = document.createElement("button");
+		save.type = "button";
+		save.className = "detail-save";
+		save.textContent = "保存";
+		// in-flight(この行が既に保存中)は二重送信防止で無効化する。
+		if (pendingIds.has(task.id)) save.disabled = true;
+		save.addEventListener("click", () => {
+			const changes: UpdateTodoChanges = {};
+			// タイトル: 空文字は送らない(iOS リマインダーが空タイトルを無視するのに合わせる)。変更時のみ。
+			const nextTitle = titleInput.value.trim();
+			if (nextTitle !== "" && nextTitle !== task.title) changes.title = nextTitle;
+			// 期日: date-only。入力があり かつ 既存の日付部分と違えば送る。空にした場合は「期日を外す」
+			// 扱いだが update-todo が除去非対応なので送らない(degrade。上記コメント/末尾報告)。
+			const dueVal = dueField.getValue();
+			const curDate = task.due !== null ? wallDatePart(task.due) : "";
+			if (dueVal !== null && dueVal.due !== curDate) changes.due = dueVal.due;
+			// 優先度: 見た目のバケット(代表値)が変わったときだけ送る(priority=3 の行をそのまま保存しても
+			// 3→1 の無用な変更を送らないため、priorityToSegment どうしで比較する)。
+			const nextPriSeg = prioritySeg.get();
+			if (nextPriSeg !== priorityToSegment(task.priority)) changes.priority = nextPriSeg;
+			// メモ: 変更時のみ。空文字にした場合はメモのクリア意図として "" を送る(update-todo は notes を
+			// 受け取れば DESCRIPTION を差し替える)。task.notes が null のときは "" と等価扱いで比較する。
+			const nextNotes = notesArea.value;
+			if (nextNotes !== (task.notes ?? "")) changes.notes = nextNotes;
+			void saveEdit(task, changes);
+		});
+		edit.appendChild(save);
+		detail.appendChild(edit);
 	}
 
 	/** ラベル付き1行(「繰り返し: 毎週 月・水」等)を作る小ヘルパー。 */
@@ -1049,22 +1269,24 @@ function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
 	};
 }
 
-/** 仮タスク(quick-add 楽観行)→ 描画用 TodoItem。due 等の詳細はチャット領分なので持たない
- *  (タイトルのみ・期日なしセクションに入る)。id は "optimistic:" prefix のまま(差分除外印)。 */
+/** 仮タスク(quick-add 楽観行)→ 描画用 TodoItem。E-2 スライス⑥前半で段階的開示により due/優先度/
+ *  メモを付けられるようになったので、仮行にもそれを反映する(セクション配置は due に従う)。
+ *  高速パス(タイトルのみ)では due=null / priority=0 / notes=null(従来と同じ)。
+ *  id は "optimistic:" prefix のまま(差分除外印)。 */
 function optimisticRowToItem(row: OptimisticRow): TodoItem {
 	return {
 		id: row.id,
 		title: row.title,
 		completed: false,
 		status: "NEEDS-ACTION",
-		due: null,
-		isAllDay: false,
-		priority: 0,
+		due: row.due,
+		isAllDay: row.isAllDay,
+		priority: row.priority,
 		percentComplete: null,
 		completedAt: null,
-		notes: null,
+		notes: row.notes,
 		sortOrder: null,
-		// 仮行はタイトルのみ(due/場所/繰り返しはチャット領分)。
+		// 場所/繰り返しは quick-add の領分外(チャット/詳細編集に委ねる)なので仮行は持たない。
 		location: null,
 		recurrence: null,
 	};
@@ -1091,8 +1313,19 @@ function rebuildDisplay(baseAffected: AffectedEntry[], baseGhosts: TaskSnapshot[
 		.filter((t) => !optimisticDeletes.has(t.id))
 		.map((t) => {
 			const ov = optimisticToggle.get(t.id);
-			if (ov === undefined) return t;
-			return { ...t, completed: ov.completed, status: ov.status };
+			const ed = optimisticEdits.get(t.id);
+			// トグルと編集は独立に重なりうる(まれだが「完了にしつつタイトル編集中」等)。両方あれば
+			// 両方を1つのシャローコピーへ重ねる(confirmedTasks は決して破壊しない=差分レンズの土台を守る)。
+			if (ov === undefined && ed === undefined) return t;
+			const merged: TodoItem = { ...t };
+			if (ov !== undefined) {
+				merged.completed = ov.completed;
+				merged.status = ov.status;
+			}
+			// 編集の楽観上書き(仕様B-2: 値だけ差し替え。becoming-edit のインライン旧→新は確定 vm の
+			// changes に任せるので、ここでは affected を立てない=装飾を付けない)。
+			if (ed !== undefined) Object.assign(merged, ed);
+			return merged;
 		});
 	for (const [id, ov] of optimisticToggle) {
 		// 該当行が確定一覧に居るときだけ becoming を立てる(既に確定 vm から抜けた・成功直前の
@@ -1842,6 +2075,135 @@ async function deleteTask(task: TodoItem): Promise<void> {
 	}
 }
 
+/** 詳細編集の保存で update-todo へ渡す「変更フィールドだけ」の集合(仕様B-1・部分更新)。
+ *  ここに入れたキーだけ送る(未指定=変更しない、が update-todo の契約)。status/recurrence は
+ *  この編集フォームの対象外なので持たない(トグルの領分・表示のみ維持)。 */
+interface UpdateTodoChanges {
+	title?: string;
+	due?: string; // date-only "YYYY-MM-DD"(update-todo の due 制約)
+	priority?: number; // 0/1/5/9(セグメント代表値。0=未設定に戻す)
+	notes?: string; // "" でメモをクリア
+}
+
+/**
+ * 詳細編集の保存(E-2 スライス⑥前半・仕様B。toggleTask / deleteTask と同じ楽観更新の骨格):
+ *   1. 変更フィールドを optimisticEdits に積み、その場で行に即反映(値だけ差し替え。becoming-edit の
+ *      インライン旧→新はサーバー応答の changes に任せる=楽観段階では装飾を付けない。仕様B-2)。
+ *      展開は閉じる(編集後の行の変化を一覧上で確認できるように。開いたままだと自分の入力欄が
+ *      再描画で初期値に戻って見え、保存されたのか紛らわしい)。
+ *   2. 裏で update-todo を fire(変更フィールドだけ + calendarId は必ず currentCalendarId。仕様B-4)。
+ *   3. 成功: 楽観を解除し、確定 vm を適用(既定ビューはそのまま / 非既定ビューは refresh 合成 —
+ *      toggleTask と同型。mutate 応答の affected:edited が becoming-edit のインライン旧→新を描く)。
+ *      失敗: 楽観をロールバック(元値へ戻す)+ エラーバナー(再試行=同じ保存を再送)。
+ * changes が空(実質何も変えていない)なら何もしない(無駄な PUT を投げない)。
+ */
+async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<void> {
+	// 仮行(create 未確定)はサーバー id が無いので編集できない(renderDetail 側でも無効化済みだが二重ガード)。
+	if (isOptimisticId(task.id)) return;
+	// 変更が1つも無ければ何もしない(展開だけ閉じて終わり=ユーザーの「保存」意図に沿う静かな no-op)。
+	if (Object.keys(changes).length === 0) {
+		expandedId = null;
+		renderAll();
+		return;
+	}
+	// 二重送信ガード(in-flight の同一行は弾く)。
+	if (pendingIds.has(task.id)) return;
+
+	// 楽観上書きを組み立てる(due を変えたら isAllDay=true も併せて上書き=編集は date-only のため)。
+	const overrides: OptimisticEdit = {};
+	if (changes.title !== undefined) overrides.title = changes.title;
+	if (changes.due !== undefined) {
+		overrides.due = changes.due;
+		overrides.isAllDay = true; // update-todo の due は終日のみ(時刻付きは未対応)
+	}
+	if (changes.priority !== undefined) overrides.priority = changes.priority;
+	if (changes.notes !== undefined) overrides.notes = changes.notes === "" ? null : changes.notes;
+
+	optimisticEdits.set(task.id, overrides);
+	pendingIds.add(task.id);
+	expandedId = null; // 編集後の行の変化を一覧で見せる(上記コメント)
+	clearBanner();
+	rebuildFromConfirmed();
+	renderAll();
+
+	try {
+		// calendarId は必ず currentCalendarId を渡す(仕様B-4・先日のバグ再発防止)。null(初回応答前)の
+		// ときだけ省略して server 既定に委ねる。変更フィールドだけを載せる(undefined は送らない=部分更新)。
+		const updateArgs: Record<string, unknown> = { id: task.id };
+		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+		if (changes.title !== undefined) updateArgs.title = changes.title;
+		if (changes.due !== undefined) updateArgs.due = changes.due;
+		if (changes.priority !== undefined) updateArgs.priority = changes.priority;
+		if (changes.notes !== undefined) updateArgs.notes = changes.notes;
+		const result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
+		if (result.isError) {
+			const first = result.content?.[0];
+			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+			throw new Error(text);
+		}
+		// 成功 → 楽観を解除してから確定 vm を適用(解除前だと rebuildDisplay が二重に重ねる)。
+		optimisticEdits.delete(task.id);
+		pendingIds.delete(task.id);
+		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
+		if (structuredContent?.tasks !== undefined) {
+			if (isDefaultView(currentView)) {
+				// 既定ビュー: mutate 応答 tasks は currentView と整合 → そのまま適用(affected:edited が旧→新を描く)。
+				applyStructuredContent(structuredContent);
+			} else {
+				// 非既定ビュー: tasks は refresh-todos(currentView+calendarId 付き)で取り直し、
+				// mutate 応答の becoming メタ(affected/removed)だけ合成する(toggleTask の非既定経路と同型)。
+				try {
+					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
+					if (refreshed.isError) {
+						const first = refreshed.content?.[0];
+						const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
+						throw new Error(text);
+					}
+					const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+					const composed: TodosStructuredContent = {
+						tasks: rsc?.tasks ?? [],
+						calendarId: rsc?.calendarId,
+						view: rsc?.view,
+						affected: structuredContent.affected,
+						removed: structuredContent.removed,
+					};
+					applyStructuredContent(composed);
+				} catch (e) {
+					// 更新自体は成功。楽観は解除済みなので次の focus refetch がビューを正す。「再読み込み失敗」告知。
+					rebuildFromConfirmed();
+					renderAll();
+					showBanner(
+						`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+						() => void retryFetch(),
+					);
+				}
+			}
+		} else {
+			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
+			try {
+				await fetchLatest();
+			} catch (e) {
+				rebuildFromConfirmed();
+				renderAll();
+				showBanner(
+					`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+					() => void retryFetch(),
+				);
+			}
+		}
+	} catch (e) {
+		// update-todo 自体の失敗(transport / isError)→ 楽観編集をロールバック(元値へ戻す)。
+		optimisticEdits.delete(task.id);
+		pendingIds.delete(task.id);
+		rebuildFromConfirmed();
+		renderAll();
+		showBanner(
+			`「${task.title}」の変更を保存できませんでした`,
+			() => void saveEdit(task, changes), // 再試行 = 同じ変更を再送(二重送信は先頭の pendingIds ガードが守る)
+		);
+	}
+}
+
 // --- quick-add(E-2 スライス③ + 2026-07-14 楽観更新ドクトリン)-------------------------
 // フォーム送信(追加ボタン / Enter)で create-todo を叩く。楽観更新へ転換したので:
 //   送信即 → 入力をクリアして入力可能のまま維持し、仮タスク(id は "optimistic:<乱数>")を
@@ -1854,25 +2216,51 @@ async function deleteTask(task: TodoItem): Promise<void> {
 // 重ね直すので消えない(一貫性の要)。
 // 【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復はチャット(LLM の create-todo)の領分。
 
+/** quick-add の詳細フィールド(段階的開示で付けた期日/優先度/メモ)の1回分。高速パス(タイトルのみ)は
+ *  due=null / priority=0 / notes="" で呼ばれる(=従来と同じ挙動)。 */
+interface QuickAddDetails {
+	due: { due: string; isAllDay: boolean } | null;
+	priority: number;
+	notes: string;
+}
+
 /** 仮行を1つ積んで即描画し、裏で create-todo を fire する(送信・再試行の共通経路)。 */
-function enqueueQuickAdd(title: string): void {
+function enqueueQuickAdd(title: string, details: QuickAddDetails): void {
 	// 仮 id は乱数で一意化(複数連続投入で衝突しないように)。差分レンズは optimistic: prefix で除外。
 	const optimisticId = `optimistic:${Math.random().toString(36).slice(2)}`;
-	optimisticRows.push({ id: optimisticId, title });
+	// 仮行にも due/priority/notes を反映(セクション配置は due に従う=期日を付けた追加は該当セクションへ)。
+	optimisticRows.push({
+		id: optimisticId,
+		title,
+		due: details.due?.due ?? null,
+		isAllDay: details.due?.isAllDay ?? false,
+		priority: details.priority,
+		notes: details.notes === "" ? null : details.notes,
+	});
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
 	announceBecoming(); // 「〜を追加しました」を aria-live へ即時通知
-	void createTodoFor(optimisticId, title);
+	void createTodoFor(optimisticId, title, details);
 }
 
 /** 仮行 optimisticId に対応する create-todo を裏で実行し、成功/失敗で仮行を回収する。 */
-async function createTodoFor(optimisticId: string, title: string): Promise<void> {
+async function createTodoFor(optimisticId: string, title: string, details: QuickAddDetails): Promise<void> {
 	try {
 		// calendarId は今表示中のコレクション(currentCalendarId)に作る。未受領(null)なら引数を
 		// 省いて server 既定("tasks")に委ねる(ヘッダがプレースホルダ表示中に投入された場合の安全側)。
-		const args: Record<string, unknown> =
-			currentCalendarId !== null ? { title, calendarId: currentCalendarId } : { title };
+		const args: Record<string, unknown> = { title };
+		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		// 段階的開示の詳細を create-todo の due 判別 union の形に正確に合わせる(仕様A-3):
+		//   due が終日 → "YYYY-MM-DD"(timeZone 不要) / 時刻付き → "YYYY-MM-DDTHH:MM:SS" + timeZone。
+		//   timeZone は閲覧デバイスの IANA ゾーン(create-todo は時刻付き due に timeZone 必須)。
+		if (details.due !== null) {
+			args.due = details.due.due;
+			if (!details.due.isAllDay) args.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		}
+		// priority は 0(なし)なら送らない(省略=未設定)。1/5/9 のときだけ載せる。
+		if (details.priority > 0) args.priority = details.priority;
+		if (details.notes !== "") args.notes = details.notes;
 		const result = await app.callServerTool({ name: "create-todo", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -1934,10 +2322,13 @@ async function createTodoFor(optimisticId: string, title: string): Promise<void>
 		rebuildFromConfirmed();
 		renderAll();
 		// 入力欄が空のときだけタイトルを戻す(ユーザーが既に次の入力を打っていたら奪わない)。
+		// 【degrade】詳細フィールド(期日/優先度/メモ)は復元しない — 送信時に既にクリア&畳んでおり、
+		// 復元には detail 部品への値の書き戻しが要る。追加失敗は稀で、再試行ボタン(同じ details で再送)を
+		// 用意しているのでそちらで救う(タイトルだけ入力欄に戻すのは「次の一手」の入口として有用)。
 		if (quickAddInput.value.trim() === "") quickAddInput.value = title;
 		showBanner(
 			`「${title}」の追加に失敗しました`,
-			() => enqueueQuickAdd(title), // 再試行 = 同じ仮行を積み直して再送
+			() => enqueueQuickAdd(title, details), // 再試行 = 同じ仮行(詳細込み)を積み直して再送
 		);
 	}
 }
@@ -1946,9 +2337,59 @@ function submitQuickAdd(): void {
 	// 空文字・空白のみは送信しない(iOS リマインダーで空行入力が無視される挙動に合わせる)。
 	const title = quickAddInput.value.trim();
 	if (title === "") return;
+	// 段階的開示で開いていれば詳細フィールドを読み取る(閉じていても getValue は現在値=既定で null/0/"")。
+	const details: QuickAddDetails = {
+		due: quickAddDue.getValue(),
+		priority: quickAddPriority.get(),
+		notes: quickAddNotes.value.trim(),
+	};
 	quickAddInput.value = ""; // 送信即クリア(入力可能のまま維持)
-	enqueueQuickAdd(title);
+	// 詳細フィールドをクリアして畳む(仕様A-4: 送信後、詳細フィールドはクリアして畳む)。
+	quickAddDue.reset();
+	quickAddPriority.reset();
+	quickAddNotes.value = "";
+	setQuickDetailOpen(false);
+	enqueueQuickAdd(title, details);
 }
+
+// --- quick-add 詳細パネルの組み立て(E-2 スライス⑥前半・段階的開示)-----------------------
+// 期日(時刻トグル付き)・優先度セグメント・メモ textarea を JS で1回だけ組み立てて #quick-add-detail
+// に append する。#quick-add は #root の外なので list 再描画に巻き込まれず、入力途中の値・展開状態は
+// 保たれる(だから静的 HTML でなく JS 構築でよい)。部品は submitQuickAdd から getValue/reset で読む。
+const quickAddDue = createDueField({ withTimeToggle: true });
+const quickAddPriority = createPrioritySegment(0);
+const quickAddNotes = document.createElement("textarea");
+quickAddNotes.className = "field-textarea";
+quickAddNotes.setAttribute("aria-label", "メモ");
+quickAddNotes.placeholder = "メモ";
+/** ラベル付きフィールドを quick-add 詳細に足す小ヘルパー(renderDetail の addField と同じ構造)。 */
+function appendQuickField(labelText: string, control: HTMLElement): void {
+	const field = document.createElement("div");
+	field.className = "field";
+	const label = document.createElement("span");
+	label.className = "field-label";
+	label.textContent = labelText;
+	field.appendChild(label);
+	field.appendChild(control);
+	quickAddDetail.appendChild(field);
+}
+appendQuickField("期日", quickAddDue.el);
+appendQuickField("優先度", quickAddPriority.el);
+appendQuickField("メモ", quickAddNotes);
+// 繰り返しは quick-add に置かない(仕様A-2: チャットと詳細編集の領分)。素早い1行追加+軽い付帯情報が
+// quick-add の役割で、反復設定は入力が複雑(頻度/曜日/終了条件)なぶんフォームの高速性を損なうため
+// LLM の create-todo(自然言語)か、既存タスクの詳細編集(将来)に委ねる。
+
+/** 詳細パネルの開閉。aria-expanded とパネルの hidden を同期する(開閉アニメは無し=ドクトリン)。 */
+function setQuickDetailOpen(open: boolean): void {
+	quickAddDetail.hidden = !open;
+	quickAddDetailToggle.setAttribute("aria-expanded", String(open));
+}
+quickAddDetailToggle.addEventListener("click", () => {
+	// hidden(閉)なら開く・表示中なら閉じる。lib.dom の hidden は boolean | "until-found" のため
+	// 真偽へ正規化する(=== false 以外はすべて「隠れている扱い」でよい)。
+	setQuickDetailOpen(quickAddDetail.hidden === false);
+});
 
 quickAddForm.addEventListener("submit", (e) => {
 	// フォーム送信は iframe 内のページ遷移(リロード)を伴うので必ず preventDefault する。

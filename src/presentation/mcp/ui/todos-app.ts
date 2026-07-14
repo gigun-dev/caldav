@@ -473,13 +473,18 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 楽観更新へ転換したので、送信即・入力をクリアして入力可能のまま維持し、仮タスクを
    * その場に挿入する(連続投入できる)。disabled による見た目のブロックはしない
    * (:disabled スタイルは失敗ロールバック等の将来用途に残すが、通常フローでは当たらない)。 */
+  /* 【E-2 スライス⑥前半: 段階的開示】1行目(入力+詳細トグル+追加)を .quick-add-row に包み、
+   * その下に詳細パネル(#quick-add-detail)を縦に積む構造へ変えた。既定は1行目だけ表示=高速パス。
+   * 詳細を開いても入力欄の位置(会話に一番近い操作面)は動かない。 */
   .quick-add {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     margin-top: 12px;
     padding-top: 8px;
     border-top: 1px solid var(--border);
   }
+  .quick-add-row { display: flex; gap: 8px; }
   .quick-add-input {
     flex: 1;
     min-width: 0;
@@ -592,6 +597,113 @@ export const TODOS_APP_HTML = `<!doctype html>
     cursor: pointer;
   }
   .detail-delete:disabled { opacity: 0.5; cursor: default; }
+
+  /* --- 段階的開示・共通フォーム部品(E-2 スライス⑥前半)-------------------------------
+   * quick-add の詳細パネルと詳細展開の編集フォームで同じ入力部品(日付 input・優先度
+   * セグメント・textarea)を使い回す。iOS リマインダーの新規/編集フォームが同じ見た目の
+   * 語彙で date/優先度/メモを出す語彙に寄せる。全部品 44px 高でタッチターゲットを確保する。
+   * 【なぜカスタム日付ピッカーを作らないか】ネイティブ input(type="date"/"datetime-local")に
+   * 委ねる。自前ピッカーはタイムゾーン/ロケール/アクセシビリティ/reduced-motion を全部
+   * 自前で背負う羽目になり、サンドボックス iframe 内での品質保証コストが見合わない
+   * (iOS/各ホストのネイティブピッカーの方が学習コストもゼロ)。 */
+  .field-date, .field-text {
+    min-height: 44px;
+    padding: 0 10px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    /* iOS Safari が date/datetime-local を独自スタイルで潰さないよう最低限の見た目を担保する。 */
+    min-width: 0;
+  }
+  .field-text { flex: 1; }
+  .field-textarea {
+    min-height: 66px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    /* 縦方向だけリサイズ可(横に広げるとカード幅を壊すため)。 */
+    resize: vertical;
+  }
+  /* フォーカスリングはブラウザ既定を残す(outline:none は書かない — アクセシビリティ要件)。 */
+
+  /* 詳細トグル / 時刻指定トグル等の控えめな2次ボタン(塗りつぶさない・muted 文字)。 */
+  .mini-toggle {
+    flex-shrink: 0;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 10px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  /* 開いている/有効化している状態は文字色を上げて示す(塗りつぶしにはしない=控えめさを保つ)。 */
+  .mini-toggle[aria-expanded="true"], .mini-toggle[aria-pressed="true"] { color: var(--fg); }
+
+  /* 優先度セグメント(なし・!・!!・!!!)。iOS のセグメンテッドコントロールに寄せる。
+   * 選択中は accent 塗り+白字。! 系(seg-pri)は未選択時にオレンジ文字(優先度=オレンジの語彙)。 */
+  .seg {
+    display: flex;
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .seg button {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 12px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+    background: var(--bg);
+    border: none;
+    border-left: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .seg button:first-child { border-left: none; }
+  .seg button.seg-pri { color: var(--pri); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+  /* quick-add 詳細パネルと詳細編集フォームの1フィールド(ラベル + 入力を縦積み)。 */
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 12px; color: var(--muted); }
+  /* 期日フィールドの行(日付 input + 時刻トグルを横並び。狭幅で折り返す)。 */
+  .due-field-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* quick-add 詳細パネル本体。開閉アニメは無し(ドクトリン)= hidden 属性の有無だけで表現する。 */
+  .qa-detail { display: flex; flex-direction: column; gap: 10px; padding: 2px 0; }
+
+  /* 詳細展開内の編集フォーム(E-2 スライス⑥前半・仕様B)。読み取り行(繰り返し/場所/完了時刻)と
+   * 削除ボタンの上に置く。保存ボタンは accent 塗り(quick-add の「追加」と同じ確定色)。 */
+  .detail-edit { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+  .detail-save {
+    align-self: flex-start;
+    min-height: 44px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .detail-save:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -623,16 +735,35 @@ export const TODOS_APP_HTML = `<!doctype html>
        一気に抱える(todos-entry.ts の「作成フォームを持たない理由」も同旨)。素早い1行投入だけを担う。
        form 要素にするのは Enter 送信を素直に拾うため(submit を entry が listen し、IME 変換確定の
        Enter は isComposing で弾く)。 -->
+  <!-- E-2 スライス⑥前半: quick-add に段階的開示を足す。1行目(.quick-add-row)は従来どおりの
+       高速パス(タイトル+追加)。その脇に小さな「詳細」トグルを置き、押すと #quick-add-detail
+       (期日/優先度/メモ)が下に開く。詳細パネルの中身(ネイティブ日付 input・優先度セグメント・
+       メモ textarea)は entry 側が JS で1回だけ組み立てて append する — 静的 HTML で書かず JS 構築に
+       するのは、日付 input の type 切替(date⇄datetime-local)や優先度セグメントの選択状態を
+       素直に扱うため。#quick-add は #root の外なので再描画に巻き込まれず、組み立てた部品の
+       入力値・展開状態は list 再描画で消えない(ヘッダと同じ理由)。 -->
   <form id="quick-add" class="quick-add">
-    <input
-      id="quick-add-input"
-      type="text"
-      class="quick-add-input"
-      autocomplete="off"
-      placeholder="新しいリマインダー"
-      aria-label="新しいリマインダーのタイトル"
-    />
-    <button id="quick-add-btn" type="submit">追加</button>
+    <div class="quick-add-row">
+      <input
+        id="quick-add-input"
+        type="text"
+        class="quick-add-input"
+        autocomplete="off"
+        placeholder="新しいリマインダー"
+        aria-label="新しいリマインダーのタイトル"
+      />
+      <!-- 詳細トグル(disclosure)。type="button" で form の暗黙 submit を起こさない。 -->
+      <button
+        id="quick-add-detail-toggle"
+        type="button"
+        class="mini-toggle"
+        aria-expanded="false"
+        aria-controls="quick-add-detail"
+      >詳細</button>
+      <button id="quick-add-btn" type="submit">追加</button>
+    </div>
+    <!-- 詳細パネル(既定 hidden)。中身は entry の buildQuickAddDetail() が append する。 -->
+    <div id="quick-add-detail" class="qa-detail" hidden></div>
   </form>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
