@@ -250,6 +250,13 @@ reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で�
 既決どおり不採用(モデル向けスキーマ汚染)。(d) ontoolresult のツール識別フィルタは ext-apps の
 API 拡張待ちで見送り。外部完了 vs 削除の区別は必要になったら removed に reason? を additive 追加。
 
+**E-3(VEVENT の agentic 入口・2026-07-14 ユーザー意向で起票)**: イベントの書き込みツール
+(create-event[s]/update-event/delete-event — vtodo-write と同型の vevent-write ビルダー)+
+アジェンダカード(今日/明日/今週セクション。todos カードの原則・becoming・楽観更新・バッチを
+そのまま流用)。照会(list-events-expanded/get-freebusy)は既存。**スコープ限定: 自分の予定の
+CRUD のみ** — ATTENDEE/ORGANIZER(招待)は方向性 B の管轄で混ぜない(A・K の依存を引き込む)。
+着手時に Fable が設計(ツール語彙・Event DTO・カードの意図定義)を先に切る。
+
 **E の残り(E-2 の先)**:
 - WebUI(独立した製品要素・ユーザー判断): tsdav 直 CalDAV か REST アダプタ経由かは設計時の論点
   (直なら Worker に CORS + DAV メソッドの preflight 対応が必要)。WebMCP は WebUI が立った時点で実験。
