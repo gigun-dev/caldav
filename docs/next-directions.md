@@ -215,7 +215,7 @@ reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で�
 > よって楽観は続行し、Smart Placement 学習後の再計測で p95 が数百 ms 圏なら悲観回帰も
 > 安価な選択肢として残す(ロールバック機構は失敗処理としてどのみち必要)。
 
-**スライス⑤(表示の拡充・2026-07-14 ユーザー指摘「表示が圧倒的に足りない」)**:
+**~~スライス⑤(表示の拡充)~~ ✅ `7122b05` + 関連束(2026-07-14)**: 詳細展開・削除ボタン・繰り返しバッジ・メモ表示 / calendarId 伝搬バグ修正(カード化け)/ 並び順安定性(done でその場に残る)/ create-calendar 空カード `2cd3dd1` / create-todos バッチ `d7ebf1d` / 楽観更新 `9027576` / DTO 拡張 `a3df4a3`。残の元記述:
 - サーバー: Task DTO に recurrence(RRULE 要約・create-todo の recurrence 入力と同語彙)+
   location を additive 追加(実装中)。location は iOS の CloudKit 天井に注意(CalDAV 非同期の見込み)。
 - UI: 行の詳細展開(メモ全文・繰り返しバッジ「毎週 月・水」等の人間可読整形・完了時刻)/
