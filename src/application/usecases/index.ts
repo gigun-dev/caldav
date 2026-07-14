@@ -152,6 +152,7 @@ export { nowStampFromDate } from "./now-stamp";
 // MCP update-todo(方向性 E-1 スライス②-b)
 export {
 	UpdateTodo,
+	RecurringDueRemovalError,
 	type UpdateTodoInput,
 	type UpdateTodoOutput,
 	type UpdateTodoError,

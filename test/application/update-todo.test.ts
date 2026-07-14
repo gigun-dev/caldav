@@ -321,6 +321,117 @@ describe("UpdateTodo", () => {
 		expect(rruleRaw).toBe("FREQ=WEEKLY;UNTIL=20260731;BYDAY=SU,SA");
 	});
 
+	// -----------------------------------------------------------------------
+	// V6 フォローアップ: 時刻付き due / due 除去(create-todo との対称化。2026-07-14)
+	// -----------------------------------------------------------------------
+	it("終日 due を時刻付きに変更すると DTSTART;TZID/DUE;TZID + VTIMEZONE が同梱される", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "時刻付き化", due: "2026-08-01" });
+		const { task } = await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: created.id,
+			due: "2026-08-01T09:00:00",
+			timeZone: "Asia/Tokyo",
+		});
+		expect(task.isAllDay).toBe(false);
+		// due は自ゾーンの offset ISO で返る(taskFromVTodo が zoneResolverFor で整形)。
+		expect(task.due).toBe("2026-08-01T09:00:00+09:00");
+
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), created.id);
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const vcal = saved!.payload.raw;
+		// VTIMEZONE(Asia/Tokyo)が VCALENDAR に同梱されている。
+		const vtz = vcal.components.filter((c) => c.name === "VTIMEZONE");
+		expect(vtz).toHaveLength(1);
+		expect(vtz[0]!.properties.find((p) => p.name === "TZID")?.value).toBe("Asia/Tokyo");
+		// DTSTART/DUE は TZID 付き。
+		const vtodo = saved!.payload.todos()[0]!.raw;
+		const dtstart = vtodo.properties.find((p) => p.name === "DTSTART");
+		expect(dtstart?.value).toBe("20260801T090000");
+		expect(dtstart?.parameters).toEqual([{ name: "TZID", values: ["Asia/Tokyo"] }]);
+	});
+
+	it("同一ゾーン内での時刻付き→時刻付き変更で VTIMEZONE が重複しない", async () => {
+		const { task: created } = await createTodo.execute({
+			owner: TEST_OWNER,
+			title: "ゾーン内変更",
+			due: "2026-08-01T09:00:00",
+			timeZone: "Asia/Tokyo",
+		});
+		await updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, due: "2026-08-02T10:00:00", timeZone: "Asia/Tokyo" });
+
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), created.id);
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const vtz = saved!.payload.raw.components.filter((c) => c.name === "VTIMEZONE");
+		expect(vtz).toHaveLength(1); // 重複追加していない。
+	});
+
+	it("時刻付き due に timeZone を付けないと DueTimeZoneRequiredError", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "tz無し", due: "2026-08-01" });
+		await expect(
+			updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, due: "2026-08-01T09:00:00" }),
+		).rejects.toMatchObject({ kind: "DueTimeZoneRequiredError" });
+	});
+
+	it("DST ゾーンは UnsupportedTimeZoneError(Phase 1 は固定オフセットのみ)", async () => {
+		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "DST", due: "2026-08-01" });
+		await expect(
+			updateTodo.execute({ owner: TEST_OWNER, todoId: created.id, due: "2026-08-01T09:00:00", timeZone: "America/New_York" }),
+		).rejects.toMatchObject({ kind: "UnsupportedTimeZoneError" });
+	});
+
+	it("due:null で期日が外れ、期日依存 VALARM(絶対 + 相対)は除去され位置アラームは残る", async () => {
+		const uri = mkResourceUri("remove-due.ics");
+		const resource = await CalendarObjectResource.fromIcs(
+			uri,
+			SINGLE_SHOT_WITH_ALARMS_ICS.replace("single-shot-alarm-test", "remove-due-test"),
+		);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+
+		const { task } = await updateTodo.execute({ owner: TEST_OWNER, todoId: "remove-due-test", due: null });
+		expect(task.due).toBeNull();
+
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), "remove-due-test");
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const vtodo = saved!.payload.todos()[0]!.raw;
+		expect(vtodo.properties.find((p) => p.name === "DTSTART")).toBeUndefined();
+		expect(vtodo.properties.find((p) => p.name === "DUE")).toBeUndefined();
+		// SINGLE_SHOT_WITH_ALARMS_ICS の2つの VALARM(絶対 + 相対)はどちらも位置でないので除去される。
+		expect(vtodo.components.filter((c) => c.name === "VALARM")).toHaveLength(0);
+	});
+
+	it("反復 VTODO(RRULE あり)の due 除去は RecurringDueRemovalError で拒否する", async () => {
+		const uri = mkResourceUri("recurring-remove-due.ics");
+		const resource = await CalendarObjectResource.fromIcs(uri, RECURRING_MASTER_ICS);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+
+		await expect(
+			updateTodo.execute({ owner: TEST_OWNER, todoId: resource.uid, due: null }),
+		).rejects.toMatchObject({ kind: "RecurringDueRemovalError" });
+	});
+
+	it("時刻付き due 変更でも絶対 VALARM トリガーが (新due-旧due) ぶん動く", async () => {
+		const uri = mkResourceUri("timed-shift.ics");
+		const resource = await CalendarObjectResource.fromIcs(
+			uri,
+			SINGLE_SHOT_WITH_ALARMS_ICS.replace("single-shot-alarm-test", "timed-shift-test"),
+		);
+		resourceRepo.seed(TEST_OWNER, mkCollectionId("tasks"), resource);
+
+		// 旧 DUE 20260712T210000+09:00 = 20260712T120000Z(= 旧絶対トリガーと同時刻)。
+		// 新 due 20260713T210000 JST = 20260713T120000Z。差 = 24h。絶対トリガーも 24h 動く。
+		await updateTodo.execute({
+			owner: TEST_OWNER,
+			todoId: "timed-shift-test",
+			due: "2026-07-13T21:00:00",
+			timeZone: "Asia/Tokyo",
+		});
+		const savedUri = await resourceRepo.findUriByUid(TEST_OWNER, mkCollectionId("tasks"), "timed-shift-test");
+		const saved = await resourceRepo.findByUri(TEST_OWNER, mkCollectionId("tasks"), savedUri!);
+		const triggers = alarmTriggers(saved!.payload.todos()[0]!.raw);
+		expect(triggers).toContain("20260713T120000Z"); // 絶対トリガー: due と同じだけ前進。
+		expect(triggers).toContain("-PT15M"); // 相対トリガー: 不変。
+	});
+
 	it("更新後は resourceRepo 上の ETag も変わっている(must-match PUT が発行された証跡)", async () => {
 		const { task: created } = await createTodo.execute({ owner: TEST_OWNER, title: "etag確認" });
 		const before = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("tasks"));

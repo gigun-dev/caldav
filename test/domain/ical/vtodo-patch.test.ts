@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyCompletion, applyReopen, patchVTodoFields } from "../../../src/domain/ical/semantics/vtodo-patch";
+import { applyCompletion, applyReopen, patchVTodoFields, removeDueAnchoredAlarmTriggers } from "../../../src/domain/ical/semantics/vtodo-patch";
 import type { NowStamp } from "../../../src/domain/ical/semantics/vtodo-stamp";
 import { parse } from "../../../src/domain/ical/parse/parser";
 import type { Component } from "../../../src/domain/ical/structure/types";
@@ -50,7 +50,7 @@ describe("patchVTodoFields", () => {
 	});
 
 	test("due を指定すると DTSTART/DUE が VALUE=DATE で同値 upsert される", () => {
-		const out = patchVTodoFields(emptyVTodo(), { due: "20260715", dueValueType: "DATE" });
+		const out = patchVTodoFields(emptyVTodo(), { due: { kind: "date", raw: "20260715" } });
 		expect(propValue(out, "DTSTART")).toBe("20260715");
 		expect(propValue(out, "DUE")).toBe("20260715");
 		const dtstart = out.properties.find((p) => p.name === "DTSTART");
@@ -107,7 +107,7 @@ describe("patchVTodoFields", () => {
 		const vtodo = loadRecurringMasterVTodo();
 		expect(propValue(vtodo, "RRULE")).toBe("FREQ=WEEKLY;UNTIL=20260731T111300Z;BYDAY=SU,SA");
 
-		const out = patchVTodoFields(vtodo, { due: "20260801", dueValueType: "DATE" });
+		const out = patchVTodoFields(vtodo, { due: { kind: "date", raw: "20260801" } });
 
 		// UNTIL の日付部分(20260731)はそのまま、時刻(T111300Z)だけ落ちて DATE 型になる。
 		expect(propValue(out, "RRULE")).toBe("FREQ=WEEKLY;UNTIL=20260731;BYDAY=SU,SA");
@@ -116,7 +116,7 @@ describe("patchVTodoFields", () => {
 	});
 
 	test("RRULE が無ければ何もしない(UNTIL 追従の対象がない)", () => {
-		const out = patchVTodoFields(emptyVTodo(), { due: "20260715", dueValueType: "DATE" });
+		const out = patchVTodoFields(emptyVTodo(), { due: { kind: "date", raw: "20260715" } });
 		expect(propValue(out, "RRULE")).toBeUndefined();
 	});
 
@@ -126,7 +126,7 @@ describe("patchVTodoFields", () => {
 			properties: [{ name: "RRULE", parameters: [], value: "FREQ=DAILY;COUNT=5" }],
 			components: [],
 		};
-		const out = patchVTodoFields(vtodo, { due: "20260715", dueValueType: "DATE" });
+		const out = patchVTodoFields(vtodo, { due: { kind: "date", raw: "20260715" } });
 		expect(propValue(out, "RRULE")).toBe("FREQ=DAILY;COUNT=5");
 	});
 
@@ -136,8 +136,115 @@ describe("patchVTodoFields", () => {
 			properties: [{ name: "RRULE", parameters: [], value: "FREQ=DAILY;UNTIL=20260801" }],
 			components: [],
 		};
-		const out = patchVTodoFields(vtodo, { due: "20260715", dueValueType: "DATE" });
+		const out = patchVTodoFields(vtodo, { due: { kind: "date", raw: "20260715" } });
 		expect(propValue(out, "RRULE")).toBe("FREQ=DAILY;UNTIL=20260801");
+	});
+
+	// --- V6 フォローアップ: 時刻付き due(kind:"date-time")---------------------------------
+	test("kind:date-time は DTSTART/DUE を TZID 付きで同値 upsert する", () => {
+		const out = patchVTodoFields(emptyVTodo(), { due: { kind: "date-time", raw: "20260715T090000", tzid: "Asia/Tokyo" } });
+		expect(propValue(out, "DTSTART")).toBe("20260715T090000");
+		expect(propValue(out, "DUE")).toBe("20260715T090000");
+		const dtstart = out.properties.find((p) => p.name === "DTSTART");
+		expect(dtstart?.parameters).toEqual([{ name: "TZID", values: ["Asia/Tokyo"] }]);
+	});
+
+	test("終日→時刻付きに変えると DTSTART の VALUE=DATE が TZID に置き換わる(残らない)", () => {
+		const allDay = patchVTodoFields(emptyVTodo(), { due: { kind: "date", raw: "20260715" } });
+		const timed = patchVTodoFields(allDay, { due: { kind: "date-time", raw: "20260715T090000", tzid: "Asia/Tokyo" } });
+		const dtstart = timed.properties.find((p) => p.name === "DTSTART");
+		// VALUE=DATE パラメータは消え TZID だけになる(upsertProperty が Property ごと丸ごと置換)。
+		expect(dtstart?.parameters).toEqual([{ name: "TZID", values: ["Asia/Tokyo"] }]);
+		expect(propValue(timed, "DTSTART")).toBe("20260715T090000");
+	});
+
+	test("時刻付き化すると RRULE:UNTIL(DATE) が DATE-TIME(UTC)に追従する(I6・逆方向)", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [
+				{ name: "DTSTART", parameters: [{ name: "VALUE", values: ["DATE"] }], value: "20260715" },
+				{ name: "RRULE", parameters: [], value: "FREQ=DAILY;UNTIL=20260731" },
+			],
+			components: [],
+		};
+		// 新 due の壁時計 09:00 JST(+09:00)= UTC 00:00。UNTIL の日付 20260731 + 09:00 JST = 20260731T000000Z。
+		const out = patchVTodoFields(vtodo, { due: { kind: "date-time", raw: "20260715T090000", tzid: "Asia/Tokyo" } });
+		expect(propValue(out, "RRULE")).toBe("FREQ=DAILY;UNTIL=20260731T000000Z");
+	});
+
+	// --- V6 フォローアップ: due 除去(kind:"remove")---------------------------------------
+	test("kind:remove は DTSTART/DUE を取り除く(他プロパティは不変)", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [
+				{ name: "SUMMARY", parameters: [], value: "keep" },
+				{ name: "DTSTART", parameters: [{ name: "VALUE", values: ["DATE"] }], value: "20260715" },
+				{ name: "DUE", parameters: [{ name: "VALUE", values: ["DATE"] }], value: "20260715" },
+			],
+			components: [],
+		};
+		const out = patchVTodoFields(vtodo, { due: { kind: "remove" } });
+		expect(propValue(out, "DTSTART")).toBeUndefined();
+		expect(propValue(out, "DUE")).toBeUndefined();
+		expect(propValue(out, "SUMMARY")).toBe("keep");
+	});
+
+	test("kind:remove は RRULE があると防御的に throw する(アンカー無し反復を作らない)", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [
+				{ name: "DTSTART", parameters: [{ name: "VALUE", values: ["DATE"] }], value: "20260715" },
+				{ name: "RRULE", parameters: [], value: "FREQ=DAILY;COUNT=5" },
+			],
+			components: [],
+		};
+		expect(() => patchVTodoFields(vtodo, { due: { kind: "remove" } })).toThrow(/RRULE/);
+	});
+});
+
+describe("removeDueAnchoredAlarmTriggers", () => {
+	function vtodoWithAlarms(): Component {
+		return {
+			name: "VTODO",
+			properties: [{ name: "SUMMARY", parameters: [], value: "t" }],
+			components: [
+				// 絶対トリガー(期日依存)。
+				{
+					name: "VALARM",
+					properties: [
+						{ name: "ACTION", parameters: [], value: "DISPLAY" },
+						{ name: "TRIGGER", parameters: [{ name: "VALUE", values: ["DATE-TIME"] }], value: "20260715T000000Z" },
+					],
+					components: [],
+				},
+				// 相対トリガー(DTSTART/DUE 依存)。
+				{
+					name: "VALARM",
+					properties: [
+						{ name: "ACTION", parameters: [], value: "DISPLAY" },
+						{ name: "TRIGGER", parameters: [{ name: "RELATED", values: ["START"] }], value: "-PT15M" },
+					],
+					components: [],
+				},
+				// 位置アラーム(期日非依存)。
+				{
+					name: "VALARM",
+					properties: [
+						{ name: "ACTION", parameters: [], value: "DISPLAY" },
+						{ name: "X-APPLE-PROXIMITY", parameters: [], value: "DEPART" },
+						{ name: "TRIGGER", parameters: [], value: "-PT0S" },
+					],
+					components: [],
+				},
+			],
+		};
+	}
+
+	test("期日依存アラーム(絶対 + 相対)を除去し、位置アラーム(X-APPLE-PROXIMITY)は残す", () => {
+		const out = removeDueAnchoredAlarmTriggers(vtodoWithAlarms());
+		const alarms = out.components.filter((c) => c.name === "VALARM");
+		expect(alarms).toHaveLength(1);
+		expect(alarms[0]?.properties.some((p) => p.name === "X-APPLE-PROXIMITY")).toBe(true);
 	});
 });
 

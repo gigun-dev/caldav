@@ -37,7 +37,9 @@ export {
 	applyReopen,
 	patchVTodoFields,
 	shiftAbsoluteAlarmTriggers,
+	removeDueAnchoredAlarmTriggers,
 	type VTodoPatchFields,
+	type VTodoDuePatch,
 } from "./vtodo-patch";
 
 // E-1 スライス②-c: 反復 VTODO の完了(D4 モデル)。CompleteTodo/UpdateTodo が

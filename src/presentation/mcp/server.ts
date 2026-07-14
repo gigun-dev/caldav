@@ -373,10 +373,18 @@ const updateTodoInputShape = {
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
 	title: z.string().optional().describe("SUMMARY(タイトル)。省略時は変更しない。"),
 	notes: z.string().optional().describe("DESCRIPTION(メモ)。省略時は変更しない。"),
-	due: z.string().optional().describe(
-		'期日。"YYYY-MM-DD"(終日)のみサポート。省略時は変更しない。' +
-			"時刻付き due の変更(create-todo が V6 で対応した \"YYYY-MM-DDTHH:MM:SS\" 形)は" +
-			"未対応(V6 フォローアップ — vtodo-patch.ts が VALUE=DATE 限定のまま)。",
+	due: z.string().nullable().optional().describe(
+		'期日(create-todo と対称。2026-07-14 V6 フォローアップ)。三値 + 2形態:' +
+			' 省略=変更しない / null=期日を外す / "YYYY-MM-DD"(終日)/ "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone と組で指定)。' +
+			"offset 付き ISO8601(例 \"...+09:00\"/\"...Z\")は不可(TZID を一意に導出できないため)。" +
+			"時刻付きに変更すると DTSTART;TZID/DUE;TZID を立て、必要なら VTIMEZONE をサーバーが同梱する。" +
+			"反復 VTODO(RRULE あり)の期日除去は拒否する(DTSTART が反復アンカーのため — 先に繰り返しを解除すること)。",
+	),
+	timeZone: z.string().optional().describe(
+		'due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須' +
+			"(省略時はエラー・暗黙 UTC フォールバックはしない)。DST ゾーン(例 America/New_York)は" +
+			"サーバー側 VTIMEZONE 生成が Phase 1 で未対応のためエラーになる — 固定オフセットゾーンのみ対応。" +
+			"due が終日/除去/省略のときは無視する(create-todo の timeZone と同じ制約)。",
 	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
@@ -1222,7 +1230,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, title, notes, due, priority, status }) => {
+		async ({ id, calendarId, title, notes, due, timeZone, priority, status }) => {
 			try {
 				// before 値: UpdateTodo UC が更新前スナップショットを返す(2026-07-14 レイテンシ改善で
 				// UC 側に移した。以前は presentation で findTaskById が別途 ListTodos 全件を読んでいたが、
@@ -1236,7 +1244,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					calendarId,
 					title,
 					notes,
+					// due は三値(undefined=変更なし / null=除去 / string=設定)をそのまま UC へ渡す
+					// (zod の .nullable().optional() で null と undefined が区別されて届く。V6 フォローアップ)。
 					due,
+					timeZone,
 					priority,
 					status,
 				});
@@ -1273,9 +1284,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				const vm = await buildTodosViewModel({ calendarId, affected });
 				return toTodosToolResponse(vm);
 			} catch (error) {
-				// TodoNotFoundError / InvalidDueError / ETagConditionError / CalDAVPreconditionError /
-				// CollectionNotFoundError いずれも「入力起因のエラー」としてメッセージをそのまま返す
-				// (create-todo と同じ扱い。instanceof で特別分岐する意味的な差が無いため catch-all で足りる)。
+				// TodoNotFoundError / InvalidDueError / DueTimeZoneRequiredError / InvalidTimeZoneError /
+				// UnsupportedTimeZoneError / RecurringDueRemovalError(V6 フォローアップの due 系検証)/
+				// ETagConditionError / CalDAVPreconditionError / CollectionNotFoundError いずれも
+				// 「入力起因のエラー」としてメッセージをそのまま返す(create-todo と同じ扱い。
+				// instanceof で特別分岐する意味的な差が無いため catch-all で足りる)。
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

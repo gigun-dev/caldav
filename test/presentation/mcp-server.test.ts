@@ -692,6 +692,54 @@ describe("/mcp", () => {
 			expect(rpc.result.structuredContent.affected).toMatchObject([{ id, kind: "completed", task: { id, title: "支払い" } }]);
 		});
 
+		// V6 フォローアップ(2026-07-14): update-todo が create-todo と対称に(時刻付き due / due:null 除去)。
+		it("update-todo(時刻付き due): timeZone 付きで時刻付きに変更でき、確定 task の isAllDay=false", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "会議", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 20,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, due: "2026-07-20T14:30:00", timeZone: "Asia/Tokyo" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const task = rpc.result.structuredContent.tasks.find((t: { id: string }) => t.id === id);
+			expect(task.isAllDay).toBe(false);
+			expect(task.due).toBe("2026-07-20T14:30:00+09:00");
+		});
+
+		it("update-todo(due:null): 期日を外すと確定 task の due が null になる", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "期日付き", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 21,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, due: null } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const task = rpc.result.structuredContent.tasks.find((t: { id: string }) => t.id === id);
+			expect(task.due).toBeNull();
+			// affected は edited(due を渡している = 変更フィールドに含まれる)。
+			expect(rpc.result.structuredContent.affected[0].kind).toBe("edited");
+		});
+
+		it("update-todo(時刻付き due・timeZone 無し): isError で DueTimeZoneRequiredError のメッセージ", async () => {
+			seedTasksCollection();
+			const id = await createTodo({ title: "tz無し", due: "2026-07-15" });
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 22,
+				method: "tools/call",
+				params: { name: "update-todo", arguments: { id, due: "2026-07-20T14:30:00" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("timeZone");
+		});
+
 		it("delete-todo: removed=[TaskSnapshot](削除直前に読んだ表示情報)+ affected は付かない", async () => {
 			seedTasksCollection();
 			const id = await createTodo({ title: "返却する本", due: "2026-07-15" });

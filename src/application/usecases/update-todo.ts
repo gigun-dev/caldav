@@ -25,15 +25,36 @@
 //    ETagConditionError を呼び出し側 MCP ツールがそのまま返す)。
 // =============================================================================
 
-import { ICalendarObject, serialize, type Component } from "../../domain/ical";
-import { applyCompletion, applyReopen, patchVTodoFields, shiftAbsoluteAlarmTriggers, stampUpdate } from "../../domain/ical/semantics";
+import {
+	buildVTimezone,
+	ICalendarObject,
+	isValidIanaZone,
+	localFieldsToEpochMillis,
+	serialize,
+	UnsupportedTimeZoneError as DomainUnsupportedTimeZoneError,
+	type Component,
+} from "../../domain/ical";
+import {
+	applyCompletion,
+	applyReopen,
+	patchVTodoFields,
+	removeDueAnchoredAlarmTriggers,
+	shiftAbsoluteAlarmTriggers,
+	stampUpdate,
+	type VTodoDuePatch,
+} from "../../domain/ical/semantics";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
 import { zoneResolverFor, type RecurrenceIterator } from "../../domain/ical/recurrence";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
 import { parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
 import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import { lookupTodo, TodoNotFoundError } from "./todo-lookup";
-import { InvalidDueError } from "./create-todo";
+import {
+	DueTimeZoneRequiredError,
+	InvalidDueError,
+	InvalidTimeZoneError,
+	UnsupportedTimeZoneError,
+} from "./create-todo";
 import { completeRecurringTodo } from "./recurring-completion";
 import { nowStampFromDate } from "./now-stamp";
 import type { Task } from "./task-dto";
@@ -44,6 +65,18 @@ import type { CalendarObjectResourceRepository } from "../ports";
 // 再定義してもよいレベルの1行だが、create-todo.ts 側は非公開 const のため import できない
 // — 公開昇格させるほどの重複でもないと判断しこのファイルにも定義する)。
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// YYYY-MM-DDTHH:MM:SS の厳密マッチ(時刻付き due・offset 無しの壁時計。create-todo.ts と同じ。
+// offset 付き "Z"/"+09:00" 等はこれに一致しない = InvalidDueError で弾かれる[TZID を offset から
+// 一意に逆引きできないため。create-todo.ts の InvalidDueError コメント参照])。
+const DATE_TIME_LOCAL_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/;
+
+// 反復ホライズン・VTIMEZONE 窓の余白。create-todo.ts の WINDOW_MARGIN_MILLIS と同じ値・同じ理由
+// (§3.6.5 の VTIMEZONE は特定瞬間のオフセットを説明できればよいが、境界日ちょうどを安全側に
+// 倒すため前後に 400日 = 1年+1ヶ月強の余白を持たせる)。update では反復ホライズンの厳密計算までは
+// せず、「due の前後 400日」窓だけで固定オフセットゾーンの遷移有無を確認できれば十分
+// (固定オフセットゾーンは運用中に遷移が無い前提なので窓の広さに敏感でない)。
+const WINDOW_MARGIN_MILLIS = 400 * 24 * 60 * 60 * 1000;
 
 // CalDate | CalDateTime の判別。semantics/helpers.ts の isCalDateTime は semantics/index.ts の
 // 公開 API に意図的に含まれていない(index.ts のコメント参照)。task-dto.ts が既にこの
@@ -67,11 +100,14 @@ function isCalDateTime(v: CalDate | CalDateTime): v is CalDateTime {
  * (recurring-completion.ts 冒頭コメントの class 化しない理由と同種の判断)に揃え、
  * この UC ファイルに留める。
  *
+ * @param newDueEpoch 新 due の絶対時刻(呼び出し側が終日=start-of-day UTC / 時刻付き=壁時計+TZID
+ *   の epoch として算出済み。V6 フォローアップで「新 due は VALUE=DATE 限定」の前提が外れたため、
+ *   新 due の epoch 化を呼び出し側に委ね、この関数は差分計算に専念する)。
  * @returns 旧 due も旧 DTSTART も無い(前進の基準が無い)場合は undefined。
  */
 function dueShiftMillis(
 	oldInstance: CalDate | CalDateTime | undefined,
-	newDueYYYYMMDD: string,
+	newDueEpoch: number,
 	zoneOf: (tzid: string) => string,
 ): number | undefined {
 	if (oldInstance === undefined) return undefined; // 基準が無い = shift しない(仕様どおり)。
@@ -83,12 +119,7 @@ function dueShiftMillis(
 		? calDateTimeToEpochMillis(oldInstance, { zoneOf, floatingTimeZone: "UTC" })
 		: calDateStartEpochMillis(oldInstance, "UTC");
 
-	// 新 due は patchVTodoFields の契約上 VALUE=DATE(YYYYMMDD)のみ(vtodo-patch.ts の
-	// dueValueType?: "DATE" 制約)。「時刻付き→終日変換の近似」はこの start-of-day 採用が
-	// 唯一の情報源であること自体を指す(update-todo.ts の呼び出し箇所コメント参照)。
-	const newEpoch = calDateStartEpochMillis(parseCalDate(newDueYYYYMMDD), "UTC");
-
-	return newEpoch - oldEpoch;
+	return newDueEpoch - oldEpoch;
 }
 
 // --- 入力 DTO ---
@@ -103,8 +134,20 @@ export interface UpdateTodoInput {
 	title?: string;
 	/** DESCRIPTION。省略時は変更しない。 */
 	notes?: string;
-	/** 期日。"YYYY-MM-DD" のみ(create-todo.ts と同じ制約)。省略時は変更しない。 */
-	due?: string;
+	/**
+	 * 期日。create-todo と対称の三値 + 2形態(V6 フォローアップ・2026-07-14):
+	 *   - undefined = 変更しない
+	 *   - null      = 期日を外す(DTSTART/DUE を除去。反復 VTODO は RecurringDueRemovalError)
+	 *   - "YYYY-MM-DD"           = 終日にする
+	 *   - "YYYY-MM-DDTHH:MM:SS"  = 時刻付きにする(timeZone と組。offset 付き ISO8601 は不可)
+	 */
+	due?: string | null;
+	/**
+	 * due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン(必須)。create-todo と同じ
+	 * 制約(省略時 DueTimeZoneRequiredError・暗黙 UTC フォールバック禁止・DST ゾーンは
+	 * UnsupportedTimeZoneError)。終日 due / due 除去 / due 省略のときは無視する。
+	 */
+	timeZone?: string;
 	/** PRIORITY(0-9)。0 は「未設定に戻す」(vtodo-patch.ts 参照)。省略時は変更しない。 */
 	priority?: number;
 	/**
@@ -153,7 +196,34 @@ export interface UpdateTodoOutput {
 	before?: Task;
 }
 
-export type UpdateTodoError = InvalidDueError | TodoNotFoundError | PutCalendarObjectError;
+/**
+ * 反復 VTODO(RRULE あり)の due を除去しようとしたときのエラー(V6 フォローアップ)。
+ * 【設計判断: サイレント破壊せず明示エラー】DTSTART は RRULE の反復アンカー(§3.8.5.3)。
+ * due を外すと DTSTART も消えるため、RRULE を残したまま due 除去を許すと「アンカー無し反復」に
+ * なり、以降の occurrence 計算が壊れる(iOS 側の解釈も不定)。除去を黙って無視するのも、DTSTART を
+ * 消して RRULE も一緒に消すのも、どちらもユーザーの意図(期日だけ外す)を超えた勝手な破壊になる。
+ * よって明示的にエラーで拒否し、呼び出し側(chat/UI)に「反復を先に解除するか、期日は残す」判断を
+ * 委ねる(create-todo.ts の RecurrenceRequiresDueError と対になる不変条件)。
+ */
+export class RecurringDueRemovalError extends Error {
+	readonly kind = "RecurringDueRemovalError" as const;
+	constructor(readonly todoId: string) {
+		super(
+			`cannot remove due from a recurring todo "${todoId}" (RRULE anchors on DTSTART §3.8.5.3); ` +
+				"clear the recurrence first, or keep the due",
+		);
+		this.name = "RecurringDueRemovalError";
+	}
+}
+
+export type UpdateTodoError =
+	| InvalidDueError
+	| DueTimeZoneRequiredError
+	| InvalidTimeZoneError
+	| UnsupportedTimeZoneError
+	| RecurringDueRemovalError
+	| TodoNotFoundError
+	| PutCalendarObjectError;
 
 export class UpdateTodo {
 	// 【resourceRepo を別途受け取る理由(CreateTodo との違い)】
@@ -174,18 +244,22 @@ export class UpdateTodo {
 	) {}
 
 	async execute(input: UpdateTodoInput): Promise<UpdateTodoOutput> {
-		let due: string | undefined;
-		if (input.due !== undefined) {
-			if (!DATE_ONLY_RE.test(input.due)) {
-				throw new InvalidDueError(input.due);
-			}
-			due = input.due.replace(/-/g, "");
-		}
+		// due の解析(format/timeZone/DST エラーは lookup 前に投げる = 安価な失敗)。
+		// 反復 VTODO の due 除去拒否だけは looked.vtodo.rrule を要するので lookup 後に行う。
+		const parsed = this.parseDuePatch(input);
+		const duePatch = parsed.duePatch;
 
 		const collectionId = mkCollectionId(input.calendarId ?? "tasks");
 		const looked = await lookupTodo(this.resourceRepo, input.owner, collectionId, input.todoId);
 		if (looked === null) {
 			throw new TodoNotFoundError(input.todoId);
+		}
+
+		// 反復 VTODO(RRULE あり)の due 除去はサイレント破壊せず拒否する(RecurringDueRemovalError の
+		// JSDoc 参照。DTSTART が反復アンカー §3.8.5.3 なので消せない)。patchVTodoFields も同じ不変条件を
+		// 防御的に throw するが、ここでは呼び出し側がわかる kind タグ付きエラーで先に弾く。
+		if (duePatch?.kind === "remove" && looked.vtodo.rrule !== undefined) {
+			throw new RecurringDueRemovalError(input.todoId);
 		}
 
 		// 更新前スナップショット(before)。lookupTodo が読んだ更新前 VTODO レンズから作る
@@ -196,12 +270,11 @@ export class UpdateTodo {
 		let patched: Component = patchVTodoFields(looked.vtodo.raw, {
 			summary: input.title,
 			description: input.notes,
-			due,
-			dueValueType: due !== undefined ? "DATE" : undefined,
+			due: duePatch,
 			priority: input.priority,
 		});
 
-		// --- due 変更時の VALARM 絶対トリガー追随(2026-07-13 追加。V2 実機で判明した欠落) -----
+		// --- due 変更時の VALARM 追随(2026-07-13 追加。V2 実機で判明した欠落。V6 で3形態に拡張)-----
 		// 【iOS 忠実 + オフセット保存】iOS ネイティブは due を動かすとリマインダー通知(VALARM)も
 		// 一緒に動く。反復マスター前進(vtodo-recurrence.ts の advanceMasterToNextOccurrence)では
 		// 既にこの「絶対トリガーを occurrence の絶対時刻差ぶん shift する」を実装済み
@@ -211,29 +284,35 @@ export class UpdateTodo {
 		// ユーザーが設定した早期リマインダーも due と同じだけ動く)。相対トリガー(RELATED/DURATION)
 		// と位置アラーム(X-APPLE-PROXIMITY)は shiftAbsoluteAlarmTriggers 自身が据え置く。
 		//
-		// 【input.due が指定されたときだけ】title/priority/status のみの update では due 自体が
-		// 動いていないので VALARM にも触れない(due===undefined ならこのブロック自体をスキップ)。
+		// 【3形態の扱い(V6 フォローアップ)】
+		//  - set(date / date-time): 絶対トリガーを (新 due epoch − 旧 due/DTSTART epoch) ぶん shift する。
+		//    新 due epoch は parseDuePatch が算出済み(終日=start-of-day UTC / 時刻付き=壁時計+TZID)。
+		//  - remove: 期日が無くなるので、期日依存 VALARM(絶対 + 相対)を除去する
+		//    (removeDueAnchoredAlarmTriggers。位置アラームだけ残す。判断根拠は同関数の JSDoc)。
+		//  - undefined(due 変更なし): このブロックをスキップ(title/priority/status のみの update は
+		//    due が動いていないので VALARM に触れない)。
 		//
-		// 【時刻付き→終日(DATE)変換の近似(限界。dueShiftMillis の JSDoc にも明記)】
-		// create/update は現状 DATE の due しか生成できない(vtodo-patch.ts の dueValueType:"DATE"
-		// 制約)。旧 due が時刻付き(DATE-TIME)だったケースで新 due(終日)に変えると、新
-		// 「インスタンス」は start-of-day を採る他ない。結果としてアラームは「旧 due 時刻から
-		// (新 due の start-of-day − 旧 due の絶対時刻)だけ動いた絶対時刻」になり、iOS が実際に
-		// 終日リマインダーを鳴らす時刻(例: 当日9:00 等、ローカル既定値)とは一致しない可能性がある。
-		// これはロスレス(既存プロパティを消さず、常に何らかの一貫した規則で動かす)を優先した
-		// 割り切りであり、「時刻付き due 自体の生成が未対応」という既存制約(create-todo.ts と
-		// 同じ)と地続きの限界として許容する。
+		// 【全日→時刻付きで「新規 VALARM は作らない」という判断(create-todo との非対称・親へ論点)】
+		// create-todo は「時刻付き due には常にサーバー発 VALARM を付ける」(V6 の統合)が、update では
+		// shiftAbsoluteAlarmTriggers は既存の絶対トリガーを動かすだけで、元々アラームが無い VTODO
+		// (終日タスクは iOS 実機観測どおり VALARM 無し)を時刻付きにしても新しい VALARM は生成しない。
+		// これは「patch = 与えられたものだけ触る/ユーザーが持っていなかったデータを編集で勝手に生やさない」
+		// というロスレス方針に沿った割り切り。「時刻付き化したら通知も付けたい」需要が確認できたら別途
+		// 判断する(最終報告で親に論点として返す)。
 		//
 		// 【反復完了経路(completeRecurringTodo)との順序】status:"COMPLETED" かつ反復 VTODO のとき
 		// 下の分岐は patched(= このブロック適用後の Component)を masterVtodo として渡す。つまり
-		// 「due patch → VALARM shift」を必ず先に済ませてから渡すことで、completeRecurringTodo 側は
+		// 「due patch → VALARM 追随」を必ず先に済ませてから渡すことで、completeRecurringTodo 側は
 		// 何も意識せず patched を受け取るだけでよい(buildCompletionSnapshot・
-		// advanceMasterToNextOccurrence の双方に、due 変更由来の VALARM shift が既に反映された
+		// advanceMasterToNextOccurrence の双方に、due 変更由来の VALARM 追随が既に反映された
 		// 状態で伝播する)。
-		if (due !== undefined) {
+		if (duePatch?.kind === "remove") {
+			patched = removeDueAnchoredAlarmTriggers(patched);
+		} else if (duePatch !== undefined) {
+			// set(date / date-time)。新 due epoch は parseDuePatch が必ず算出している。
 			const zoneOf = zoneResolverFor(looked.resource.payload);
 			const oldInstance = looked.vtodo.due ?? looked.vtodo.dtstart; // 旧 DUE、無ければ旧 DTSTART。
-			const shiftMs = dueShiftMillis(oldInstance, due, zoneOf);
+			const shiftMs = dueShiftMillis(oldInstance, parsed.newDueEpoch!, zoneOf);
 			if (shiftMs !== undefined) {
 				patched = shiftAbsoluteAlarmTriggers(patched, shiftMs);
 			}
@@ -271,7 +350,27 @@ export class UpdateTodo {
 		// VCALENDAR.components の対象 VTODO だけを patch 後の Component に差し替える。
 		// 他のサブコンポーネント(VTIMEZONE 等)はそのまま保持する(ロスレス編集の核心)。
 		const vcalendar = looked.resource.payload.raw;
-		const components = vcalendar.components.map((c) => (c === looked.vtodo.raw ? patched : c));
+		let components = vcalendar.components.map((c) => (c === looked.vtodo.raw ? patched : c));
+
+		// 時刻付き due に変更したとき、その TZID の VTIMEZONE を VCALENDAR に同梱する(§3.6.5:
+		// TZID 付きプロパティを使うカレンダーは対応する VTIMEZONE を含めるのが前提。create-todo.ts が
+		// buildVTimezone を application 層で呼んで足すのと同じ責務分担 — patchVTodoFields は VTODO 内
+		// だけを触り、VCALENDAR レベルの VTIMEZONE 同梱はここで行う)。
+		// 【重複回避】同 TZID の VTIMEZONE が既にあれば足さない(iOS 発の既存タイムゾーンや、
+		// 同ゾーン内での時刻変更で二重に積まないため)。TZID の照合は VTIMEZONE の TZID プロパティ値で行う。
+		if (parsed.dueVTimezone !== undefined) {
+			const newTzid = parsed.dueVTimezone.properties.find((p) => p.name === "TZID")?.value;
+			const alreadyPresent = components.some(
+				(c) => c.name === "VTIMEZONE" && c.properties.find((p) => p.name === "TZID")?.value === newTzid,
+			);
+			if (!alreadyPresent) {
+				// VTIMEZONE は VCALENDAR の先頭寄り(他コンポーネントより前)に置くのが慣例だが、RFC 5545 は
+				// 順序に意味を課さない(§3.6)。既存構造をなるべく乱さないため単純に末尾へ追加する
+				// (serialize/parse の往復は順序を保存するだけで、iOS の解釈も順序非依存)。
+				components = [...components, parsed.dueVTimezone];
+			}
+		}
+
 		const newVcalendar: Component = { ...vcalendar, components };
 		const ics = serialize(newVcalendar);
 
@@ -290,6 +389,74 @@ export class UpdateTodo {
 			throw new Error("UpdateTodo: internal error — patched VTODO not found after round-trip");
 		}
 
-		return { task: taskFromVTodo(vtodo), before };
+		// 時刻付き due(TZID 付き)を正しく offset ISO に整形するため zoneResolverFor(obj)/timeZone を
+		// 渡す(create-todo.ts の return と同じパターン)。obj は VTIMEZONE を含む VCALENDAR レンズなので
+		// zoneResolverFor が TZID→IANA を解決できる。timeZone は floating な DATE-TIME の既定解釈用
+		// (input.timeZone が無い = 終日/除去/変更なしのケースは UTC 既定で従来と同じ)。
+		return { task: taskFromVTodo(vtodo, zoneResolverFor(obj), input.timeZone ?? "UTC"), before };
+	}
+
+	/**
+	 * input.due(三値 + 2形態)を VTodoDuePatch へ解析し、時刻付きなら VTIMEZONE と新 due epoch も
+	 * 併せて返す(create-todo.ts の execute 前半の due 解析と対称。フォーマット/timeZone/DST の各
+	 * エラーはここで投げる)。
+	 *
+	 * @returns duePatch=undefined(input.due===undefined: 変更なし)/ kind:"remove"(null: 除去。
+	 *   dueVTimezone・newDueEpoch は無し)/ kind:"date"(終日: newDueEpoch=start-of-day UTC)/
+	 *   kind:"date-time"(時刻付き: dueVTimezone + newDueEpoch=壁時計+TZID の epoch)。
+	 */
+	private parseDuePatch(input: UpdateTodoInput): {
+		duePatch: VTodoDuePatch | undefined;
+		dueVTimezone: Component | undefined;
+		newDueEpoch: number | undefined;
+	} {
+		if (input.due === undefined) {
+			return { duePatch: undefined, dueVTimezone: undefined, newDueEpoch: undefined };
+		}
+		if (input.due === null) {
+			// 期日を外す(反復 VTODO の拒否は lookup 後に execute 側で行う — ここでは rrule を知らない)。
+			return { duePatch: { kind: "remove" }, dueVTimezone: undefined, newDueEpoch: undefined };
+		}
+		if (DATE_ONLY_RE.test(input.due)) {
+			const raw = input.due.replace(/-/g, ""); // YYYYMMDD(VALUE=DATE の値構文)。
+			// 終日 due の「新インスタンス」は start-of-day を UTC で採る(既存 dueShiftMillis と同じ規約)。
+			const newDueEpoch = calDateStartEpochMillis(parseCalDate(raw), "UTC");
+			return { duePatch: { kind: "date", raw }, dueVTimezone: undefined, newDueEpoch };
+		}
+		// 時刻付き("YYYY-MM-DDTHH:MM:SS")。create-todo.ts と同じ検証(offset ISO 拒否・timeZone 必須・
+		// 暗黙 UTC 禁止・DST ゾーン未対応)。
+		const m = DATE_TIME_LOCAL_RE.exec(input.due);
+		if (m === null) {
+			// 空文字・offset 付き ISO8601・その他不正な形式はすべてここに落ちる(create-todo と同じ)。
+			throw new InvalidDueError(input.due);
+		}
+		if (input.timeZone === undefined) {
+			throw new DueTimeZoneRequiredError(input.due);
+		}
+		if (!isValidIanaZone(input.timeZone)) {
+			throw new InvalidTimeZoneError(input.timeZone);
+		}
+		const [, y, mo, d, h, mi, s] = m as unknown as [string, string, string, string, string, string, string];
+		const newDueEpoch = localFieldsToEpochMillis(
+			{ year: Number(y), month: Number(mo), day: Number(d), hour: Number(h), minute: Number(mi), second: Number(s) },
+			input.timeZone,
+		);
+		// VTIMEZONE を due の前後 400日窓で生成する(create-todo.ts と同じ。反復ホライズンの厳密計算は
+		// せず窓だけで足りる — WINDOW_MARGIN_MILLIS のコメント参照)。DST ゾーンは domain の
+		// UnsupportedTimeZoneError を application 層の kind タグ付きへ写像する(create-todo と同じ)。
+		let dueVTimezone: Component;
+		try {
+			dueVTimezone = buildVTimezone(input.timeZone, {
+				startMillis: newDueEpoch - WINDOW_MARGIN_MILLIS,
+				endMillis: newDueEpoch + WINDOW_MARGIN_MILLIS,
+			});
+		} catch (error) {
+			if (error instanceof DomainUnsupportedTimeZoneError) {
+				throw new UnsupportedTimeZoneError(input.timeZone);
+			}
+			throw error;
+		}
+		const raw = `${y}${mo}${d}T${h}${mi}${s}`; // YYYYMMDDTHHMMSS(DATE-TIME の値構文)。
+		return { duePatch: { kind: "date-time", raw, tzid: input.timeZone }, dueVTimezone, newDueEpoch };
 	}
 }
