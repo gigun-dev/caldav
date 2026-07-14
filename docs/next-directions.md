@@ -242,6 +242,15 @@ reduced-motion 尊重・pending 中や入力中は適用を延期(指の下で�
 開いている App に push すると(Inspector で実測・claude.ai でも起こりうる)、mutate 応答は view を
 持たないため App の includeCompleted ビューが既定に上書きされる。防御: applyStructuredContent で
 「currentView 非既定 × 届いた vm に view 無し」は直接適用せず refetch(currentView 付き)に差し替え。
+→ **2026-07-14 main 直接再検証(chrome-devtools)で機序を訂正**: Inspector で実測再現した。
+現象は「開いている App の中身が他ツール(create-todo)の結果に置き換わる」で実在するが、
+機序は ontoolresult の push ではなく**パネルの再バインド**(ヘッダも list-todos→create-todo に
+変わり、新インスタンスとして create-todo 結果を初回描画。判別根拠: 行ラベルが「追加」+
+aria-live「〜を追加しました」= affected 付き vm の適用でしか出ない表示)。新インスタンスは
+currentView が白紙なので防御は発動しない(発動すべきでもない — 初回 vm 受理は契約どおり)。
+つまり「生きているインスタンスへの view 無し push」という防御の想定失敗モードは**現時点で
+未観測**であり、防御の根拠は「ext-apps 仕様が push タイミングを規定していない空白 × コスト小」に
+後退する(維持はする)。
 → **防御 ✅ `98616f2` + Fable 設計裁定(2026-07-14)**: (a) クライアント防御を正とする
 (ホストの push 挙動は制御外で、品質基準「最も気難しいクライアントで動く」に照らしホスト任せに
 しない)。(b) mutate 応答への view:{} echo は**不採用** — 「view の欠落 = list/refresh 由来でない」
