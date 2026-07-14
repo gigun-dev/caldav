@@ -12,10 +12,20 @@ shake-undo 決着 ✅。E-2 はスライス⑥前半まで完了(楽観更新・
 quick-add 段階的開示・詳細編集・calendar 3 ツール・create-todos バッチ・シマー、全て本番検証済み)。
 レイテンシは計測基盤(mcpTool×colo ログ)+ 往復削減2段 + Smart Placement 導入済み(効果は学習後)。
 **進行中**: update-todo due 対称化(時刻付き/除去)+ UI フィードバック3点(円の縦ズレ・行 ⓘ・FAB)。
+
+> **2026-07-15 更新:** UI 全面刷新 **v2** を実装・push(67d4893 + c4c2e04)。iOS リマインダー
+> 準拠に再設計: 一覧=走査面(becoming ラベルは meta 右端・ⓘ は選択行のみ)/ 行タップ=選択
+> (タイトル・メモのインライン編集、選択解除=自動保存)/ ⓘ=詳細セミモーダル(編集ありき・
+> 日付/時刻/場所トグル・繰り返し iOS 語彙プリセット・リスト›でコレクション移動)/ 削除=行の
+> 左スワイプ。サーバー側は update-todo に recurrence/location、create に location、
+> **move-todo 新設**(rawIcs 無変更・PUT→DELETE 順・movedTo 契約)。recurrence zod strict 化
+> (小粒是正の後者)もここで解消。設計モックは scratchpad/todos-refined-v2.html(コミット外)。
+> **本番検証(UI 目視 + D1 生 ICS 照合)が未了。**
+
 **次の優先順位(2026-07-14 確定)**:
 1. 進行中タスクの検収 → deploy → 検証(E-2 はこれで一区切り宣言候補)
 2. 小粒是正2件(検証で発見): create-calendar の非 ASCII displayName → slug が "2" 等に縮退
-   (UUID fallback 強化)/ create-todos の recurrence 誤キー黙殺(zod strict 化)
+   (UUID fallback 強化)/ ~~create-todos の recurrence 誤キー黙殺(zod strict 化)~~ ✅ 2026-07-15
 3. **E-3(VEVENT ツール+アジェンダカード)設計** — Fable が先に設計。get-todo 詳細カードも同時期
 4. **R-6(OAuth scope 分離)** — 公開前必須。E-3 実装と並行可(認証層で独立)
 5. 数日後: Smart Placement 効果再計測(colo ログ)→ 楽観 UI の再評価・STATUS 列 migration の要否判断
