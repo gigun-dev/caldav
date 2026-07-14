@@ -352,6 +352,12 @@ describe("/mcp", () => {
 			expect(cal.color).toBeUndefined();
 		});
 
+		// 2026-07-14 追記: create-calendar を registerAppTool 化(空のリストカードを出す)したため、
+		// structuredContent はカレンダーのメタ情報オブジェクトではなく TodosViewModel 契約
+		// ({tasks, calendarId, timeZone})に変わった。カレンダーのメタ情報(displayName/components/
+		// color)は content(text)側に引き続き JSON で残るので、そちらで検証する
+		// (UI 契約(structuredContent)には calendarId しか要らない — todos-entry.ts が
+		// vm.calendarId をヘッダ・quick-add の作成先に使う設計のため)。
 		it("create-calendar: id/components を明示指定して作成できる", async () => {
 			const res = await fetchMcp({
 				jsonrpc: "2.0",
@@ -364,7 +370,12 @@ describe("/mcp", () => {
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
-			expect(rpc.result.structuredContent).toEqual({
+			// structuredContent: 作成直後の空のリストカード(実在確認を兼ねて実際に ListTodos を
+			// 通した結果なので tasks は空配列ハードコードではない)。
+			expect(rpc.result.structuredContent).toEqual({ tasks: [], calendarId: "personal", timeZone: "UTC" });
+			// content(text)側にカレンダーのメタ情報が残る(従来の応答契約を維持)。
+			const textResult = JSON.parse(rpc.result.content[0].text);
+			expect(textResult).toEqual({
 				id: "personal",
 				displayName: "Personal",
 				components: ["VEVENT"],
@@ -383,10 +394,13 @@ describe("/mcp", () => {
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
-			expect(rpc.result.structuredContent.components).toEqual(["VTODO"]);
+			const textResult = JSON.parse(rpc.result.content[0].text);
+			expect(textResult.components).toEqual(["VTODO"]);
 			// 日本語 displayName は slugifyForCollectionId の許容文字([a-z0-9])に1文字も
 			// マッチしないため、生成 id は crypto.randomUUID() フォールバック(UUID 形式)になる。
-			expect(rpc.result.structuredContent.id).toMatch(/^[0-9a-f-]{36}$/);
+			expect(textResult.id).toMatch(/^[0-9a-f-]{36}$/);
+			// structuredContent.calendarId は content 側の id(自動生成 slug/UUID)と一致する。
+			expect(rpc.result.structuredContent).toEqual({ tasks: [], calendarId: textResult.id, timeZone: "UTC" });
 		});
 
 		it("create-calendar: 既存 id との衝突は isError(CollectionAlreadyExistsError)", async () => {

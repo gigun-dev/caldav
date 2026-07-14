@@ -650,7 +650,14 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 	);
 
 	// --- create-calendar(直近タスク: CreateCollection UC を MCP から露出。DAV MKCALENDAR と同じ UC)--
-	server.registerTool(
+	// 【なぜ registerAppTool 化したか(2026-07-14 追記・ユーザーフィードバック「操作には UI が
+	// 伴うべき。空でも表示したほうがよい」)】新規リスト作成直後は当然タスクが0件だが、
+	// list-todos と同じ TODOS_UI_URI(空のリストカード=ヘッダに新リスト名+quick-add)を出せば、
+	// その場でタスクを追加する導線がカード内で完結する。todos-entry.ts は vm.calendarId を
+	// ヘッダ表示と quick-add の作成先(currentCalendarId)に使う設計なので、structuredContent を
+	// TodosViewModel 形にするだけで「新リストのカード」が成立する — UI 側(ui/)を触る必要はない。
+	registerAppTool(
+		server,
 		"create-calendar",
 		{
 			title: "Create calendar",
@@ -659,6 +666,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 				'components を省略すると VTODO 用(リマインダーリスト)として作られる。作成後の id は' +
 				"create-todo/list-todos の calendarId としてそのまま使える。",
 			inputSchema: createCalendarInputShape,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
 		async ({ id, displayName, components, color }) => {
 			try {
@@ -679,9 +690,18 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef): McpServer {
 					components: collection.supportedComponents ?? supportedComponents,
 					...(collection.color !== undefined ? { color: collection.color.toString() } : {}),
 				};
+				// structuredContent は TodosViewModel 契約(UI が読む形)にする。tasks を空配列で
+				// 決め打ちしない理由: 作成直後でも実在確認を兼ねて実際に ListTodos を1回通しておくと、
+				// 将来 CreateCollection が「既存タスクを引き継いだ複製」等になっても壊れない
+				// (buildTodosViewModel は他の mutate 系ツールと同じ経路なので挙動が揃う)。
+				// 現状は新規コレクションなので実質空配列が返るだけで、レイテンシコストは他の
+				// mutate 系ツール(create-todo 等)と同等(確定一覧の ListTodos 1回)。
+				// カレンダーのメタ情報(displayName/components/color)は UI 契約に不要なので
+				// content(text)側にだけ残し、structuredContent には calendarId のみ載せる。
+				const vm = await buildTodosViewModel({ calendarId: collection.id });
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
+					structuredContent: vm as unknown as { [key: string]: unknown },
 				};
 			} catch (error) {
 				// InvalidIdentifierError(id/自動生成 slug が不正 — 通常 slugify 側で防げるが id 手動
