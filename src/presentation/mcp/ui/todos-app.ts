@@ -779,6 +779,240 @@ export const TODOS_APP_HTML = `<!doctype html>
     cursor: pointer;
   }
   .detail-save:disabled { opacity: 0.5; cursor: default; }
+
+  /* ===========================================================================
+   * v2(選択モデル + 詳細セミモーダル + スワイプ削除)追加スタイル。
+   * 正 = scratchpad/todos-refined-v2.html。既存のテーマ変数戦略(ホスト注入 var + fallback)に
+   * 合わせるため、モックの theme-light/theme-dark クラス変数はここで :root + prefers-color-scheme に
+   * 落とし込む。要素側はこの自前変数だけを見る(冒頭「テーマ変数の方針」と一貫)。
+   * ------------------------------------------------------------------------- */
+  :root {
+    /* 選択行の淡い背景・シート面・入力インセット・細い罫線・第3テキスト色・トグル色・scrim。
+     * bg-subtle/inset はホスト注入 secondary 背景に乗れるものは乗せ、無ければ iOS 実測値。 */
+    --bg-subtle: var(--color-background-secondary, #f7f7f8);
+    --bg-inset: #f2f2f4;
+    --sheet-bg: #f2f2f6;
+    --border-hair: var(--color-border-secondary, #eeeef0);
+    --text-3: #b4b4b8;
+    --scrim: rgba(0, 0, 0, 0.28);
+    --toggle-on: #34c759; /* iOS システムグリーン(トグル ON) */
+    --toggle-off: #d1d1d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-subtle: var(--color-background-secondary, #27272a);
+      --bg-inset: #2a2a2e;
+      --sheet-bg: #161618;
+      --border-hair: var(--color-border-secondary, #2e2e32);
+      --text-3: #5c5c62;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --toggle-on: #30d158;
+      --toggle-off: #4a4a4f;
+    }
+  }
+
+  /* --- 行 head(タイトル2行の縦積み領域)。row-head は ghost 行が使うので温存し、新設 .head を足す。 */
+  .head { flex: 1; min-width: 0; }
+  /* meta を1行に保ち(nowrap)、becoming ラベルを右端へ押し出す(margin-left:auto。モック要件1・④修正)。 */
+  .meta { align-items: baseline; flex-wrap: nowrap; min-width: 0; }
+  .meta .loc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .meta .tag { margin-left: auto; padding-left: 8px; flex: none; }
+
+  /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)------------------------
+   * 下線は出さない(ユーザー判断 2026-07-15。選択は bg-subtle 背景とメモ行・ⓘ の出現で十分伝わり、
+   * キャレット(ネイティブカーソル)が担う情報の二重表現を避ける)。 */
+  li.selected .row-main { background: var(--bg-subtle); border-radius: 10px; }
+  .title-edit {
+    display: block;
+    width: 100%;
+    font: inherit;
+    color: var(--fg);
+    border: none;
+    background: none;
+    outline: none;
+    padding: 2px 0;
+  }
+  .memo-line {
+    display: block;
+    width: 100%;
+    font: inherit;
+    font-size: 12px;
+    color: var(--muted);
+    border: none;
+    background: none;
+    outline: none;
+    padding: 2px 0;
+  }
+  .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
+  /* 選択行の ⓘ は accent 色で出す(存在自体が「詳細へ」の主導線)。 */
+  li.selected button.info { color: var(--accent); }
+
+  /* --- スワイプ削除(iOS 準拠。左スワイプ/長押しで右端に赤ボタンを露出)------------------------ */
+  li.swiping { position: relative; overflow: hidden; }
+  li.swiping .row-main {
+    transform: translateX(-76px);
+    position: relative;
+    z-index: 1;
+    background: var(--bg);
+  }
+  .swipe-del {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 76px;
+    border: none;
+    background: var(--danger);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* --- 詳細セミモーダル(ボトムシート)-----------------------------------------------------
+   * quick-add FAB シートと同じ position:fixed の重ね方に倣う(内部にスクロールコンテナを作らない
+   * ドクトリンとは別枠 — モーダルは会話フローの上に重なる面で、本文は sheet-body が内部スクロールする)。
+   * height は max-height:88vh でコンテンツに応じて伸び、超えたら本文が内部スクロール(iframe が短くても破綻しない)。 */
+  .scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 60; }
+  .sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 88vh;
+    z-index: 61;
+    display: flex;
+    flex-direction: column;
+    background: var(--sheet-bg);
+    border-top-left-radius: 14px;
+    border-top-right-radius: 14px;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
+  }
+  .grabber { width: 36px; height: 4px; border-radius: 2px; background: var(--text-3); opacity: 0.5; margin: 8px auto 2px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px 8px; }
+  .sheet-head .h-title { font-size: 14px; font-weight: 600; color: var(--fg); }
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-x { background: var(--bg-inset); color: var(--muted); }
+  .btn-ok { background: var(--accent); color: #fff; font-weight: 700; }
+  .sheet-body { flex: 1; overflow-y: auto; padding: 4px 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .group { background: var(--bg); border-radius: 12px; overflow: hidden; }
+  .g-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 12px; font-size: 13.5px; color: var(--fg); }
+  .g-row + .g-row { border-top: 1px solid var(--border-hair); }
+  .g-row .g-icon { flex: none; width: 20px; text-align: center; color: var(--muted); }
+  .g-row .g-label { flex: 1; min-width: 0; display: flex; align-items: center; }
+  .g-row .g-value { flex: none; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  /* 値=メニュー(pull-down)の行には小さな ⌵ を添える(iOS の値メニューの記号)。 */
+  .g-row .g-value.menu::after { content: "⌵"; font-size: 11px; color: var(--text-3); }
+  .g-value.readonly { color: var(--text-3); cursor: default; }
+  /* タイトル+メモ グループ(大きめタイトル入力 + メモ placeholder)。 */
+  .title-input {
+    font: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--fg);
+    width: 100%;
+    border: none;
+    background: none;
+    padding: 12px 12px 2px;
+    outline: none;
+  }
+  .notes-input {
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    width: 100%;
+    border: none;
+    background: none;
+    padding: 2px 12px 12px;
+    outline: none;
+    resize: none;
+    min-height: 34px;
+  }
+  .notes-input::placeholder, .title-input::placeholder { color: var(--text-3); }
+  /* iOS 風トグル。 */
+  .toggle { flex: none; width: 44px; height: 26px; border-radius: 13px; background: var(--toggle-off); position: relative; cursor: pointer; }
+  .toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  .toggle.on { background: var(--toggle-on); }
+  .toggle.on::after { left: auto; right: 2px; }
+  /* 値=入力の一本化(枠なし・accent 色のネイティブ input を「値の位置」に置く)。カレンダー/時計
+   * ピッカーはネイティブ(iOS ホイール等)にそのまま委ねる。::-webkit-calendar-picker-indicator は
+   * 非表示にして「値テキストだけ」に見せる(モック要件3)。 */
+  .value-input {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--accent);
+    border: none;
+    background: none;
+    padding: 0;
+    outline: none;
+    margin-left: 8px;
+  }
+  .value-input::-webkit-calendar-picker-indicator { display: none; }
+  /* 場所などテキスト系はトグル ON 時に枠付き入力行を出す(自由入力は枠の方が編集可能性が伝わる)。 */
+  .g-input { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px 42px; }
+  .g-input input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  /* 曜日チップ(繰り返し=毎週/隔週のとき)。 */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 12px 10px 42px; }
+  .chips button {
+    font: inherit;
+    font-size: 12px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-inset);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* --- 繰り返し/終了/優先度のポップアップメニュー(iOS pull-down)。fixed 配置(JS が座標を書く)。 */
+  .menu-pop {
+    position: fixed;
+    width: 200px;
+    z-index: 70;
+    background: var(--bg);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--border-hair);
+  }
+  .menu-pop .m-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 13.5px; cursor: pointer; color: var(--fg); }
+  .menu-pop .m-row + .m-row { border-top: 1px solid var(--border-hair); }
+  .menu-pop .m-row .m-check { width: 14px; color: var(--accent); font-weight: 700; }
+  .menu-pop .m-row.m-sep { border-top: 6px solid var(--bg-inset); }
+  .menu-pop .m-row.m-disabled { color: var(--text-3); cursor: default; }
 </style>
 </head>
 <body>
@@ -848,6 +1082,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   <!-- 追加 FAB(2026-07-14 UI フィードバック対応)。カード右下固定。タップで上の quick-add シート
        を開く。開いている間は entry が hidden にして重なりを避ける。type="button" で暗黙 submit を防ぐ。 -->
   <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加">＋</button>
+  <!-- v2 詳細セミモーダル(ボトムシート)の描画先。#root(一覧)とは独立した常設コンテナで、
+       一覧再描画(renderAll の innerHTML)に巻き込まれない。todos-entry.ts の openSheet/closeSheet が
+       この中に scrim + sheet を出し入れする(空のうちは何も描かれない)。 -->
+  <div id="sheet-root"></div>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->

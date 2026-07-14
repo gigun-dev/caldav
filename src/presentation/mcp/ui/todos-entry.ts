@@ -135,6 +135,9 @@ const statusEl = document.getElementById("status") as HTMLElement;
 // 視覚非表示の aria-live(role="status")。becoming の視覚表現と対になる音声版
 // (「「牛乳を買う」を完了しました」等)。todos-app.ts の .sr-only コメント参照。
 const liveEl = document.getElementById("live") as HTMLElement;
+// v2 詳細セミモーダルの描画先。#root(一覧)とは独立した常設コンテナで、一覧再描画(renderAll)に
+// 巻き込まれない(シートは開いている間そのまま生き、裏で一覧が更新されても閉じない)。null=シート閉。
+const sheetRoot = document.getElementById("sheet-root") as HTMLElement;
 // E-2 スライス③: 対象リスト名の見出し + quick-add(タイトル1行追加)の静的要素。
 // いずれも #root の外(常時ある操作面)なので描画の破壊的更新に巻き込まれない。
 const appTitleEl = document.getElementById("app-title") as HTMLElement;
@@ -263,16 +266,43 @@ let optimisticRows: OptimisticRow[] = [];
 // 上書き。id → 変更したフィールドだけの部分上書き。rebuildDisplay が confirmedTasks の該当行へ
 // この値を重ねる(値だけ差し替え = becoming-edit のインライン旧→新はサーバー応答の changes に任せる、
 // という仕様B-2)。成功で確定 vm に置き換わり、失敗でこの Map から抜いて元値へ戻す(ロールバック)。
-type OptimisticEdit = Partial<Pick<TodoItem, "title" | "due" | "isAllDay" | "priority" | "notes">>;
+// 【v2 追加】location / recurrence も楽観上書きに含める(詳細セミモーダルの ✓ が update-todo で
+// 場所・繰り返しを部分更新できるようになったため)。location は string|null(null=除去)、
+// recurrence は TodoRecurrence|null(null=繰り返し除去)。rebuildDisplay が Object.assign で重ねる。
+type OptimisticEdit = Partial<Pick<TodoItem, "title" | "due" | "isAllDay" | "priority" | "notes" | "location" | "recurrence">>;
 const optimisticEdits = new Map<string, OptimisticEdit>();
 /** 仮行 id 判定(differ から除外・トグル禁止に使う)。 */
 function isOptimisticId(id: string): boolean {
 	return id.startsWith("optimistic:");
 }
-// expandedId(E-2 スライス⑤): 詳細を開いている行の id。単一値なので「同時に開くのは1行だけ」
-// (別の行を開くと前の行は自動で閉じる)が状態設計だけで満たされる。再描画(refetch/mutation)を
-// 跨いで展開を保持する(completedOpen と同じ発想 — 見ていた展開が勝手に閉じるのを防ぐ)。null=全閉。
-let expandedId: string | null = null;
+// 【v2 選択モデル + 詳細セミモーダル + スワイプ削除への置換(2026-07-15)】
+// 旧・インライン詳細展開(expandedId + renderDetail)は廃止。iOS リマインダー準拠の「行選択で
+// タイトルを直接編集 / ⓘ で詳細シート / 左スワイプで削除」に作り替える。expandedId → selectedId +
+// sheetState + swipeId の3状態へ分解する。いずれも再描画(refetch/mutation)を跨いで保持する
+// (completedOpen と同じ発想 — 見ていた選択・シート・スワイプが勝手にリセットされるのを防ぐ)。
+//
+// selectedId: head タップで単一行を選択(iOS の「タップで行が編集モードに入る」)。選択行はタイトルが
+//   枠なし input 化し、直下に「メモを追加」行と ⓘ が出る。選択解除=確定(auto-save): 行外タップ /
+//   Enter / 別行選択のいずれでも、変更があれば update-todo(title/notes のみ・部分更新)を楽観送信する。
+let selectedId: string | null = null;
+// swipeId: 左スワイプ(touch)or 右クリック/長押し(contextmenu)で削除ボタンを露出している行の id。
+//   単一値なので別行を触れば前の露出は畳まれる(iOS の swipe-to-delete と同じ排他)。null=露出なし。
+let swipeId: string | null = null;
+// sheetState: ⓘ で開くボトムシート(詳細セミモーダル)。page でシート内ページを差し替える
+//   (detail=編集フォーム / list=リスト移動の選択ページ)。null=シート閉。#sheet-root へ描くので
+//   一覧再描画に巻き込まれない。
+let sheetState: { id: string; page: "detail" | "list" } | null = null;
+// sheetDraft: シートで編集中の作業コピー。構造フィールド(日付/時刻トグル・繰り返し・優先度・場所 ON/OFF)は
+//   ここに持ち、テキスト入力(title/notes/location)は input イベントでここへ同期する — 構造変化での
+//   シート再描画(メニュー選択等)でテキスト入力値が失われないようにするため。null=シート閉。
+let sheetDraft: SheetDraft | null = null;
+// list-calendars の結果キャッシュ(リスト移動ページで列挙)。初回ナビゲーション時に遅延取得する
+//   (シートを開くたびに毎回叩かない。移動が起きればサーバー vm が来るのでキャッシュ鮮度は実害小)。
+let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[] }> | null = null;
+// 選択行のタイトル/メモ入力への参照。commitSelection が renderAll 前の DOM 値を読むために renderRow が
+//   選択行の描画時にセットする(renderAll は #root を innerHTML で作り直すので、再描画前に値を捕まえる)。
+let selTitleInput: HTMLInputElement | null = null;
+let selMemoInput: HTMLInputElement | null = null;
 // optimisticDeletes(E-2 スライス⑤・楽観削除): delete-todo 送信中の行 id。rebuildDisplay が
 // 表示から即除去する(楽観適用)。成功で確定 vm に置き換わり、失敗でこの Set から抜いて行が復活する。
 // 【becoming-gone を1描画見せてから消す演出は省略した(判断)】仕様が許容する省略。楽観削除で
@@ -321,6 +351,9 @@ function naturalSection(task: TodoItem, todayKey: string): SectionKey {
 // 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
 // ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
 let currentCalendarId: string | null = null;
+// currentTimeZone(v2): この一覧の解釈ゾーン(vm.timeZone)。詳細シートの「時間帯」行を、閲覧者の
+// Intl ゾーンと異なるときだけ出すために保持する。null=未受領(その間は時間帯行を出さない)。
+let currentTimeZone: string | null = null;
 // becoming(変化の中間状態)の元データ。応答を受け取るたびに丸ごと置き換える —
 // affected/removed の無い応答(list/refresh)が来れば空になり、becoming は自然に平常へ
 // 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
@@ -854,18 +887,25 @@ function planEdit(aff: AffectedEntry): EditPlan {
 	return { dueChange, priChange, moreCount, tag };
 }
 
-/** 1行(li)を組み立てる。チェックは実 <button>(aria-pressed)にする —
- *  div+onclick だと VoiceOver がボタンとして読み上げず、キーボード操作もできないため。 */
+/** 1行(li)を組み立てる(v2 選択モデル)。行 = [丸チェック][head(2行)][trailing]。
+ *  非選択: head = タイトル + meta(due/⟳/📍/becoming ラベル)。head タップで選択に入る。
+ *  選択:   head = タイトル input + 「メモを追加」行 + meta、trailing に ⓘ(詳細シートを開く)。
+ *  チェックは実 <button>(aria-pressed)にする — div+onclick は VoiceOver がボタンとして
+ *  読まずキーボード操作もできないため。 */
 function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 削除ゴースト(removed 由来の擬似 TodoItem)は専用の form で早期 return
 	// (チェックボタンを持たない・操作不能・破線ボックス。詳細は renderGhostRow)。
 	if (ghosts.some((g) => g.id === task.id)) return renderGhostRow(task, todayKey);
 
 	const li = document.createElement("li");
+	// data-id: 行外タップ判定(document click の deselect / swipe close)で closest("li[data-id]") から
+	// 拾うため。renderAll は #root を innerHTML で作り直すので毎描画で付け直す。
+	li.dataset.id = task.id;
 	if (task.completed) li.classList.add("done");
-	// 2026-07-14 ドクトリン改訂: pending でも見た目はブロックしない(li.pending クラス付与と
-	// スピナー・disabled を廃止)。in-flight の間は既に楽観状態が塗られており(optimisticToggle)、
-	// 二重送信は toggleTask 冒頭の pendingIds ガードで防ぐ。よって行/ボタンの見た目は通常のまま。
+	const sel = selectedId === task.id;
+	const swiped = swipeId === task.id;
+	if (sel) li.classList.add("selected");
+	if (swiped) li.classList.add("swiping");
 
 	// becoming 装飾の決定。未知 kind は何も足さない(通常描画へ degrade)。
 	// 2026-07-14 楽観更新: in-flight のトグルは optimisticToggle 由来の becoming(completed/reopened)を
@@ -875,8 +915,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	let editPlan: EditPlan | null = null;
 	if (aff !== undefined) {
 		// sync(E-2 スライス④): システム起因の変化はラベルを中立の「同期(...)」にする。
-		// form(左バー/リング/破線)は user 起因と同一語彙を使い、区別はラベルだけに集約する
-		// (出所は断定しない・ユーザーの「追加/完了」ラベルと明確に区別、という設計)。
+		// form(左バー/リング/破線)は user 起因と同一語彙を使い、区別はラベルだけに集約する。
 		const isSync = aff.sync === true;
 		if (aff.kind === "completed") {
 			li.classList.add("becoming-done");
@@ -887,18 +926,11 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
 			tagText = isSync ? "同期(追加)" : "追加";
-			// 2026-07-14 in-flight シマー: 仮行(quick-add optimistic row・create-todo 応答待ち)
-			// だけ .inflight を足し、CSS 側で既存の wake グラデをループさせる(色は増やさず
-			// 動きだけ足す)。確定済みの added 行(サーバー由来・isSync 含む)は対象外 —
-			// 「もう起きたこと」の静的表示という becoming の原則(ファイル冒頭)は崩さず、
-			// 「いま進行中で結果未確定」を伝える通信目的にだけシマーを限定する。
+			// in-flight シマー: 仮行(quick-add optimistic row)だけ .inflight を足す(色は増やさず動きだけ)。
 			if (isOptimisticId(task.id)) li.classList.add("inflight");
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
-			// 編集はインライン差分(旧→新)の粒度ラベル(期日変更 等)を user 起因では使うが、
-			// sync では出所不明の一括ラベル「同期(編集)」に丸める(何が変わったかは form と
-			// meta の旧→新が語る。ラベルは「これは同期由来」の一言に徹する)。
 			tagText = isSync ? "同期(編集)" : editPlan.tag;
 		}
 	}
@@ -906,211 +938,317 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	const check = document.createElement("button");
 	check.type = "button";
 	check.className = "check";
-	// aria-pressed で「トグルボタン」であることを支援技術に伝える。ラベルは操作の結果を
-	// 先に言う形(「〜を完了にする」)にして、押す前に何が起きるか分かるようにする。
 	check.setAttribute("aria-pressed", String(task.completed));
 	check.setAttribute(
 		"aria-label",
 		task.completed ? `「${task.title}」を未完了に戻す` : `「${task.title}」を完了にする`,
 	);
-	// disabled にはしない(見た目のブロックはしない方針)。in-flight の再タップは toggleTask 冒頭の
-	// pendingIds ガードが無害に弾く。連続で複数件チェックを打てる体験も維持される。
 	const circle = document.createElement("span");
 	circle.className = "circle";
 	circle.setAttribute("aria-hidden", "true");
-	circle.textContent = "✓"; // 未完/pending 時は CSS が color:transparent で隠す
+	circle.textContent = "✓"; // 未完時は CSS が color:transparent で隠す
 	check.appendChild(circle);
+	// 丸チェックのトグルは選択と干渉させない(モック要件2)。stopPropagation はしない — 別行の
+	// チェックを押したら selectedId!=その行 なので document click で前選択が commit されるのは iOS 的に自然。
 	check.addEventListener("click", () => void toggleTask(task));
 
-	// 【2026-07-14 UI フィードバック対応: 行構造を row-main(横) + detail(縦) に分離】
-	// 以前は li(横 flex)直下に check と texts を並べ、detail は texts 内(header の下)にあった。
-	// これだと ①チェック円を texts 全体(header + detail)に対して垂直配置するため、タイトル行との
-	// 上下位置が合わない(円が上に寄って見える)②展開の affordance が「タイトルタップ」だけで
-	// 見えない、という2つのフィードバックがあった。row-main(check + header + ⓘ を align-items:center で
-	// 横並び)に畳むことで円がタイトル行と垂直センタリングされ、detail は row-main の「下」に
-	// li 直下で開く(centering に巻き込まれない)。ⓘ(info)アイコンを右端に足して展開の主 affordance にする。
 	const rowMain = document.createElement("div");
 	rowMain.className = "row-main";
 	rowMain.appendChild(check);
 
-	// row-head(E-2 スライス⑤): タイトル + meta を包むタップ開閉領域。詳細(削除ボタンを含む)は
-	// この header の内側ではなく row-main の外(li 直下)に置く — role="button" の中に <button> を
-	// ネストすると ARIA 違反(インタラクティブ入れ子)になるため、クリック領域は header に限定する。
-	// チェック円(check button)は header の外(row-main の別 flex 子)なので、円のタップは開閉と干渉しない。
-	const isExpanded = expandedId === task.id;
-	const header = document.createElement("div");
-	header.className = "row-head";
-	header.setAttribute("role", "button");
-	header.setAttribute("tabindex", "0");
-	header.setAttribute("aria-expanded", String(isExpanded));
-	// 開閉トグル: 同時に開くのは1行だけ(expandedId は単一値なので別行を開くと前行は自動で閉じる)。
-	const toggleExpand = (): void => {
-		expandedId = isExpanded ? null : task.id;
-		renderAll();
-	};
-	header.addEventListener("click", toggleExpand);
-	// キーボード操作(role=button は Enter/Space での起動を自前で配線する必要がある)。
-	header.addEventListener("keydown", (e) => {
-		if (e.key === "Enter" || e.key === " ") {
-			e.preventDefault(); // Space のページスクロール抑止 + Enter の暗黙送信抑止
-			toggleExpand();
-		}
-	});
-	const title = document.createElement("div");
-	title.className = "title";
-	// 優先度 ! 記号(E-2 スライス③): iOS リマインダーに合わせてタイトルの左に小さく置く。以前は
-	// meta 行(2行目)に出していたが、iOS の語彙(タイトル前・オレンジ)へ寄せて title 先頭へ移した。
-	// becoming-edit(優先度変更)のときは meta 行に旧→新の差分を出すので、ここでの常時表示は
-	// 抑止する(差分は差分の言語で語る、という既存方針。二重表示を避ける)。
-	const titlePriMarks = priorityMarks(task.priority);
-	if (titlePriMarks !== "" && editPlan?.priChange == null) {
-		const priInline = document.createElement("span");
-		priInline.className = "pri-inline";
-		priInline.textContent = titlePriMarks;
-		// 記号だけだと支援技術に「!!!」と読まれて意味不明なのでラベルを添える(旧 meta 実装を踏襲)。
-		priInline.setAttribute(
-			"aria-label",
-			titlePriMarks === "!!!" ? "優先度 高" : titlePriMarks === "!!" ? "優先度 中" : "優先度 低",
-		);
-		title.appendChild(priInline);
-	}
-	// タイトル本文はテキストノードで追加する(pri-inline span の後ろに置くため textContent 代入は使わない)。
-	title.appendChild(document.createTextNode(task.title));
-	// メモ有りインジケータ(E-2 スライス⑤): notes が非 null かつ非空なら控えめな「≡」をタイトル末尾に。
-	// 中身は詳細展開で見せるので、一覧では「メモがある」ことだけを最小の記号で示す(iOS リマインダーの
-	// サブタイトル行に相当する情報を、走査性を損なわないアイコン1つに畳む)。
-	if (task.notes !== null && task.notes.trim() !== "") {
-		const noteMark = document.createElement("span");
-		noteMark.className = "note-mark";
-		noteMark.textContent = "≡";
-		noteMark.setAttribute("aria-label", "メモあり");
-		title.appendChild(noteMark);
-	}
-	header.appendChild(title);
+	// --- head(2行: タイトル / meta)------------------------------------------------
+	const head = document.createElement("div");
+	head.className = "head";
 
-	// メタ行: due 相対表現(あるものだけ)。優先度の常時表示は title 先頭へ移した(上記)。notes は行内に出さない
-	// (①の情報設計 — カード幅で notes まで出すと一覧の走査性が落ちる。展開 UI は②以降)。
-	// becoming: edited のインライン差分があるフィールドは、通常表示の代わりに
-	// 「旧(減光)→ 新(琥珀)」の凍結表示に差し替える(旧値に取消線は使わない —
-	// 取消線=完了の恒久記号、の一貫性)。新値 = 行の現在値なので情報の重複はない。
-	// 通常の優先度 ! は title 先頭へ移したので meta の描画条件からは外す(E-2 スライス③)。
-	// meta に優先度が出るのは becoming-edit の旧→新差分(priChange)のときだけ = hasInline に含まれる。
+	if (sel) {
+		// 選択中: タイトルは枠なし input(下線なし・背景は CSS の .row.selected が担う)。
+		const ti = document.createElement("input");
+		ti.className = "title-edit";
+		ti.type = "text";
+		ti.value = task.title;
+		ti.setAttribute("aria-label", "タイトル");
+		// Enter=確定(選択解除)。IME 変換確定の Enter は isComposing で弾く(quick-add と同じ規律)。
+		ti.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.isComposing) {
+				e.preventDefault();
+				commitSelection();
+				selectedId = null;
+				renderAll();
+			}
+		});
+		head.appendChild(ti);
+		selTitleInput = ti;
+
+		// 「メモを追加」行 = 枠なし単一行 input(空なら placeholder、既存メモがあれば値表示)。
+		// 直接 input 方式を採る(モック要件2 の「タップで textarea 化 or 直接 input」の後者)。
+		// 全文改行編集はシート側の textarea に委ねる。input.value は改行を保持できるので、
+		// 未編集なら task.notes と厳密一致 → commitSelection は notes を送らない(誤上書きしない)。
+		const mi = document.createElement("input");
+		mi.className = "memo-line";
+		mi.type = "text";
+		mi.value = task.notes ?? "";
+		mi.placeholder = "メモを追加";
+		mi.setAttribute("aria-label", "メモ");
+		mi.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.isComposing) {
+				e.preventDefault();
+				commitSelection();
+				selectedId = null;
+				renderAll();
+			}
+		});
+		head.appendChild(mi);
+		selMemoInput = mi;
+	} else {
+		// 非選択: タイトル div(優先度 ! 記号 + 本文 + メモ有り ≡)。head タップで選択に入る。
+		const title = document.createElement("div");
+		title.className = "title";
+		const titlePriMarks = priorityMarks(task.priority);
+		if (titlePriMarks !== "" && editPlan?.priChange == null) {
+			const priInline = document.createElement("span");
+			priInline.className = "pri-inline";
+			priInline.textContent = titlePriMarks;
+			priInline.setAttribute(
+				"aria-label",
+				titlePriMarks === "!!!" ? "優先度 高" : titlePriMarks === "!!" ? "優先度 中" : "優先度 低",
+			);
+			title.appendChild(priInline);
+		}
+		title.appendChild(document.createTextNode(task.title));
+		if (task.notes !== null && task.notes.trim() !== "") {
+			const noteMark = document.createElement("span");
+			noteMark.className = "note-mark";
+			noteMark.textContent = "≡";
+			noteMark.setAttribute("aria-label", "メモあり");
+			title.appendChild(noteMark);
+		}
+		head.appendChild(title);
+		// head タップ=選択(iOS 準拠)。仮行(create 未確定)は選択させても saveEdit が no-op なので許容。
+		head.addEventListener("click", () => setSelected(task.id));
+	}
+
+	// --- meta 行: due / ⟳繰り返し / 📍場所 / becoming ラベル(右端)----------------------
+	// becoming ラベル(tag)は meta の右端(margin-left:auto)へ移設(モック要件1・④のずれ修正)。
+	// location チップは task.location が非空のとき新設(truncate)。
 	const dueInfo = formatDue(task, todayKey);
 	const hasInline = editPlan !== null && (editPlan.dueChange !== null || editPlan.priChange !== null);
 	const hasMore = editPlan !== null && editPlan.moreCount > 0;
-	// 繰り返しバッジ(E-2 スライス⑤): recurrence があれば due の隣に「⟳ 毎週 月・水」等を出す。
-	// 語彙外/複雑形はテキスト "" で ⟳ アイコンのみ(formatRecurrence 参照)。becoming-edit の
-	// 期日差分表示中(dueChange インライン)は一過性の差分表示に専念させ、常時バッジは抑止する
-	// (差分は差分の言語で語る、という meta 行の既存方針)。それ以外では常に出す。
 	const hasRecur = task.recurrence !== null && editPlan?.dueChange == null;
-	if (dueInfo.text !== "" || hasInline || hasMore || hasRecur) {
-		const meta = document.createElement("div");
-		meta.className = "meta";
+	const hasLoc = task.location !== null && task.location.trim() !== "";
+	const meta = document.createElement("div");
+	meta.className = "meta";
 
-		/** 旧 → 新 のインライン差分 span 群を親に追加する小ヘルパー(due/priority 共用)。 */
-		const appendDiff = (parent: HTMLElement, before: string, after: string): void => {
-			const old = document.createElement("span");
-			old.className = "old";
-			old.textContent = before;
-			const arrow = document.createElement("span");
-			arrow.className = "arrow";
-			arrow.textContent = "→";
-			const next = document.createElement("span");
-			next.className = "new";
-			next.textContent = after;
-			parent.appendChild(old);
-			parent.appendChild(arrow);
-			parent.appendChild(next);
-		};
+	/** 旧 → 新 のインライン差分 span 群を親に追加する小ヘルパー(due/priority 共用)。 */
+	const appendDiff = (parent: HTMLElement, before: string, after: string): void => {
+		const old = document.createElement("span");
+		old.className = "old";
+		old.textContent = before;
+		const arrow = document.createElement("span");
+		arrow.className = "arrow";
+		arrow.textContent = "→";
+		const next = document.createElement("span");
+		next.className = "new";
+		next.textContent = after;
+		parent.appendChild(old);
+		parent.appendChild(arrow);
+		parent.appendChild(next);
+	};
 
-		if (editPlan?.priChange != null) {
-			// 優先度の差分。サーバー(todos-diff.ts)が既に「高/中/低/なし」の表示語へ
-			// 正規化して渡す契約なのでそのまま使う(! 記号へ再変換しない — 「なし → 高」の
-			// ような遷移は語の方が読める。行本体の ! 記号との不一致は許容し、差分は差分の
-			// 言語で語る)。片側欠落は「なし」で補う。
-			const pri = document.createElement("span");
-			pri.className = "pri";
-			appendDiff(pri, editPlan.priChange.before ?? "なし", editPlan.priChange.after ?? "なし");
-			meta.appendChild(pri);
-		}
-
-		if (editPlan?.dueChange != null) {
-			// 期日の差分。overdue の赤は出さない — 差分表示中の主役は「変わったこと」で、
-			// 警告色を重ねると琥珀(新値)との色の意味が濁る(次の描画から通常の赤に戻る)。
-			const due = document.createElement("span");
-			due.className = "due";
-			appendDiff(
-				due,
-				editPlan.dueChange.before !== undefined ? formatDueMeta(editPlan.dueChange.before, todayKey) : "なし",
-				editPlan.dueChange.after !== undefined ? formatDueMeta(editPlan.dueChange.after, todayKey) : "なし",
-			);
-			meta.appendChild(due);
-		} else if (dueInfo.text !== "") {
-			const due = document.createElement("span");
-			due.className = "due";
-			// 完了済み行では期限切れの赤を出さない(もう済んだものに警告色は不要)。
-			if (dueInfo.overdue && !task.completed) due.classList.add("overdue");
-			due.textContent = dueInfo.text;
-			meta.appendChild(due);
-		}
-
-		if (editPlan !== null && editPlan.moreCount > 0) {
-			// インラインにできなかった変更の存在だけ示す(内容は AI の応答文に委ねる)。
-			const more = document.createElement("span");
-			more.className = "more";
-			more.textContent = `他${editPlan.moreCount}件`;
-			meta.appendChild(more);
-		}
-		// 繰り返しバッジ(E-2 スライス⑤)。due の後ろに置く(iOS リマインダーの並びに寄せる)。
-		if (hasRecur && task.recurrence !== null) {
-			const recurText = formatRecurrence(task.recurrence);
-			const recur = document.createElement("span");
-			recur.className = "recur";
-			// テキスト "" のとき(語彙外/複雑形 degrade)は ⟳ アイコンのみ。テキストありは「⟳ 毎週 月・水」。
-			recur.textContent = recurText === "" ? "⟳" : `⟳ ${recurText}`;
-			recur.setAttribute("aria-label", recurText === "" ? "繰り返し" : `繰り返し ${recurText}`);
-			meta.appendChild(recur);
-		}
-		header.appendChild(meta);
+	if (editPlan?.priChange != null) {
+		const pri = document.createElement("span");
+		pri.className = "pri";
+		appendDiff(pri, editPlan.priChange.before ?? "なし", editPlan.priChange.after ?? "なし");
+		meta.appendChild(pri);
 	}
-	rowMain.appendChild(header);
-
-	// ⓘ(info)アイコン(2026-07-14 UI フィードバック対応: 詳細展開の主 affordance)。
-	// 以前はタイトルタップだけが展開トリガーで、見えない affordance だったためユーザーが気づかず、
-	// quick-add 側の「詳細」ボタンを詳細表示と誤認していた。行右端に明示的な ⓘ を置き、それをタップで
-	// 展開する(タイトルタップでの開閉も header に残すが、ⓘ が視認できる主導線)。toggleExpand を共有。
-	// role/aria: 実 <button> なので role 不要。aria-expanded で開閉状態を、aria-label で用途を伝える。
-	const info = document.createElement("button");
-	info.type = "button";
-	info.className = "info";
-	info.setAttribute("aria-expanded", String(isExpanded));
-	info.setAttribute("aria-label", isExpanded ? `「${task.title}」の詳細を閉じる` : `「${task.title}」の詳細を開く`);
-	info.textContent = "ⓘ";
-	info.addEventListener("click", (e) => {
-		e.stopPropagation(); // header クリックとの二重発火を防ぐ(row-main 内の別ボタン)。
-		toggleExpand();
-	});
-	rowMain.appendChild(info);
-
-	// becoming マイクロラベル(行右端、ⓘ の外側)。装飾(リング・バー等)は支援技術に届かないが、
-	// こちらは読み上げ対象のテキスト — さらに操作直後の要約は #live(aria-live)にも流す。
+	if (editPlan?.dueChange != null) {
+		const due = document.createElement("span");
+		due.className = "due";
+		appendDiff(
+			due,
+			editPlan.dueChange.before !== undefined ? formatDueMeta(editPlan.dueChange.before, todayKey) : "なし",
+			editPlan.dueChange.after !== undefined ? formatDueMeta(editPlan.dueChange.after, todayKey) : "なし",
+		);
+		meta.appendChild(due);
+	} else if (dueInfo.text !== "") {
+		const due = document.createElement("span");
+		due.className = "due";
+		if (dueInfo.overdue && !task.completed) due.classList.add("overdue");
+		due.textContent = dueInfo.text;
+		meta.appendChild(due);
+	}
+	if (hasMore) {
+		const more = document.createElement("span");
+		more.className = "more";
+		more.textContent = `他${editPlan?.moreCount ?? 0}件`;
+		meta.appendChild(more);
+	}
+	// 繰り返しバッジ(⟳)。due の後ろ(iOS リマインダーの並び)。
+	if (hasRecur && task.recurrence !== null) {
+		const recurText = formatRecurrence(task.recurrence);
+		const recur = document.createElement("span");
+		recur.className = "recur";
+		recur.textContent = recurText === "" ? "⟳" : `⟳ ${recurText}`;
+		recur.setAttribute("aria-label", recurText === "" ? "繰り返し" : `繰り返し ${recurText}`);
+		meta.appendChild(recur);
+	}
+	// 📍場所チップ(v2 新設・モック要件1)。truncate は CSS .meta .loc(overflow:hidden)。
+	if (hasLoc && task.location !== null) {
+		const loc = document.createElement("span");
+		loc.className = "loc";
+		loc.textContent = `📍 ${task.location}`;
+		loc.setAttribute("aria-label", `場所 ${task.location}`);
+		meta.appendChild(loc);
+	}
+	// becoming マイクロラベル(meta 右端。margin-left:auto で押し出す)。読み上げ対象のテキスト
+	// (装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
 	if (tagText !== null) {
 		const tag = document.createElement("span");
 		tag.className = "tag";
 		tag.textContent = tagText;
-		rowMain.appendChild(tag);
+		meta.appendChild(tag);
+	}
+	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
+	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
+
+	rowMain.appendChild(head);
+
+	// --- trailing: 選択中の行だけ ⓘ(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
+	if (sel) {
+		const info = document.createElement("button");
+		info.type = "button";
+		info.className = "info";
+		info.setAttribute("aria-label", `「${task.title}」の詳細`);
+		info.textContent = "ⓘ";
+		info.addEventListener("click", (e) => {
+			e.stopPropagation();
+			// 詳細シートを開く前にインライン編集を確定してから開く(タイトル/メモを二重管理しない)。
+			// 確定後の最新表示行をシートの初期値に使う(楽観上書きが乗った display 行)。
+			commitSelection();
+			selectedId = null;
+			const latest = tasks?.find((t) => t.id === task.id) ?? task;
+			openSheet(latest);
+			renderAll();
+		});
+		rowMain.appendChild(info);
 	}
 
 	li.appendChild(rowMain);
 
-	// 詳細展開(E-2 スライス⑤): 開いている行だけ row-main の「下」に詳細パネルを差し込む(li 直下 =
-	// row-main の垂直センタリングに巻き込まれない)。開閉はアニメ無し(ドクトリン)= 単に DOM の
-	// 有無で表現する(再描画のたび作り直す一方向データフロー)。detail は check の幅ぶんインデントして
-	// 「この行に属する詳細」であることを示す(CSS .detail の margin-left)。
-	if (isExpanded) {
-		li.appendChild(renderDetail(task, todayKey));
+	// --- スワイプ削除ボタン(露出中のみ)。左スワイプ/長押しで露出、タップで楽観削除 ------------
+	if (swiped) {
+		const del = document.createElement("button");
+		del.type = "button";
+		del.className = "swipe-del";
+		del.textContent = "削除";
+		del.setAttribute("aria-label", `「${task.title}」を削除`);
+		del.addEventListener("click", (e) => {
+			e.stopPropagation();
+			swipeId = null;
+			void deleteTask(task);
+		});
+		li.appendChild(del);
 	}
+	// スワイプ/長押しジェスチャの配線(仮行は削除できないので付けない)。
+	if (!isOptimisticId(task.id)) attachSwipe(li, task);
 	return li;
+}
+
+/** setSelected: 行を選択(前の選択があれば確定 auto-save してから切替)。選択後に新タイトル input へ
+ *  フォーカスしキャレットを末尾に置く(iOS の「タップで編集に入りカーソルが末尾」を再現)。 */
+function setSelected(id: string): void {
+	if (selectedId === id) return; // 同じ行の再タップは何もしない(input のフォーカスを奪わない)
+	commitSelection(); // 別行選択=前選択の確定(モック要件2)
+	selectedId = id;
+	closeSwipe();
+	renderAll();
+	if (selTitleInput !== null) {
+		selTitleInput.focus();
+		const v = selTitleInput.value;
+		selTitleInput.setSelectionRange(v.length, v.length);
+	}
+}
+
+/** commitSelection: 選択解除=確定(auto-save)の本体。renderAll 前に selTitleInput/selMemoInput の
+ *  DOM 値を読み、タイトル/メモに変更があれば update-todo(部分更新)を楽観送信する(既存 saveEdit に乗せる)。
+ *  呼び出し側が selectedId=null と renderAll を担う(この関数は state の読み取りと保存のみ)。 */
+function commitSelection(): void {
+	const inputTitle = selTitleInput;
+	const inputMemo = selMemoInput;
+	selTitleInput = null;
+	selMemoInput = null;
+	if (selectedId === null) return;
+	const task = tasks?.find((t) => t.id === selectedId);
+	if (task === undefined) return;
+	const changes: UpdateTodoChanges = {};
+	if (inputTitle !== null) {
+		const nt = inputTitle.value.trim();
+		// 空タイトルは送らない(iOS が空を無視する挙動)。変更時のみ。
+		if (nt !== "" && nt !== task.title) changes.title = nt;
+	}
+	if (inputMemo !== null) {
+		const nn = inputMemo.value;
+		if (nn !== (task.notes ?? "")) changes.notes = nn;
+	}
+	if (Object.keys(changes).length > 0) void saveEdit(task, changes);
+}
+
+/** closeSwipe: スワイプ露出を畳む(state のみ。renderAll は呼び出し側)。 */
+function closeSwipe(): void {
+	if (swipeId !== null) swipeId = null;
+}
+
+/** 左スワイプ(touch)/ 右クリック・長押し(contextmenu)で削除ボタンを露出するジェスチャ配線。
+ *  デスクトップ fallback は contextmenu(モック要件5)。縦方向の動きが優勢ならホストの会話スクロールを
+ *  優先し何もしない(UI 内で縦スクロールを奪わない既存ドクトリン)。 */
+function attachSwipe(li: HTMLElement, task: TodoItem): void {
+	let startX = 0;
+	let startY = 0;
+	let tracking = false;
+	li.addEventListener(
+		"touchstart",
+		(e) => {
+			const t = e.touches[0];
+			if (t === undefined) return;
+			startX = t.clientX;
+			startY = t.clientY;
+			tracking = true;
+		},
+		{ passive: true },
+	);
+	li.addEventListener(
+		"touchmove",
+		(e) => {
+			if (!tracking) return;
+			const t = e.touches[0];
+			if (t === undefined) return;
+			const dx = t.clientX - startX;
+			const dy = t.clientY - startY;
+			// 縦の動きが優勢 → スワイプ判定を降りて縦スクロールに委ねる。
+			if (Math.abs(dy) > Math.abs(dx)) {
+				tracking = false;
+				return;
+			}
+			// 左へ 40px 超で露出、右へ 40px 超で解除(閾値は誤検出しにくい実測値)。
+			if (dx < -40 && swipeId !== task.id) {
+				swipeId = task.id;
+				tracking = false;
+				renderAll();
+			} else if (dx > 40 && swipeId === task.id) {
+				swipeId = null;
+				tracking = false;
+				renderAll();
+			}
+		},
+		{ passive: true },
+	);
+	li.addEventListener("touchend", () => {
+		tracking = false;
+	});
+	li.addEventListener("contextmenu", (e) => {
+		e.preventDefault();
+		swipeId = swipeId === task.id ? null : task.id;
+		renderAll();
+	});
 }
 
 /** completedAt(§3.8.2.1 で UTC ISO "...Z")→ 閲覧者ローカルの "YYYY/M/D HH:MM"。
@@ -1124,148 +1262,788 @@ function formatCompletedAt(iso: string): string {
 	return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
 }
 
-/**
- * 詳細展開パネル(E-2 スライス⑤)。行の header タップで開き、行下にインライン表示する。
- * 内容: メモ全文(改行保持・長文はスクロール)/ 繰り返しの完全表記(終了条件込み)/ 場所 /
- * 完了時刻(完了済みのみ)/ 削除ボタン。存在する情報だけ出す(空の行は作らない)。
- * 削除ボタンは「展開内のみに配置=それ自体が確認段階」という設計(confirm ダイアログは出さない。
- * 一覧の行には出さず、意図的に一段深い場所に置くことで誤タップを防ぐ)。
- */
-function renderDetail(task: TodoItem, _todayKey: string): HTMLElement {
-	const detail = document.createElement("div");
-	detail.className = "detail";
+// =============================================================================
+// 繰り返しプリセット(iOS リマインダー語彙 ⇄ ツール引数)の相互写像(v2)
+// =============================================================================
+// モックのプリセットメニュー(しない/毎日/平日/週末/毎週/隔週/毎月/3か月ごと/6か月ごと/毎年)を
+// update-todo の recurrence 引数({frequency,interval?,weekdays?,count?,until?})への糖衣として扱う。
+// 語彙外(序数 BYDAY・複雑形・語彙外 FREQ)は「カスタム」表示にして編集送信しない(安全側 degrade)。
 
-	// --- 編集フォーム(E-2 スライス⑥前半・仕様B)----------------------------------------
-	// タイトル(インライン text)・期日(ネイティブ date input・date-only)・優先度(セグメント)・
-	// メモ(textarea)を編集し、保存ボタン1つで「変更したフィールドだけ」を update-todo に渡す
-	// (undefined は送らない=部分更新の契約。仕様B-1)。仮行(create 未確定)は本物 id が無いので
-	// 編集不可(保存を無効化)。繰り返し/status の編集は置かない(表示のみ維持・トグルの領分。仕様B-3)。
-	// 【なぜ read-only の notes 全文表示を廃してこの textarea に統合したか】展開を開くたび notes を
-	// 二重(読み取り+編集)に出すと冗長。textarea が既に全文を改行保持で見せるので、これが表示も兼ねる。
-	if (!isOptimisticId(task.id)) {
-		const edit = document.createElement("div");
-		edit.className = "detail-edit";
+/** メニュー選択状態を表すキー。custom は「既存値が語彙外」= グレー表示・選択不可の第3状態。 */
+type RecurPreset =
+	| "none"
+	| "daily"
+	| "weekday"
+	| "weekend"
+	| "weekly"
+	| "biweekly"
+	| "monthly"
+	| "quarterly"
+	| "halfyearly"
+	| "yearly"
+	| "custom";
 
-		/** ラベル付きフィールド(縦積み)を作る小ヘルパー。 */
-		const addField = (labelText: string, control: HTMLElement): void => {
-			const field = document.createElement("div");
-			field.className = "field";
-			const label = document.createElement("span");
-			label.className = "field-label";
-			label.textContent = labelText;
-			field.appendChild(label);
-			field.appendChild(control);
-			edit.appendChild(field);
-		};
+/** update-todo の recurrence 引数(サーバー契約: "none"=除去・全置換・due 必須)。 */
+interface RecurArgs {
+	frequency: "none" | "daily" | "weekly" | "monthly" | "yearly";
+	interval?: number;
+	weekdays?: string[];
+	count?: number;
+	until?: string;
+}
 
-		// タイトル(インライン text)。
-		const titleInput = document.createElement("input");
-		titleInput.type = "text";
-		titleInput.className = "field-text";
-		titleInput.value = task.title;
-		titleInput.setAttribute("aria-label", "タイトル");
-		addField("タイトル", titleInput);
+/** プリセット → 表示ラベル(メニューと g-value 表示で共用)。 */
+const PRESET_LABEL: Record<RecurPreset, string> = {
+	none: "しない",
+	daily: "毎日",
+	weekday: "平日",
+	weekend: "週末",
+	weekly: "毎週",
+	biweekly: "隔週",
+	monthly: "毎月",
+	quarterly: "3か月ごと",
+	halfyearly: "6か月ごと",
+	yearly: "毎年",
+	custom: "カスタム",
+};
+/** メニューに並べる順(モック準拠。custom は現在値が custom のときだけ末尾に選択状態で見せる)。 */
+const PRESET_MENU_ORDER: readonly RecurPreset[] = [
+	"none",
+	"daily",
+	"weekday",
+	"weekend",
+	"weekly",
+	"biweekly",
+	"monthly",
+	"quarterly",
+	"halfyearly",
+	"yearly",
+];
 
-		// 期日。既存 due の日付(+ 時刻付きなら時刻)を初期値に。update-todo が create-todo と対称に
-		// なった(2026-07-14 V6 フォローアップ: 時刻付き due + due:null 除去)ので、quick-add と同じ部品で
-		// 「時刻を指定」トグルと「期日を外す」ボタンを出す(以前は date-only に degrade していた)。
-		const dueField = createDueField({
-			withTimeToggle: true,
-			withClear: task.due !== null, // 元々 due があるときだけ「期日を外す」を出す(無いものは外せない)。
-			initialDate: task.due !== null ? wallDatePart(task.due) : "",
-			// 時刻付きタスクは時刻付きモードで開く(offset ISO の "HH:MM"。wallTimePart 参照)。終日は undefined。
-			initialTime: task.due !== null && !task.isAllDay && task.due.includes("T") ? wallTimePart(task.due) : undefined,
-		});
-		addField("期日", dueField.el);
-
-		// 優先度(セグメント)。既存 priority を代表値へ丸めて初期選択にする。
-		const prioritySeg = createPrioritySegment(priorityToSegment(task.priority));
-		addField("優先度", prioritySeg.el);
-
-		// メモ(textarea)。表示も兼ねる(上記コメント)。改行はそのまま value に入る。
-		const notesArea = document.createElement("textarea");
-		notesArea.className = "field-textarea";
-		notesArea.value = task.notes ?? "";
-		notesArea.setAttribute("aria-label", "メモ");
-		addField("メモ", notesArea);
-
-		// 保存ボタン。押下時に「元値と違うフィールドだけ」を集めて saveEdit に渡す(部分更新)。
-		const save = document.createElement("button");
-		save.type = "button";
-		save.className = "detail-save";
-		save.textContent = "保存";
-		// in-flight(この行が既に保存中)は二重送信防止で無効化する。
-		if (pendingIds.has(task.id)) save.disabled = true;
-		save.addEventListener("click", () => {
-			const changes: UpdateTodoChanges = {};
-			// タイトル: 空文字は送らない(iOS リマインダーが空タイトルを無視するのに合わせる)。変更時のみ。
-			const nextTitle = titleInput.value.trim();
-			if (nextTitle !== "" && nextTitle !== task.title) changes.title = nextTitle;
-			// 期日(V6 フォローアップ: 時刻付き + 除去に対応)。現在値の「壁時計表現」を作って比較する:
-			//   終日 → "YYYY-MM-DD" / 時刻付き → "YYYY-MM-DDTHH:MM:SS"(offset ISO の先頭19文字 = 壁時計)。
-			// getValue() は 空=null / 終日 "YYYY-MM-DD" / 時刻付き "YYYY-MM-DDTHH:MM:SS" を返す。
-			//   - 入力を空にした & 元は due 有り → 期日を外す(due:null を送る)。
-			//   - 元も空で今も空 → 変更なし(送らない)。
-			//   - 値が現在の壁時計表現と違う → 送る(終日⇄時刻付きの遷移・時刻変更も「違う」に含まれる)。
-			const dueVal = dueField.getValue();
-			const curWall = task.due === null ? "" : task.due.includes("T") ? task.due.slice(0, 19) : task.due;
-			if (dueVal === null) {
-				if (curWall !== "") changes.due = null; // 期日を外す。
-			} else if (dueVal.due !== curWall) {
-				changes.due = dueVal.due;
-			}
-			// 優先度: 見た目のバケット(代表値)が変わったときだけ送る(priority=3 の行をそのまま保存しても
-			// 3→1 の無用な変更を送らないため、priorityToSegment どうしで比較する)。
-			const nextPriSeg = prioritySeg.get();
-			if (nextPriSeg !== priorityToSegment(task.priority)) changes.priority = nextPriSeg;
-			// メモ: 変更時のみ。空文字にした場合はメモのクリア意図として "" を送る(update-todo は notes を
-			// 受け取れば DESCRIPTION を差し替える)。task.notes が null のときは "" と等価扱いで比較する。
-			const nextNotes = notesArea.value;
-			if (nextNotes !== (task.notes ?? "")) changes.notes = nextNotes;
-			void saveEdit(task, changes);
-		});
-		edit.appendChild(save);
-		detail.appendChild(edit);
+/** プリセット → RecurArgs(モック要件4のマップ)。custom は null(送信しない印)。 */
+function presetToArgs(preset: RecurPreset, weekdays: string[]): RecurArgs | null {
+	switch (preset) {
+		case "none":
+			return { frequency: "none" };
+		case "daily":
+			return { frequency: "daily" };
+		case "weekday":
+			return { frequency: "weekly", weekdays: ["MO", "TU", "WE", "TH", "FR"] };
+		case "weekend":
+			return { frequency: "weekly", weekdays: ["SA", "SU"] };
+		case "weekly":
+			return { frequency: "weekly", ...(weekdays.length > 0 ? { weekdays } : {}) };
+		case "biweekly":
+			return { frequency: "weekly", interval: 2, ...(weekdays.length > 0 ? { weekdays } : {}) };
+		case "monthly":
+			return { frequency: "monthly" };
+		case "quarterly":
+			return { frequency: "monthly", interval: 3 };
+		case "halfyearly":
+			return { frequency: "monthly", interval: 6 };
+		case "yearly":
+			return { frequency: "yearly" };
+		case "custom":
+			return null; // 語彙外 = 触らない(送信しない)
 	}
+}
 
-	/** ラベル付き1行(「繰り返し: 毎週 月・水」等)を作る小ヘルパー。 */
-	const addRow = (label: string, value: string): void => {
+/** 逆写像: 既存 Task.recurrence → メニュー選択状態(preset)+ 曜日チップの選択曜日。
+ *  語彙外 frequency / 序数 BYDAY("2MO" 等)/ 想定外 interval は "custom"(グレー・編集送信しない)。 */
+function recurrenceToPreset(rec: TodoRecurrence | null): { preset: RecurPreset; weekdays: string[] } {
+	if (rec === null) return { preset: "none", weekdays: [] };
+	const known = (rec.weekdays ?? []).every((w) => w in WEEKDAY_JA);
+	if (!(rec.frequency in RECUR_EVERY) || !known) {
+		return { preset: "custom", weekdays: (rec.weekdays ?? []).filter((w) => w in WEEKDAY_JA) };
+	}
+	const wd = rec.weekdays ?? [];
+	const iv = rec.interval;
+	if (rec.frequency === "daily") return iv === 1 ? { preset: "daily", weekdays: [] } : { preset: "custom", weekdays: [] };
+	if (rec.frequency === "yearly") return iv === 1 ? { preset: "yearly", weekdays: [] } : { preset: "custom", weekdays: [] };
+	if (rec.frequency === "monthly") {
+		if (iv === 1) return { preset: "monthly", weekdays: [] };
+		if (iv === 3) return { preset: "quarterly", weekdays: [] };
+		if (iv === 6) return { preset: "halfyearly", weekdays: [] };
+		return { preset: "custom", weekdays: [] };
+	}
+	// weekly
+	if (iv === 2) return { preset: "biweekly", weekdays: wd };
+	if (iv === 1) {
+		const set = new Set(wd);
+		const isWeekday = wd.length === 5 && ["MO", "TU", "WE", "TH", "FR"].every((d) => set.has(d));
+		const isWeekend = wd.length === 2 && ["SA", "SU"].every((d) => set.has(d));
+		if (isWeekday) return { preset: "weekday", weekdays: wd };
+		if (isWeekend) return { preset: "weekend", weekdays: wd };
+		return { preset: "weekly", weekdays: wd };
+	}
+	return { preset: "custom", weekdays: wd };
+}
+
+/** 優先度の代表値(0/1/5/9)→ 表示語。シートの優先順位メニュー表示で使う。 */
+function priorityLabel(seg: number): string {
+	return seg === 1 ? "高" : seg === 5 ? "中" : seg === 9 ? "低" : "なし";
+}
+/** 優先順位メニューの選択肢(なし/低/中/高。iOS の値メニュー)。value は代表値(update-todo 送信値)。 */
+const PRIORITY_MENU: ReadonlyArray<{ value: number; label: string }> = [
+	{ value: 0, label: "なし" },
+	{ value: 9, label: "低" },
+	{ value: 5, label: "中" },
+	{ value: 1, label: "高" },
+];
+
+// =============================================================================
+// ポップアップメニュー(iOS の pull-down menu を借景。繰り返し/終了/優先度の値行が使う)
+// =============================================================================
+// 単一のメニューだけ開く(openMenuEl)。値行(anchor)の近くに fixed 配置し、外側タップで閉じる
+// (document click リスナーは接続後に配線する)。シートも fixed なので fixed 配置で座標が噛み合う。
+let openMenuEl: HTMLElement | null = null;
+function closeMenu(): void {
+	if (openMenuEl !== null) {
+		openMenuEl.remove();
+		openMenuEl = null;
+	}
+}
+interface MenuOption {
+	key: string;
+	label: string;
+	selected?: boolean;
+	disabled?: boolean;
+	sep?: boolean; // 区切り(上に太い罫線。カスタムの手前で使う)
+}
+function openMenu(anchor: HTMLElement, options: MenuOption[], onSelect: (key: string) => void): void {
+	closeMenu();
+	const pop = document.createElement("div");
+	pop.className = "menu-pop";
+	for (const o of options) {
 		const row = document.createElement("div");
-		row.className = "detail-row";
-		const l = document.createElement("span");
-		l.className = "detail-label";
-		l.textContent = `${label}: `;
-		row.appendChild(l);
-		row.appendChild(document.createTextNode(value));
-		detail.appendChild(row);
+		row.className = "m-row" + (o.sep === true ? " m-sep" : "") + (o.disabled === true ? " m-disabled" : "");
+		const chk = document.createElement("span");
+		chk.className = "m-check";
+		chk.textContent = o.selected === true ? "✓" : "";
+		row.appendChild(chk);
+		row.appendChild(document.createTextNode(o.label));
+		if (o.disabled !== true) {
+			row.addEventListener("click", (e) => {
+				e.stopPropagation();
+				closeMenu();
+				onSelect(o.key);
+			});
+		}
+		pop.appendChild(row);
+	}
+	document.body.appendChild(pop);
+	// anchor の下・右揃えで置く。画面外へはみ出さないようクランプする(offsetHeight は append 後に確定)。
+	const r = anchor.getBoundingClientRect();
+	pop.style.top = `${Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - pop.offsetHeight))}px`;
+	pop.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+	openMenuEl = pop;
+}
+
+// =============================================================================
+// 詳細セミモーダル(ボトムシート・v2 の中核。モック要件3)
+// =============================================================================
+// ⓘ タップで開く。#sheet-root(#root とは独立)に scrim + sheet を描く。編集ありき(iOS リマインダー
+// 詳細準拠): トグル(日付/時刻/場所)+ 値メニュー(繰り返し/終了/優先度)+ リスト移動ページ。
+// ✕=破棄して閉じる / ✓=変更フィールドだけ update-todo(既存 saveEdit の楽観機構に乗せる)。削除は置かない。
+
+/** シートの編集作業コピー。構造フィールドはここに持ち、テキストは input イベントで同期する
+ *  (構造変化でシートを再描画してもテキスト入力値が失われないように)。 */
+interface SheetDraft {
+	title: string;
+	notes: string;
+	hasDate: boolean;
+	dateVal: string; // "YYYY-MM-DD"
+	hasTime: boolean;
+	timeVal: string; // "HH:MM"
+	recurPreset: RecurPreset;
+	weekdays: string[]; // weekly/biweekly のとき選択曜日(BYDAY コード)
+	recurEnd: "none" | "until" | "count";
+	until: string | null; // "YYYY-MM-DD"
+	count: number | null; // 既存 count(UI から新規設定はしない=表示のみの第3状態)
+	priority: number; // 代表値 0/1/5/9
+	location: string | null; // null=場所トグル OFF
+}
+
+/** task から作業コピーを作る。日付/時刻/繰り返し/優先度/場所を逆写像で初期化する。 */
+function makeSheetDraft(task: TodoItem): SheetDraft {
+	const { preset, weekdays } = recurrenceToPreset(task.recurrence);
+	const rec = task.recurrence;
+	const hasTime = task.due !== null && !task.isAllDay && task.due.includes("T");
+	return {
+		title: task.title,
+		notes: task.notes ?? "",
+		hasDate: task.due !== null,
+		dateVal: task.due !== null ? wallDatePart(task.due) : localDateKey(new Date()),
+		hasTime,
+		timeVal: hasTime ? wallTimePart(task.due as string) : "09:00",
+		recurPreset: preset,
+		weekdays,
+		recurEnd: rec?.count != null ? "count" : rec?.until != null ? "until" : "none",
+		until: rec?.until != null ? rec.until.slice(0, 10) : null,
+		count: rec?.count ?? null,
+		priority: priorityToSegment(task.priority),
+		location: task.location,
 	};
+}
 
-	// 繰り返しの完全表記(終了条件込み)。バッジ(一覧行)より詳しい情報を出す唯一の場所。
-	if (task.recurrence !== null) {
-		addRow("繰り返し", formatRecurrenceFull(task.recurrence));
-	}
-	// 場所(LOCATION)。iOS のジオフェンス通知とは別物(task-dto.ts の location JSDoc 参照)だが、
-	// 他クライアント/自前書き込みの LOCATION は素直に見せる。
-	if (task.location !== null && task.location.trim() !== "") {
-		addRow("場所", task.location);
-	}
-	// 完了時刻は完了済みのときだけ(未完了行に「完了: —」を出しても意味がない)。
-	if (task.completed && task.completedAt !== null) {
-		addRow("完了", formatCompletedAt(task.completedAt));
-	}
+/** シートを開く(ⓘ から)。draft を初期化し detail ページで描く。 */
+function openSheet(task: TodoItem): void {
+	// 仮行(create 未確定)はサーバー id が無いので詳細編集できない。開かない(no-op)。
+	if (isOptimisticId(task.id)) return;
+	sheetDraft = makeSheetDraft(task);
+	sheetState = { id: task.id, page: "detail" };
+	closeSwipe();
+	renderSheet();
+}
+/** シートを閉じる(✕ / scrim / 保存後 / 移動後)。draft を破棄しコンテナを空にする。 */
+function closeSheet(): void {
+	sheetState = null;
+	sheetDraft = null;
+	sheetRoot.innerHTML = "";
+	closeMenu();
+}
+/** 現在シートが対象にしている表示行(楽観上書き込みの display 行)。無ければ null。 */
+function currentSheetTask(): TodoItem | null {
+	if (sheetState === null || tasks === null) return null;
+	const id = sheetState.id;
+	return tasks.find((t) => t.id === id) ?? null;
+}
 
-	// 削除ボタン(赤系・展開内のみ)。header の外(兄弟)なので role=button の入れ子にはならない。
-	const del = document.createElement("button");
-	del.type = "button";
-	del.className = "detail-delete";
-	del.textContent = "削除";
-	del.setAttribute("aria-label", `「${task.title}」を削除`);
-	// 楽観削除(deleteTask)。仮行(create 未確定)は本物 id が無いので押せないようにする。
-	if (isOptimisticId(task.id)) del.disabled = true;
-	del.addEventListener("click", () => void deleteTask(task));
-	detail.appendChild(del);
+/** シート描画のディスパッチ。sheetState.page に応じて detail / list ページを #sheet-root に描く。 */
+function renderSheet(): void {
+	if (sheetState === null || sheetDraft === null) {
+		sheetRoot.innerHTML = "";
+		return;
+	}
+	const task = currentSheetTask();
+	if (task === null) {
+		// 対象行が消えた(削除・外部同期)。シートを閉じる。
+		closeSheet();
+		return;
+	}
+	sheetRoot.innerHTML = "";
+	const scrim = document.createElement("div");
+	scrim.className = "scrim";
+	// scrim タップ = 破棄して閉じる(iOS のシート外タップ)。
+	scrim.addEventListener("click", () => closeSheet());
+	sheetRoot.appendChild(scrim);
+	if (sheetState.page === "list") {
+		sheetRoot.appendChild(renderSheetListPicker(task));
+	} else {
+		sheetRoot.appendChild(renderSheetDetail(task, sheetDraft));
+	}
+}
 
-	return detail;
+/** 詳細ページの本体(グループ積み)。d は sheetDraft(この関数はそれを直接読み書きする)。 */
+function renderSheetDetail(task: TodoItem, d: SheetDraft): HTMLElement {
+	const sheet = document.createElement("div");
+	sheet.className = "sheet";
+	sheet.appendChild(el("div", "grabber"));
+
+	// ヘッダ: ✕(破棄) / 「詳細」 / ✓(保存)。
+	const shead = el("div", "sheet-head");
+	const btnX = document.createElement("button");
+	btnX.type = "button";
+	btnX.className = "icon-btn btn-x";
+	btnX.textContent = "✕";
+	btnX.setAttribute("aria-label", "破棄して閉じる");
+	btnX.addEventListener("click", () => closeSheet());
+	const htitle = el("span", "h-title");
+	htitle.textContent = "詳細";
+	const btnOk = document.createElement("button");
+	btnOk.type = "button";
+	btnOk.className = "icon-btn btn-ok";
+	btnOk.textContent = "✓";
+	btnOk.setAttribute("aria-label", "保存して閉じる");
+	btnOk.addEventListener("click", () => {
+		const changes = collectSheetChanges(task, d);
+		closeSheet();
+		if (Object.keys(changes).length > 0) void saveEdit(task, changes);
+	});
+	shead.appendChild(btnX);
+	shead.appendChild(htitle);
+	shead.appendChild(btnOk);
+	sheet.appendChild(shead);
+
+	const body = el("div", "sheet-body");
+	sheet.appendChild(body);
+
+	// --- グループ1: タイトル + メモ -----------------------------------------------------
+	const g1 = el("div", "group");
+	const titleInput = document.createElement("input");
+	titleInput.className = "title-input";
+	titleInput.type = "text";
+	titleInput.value = d.title;
+	titleInput.setAttribute("aria-label", "タイトル");
+	titleInput.addEventListener("input", () => {
+		d.title = titleInput.value;
+	});
+	const notesInput = document.createElement("textarea");
+	notesInput.className = "notes-input";
+	notesInput.value = d.notes;
+	notesInput.placeholder = "メモを追加";
+	notesInput.setAttribute("aria-label", "メモ");
+	notesInput.addEventListener("input", () => {
+		d.notes = notesInput.value;
+	});
+	g1.appendChild(titleInput);
+	g1.appendChild(notesInput);
+	body.appendChild(g1);
+
+	// --- グループ2: 日付 / 時刻 / 時間帯 --------------------------------------------------
+	const g2 = el("div", "group");
+	// 日付行: 🗓 + 枠なし date input(値表示と入力の一本化) + トグル。
+	{
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("🗓"));
+		const label = el("span", "g-label");
+		label.appendChild(document.createTextNode("日付"));
+		if (d.hasDate) {
+			const di = document.createElement("input");
+			di.className = "value-input";
+			di.type = "date";
+			di.value = d.dateVal;
+			di.setAttribute("aria-label", "日付");
+			di.addEventListener("change", () => {
+				d.dateVal = di.value;
+			});
+			label.appendChild(di);
+		}
+		row.appendChild(label);
+		row.appendChild(
+			makeToggle(d.hasDate, "日付を有効にする", () => {
+				d.hasDate = !d.hasDate;
+				if (!d.hasDate) d.hasTime = false; // 日付を外したら時刻も外す(時刻は日付に従属)
+				renderSheet();
+			}),
+		);
+		g2.appendChild(row);
+	}
+	// 時刻行は日付が ON のときだけ出す(時刻は日付に従属)。
+	if (d.hasDate) {
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("🕐"));
+		const label = el("span", "g-label");
+		label.appendChild(document.createTextNode("時刻"));
+		if (d.hasTime) {
+			const ti = document.createElement("input");
+			ti.className = "value-input";
+			ti.type = "time";
+			ti.value = d.timeVal;
+			ti.setAttribute("aria-label", "時刻");
+			ti.addEventListener("change", () => {
+				d.timeVal = ti.value === "" ? "09:00" : ti.value;
+			});
+			label.appendChild(ti);
+		}
+		row.appendChild(label);
+		row.appendChild(
+			makeToggle(d.hasTime, "時刻を有効にする", () => {
+				d.hasTime = !d.hasTime;
+				renderSheet();
+			}),
+		);
+		g2.appendChild(row);
+	}
+	// 時間帯行(読み取り専用)。task 自身のゾーン(コレクションの timeZone)が閲覧者の Intl ゾーンと
+	// 異なるときだけ出す情報行(編集はスコープ外・黙って壊さないための表示のみ。モック要件3)。
+	if (d.hasDate && currentTimeZone !== null) {
+		const viewerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		if (currentTimeZone !== viewerZone) {
+			const row = el("div", "g-row");
+			row.appendChild(gIcon("🌐"));
+			const label = el("span", "g-label");
+			label.textContent = "時間帯";
+			row.appendChild(label);
+			const val = el("span", "g-value readonly");
+			val.textContent = currentTimeZone;
+			row.appendChild(val);
+			g2.appendChild(row);
+		}
+	}
+	body.appendChild(g2);
+
+	// --- グループ3: 繰り返し(+曜日チップ+終了)-------------------------------------------
+	const g3 = el("div", "group");
+	{
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("⟳"));
+		const label = el("span", "g-label");
+		label.textContent = "繰り返し";
+		row.appendChild(label);
+		const val = el("span", "g-value menu");
+		val.textContent = PRESET_LABEL[d.recurPreset];
+		if (d.recurPreset === "custom") val.classList.add("readonly"); // 語彙外はグレー
+		val.addEventListener("click", () => {
+			const opts: MenuOption[] = PRESET_MENU_ORDER.map((p) => ({
+				key: p,
+				label: PRESET_LABEL[p],
+				selected: d.recurPreset === p,
+			}));
+			// 現在値が custom のときだけ「カスタム」を末尾に選択状態(不可)で見せる(モック準拠)。
+			if (d.recurPreset === "custom") {
+				opts.push({ key: "custom", label: "カスタム", selected: true, disabled: true, sep: true });
+			}
+			openMenu(val, opts, (key) => {
+				d.recurPreset = key as RecurPreset;
+				renderSheet();
+			});
+		});
+		row.appendChild(val);
+		g3.appendChild(row);
+	}
+	// 曜日チップ(毎週/隔週のときだけ)。日〜土。選択で d.weekdays をトグル。
+	if (d.recurPreset === "weekly" || d.recurPreset === "biweekly") {
+		const chips = el("div", "chips");
+		const order: ReadonlyArray<[string, string]> = [
+			["SU", "日"],
+			["MO", "月"],
+			["TU", "火"],
+			["WE", "水"],
+			["TH", "木"],
+			["FR", "金"],
+			["SA", "土"],
+		];
+		for (const [code, ja] of order) {
+			const b = document.createElement("button");
+			b.type = "button";
+			b.textContent = ja;
+			const on = d.weekdays.includes(code);
+			b.setAttribute("aria-pressed", String(on));
+			b.setAttribute("aria-label", ja);
+			b.addEventListener("click", () => {
+				d.weekdays = d.weekdays.includes(code) ? d.weekdays.filter((w) => w !== code) : [...d.weekdays, code];
+				renderSheet();
+			});
+			chips.appendChild(b);
+		}
+		g3.appendChild(chips);
+	}
+	// 繰り返しの終了(繰り返しが「しない」以外のときだけ意味がある)。しない/日付。既存 count があれば
+	// 「N回」を第3状態として表示する(UI からの count 新規設定はしない=表示のみ。モック要件3)。
+	if (d.recurPreset !== "none" && d.recurPreset !== "custom") {
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("⟳̸")); // ⟳ + 結合斜線(繰り返しの終了)
+		const label = el("span", "g-label");
+		label.textContent = "繰り返しの終了";
+		row.appendChild(label);
+		const val = el("span", "g-value menu");
+		val.textContent = d.recurEnd === "until" ? "日付" : d.recurEnd === "count" ? `${d.count ?? 0}回` : "しない";
+		val.addEventListener("click", () => {
+			const opts: MenuOption[] = [
+				{ key: "none", label: "しない", selected: d.recurEnd === "none" },
+				{ key: "until", label: "日付", selected: d.recurEnd === "until" },
+			];
+			// 既存 count がある行だけ「N回」を第3の選択状態として見せる(不可=編集は日付/しないのみ)。
+			if (d.count != null) {
+				opts.push({ key: "count", label: `${d.count}回`, selected: d.recurEnd === "count", disabled: true });
+			}
+			openMenu(val, opts, (key) => {
+				d.recurEnd = key as "none" | "until" | "count";
+				if (d.recurEnd === "until" && d.until === null) d.until = d.dateVal; // 既定=期日と同じ日
+				renderSheet();
+			});
+		});
+		row.appendChild(val);
+		g3.appendChild(row);
+		// 終了=日付 のとき、枠なし date input を1行足す(値表示と入力の一本化)。
+		if (d.recurEnd === "until") {
+			const urow = el("div", "g-row");
+			urow.appendChild(gIcon(""));
+			const ulabel = el("span", "g-label");
+			ulabel.appendChild(document.createTextNode("終了日"));
+			const ui = document.createElement("input");
+			ui.className = "value-input";
+			ui.type = "date";
+			ui.value = d.until ?? d.dateVal;
+			ui.setAttribute("aria-label", "繰り返しの終了日");
+			ui.addEventListener("change", () => {
+				d.until = ui.value === "" ? null : ui.value;
+			});
+			ulabel.appendChild(ui);
+			urow.appendChild(ulabel);
+			g3.appendChild(urow);
+		}
+	}
+	body.appendChild(g3);
+
+	// --- グループ4(整理): リスト › / 優先順位 --------------------------------------------
+	const g4 = el("div", "group");
+	{
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("☰"));
+		const label = el("span", "g-label");
+		label.textContent = "リスト";
+		row.appendChild(label);
+		const val = el("span", "g-value");
+		// 現在のリスト名(calendarId)+ 「›」= 選択ページへ push。
+		val.appendChild(document.createTextNode(currentCalendarId ?? ""));
+		const chev = document.createElement("span");
+		chev.style.color = "var(--text-3)";
+		chev.textContent = " ›";
+		val.appendChild(chev);
+		row.appendChild(val);
+		row.style.cursor = "pointer";
+		row.addEventListener("click", () => {
+			if (sheetState !== null) sheetState = { id: sheetState.id, page: "list" };
+			renderSheet();
+			void ensureCalendars().then(() => {
+				// 取得完了後に list ページを描き直す(まだ list ページを見ているときだけ)。
+				if (sheetState?.page === "list") renderSheet();
+			});
+		});
+		g4.appendChild(row);
+	}
+	{
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("!!!", "var(--pri)"));
+		const label = el("span", "g-label");
+		label.textContent = "優先順位";
+		row.appendChild(label);
+		const val = el("span", "g-value menu");
+		val.textContent = priorityLabel(d.priority);
+		val.addEventListener("click", () => {
+			openMenu(
+				val,
+				PRIORITY_MENU.map((p) => ({ key: String(p.value), label: p.label, selected: d.priority === p.value })),
+				(key) => {
+					d.priority = Number(key);
+					renderSheet();
+				},
+			);
+		});
+		row.appendChild(val);
+		g4.appendChild(row);
+	}
+	body.appendChild(g4);
+
+	// --- グループ5: 場所(トグル + テキスト入力)------------------------------------------
+	const g5 = el("div", "group");
+	{
+		const row = el("div", "g-row");
+		row.appendChild(gIcon("📍"));
+		const label = el("span", "g-label");
+		label.textContent = "場所";
+		row.appendChild(label);
+		row.appendChild(
+			makeToggle(d.location !== null, "場所を有効にする", () => {
+				// OFF→ON は空文字("")で開く(入力欄が出る)。ON→OFF は null(除去)。
+				d.location = d.location === null ? "" : null;
+				renderSheet();
+			}),
+		);
+		g5.appendChild(row);
+		if (d.location !== null) {
+			const inputRow = el("div", "g-input");
+			const li = document.createElement("input");
+			li.type = "text";
+			li.value = d.location;
+			li.placeholder = "場所";
+			li.setAttribute("aria-label", "場所");
+			li.addEventListener("input", () => {
+				d.location = li.value;
+			});
+			inputRow.appendChild(li);
+			g5.appendChild(inputRow);
+		}
+	}
+	body.appendChild(g5);
+
+	// 削除ボタンは置かない(モック要件3・iOS 詳細にも削除は無い。削除は一覧のスワイプの領分)。
+	return sheet;
+}
+
+/** リスト移動の選択ページ(シート内 push 遷移。list-calendars の VTODO リストを列挙・現在地に ✓)。 */
+function renderSheetListPicker(task: TodoItem): HTMLElement {
+	const sheet = el("div", "sheet");
+	sheet.appendChild(el("div", "grabber"));
+	const shead = el("div", "sheet-head");
+	const back = document.createElement("button");
+	back.type = "button";
+	back.className = "icon-btn btn-x";
+	back.textContent = "‹";
+	back.setAttribute("aria-label", "詳細へ戻る");
+	back.addEventListener("click", () => {
+		if (sheetState !== null) sheetState = { id: sheetState.id, page: "detail" };
+		renderSheet();
+	});
+	const htitle = el("span", "h-title");
+	htitle.textContent = "リスト";
+	const spacer = document.createElement("span");
+	spacer.style.width = "32px";
+	shead.appendChild(back);
+	shead.appendChild(htitle);
+	shead.appendChild(spacer);
+	sheet.appendChild(shead);
+
+	const body = el("div", "sheet-body");
+	const group = el("div", "group");
+	if (calendarsCache === null) {
+		// 取得中(呼び出し側 ensureCalendars が完了後に renderSheet 再描画する)。
+		const loading = el("div", "g-row");
+		const l = el("span", "g-label");
+		l.textContent = "読み込み中…";
+		loading.appendChild(l);
+		group.appendChild(loading);
+	} else {
+		// VTODO を受理できるリスト(リマインダーリスト)だけ列挙する。
+		const lists = calendarsCache.filter((c) => c.components.includes("VTODO"));
+		if (lists.length === 0) {
+			const empty = el("div", "g-row");
+			const l = el("span", "g-label");
+			l.textContent = "リストがありません";
+			empty.appendChild(l);
+			group.appendChild(empty);
+		}
+		for (const c of lists) {
+			const row = el("div", "g-row");
+			row.appendChild(gIcon("☰"));
+			const label = el("span", "g-label");
+			label.textContent = c.displayName !== "" ? c.displayName : c.id;
+			row.appendChild(label);
+			const isHere = c.id === currentCalendarId;
+			if (isHere) {
+				const check = el("span", "g-value");
+				check.style.color = "var(--accent)";
+				check.style.fontWeight = "700";
+				check.textContent = "✓";
+				row.appendChild(check);
+			}
+			row.style.cursor = "pointer";
+			row.addEventListener("click", () => {
+				if (isHere) {
+					// 現在地の選択 = 詳細へ戻るだけ(移動しない)。
+					if (sheetState !== null) sheetState = { id: sheetState.id, page: "detail" };
+					renderSheet();
+					return;
+				}
+				void moveTodo(task, c.id);
+			});
+			group.appendChild(row);
+		}
+	}
+	body.appendChild(group);
+	sheet.appendChild(body);
+	return sheet;
+}
+
+/** シートの ✓ が update-todo へ渡す「変更フィールドだけ」を draft と task の差分から集める。 */
+function collectSheetChanges(task: TodoItem, d: SheetDraft): UpdateTodoChanges {
+	const changes: UpdateTodoChanges = {};
+	// タイトル(空は送らない・変更時のみ)。
+	const t = d.title.trim();
+	if (t !== "" && t !== task.title) changes.title = t;
+	// メモ(変更時のみ・"" でクリア)。
+	if (d.notes !== (task.notes ?? "")) changes.notes = d.notes;
+	// 期日(終日 "YYYY-MM-DD" / 時刻付き "YYYY-MM-DDTHH:MM:SS" / null=除去)。
+	const nextDue = d.hasDate ? (d.hasTime ? `${d.dateVal}T${d.timeVal}:00` : d.dateVal) : null;
+	const curWall = task.due === null ? null : task.due.includes("T") ? task.due.slice(0, 19) : task.due;
+	if (nextDue === null) {
+		if (curWall !== null) changes.due = null;
+	} else if (nextDue !== curWall) {
+		changes.due = nextDue;
+	}
+	// 優先度(代表値バケットが変わったときだけ)。
+	if (d.priority !== priorityToSegment(task.priority)) changes.priority = d.priority;
+	// 場所(OFF=null で除去 / 空文字も除去扱い)。現在値も空文字は null 同一視して比較する。
+	const nextLoc = d.location === null || d.location.trim() === "" ? null : d.location;
+	const curLoc = task.location === null || task.location.trim() === "" ? null : task.location;
+	if (nextLoc !== curLoc) changes.location = nextLoc;
+	// 繰り返し(custom は触らない)。プリセット/曜日/終了のいずれかが変わったときだけ全置換で送る。
+	if (d.recurPreset !== "custom") {
+		const orig = recurrenceToPreset(task.recurrence);
+		const origEnd = task.recurrence?.count != null ? "count" : task.recurrence?.until != null ? "until" : "none";
+		const origUntil = task.recurrence?.until != null ? task.recurrence.until.slice(0, 10) : null;
+		const changed =
+			d.recurPreset !== orig.preset ||
+			JSON.stringify([...d.weekdays].sort()) !== JSON.stringify([...orig.weekdays].sort()) ||
+			d.recurEnd !== origEnd ||
+			(d.recurEnd === "until" && d.until !== origUntil);
+		if (changed) {
+			const args = presetToArgs(d.recurPreset, d.weekdays);
+			// recurrence は due 必須(none 除去を除く)。due が無ければ送れないので skip(安全側 degrade)。
+			if (args !== null && (args.frequency === "none" || d.hasDate)) {
+				if (d.recurEnd === "until" && d.until != null && args.frequency !== "none") args.until = d.until;
+				changes.recurrence = args;
+			}
+		}
+	}
+	return changes;
+}
+
+/** list-calendars を遅延取得してキャッシュする(リスト移動ページで使う)。失敗はバナー表示に degrade。 */
+async function ensureCalendars(): Promise<void> {
+	if (calendarsCache !== null) return;
+	try {
+		const result = await app.callServerTool({ name: "list-calendars", arguments: {} });
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		const sc = result.structuredContent as
+			| { calendars?: Array<{ id: string; displayName?: string; components?: readonly string[] }> }
+			| undefined;
+		calendarsCache = (sc?.calendars ?? []).map((c) => ({
+			id: c.id,
+			displayName: c.displayName ?? c.id,
+			components: c.components ?? ["VTODO"],
+		}));
+	} catch (e) {
+		showBanner(`リストの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+/** move-todo(タスクを別リストへ移動)。応答=移動元ビューの TodosViewModel + removed ghost。
+ *  ツールが未実装の環境では isError でバナーに degrade する(UI は壊れない。モック要件6)。 */
+async function moveTodo(task: TodoItem, toCalendarId: string): Promise<void> {
+	closeSheet();
+	if (selectedId === task.id) selectedId = null;
+	clearBanner();
+	try {
+		const args: Record<string, unknown> = { id: task.id, toCalendarId };
+		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		const result = await app.callServerTool({ name: "move-todo", arguments: args });
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		// 応答は移動元ビューの vm(移動したタスクが抜けた一覧)+ removed ghost。そのまま確定描画する
+		// (ghost が becoming-gone を1描画だけ描く=「このリストから移動して消えた」を静的に見せる)。
+		applyStructuredContent(result.structuredContent);
+	} catch (e) {
+		rebuildFromConfirmed();
+		renderAll();
+		showBanner(
+			`「${task.title}」の移動に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+			() => void moveTodo(task, toCalendarId),
+		);
+	}
+}
+
+/** 小ヘルパー: クラス付き要素。シート DOM 構築の記述量を削る。 */
+function el(tag: string, className: string): HTMLElement {
+	const e = document.createElement(tag);
+	e.className = className;
+	return e;
+}
+/** g-row の先頭アイコン span(色指定可)。 */
+function gIcon(txt: string, color?: string): HTMLElement {
+	const e = el("span", "g-icon");
+	e.textContent = txt;
+	if (color !== undefined) e.style.color = color;
+	return e;
+}
+/** iOS 風トグル(span.toggle)。on 状態と click ハンドラを配線する。 */
+function makeToggle(on: boolean, ariaLabel: string, onClick: () => void): HTMLElement {
+	const t = el("span", on ? "toggle on" : "toggle");
+	t.setAttribute("role", "switch");
+	t.setAttribute("aria-checked", String(on));
+	t.setAttribute("aria-label", ariaLabel);
+	t.addEventListener("click", (e) => {
+		e.stopPropagation();
+		onClick();
+	});
+	return t;
 }
 
 /** 削除ゴースト行(becoming-gone)。removed:[{id,title,due?}] 由来の擬似 TodoItem を
@@ -1459,6 +2237,10 @@ function renderAll(): void {
 		return;
 	}
 	root.innerHTML = "";
+	// 選択行入力への参照を毎描画でリセットする(この描画で選択行が描かれれば renderRow が付け直す)。
+	// こうしておくと、選択行がフィルタ等で消えた描画では参照が古いまま残らない(commit の誤読を防ぐ)。
+	selTitleInput = null;
+	selMemoInput = null;
 	const todayKey = localDateKey(new Date());
 	// 削除ゴースト(removed)は tasks にもう存在しないので、描画用の擬似 TodoItem に
 	// 変換して合流させる。due からソート位置が決まる(due 無しは期日なしセクション)ため、
@@ -1576,6 +2358,9 @@ interface TodosStructuredContent {
 	// ヘッダ見出しと quick-add の作成先に使う。合成 vm(mutation の非既定ビュー経路)では refresh 側の
 	// vm から引き継がれる(applyStructuredContent が currentCalendarId を更新する)。
 	calendarId?: string;
+	// timeZone(コレクションの解釈ゾーン)。v2 詳細シートの「時間帯」行を「閲覧者ゾーンと異なるときだけ」
+	// 出すために使う(list-todos/create-todo 等の vm が載せる)。
+	timeZone?: string;
 	affected?: AffectedEntry[];
 	removed?: TaskSnapshot[];
 	// view echo(E-2 view 状態非保持バグ修正)。list-todos/refresh-todos が「この一覧はどのビューか」を
@@ -1702,6 +2487,10 @@ function applyStructuredContent(sc: unknown): void {
 	if (structuredContent?.calendarId !== undefined) {
 		currentCalendarId = structuredContent.calendarId;
 		appTitleEl.textContent = currentCalendarId;
+	}
+	// timeZone を保持(詳細シートの「時間帯」行の出し分けに使う)。値が来たときだけ更新する。
+	if (structuredContent?.timeZone !== undefined) {
+		currentTimeZone = structuredContent.timeZone;
 	}
 	markUpdated();
 	announceBecoming();
@@ -2067,8 +2856,10 @@ async function deleteTask(task: TodoItem): Promise<void> {
 
 	optimisticDeletes.add(task.id);
 	pendingIds.add(task.id); // maybeRefetch の抑止 + 差分レンズの degrade ガードに乗せる
-	// 展開中の行を消すので展開状態も閉じる(消えた行の詳細パネルが宙に浮かないように)。
-	if (expandedId === task.id) expandedId = null;
+	// 消す行が選択中/シート表示中/スワイプ露出中なら、その状態も畳む(消えた行の UI が宙に浮かないように)。
+	if (selectedId === task.id) selectedId = null;
+	if (swipeId === task.id) swipeId = null;
+	if (sheetState?.id === task.id) closeSheet();
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -2150,17 +2941,20 @@ async function deleteTask(task: TodoItem): Promise<void> {
 	}
 }
 
-/** 詳細編集の保存で update-todo へ渡す「変更フィールドだけ」の集合(仕様B-1・部分更新)。
- *  ここに入れたキーだけ送る(未指定=変更しない、が update-todo の契約)。status/recurrence は
- *  この編集フォームの対象外なので持たない(トグルの領分・表示のみ維持)。 */
+/** 詳細編集の保存(インライン選択の commit・詳細シートの ✓)で update-todo へ渡す「変更フィールドだけ」の
+ *  集合(部分更新)。ここに入れたキーだけ送る(未指定=変更しない、が update-todo の契約)。
+ *  【v2 で recurrence / location を追加】旧・詳細展開フォームは status/recurrence を対象外にしていたが、
+ *  v2 の詳細セミモーダルは繰り返し・場所も編集できる(サーバー契約が並行拡張された。モック要件6)。 */
 interface UpdateTodoChanges {
 	title?: string;
 	// due: "YYYY-MM-DD"(終日)/ "YYYY-MM-DDTHH:MM:SS"(時刻付き)/ null(期日を外す)。
-	// V6 フォローアップで update-todo が create-todo と対称になったので3値すべて送れる
-	// (キー自体を入れない = 変更しない。null = 除去)。時刻付きのときは saveEdit が timeZone も添える。
 	due?: string | null;
-	priority?: number; // 0/1/5/9(セグメント代表値。0=未設定に戻す)
+	priority?: number; // 0/1/5/9(代表値。0=未設定に戻す)
 	notes?: string; // "" でメモをクリア
+	// 場所(LOCATION)。string=設定 / null=除去(update-todo の location 契約)。
+	location?: string | null;
+	// 繰り返し(RRULE)。"none"=除去・全置換・due 必須(update-todo の recurrence 契約)。custom は送らない。
+	recurrence?: RecurArgs;
 }
 
 /**
@@ -2176,14 +2970,10 @@ interface UpdateTodoChanges {
  * changes が空(実質何も変えていない)なら何もしない(無駄な PUT を投げない)。
  */
 async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<void> {
-	// 仮行(create 未確定)はサーバー id が無いので編集できない(renderDetail 側でも無効化済みだが二重ガード)。
+	// 仮行(create 未確定)はサーバー id が無いので編集できない(呼び出し側でも無効化済みだが二重ガード)。
 	if (isOptimisticId(task.id)) return;
-	// 変更が1つも無ければ何もしない(展開だけ閉じて終わり=ユーザーの「保存」意図に沿う静かな no-op)。
-	if (Object.keys(changes).length === 0) {
-		expandedId = null;
-		renderAll();
-		return;
-	}
+	// 変更が1つも無ければ何もしない(ユーザーの「保存/確定」意図に沿う静かな no-op)。
+	if (Object.keys(changes).length === 0) return;
 	// 二重送信ガード(in-flight の同一行は弾く)。
 	if (pendingIds.has(task.id)) return;
 
@@ -2202,10 +2992,24 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 	}
 	if (changes.priority !== undefined) overrides.priority = changes.priority;
 	if (changes.notes !== undefined) overrides.notes = changes.notes === "" ? null : changes.notes;
+	// v2 追加: 場所 / 繰り返しの楽観上書き。location は null=除去。recurrence は RecurArgs → TodoRecurrence 形へ
+	// 変換して重ねる("none"=繰り返し除去=null)。表示(一覧の ⟳ バッジ・シート再オープン時の初期値)へ即反映する。
+	if (changes.location !== undefined) overrides.location = changes.location;
+	if (changes.recurrence !== undefined) {
+		overrides.recurrence =
+			changes.recurrence.frequency === "none"
+				? null
+				: {
+						frequency: changes.recurrence.frequency,
+						interval: changes.recurrence.interval ?? 1,
+						weekdays: changes.recurrence.weekdays ?? null,
+						count: changes.recurrence.count ?? null,
+						until: changes.recurrence.until ?? null,
+					};
+	}
 
 	optimisticEdits.set(task.id, overrides);
 	pendingIds.add(task.id);
-	expandedId = null; // 編集後の行の変化を一覧で見せる(上記コメント)
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -2227,6 +3031,11 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 		}
 		if (changes.priority !== undefined) updateArgs.priority = changes.priority;
 		if (changes.notes !== undefined) updateArgs.notes = changes.notes;
+		// v2 追加: 場所(null=除去)/ 繰り返し(RecurArgs をそのまま。"none"=除去・全置換・due 必須)。
+		// 時刻付き until を含む recurrence でも until は date-only 文字列なので timeZone は不要(due の
+		// 時刻付き分岐で既に timeZone を添えている。recurrence の DTSTART/DUE はサーバーが due から組む)。
+		if (changes.location !== undefined) updateArgs.location = changes.location;
+		if (changes.recurrence !== undefined) updateArgs.recurrence = changes.recurrence;
 		const result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -2466,6 +3275,33 @@ document.addEventListener("click", (e) => {
 	const target = e.target as Node;
 	if (quickAddForm.contains(target) || quickAddFab.contains(target)) return;
 	closeQuickAddSheet();
+});
+
+// --- v2 グローバルクリック: メニュー閉 / 選択解除(確定)/ スワイプ露出畳み --------------------
+// 一覧の外側(空白・別領域)をタップしたときの後始末を1本に集約する。行の head/circle/ⓘ 自身の
+// クリックはそれぞれのハンドラで先に処理され、ここは「その外」を担う(iOS のシート外タップに相当)。
+// 【順序の噛み合い】別行の head をタップした選択切替では、head の setSelected が先に走って selectedId が
+// 新 id になり renderAll 済み。ここに来た時点で closest("li[data-id]") は(detached でも)クリックした
+// 行の li を返し data-id === 新 selectedId なので二重 commit しない。空白タップだけが commit+解除に至る。
+document.addEventListener("click", (e) => {
+	const target = e.target as HTMLElement;
+	// 開いているポップアップメニューは、その外側タップで閉じる(メニュー内の行は stopPropagation 済み)。
+	if (openMenuEl !== null && !openMenuEl.contains(target)) closeMenu();
+	// シート内のタップは一覧の選択/スワイプに影響させない(シートは独立面)。
+	if (sheetRoot.contains(target)) return;
+	const row = target.closest("li[data-id]") as HTMLElement | null;
+	const rowId = row?.dataset.id ?? null;
+	// 選択解除=確定(auto-save): 選択行の外をタップしたら commit して選択を外す。
+	if (selectedId !== null && rowId !== selectedId) {
+		commitSelection();
+		selectedId = null;
+		renderAll();
+	}
+	// スワイプ露出行の外をタップしたら畳む(削除ボタン自身は stopPropagation 済みで別扱い)。
+	if (swipeId !== null && rowId !== swipeId) {
+		swipeId = null;
+		renderAll();
+	}
 });
 
 // --- quick-add 詳細パネルの組み立て(E-2 スライス⑥前半・段階的開示)-----------------------
