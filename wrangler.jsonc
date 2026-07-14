@@ -33,5 +33,12 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
-  }
+  },
+  // 2026-07-14 レイテンシ対策: Smart Placement。本 Worker は D1 を直列に複数回叩く
+  // (todo mutate 1回で read→PUT batch→一覧再構築)。既定ではユーザー最寄りエッジで実行される
+  // ため、D1 のホームリージョンと離れていると往復ごとに大陸間 RTT を払う(実測: CPU p95=34ms
+  // なのに wall が秒単位 — I/O 待ち支配の決定的証拠)。smart は実トラフィックの
+  // サブリクエスト先(D1)を見て実行ロケーションを D1 側へ寄せ、往復を域内 RTT にする。
+  // 注意: 効果はトラフィックの学習後に出る(即時ではない)。効果測定は {mcpTool, ms} ログで。
+  "placement": { "mode": "smart" }
 }
