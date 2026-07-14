@@ -323,7 +323,17 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 直前の操作で変化した行に「いま変わった」の静的な form を1回の描画だけ与える
    * (ステートレス: 次に affected/removed の無い応答が来れば自然に平常へ戻る)。
    * アニメーションは使わない — 会話ログ内の従属カードが勝手に動くのはノイズだし、
-   * fresh-instance 描画のたびに再生されて「また今起きた」ように誤読させるため。 */
+   * fresh-instance 描画のたびに再生されて「また今起きた」ように誤読させるため。
+   *
+   * 【2026-07-14 例外: 不確定進行(in-flight)の状態通信だけは Shimmer を許す】
+   * 上の「becoming はステートレスな静的 form」は"もう起きたこと"の表現規律であって、
+   * "いま結果が未確定で進行中"を伝える手段が無いこと自体は別の穴だった(quick-add の仮行が
+   * 確定/失敗までの間、見た目上は追加済み行と区別が付かない)。装飾・遷移アニメの禁止は
+   * 不変だが、進行中であること自体をユーザーに伝える通信目的の動きは対象外とする —
+   * 「動きが情報を運ぶか(進行中の告知)/ノイズか(ただの演出)」で線を引く。適用は
+   * 仮行(.inflight、優待生成される optimistic: 行)限定・CSS アニメーションのみ
+   * (linear・約1.2s ループ・background-position だけを動かし layout は起こさない。
+   * 詳細根拠は li.becoming-in.inflight のコメント参照)。 */
 
   /* becoming マイクロラベル(行右端。「完了/追加/期日変更/削除」等の短い日本語)。
    * 語彙をアイコンでなく文字にするのは、変化の種別が4つ以上あり記号の学習コストが
@@ -367,6 +377,36 @@ export const TODOS_APP_HTML = `<!doctype html>
     background: linear-gradient(to right, var(--add-wake), transparent 55%);
   }
   li.becoming-in .tag { color: var(--add); }
+
+  /* in-flight シマー(quick-add 仮行限定・.inflight は renderRow が isOptimisticId(task.id) の
+   * ときだけ付与)。新しい色は導入せず、既存の wake グラデ(--add-wake)を横に掃くだけ:
+   * background-size を 200% に広げて同じグラデを敷き詰め、background-position を動かして
+   * 「帯が左→右に流れる」錯覚を作る(グラデ自体の形・色は変えない = 「動きだけ足す」の実現方法)。
+   * 【技術指針の根拠(emil-design-eng skill 準拠)】
+   *   - easing は linear: 定常的にループし続ける運動なので、ease だと毎周期の減速/加速が
+   *     ノイズになる(linear = 「継続中である」ことだけを均等に伝える)。
+   *   - 周期は 1.2s: 完了操作の box-shadow パルス(.skel の pulse も同じ 1.2s)に速度感を揃えつつ、
+   *     「速めのほうが知覚上テキパキ感が出る」指針に合わせ skeleton より詰めた帯にはしていない
+   *     (帯自体の見た目は同じグラデを流用するので周期だけで速さを作る)。
+   *   - CSS アニメーションのみで JS 駆動にしない: create-todo 応答待ち中はメインスレッドで
+   *     fetch/JSON 処理が走る。JS の rAF 駆動だとそこでコマ落ちし「固まった」ように見えるが、
+   *     CSS アニメーションはコンポジタスレッドで進行するため無関係に滑らかに動き続ける。
+   *   - 動かすプロパティは background-position のみ(transform 系ではなく background なのは、
+   *     このグラデ自体が background-image なため。position の変更はレイアウトにもペイントの
+   *     再計算対象領域拡大にも影響しない = リフローを起こさない)。 */
+  li.becoming-in.inflight {
+    background-size: 200% 100%;
+    animation: wake-sweep 1.2s linear infinite;
+  }
+  @keyframes wake-sweep {
+    from { background-position: -100% 0; }
+    to { background-position: 100% 0; }
+  }
+  /* reduced-motion: シマーを止め、becoming-in 本来の静的 wake(帯の先頭が見える位置)に戻す。
+   * background-position: 0 0 は通常の li.becoming-in と同じ描画結果になる。 */
+  @media (prefers-reduced-motion: reduce) {
+    li.becoming-in.inflight { animation: none; background-position: 0 0; }
+  }
 
   /* edited: 変更フィールドの旧値→新値をインラインで凍結表示(例: 7/14 → 7/18)。
    * 旧値は取消線ではなく減光のみ — 取消線=完了の恒久記号、という一貫性を守るため。 */

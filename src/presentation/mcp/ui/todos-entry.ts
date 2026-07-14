@@ -713,6 +713,12 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
 			tagText = isSync ? "同期(追加)" : "追加";
+			// 2026-07-14 in-flight シマー: 仮行(quick-add optimistic row・create-todo 応答待ち)
+			// だけ .inflight を足し、CSS 側で既存の wake グラデをループさせる(色は増やさず
+			// 動きだけ足す)。確定済みの added 行(サーバー由来・isSync 含む)は対象外 —
+			// 「もう起きたこと」の静的表示という becoming の原則(ファイル冒頭)は崩さず、
+			// 「いま進行中で結果未確定」を伝える通信目的にだけシマーを限定する。
+			if (isOptimisticId(task.id)) li.classList.add("inflight");
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
