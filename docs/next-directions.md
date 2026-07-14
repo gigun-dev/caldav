@@ -7,12 +7,21 @@
 > 第2版までの積層の生記録は git 履歴と docs/log.md にある)。
 > 時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
 
-**現在地**: 方向性 G(意味計算)✅・J(採択途中 RFC)✅ が完了。着手順で先行させた
-E(agentic 入口)は OAuth-for-MCP ✅・照会 3 ツール ✅・E-1(todo CRUD の MCP 完全対応)✅ まで
-クローズし、**E-2(MCP App UI)の本実装スライス②(becoming 差分 UI)まで完了**。
-**次のセッションはまず R-1(VJOURNAL hydrate 回帰バグ・「レビュー起票」節参照)を潰し、
-その後 E-2 スライス③ / shake-undo 実機キャプチャ / A(マルチユーザー)から冒頭で選ぶ。**
-2026-07-13 に Codex 体系レビュー実施 → 裁定は「レビュー起票」節(R-1〜R-8)。
+**現在地(2026-07-14 更新)**: G ✅・J ✅(実装部)・Codex レビュー R-1〜R-5 是正 ✅・
+shake-undo 決着 ✅。E-2 はスライス⑥前半まで完了(楽観更新・becoming 差分・view/位置記憶・
+quick-add 段階的開示・詳細編集・calendar 3 ツール・create-todos バッチ・シマー、全て本番検証済み)。
+レイテンシは計測基盤(mcpTool×colo ログ)+ 往復削減2段 + Smart Placement 導入済み(効果は学習後)。
+**進行中**: update-todo due 対称化(時刻付き/除去)+ UI フィードバック3点(円の縦ズレ・行 ⓘ・FAB)。
+**次の優先順位(2026-07-14 確定)**:
+1. 進行中タスクの検収 → deploy → 検証(E-2 はこれで一区切り宣言候補)
+2. 小粒是正2件(検証で発見): create-calendar の非 ASCII displayName → slug が "2" 等に縮退
+   (UUID fallback 強化)/ create-todos の recurrence 誤キー黙殺(zod strict 化)
+3. **E-3(VEVENT ツール+アジェンダカード)設計** — Fable が先に設計。get-todo 詳細カードも同時期
+4. **R-6(OAuth scope 分離)** — 公開前必須。E-3 実装と並行可(認証層で独立)
+5. 数日後: Smart Placement 効果再計測(colo ログ)→ 楽観 UI の再評価・STATUS 列 migration の要否判断
+6. その後 **A(マルチユーザー)+ R-7(CAS)** — 次の大きな山
+E-2 スライス⑥残(コレクション切り替え・becoming nonce・sessionStorage 選好復元)は
+「実運用で不快が実証されたら」に降格(過剰先行を避ける)。
 
 ## 今日までに完成しているもの(前提)
 
