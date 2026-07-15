@@ -29,11 +29,12 @@ import type {
 	ResourceUri,
 	SyncChange,
 } from "../../src/domain/caldav";
-import type {
-	PrincipalRepository,
-	CalendarCollectionRepository,
-	CalendarObjectResourceRepository,
-	CollectionUnitOfWork,
+import {
+	ConcurrencyConflictError,
+	type PrincipalRepository,
+	type CalendarCollectionRepository,
+	type CalendarObjectResourceRepository,
+	type CollectionUnitOfWork,
 } from "../../src/application/ports";
 import type { ComponentKind } from "../../src/domain/caldav";
 import { IcaljsRRuleIterator } from "../../src/infrastructure/recurrence/icaljs-rrule-iterator";
@@ -75,15 +76,49 @@ function collectionKey(owner: PrincipalRef, id: CollectionId): string {
 	return `${owner}::${id}`;
 }
 
+/**
+ * R-7 で導入: 読み取り時に独立したクローンを返すためのヘルパー。
+ *
+ * 【なぜクローンが必要になったか(R-7 で顕在化したフェイクの前提のズレ)】
+ * CalendarCollection.recordChange は「可変(mutable)にした判断」(calendar-collection.ts
+ * 冒頭コメント)によりインスタンスを直接書き換える。旧 findById はストアの参照をそのまま
+ * 返していたため、呼び出し側(PutCalendarObject など)が受け取った集約に recordChange すると、
+ * ストア内の「まだ保存されていないはずの」エントリまで一緒に書き換わってしまっていた
+ * (JS のオブジェクト参照はコピーされないため)。CAS 導入前はこれで実害が無かった
+ * (最終的に同じ状態を uow.saveResource 経由で seed() し直すだけだったので副作用が無害だった)
+ * が、R-7 で「baseline(hydrate 時点の syncCounter)と、UoW 実行時点でストアに実際に
+ * 入っている値」を比較する CAS 検証を入れたことで、この参照共有が「常に baseline ==
+ * 現在値」という誤った一致を生み、競合を一切検知できなくなった(逆に正しい検証すら壊れて
+ * 全部素通りになるはずが、実際は「ストアの値が既に recordChange 後の値になっている」ため
+ * baseline との比較で毎回不一致になり、あらゆる PUT/DELETE が ConcurrencyConflictError に
+ * なるという逆方向の壊れ方をした — 実機ならぬ実装で踏んだ罠なのでコメントに残す)。
+ * D1 は「読み取り」が行を書き換えることは無い(SELECT は副作用を持たない)ので、フェイクも
+ * それに揃えるのが正しい振る舞い。findById/findAllByOwner はクローンを返し、呼び出し側の
+ * mutation がストアへ波及しないようにする。
+ */
+function cloneCollection(c: CalendarCollection): CalendarCollection {
+	return new CalendarCollection({
+		id: c.id,
+		owner: c.owner,
+		displayName: c.displayName,
+		supportedComponents: c.supportedComponents,
+		color: c.color,
+		order: c.order,
+		syncCounter: c.syncToken,
+		changeLog: c.changes,
+	});
+}
+
 export class FakeCalendarCollectionRepository implements CalendarCollectionRepository {
 	private readonly store = new Map<string, CalendarCollection>();
 
 	async findAllByOwner(owner: PrincipalRef): Promise<CalendarCollection[]> {
-		return [...this.store.values()].filter((c) => c.owner === owner);
+		return [...this.store.values()].filter((c) => c.owner === owner).map(cloneCollection);
 	}
 
 	async findById(owner: PrincipalRef, id: CollectionId): Promise<CalendarCollection | null> {
-		return this.store.get(collectionKey(owner, id)) ?? null;
+		const found = this.store.get(collectionKey(owner, id));
+		return found ? cloneCollection(found) : null;
 	}
 
 	async save(collection: CalendarCollection): Promise<void> {
@@ -245,6 +280,34 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		private readonly collectionRepo: FakeCalendarCollectionRepository,
 	) {}
 
+	/**
+	 * R-7: D1CollectionUnitOfWork の CAS 契約(ports/index.ts の ConcurrencyConflictError
+	 * コメント参照)をインメモリでも再現する。契約テストを D1/フェイク間で共通化できるように
+	 * するための実装(タスク指示「インメモリ実装にも同じ CAS 意味論を実装する」)。
+	 *
+	 * ストア内の「現在の syncCounter」と、渡された collection の baselineSyncCounter(hydrate 時点
+	 * の値)を比較する。D1 の `UPDATE ... WHERE sync_counter = :baseline` と同じ判定を、
+	 * インメモリでは「保存前に読み比べる」形で行う(D1 と違い真の並行アクセスは無い単一スレッドの
+	 * フェイクなので、CAS を模すには「比較してから書く」の2ステップで十分 — 冒頭コメントの
+	 * 「実装の詳細を持たない最小限のシミュレーション」方針どおり)。
+	 */
+	private async assertBaselineMatches(owner: PrincipalRef, collectionId: CollectionId, collection: CalendarCollection): Promise<void> {
+		const stored = await this.collectionRepo.findById(owner, collectionId);
+		// stored が無い(=コレクションがまだ一度も保存されていない)場合、D1 側は
+		// 「行が無い」= WHERE sync_counter = 0 は成立しない(0行更新で ConcurrencyConflictError)
+		// はずだが、フェイクのテストでは「MKCALENDAR 相当のシード(collectionRepo.seed)を経ずに
+		// いきなり UoW を呼ぶ」ケースがある(既存テストの多くがそう)。この場合は「まだ何も
+		// 競合していない」とみなし baseline=0 と同一視して素通しする(D1 の実運用パスでは
+		// PutCalendarObject.execute が事前に collectionRepo.findById で存在確認しており、
+		// 存在しなければ CollectionNotFoundError で止まるため、UoW まで到達する時点で実際には
+		// 必ず行が存在する — フェイク側のこの緩和は「seed を省略した軽量テストを壊さない」ための
+		// 割り切りであり、D1 の挙動と完全に一致させるものではない)。
+		const storedCounter = stored?.syncToken.counter ?? 0;
+		if (storedCounter !== collection.baselineSyncCounter.counter) {
+			throw new ConcurrencyConflictError(owner, collectionId);
+		}
+	}
+
 	async saveResource(
 		owner: PrincipalRef,
 		collectionId: CollectionId,
@@ -252,6 +315,7 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		collection: CalendarCollection,
 		bounds: OccurrenceBounds,
 	): Promise<void> {
+		await this.assertBaselineMatches(owner, collectionId, collection);
 		// リソースを保存(bounds も一緒に。D1 実装が同一行へ書くのと同じ扱い)。
 		this.resourceRepo.seed(owner, collectionId, resource, bounds);
 		// コレクション(syncCounter / changeLog 更新済みのはず)を保存。
@@ -264,6 +328,7 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		uri: ResourceUri,
 		collection: CalendarCollection,
 	): Promise<void> {
+		await this.assertBaselineMatches(owner, collectionId, collection);
 		// リソースを削除。
 		this.resourceRepo.remove(owner, collectionId, uri);
 		// コレクションを保存。

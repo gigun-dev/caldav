@@ -22,11 +22,12 @@ import {
 	type ResourceUri,
 } from "../../domain/caldav";
 import type { OccurrenceBounds } from "../../domain/ical/recurrence";
-import type {
-	CalendarCollectionRepository,
-	CalendarObjectResourceRepository,
-	CollectionUnitOfWork,
-	PrincipalRepository,
+import {
+	ConcurrencyConflictError,
+	type CalendarCollectionRepository,
+	type CalendarObjectResourceRepository,
+	type CollectionUnitOfWork,
+	type PrincipalRepository,
 } from "../../application/ports";
 
 interface CollectionRow {
@@ -246,6 +247,52 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 	constructor(private readonly db: D1Database) {}
 
+	/**
+	 * R-7: CAS (Compare-And-Swap) 化された saveResource/deleteResource が共有する batch 実行
+	 * ヘルパー。3文構成(①CAS UPDATE → ②sync_changes INSERT → ③object 側の書き込み)の後半
+	 * 2文は呼び出し側が組み立て、ここでは実行と結果判定だけを共通化する。
+	 *
+	 * 【①の meta.changes === 0 判定を先頭に固定する理由】
+	 * ports/index.ts の ConcurrencyConflictError コメントに書いたとおり、①が空振り(0行更新)
+	 * したら②③は「baseline が古いまま書かれた」ことになるので、そもそも実行結果を信用しては
+	 * いけない。batch() は全文を1トランザクションとして実行するので、①が0行でも②③の SQL 文
+	 * 自体は(ガード条件次第で)空振りするか無害な形で走るが、その結果を UoW の成功として
+	 * 呼び出し元へ返してしまうと「実は競合していたのに 204/201 を返す」事故になる。よって
+	 * batch 結果の先頭要素だけを見て、0行なら即 throw する。
+	 *
+	 * 【②の PK 制約違反(sync_changes の重複 token)も同じエラーへ正規化する理由】
+	 * ①のガード(WHERE sync_counter = :baseline)と②の PK((owner, collection_id, token))は、
+	 * 同じ「baseline が古い」という事象を検知する二重の砦になっている。理論上は①が必ず先に
+	 * 空振りするはずだが、D1 の batch は複数文を1トランザクションで実行するため「①は通ったが
+	 * ②で PK 衝突する」という順序は起こらない設計だとしても、SQLite の制約チェックタイミングや
+	 * 将来の実装変更に対して余計な前提を置きたくない。①のガードだけに頼らず、②由来の
+	 * 制約違反例外も catch して同じ ConcurrencyConflictError に倒しておくことで、
+	 * 「①②のどちらが先に競合を捕まえても呼び出し元の見え方は同じ」という不変条件を保つ。
+	 */
+	private async executeCasBatch(
+		owner: PrincipalRef,
+		id: CollectionId,
+		statements: D1PreparedStatement[],
+	): Promise<void> {
+		let results: D1Result[];
+		try {
+			results = await this.db.batch(statements);
+		} catch {
+			// 2026-07-15 R-7: sync_changes の PK (owner, collection_id, token) 制約違反は
+			// D1/SQLite が例外として投げる(batch 全体が reject される)。この PK は「同じ baseline
+			// から2つのリクエストが同時に N+1 を書こうとした」ときの第二の砦(以前はこの
+			// constraint error がそのまま呼び出し元まで伝播し、presentation 層で拾われず
+			// 生の 500 になっていた — R-7 タスクの背景で説明した「偶発的な砦」の正体)。
+			// ここで捕まえて意図した ConcurrencyConflictError に正規化する。
+			throw new ConcurrencyConflictError(owner, id);
+		}
+		// ①(先頭の CAS UPDATE)が0行 = baseline がすでに動いていた = 競合。
+		const casResult = results[0];
+		if (casResult?.meta.changes === 0) {
+			throw new ConcurrencyConflictError(owner, id);
+		}
+	}
+
 	async saveResource(
 		owner: PrincipalRef,
 		id: CollectionId,
@@ -255,10 +302,27 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 	): Promise<void> {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("saveResource requires a recorded collection change");
-		await this.db.batch([
+		const newCounter = collection.syncToken.counter;
+		const baselineCounter = collection.baselineSyncCounter.counter;
+		await this.executeCasBatch(owner, id, [
+			// ① CAS 本体: baseline(hydrate 時に読んだ値)のときだけ new へ進める。
+			this.db.prepare(
+				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ? AND sync_counter = ?",
+			).bind(newCounter, owner, id, baselineCounter),
+			// ② 変更ログ。PK (owner, collection_id, token) が第二の砦(executeCasBatch のコメント参照)。
+			this.db.prepare(
+				"INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)",
+			).bind(owner, id, change.token.counter, change.uri, change.kind),
+			// ③ オブジェクト upsert。①が空振り(=競合)だったときに書き込みが混入しないよう、
+			// サブクエリで「①が成功して sync_counter が new になっている」ことを再確認してから
+			// 実行する(SQLite の batch は複数文を条件分岐できないため、この自己参照 WHERE で
+			// ①の成否を③の実行条件へ橋渡しする — ports/index.ts の UoW コメント③参照)。
+			// INSERT ... SELECT ... ON CONFLICT は SQLite 3.24+ の UPSERT 構文がそのまま使える
+			// (VALUES 由来か SELECT 由来かを問わない)。
 			this.db.prepare(
 				`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+				 WHERE (SELECT sync_counter FROM calendar_collections WHERE owner = ? AND id = ?) = ?
 				 ON CONFLICT(owner, collection_id, uri) DO UPDATE SET
 				 etag=excluded.etag, ics=excluded.ics, component_kind=excluded.component_kind,
 				 uid=excluded.uid, updated_at=excluded.updated_at,
@@ -266,29 +330,30 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 			).bind(
 				owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
 				bounds.firstMillis, bounds.lastMillis,
+				owner, id, newCounter,
 			),
-			this.db.prepare(
-				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ?",
-			).bind(collection.syncToken.counter, owner, id),
-			this.db.prepare(
-				"INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)",
-			).bind(owner, id, change.token.counter, change.uri, change.kind),
 		]);
 	}
 
 	async deleteResource(owner: PrincipalRef, id: CollectionId, uri: ResourceUri, collection: CalendarCollection): Promise<void> {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("deleteResource requires a recorded collection change");
-		await this.db.batch([
+		const newCounter = collection.syncToken.counter;
+		const baselineCounter = collection.baselineSyncCounter.counter;
+		await this.executeCasBatch(owner, id, [
+			// ① CAS 本体(saveResource と同じ)。
 			this.db.prepare(
-				"DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?",
-			).bind(owner, id, uri),
-			this.db.prepare(
-				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ?",
-			).bind(collection.syncToken.counter, owner, id),
+				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ? AND sync_counter = ?",
+			).bind(newCounter, owner, id, baselineCounter),
+			// ② 変更ログ。
 			this.db.prepare(
 				"INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)",
 			).bind(owner, id, change.token.counter, change.uri, change.kind),
+			// ③ DELETE 側のガードも同じ自己参照サブクエリで①の成否を確認する。
+			this.db.prepare(
+				`DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?
+				 AND (SELECT sync_counter FROM calendar_collections WHERE owner = ? AND id = ?) = ?`,
+			).bind(owner, id, uri, owner, id, newCounter),
 		]);
 	}
 }

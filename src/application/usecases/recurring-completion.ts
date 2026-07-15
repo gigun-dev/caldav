@@ -89,6 +89,62 @@ export interface CompleteRecurringTodoResult {
 }
 
 /**
+ * R-8(R-7 に軽く同梱): スナップショット UID を「元 UID + 完了させる occurrence の DTSTART/DUE」
+ * から決定的に導出する。
+ *
+ * 【なぜ決定的にするのか(R-7 の CAS 化との関係)】
+ * R-7 で PUT が 412 を返すようになったことで、「1回目の PUT は実は DB に反映されていたのに
+ * クライアントには何らかの理由でエラーが伝わり、同じ操作をもう一度送ってくる」という
+ * at-least-once な再試行が今までより増える可能性がある(このオーケストレーションはファイル
+ * 冒頭コメントのとおりそもそも非原子 2 PUT で「再試行前提」の設計)。旧実装は
+ * `crypto.randomUUID()` で毎回新しい UID を採番していたため、再試行のたびに別リソース
+ * (`${newUid}.ics`)が INSERT され、同じ occurrence の完了スナップショットが複数件重複して
+ * 残るおそれがあった。UID(および PUT 先の resourceUri = `${uid}.ics`)を「元 VTODO の UID +
+ * 完了させる occurrence の DTSTART/DUE」から決定的に導出すれば、再試行は同じ URI への
+ * PUT になり、PutCalendarObject の `INSERT ... ON CONFLICT(owner, collection_id, uri) DO
+ * UPDATE` (repositories.ts) がそのまま upsert として吸収する(migrations/0001 の
+ * `UNIQUE (owner, collection_id, uid)` 制約にも触れない — uid も URI も同じ値になるため)。
+ *
+ * 【occurrence キーに DTSTART/DUE を使う判断】
+ * このスナップショットは RECURRENCE-ID を持たない(buildCompletionSnapshot は UID を差し替える
+ * だけで RECURRENCE-ID プロパティを追加しない — D4 モデルは「単発 VTODO」として作る設計。
+ * vtodo-recurrence.ts の buildCompletionSnapshot コメント参照)。そのため「どの occurrence を
+ * 完了させたか」を一意に表す既存の値は、マスターの現在の DTSTART(無ければ DUE)しかない。
+ * 同じマスターに対して同じ DTSTART/DUE で2回 completeRecurringTodo が呼ばれることは
+ * 「同じ occurrence をもう一度完了させようとした」場合のみで、それはまさに再試行のケースと
+ * 一致する(正常系で同じ occurrence を2回別々に完了させる操作はそもそも意味がない)。
+ *
+ * 【SHA-256 を使う理由・UUID 形式にしない判断】
+ * Workers ランタイムで確実に使える Web Crypto の `crypto.subtle.digest` を使う(乱数生成用の
+ * `crypto.randomUUID()` から `crypto.subtle` に変えるだけで追加の依存は増えない)。出力は
+ * ハッシュの hex 文字列そのままにし、UUID の見た目(8-4-4-4-12)に整形する追加コストはかけない
+ * — このプロジェクトの UID は RFC 5545 上「一意な文字列」であればよく UUID 形式である必要は
+ * ない(calendar_objects.uid 列も TEXT で形式を強制しない)。`completion-` プレフィックスは
+ * デバッグ時に「D4 モデルの完了スナップショットである」ことが uid だけで分かるようにするため。
+ */
+async function deterministicSnapshotUid(masterVtodo: Component): Promise<string> {
+	// UID は masterVtodo 自身から読む(呼び出し側 looked.vtodo.uid は VTodo レンズの都合で
+	// string | undefined 型になっている — RFC 5545 上 UID は VTODO に必須なので実運用では
+	// 常に存在するが、型としては masterVtodo.properties から直接引くほうが素直で、
+	// 「マスターの現在の状態から決定的に導く」という関数の意図とも一致する)。
+	const masterUid = masterVtodo.properties.find((p) => p.name === "UID")?.value ?? "";
+	// DTSTART が無い VTODO(iOS の VTODO は DTSTART 省略が珍しくない)は DUE を occurrence
+	// キーとして使う。どちらも無ければ空文字(この場合は事実上 completeRecurringTodo が毎回
+	// 同じ UID を返すことになるが、DTSTART も DUE も無いマスターへの反復完了は D4 モデルの
+	// 前提〈RRULE で occurrence が動く〉と矛盾するため実運用では起きない想定の保険的分岐)。
+	const occurrenceKey =
+		masterVtodo.properties.find((p) => p.name === "DTSTART")?.value ??
+		masterVtodo.properties.find((p) => p.name === "DUE")?.value ??
+		"";
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(`${masterUid} ${occurrenceKey}`),
+	);
+	const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+	return `completion-${hex}`;
+}
+
+/**
  * 反復 VTODO(RRULE あり)の完了を D4 モデルで実行する。
  * CompleteTodo.execute / UpdateTodo.execute(status:"COMPLETED" 分岐)から呼ばれる。
  */
@@ -107,7 +163,9 @@ export async function completeRecurringTodo(
 	const advance = advanceMasterToNextOccurrence(masterVtodo, deps.recurrenceIterator, zoneOf);
 
 	// --- 常に2 PUT: snapshot-first の順序厳守(冒頭コメントの失敗モード分析どおり) -----------
-	const snapshotUid = crypto.randomUUID();
+	// R-8: UID は決定的に導出する(上の deterministicSnapshotUid コメント参照 — 再試行時に
+	// 同一 URI への upsert として自然に吸収させるため、以前の crypto.randomUUID() から変更)。
+	const snapshotUid = await deterministicSnapshotUid(masterVtodo);
 	const snapshot = buildCompletionSnapshot(
 		masterVtodo,
 		{ uid: snapshotUid, nextAlarmUid: () => crypto.randomUUID() },

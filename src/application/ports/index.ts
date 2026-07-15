@@ -204,7 +204,86 @@ export interface CalendarObjectResourceRepository {
 // =============================================================================
 
 /**
+ * R-7: CollectionUnitOfWork が検知する楽観ロック競合(CAS 失敗)エラー。
+ * - HTTP: 412 Precondition Failed(presentation 層でマッピング。app.ts の errorResponse 参照)。
+ *
+ * 【なぜ domain ではなく application/ports に置くのか】
+ * 「同時に2つのリクエストが同じ syncCounter を基準に書き込もうとした」という事実は
+ * 集約(CalendarCollection)のドメイン不変条件の話ではなく、永続化層が複数リクエストを
+ * 直列化できない(D1 は行ロックを明示的に取れない)ことに起因する技術的関心事。
+ * domain 層は「起きたことを記録する」役割だけを持ち、「記録が競合したときどうするか」は
+ * infrastructure/application の責務なので、エラー型もここ(ports)に置く。
+ *
+ * 【背景: TOCTOU の機序と、このエラーが埋める役割】
+ * put-calendar-object.ts / delete-calendar-object.ts は (a) collection を hydrate
+ * (baselineSyncCounter=N を記憶)→ (b) ETag precondition をメモリ判定 → (c) recordChange で
+ * N+1 を計算 → (d) UoW.saveResource/deleteResource が DB へ書く、という順序で動く。
+ * 並行する2リクエストが同じ N を hydrate すると両方が N+1 を書こうとする。CollectionUnitOfWork
+ * 実装(D1CollectionUnitOfWork)は「①baseline=N を条件にした CAS UPDATE」→ 空振り(0 行更新)
+ * したら、②の sync_changes PK 制約違反(token 重複)より前でも後でも、必ずこのエラーへ正規化
+ * して throw する契約。呼び出し側 UC はこれを catch せず素通しし、presentation 層が 412 に写す
+ * (put-preconditions R1〜R7 の 412 と同じマッピング先 — クライアントは「競合したので取得し
+ * 直して再送してください」という通常の楽観ロック失敗として扱える)。
+ *
+ * 【再試行ロジックをここに持ち込まない判断】
+ * RFC 4918 は precondition 失敗一般に 412 を使う契約なので、素の 412 を返すだけに留める。
+ * サーバー側で自動リトライ(baseline を取り直して再 hydrate → 再 recordChange)する設計も
+ * 検討したが、「呼び出し元が期待している ETag 検証をもう一度やり直す」処理を UoW 層に
+ * 埋め込むのは責務が重すぎる(UoW は「保存する」ことだけを知っていればよい)。可逆な判断
+ * なので、実測で iOS 側が不快な挙動(頻繁な 412 でユーザー操作が失われる等)を見せたら
+ * UC 外側(presentation か application の呼び出し元)にリトライを足す。
+ */
+export class ConcurrencyConflictError extends Error {
+	readonly kind = "ConcurrencyConflictError" as const;
+	constructor(
+		readonly owner: PrincipalRef,
+		readonly collectionId: CollectionId,
+	) {
+		super(`Concurrent write conflict on calendar collection: ${owner} / ${collectionId}`);
+		this.name = "ConcurrencyConflictError";
+	}
+}
+
+/**
  * カレンダーオブジェクトリソースの保存 + コレクションの変更ログ更新を原子的に行う UoW。
+ *
+ * 【R-7: CAS(Compare-And-Swap)契約】
+ * saveResource/deleteResource は、渡された collection.baselineSyncCounter(hydrate 時点の
+ * syncCounter)を「まだ DB 側の行がそこから動いていないこと」の条件として使う。
+ * 実装(D1CollectionUnitOfWork)は
+ *   ① `UPDATE calendar_collections SET sync_counter = :new WHERE owner=? AND id=? AND
+ *      sync_counter = :baseline` を batch の先頭に置く(:new は collection.syncToken.counter =
+ *      recordChange 後の値、:baseline は collection.baselineSyncCounter.counter)。
+ *   ② batch 実行後 `results[0].meta.changes === 0` なら baseline がすでに動いている
+ *      (=他プロセスが先に書いた)ということなので ConcurrencyConflictError を throw する。
+ *   ③ ①が空振りしたときに calendar_objects への upsert/delete が実行されてしまわないよう、
+ *      オブジェクト側の SQL にも sync_counter の一致条件をガードとして埋め込む(同一 batch 内で
+ *      複数文にまたがる「条件付き実行」は SQLite に無いため、UPDATE 文の代わりに INSERT ...
+ *      SELECT ... WHERE (SELECT sync_counter FROM calendar_collections WHERE owner=? AND id=?) =
+ *      :new という形で自己参照サブクエリにより空振りを模す)。
+ *   ④ ②の PK 制約違反(sync_changes の (owner, collection_id, token) 重複)も、同じ競合の
+ *      別の現れなので ConcurrencyConflictError に正規化する(タイミング次第でどちらが先に
+ *      検知するかは決まらないため、両方とも同じ結果に落とす)。
+ *
+ * 【ボツ案 (architect 却下): SELECT FOR UPDATE 相当のロック】
+ * D1(SQLite ベース)には行ロックを明示的に取る構文が無く、batch() の原子性は「同一トランザクション
+ * として実行される」ことのみを保証する(実行順に他クライアントを締め出すロックではない)。
+ * よって「読んでからロックする」型の悲観ロックは実装できない。CAS(書き込み時に基準値を検証)
+ * のほうが D1 の実行モデルに素直に乗る。
+ *
+ * 【ボツ案 (architect 却下): DO による直列化】
+ * Durable Object を1コレクションにつき1つ立てて全書き込みをそこへ直列化する案は、CalDAV の
+ * 書き込みパスすべてに DO 呼び出しを挟む大改修になり、R-7 のスコープ(「偶発的な砦を意図した
+ * 設計に昇格させる」)を大きく超える。将来の書き込みスループット要求次第では検討に値するが、
+ * 今は YAGNI。
+ *
+ * 【ボツ案 (architect 却下): etag 列 CAS 単独】
+ * calendar_objects.etag を CAS の対象にする案(「このリソースの ETag がまだ X のときだけ書く」)
+ * は、PUT の ETag precondition(put-calendar-object.ts の Step 3)とほぼ同じ条件を DB 側でも
+ * 二重に見ることになり、かつ「コレクション全体の syncCounter」という集約横断の整合性(SyncChange
+ * のトークン採番の一意性)は守れない — 同じコレクションの別リソースへの同時書き込みが起きても
+ * syncCounter の競合は検知できないままになる。CAS の対象は「集約が実際に不変条件を持つ列」
+ * (calendar_collections.sync_counter)であるべき、という判断。
  *
  * 【なぜ UoW インターフェースを別に切るのか】
  * CalendarObjectResource と CalendarCollection は別集約だが、「オブジェクトを PUT/DELETE する」

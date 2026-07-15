@@ -17,7 +17,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { app, __setRepositoriesFactoryForTest } from "../../src/app";
-import { CalendarCollection, collectionId, principalPath } from "../../src/domain/caldav";
+import { ConcurrencyConflictError, type CollectionUnitOfWork } from "../../src/application/ports";
+import { CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,
 	FakeCalendarObjectResourceRepository,
@@ -280,6 +281,83 @@ describe("Worker app", () => {
 				headers: { authorization: authHeader(), "if-match": etag },
 			});
 			expect(res.status).toBe(204);
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// R-7: ConcurrencyConflictError → 412 マッピング
+	// -------------------------------------------------------------------------
+	//
+	// 【D1 の実 CAS 競合検知ではなく「投げられたら 412 になる」ことだけを検証する理由】
+	// D1CollectionUnitOfWork の CAS 本体(baseline が古いときに実際に検知する挙動)は
+	// test/worker/cas-concurrency.test.ts が実 D1 で決定的に検証している(bun test には D1 が
+	// 無いため再現できない — 同ファイル冒頭コメント参照)。ここで確認したいのはそれとは別の
+	// 関心事: 「ConcurrencyConflictError という型が throw されたとき、presentation 層
+	// (app.ts の errorResponse)が正しく 412 Precondition Failed を返すか」という、D1 の実挙動
+	// に依存しない純粋なマッピングロジックの話。そのため「常に ConcurrencyConflictError を
+	// throw する UoW」を注入し、決定的に(D1 の実タイミングに一切依存せず)検証する
+	// (この2ファイルで「検知」と「マッピング」の関心事を分離した設計判断は
+	// cas-concurrency.test.ts のコメントにも書いた)。
+	describe("R-7: ConcurrencyConflictError → 412 マッピング", () => {
+		beforeEach(async () => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+			// DELETE は「削除対象が実在すること」を uow に到達する前に findByUri で確認する
+			// (delete-calendar-object.ts の existing チェック — 見つからなければ 404 になり、
+			// 今回検証したい 412 マッピングまで到達しない)。UoW を差し替える前にリソースを直接
+			// resources ストアへ置いておく(uow を経由すると差し替え後の常時 throw に引っかかる
+			// ため、resources.seed で直接置く)。
+			await harness.repos.resources.seed(
+				OWNER,
+				CALENDAR,
+				await CalendarObjectResource.fromIcs(resourceUri("conflict.ics"), makeVEventIcs("uid-conflict")),
+			);
+			// このブロックだけ、常に ConcurrencyConflictError を throw する UoW に差し替える
+			// (フェイクの CAS 実装〈FakeCollectionUnitOfWork〉ではなく、あえて
+			// 呼び出しがあったことを確認するためのミニマルな実装を直書きする — このテストの
+			// 関心は「UoW が競合を検知するロジック」ではなく「投げられた後のマッピング」のみ
+			// なので、fakes.ts の CAS 実装を再利用せず単純化する)。
+			const alwaysConflictingUow: CollectionUnitOfWork = {
+				saveResource: async () => {
+					throw new ConcurrencyConflictError(OWNER, CALENDAR);
+				},
+				deleteResource: async () => {
+					throw new ConcurrencyConflictError(OWNER, CALENDAR);
+				},
+			};
+			// harness.repos.uow の静的型は makeRepos() の推論結果(具象 FakeCollectionUnitOfWork)
+			// になっているため、ポート型(CollectionUnitOfWork)の別実装をそのまま代入すると
+			// 「具象クラス固有のプロパティが無い」という的外れな型エラーになる。テストの意図は
+			// 「呼び出し側(app.ts)はポート型にしか依存しない」ことの確認そのものなので、
+			// ここではポート型として narrow して代入する(型を偽るのではなく、
+			// 本来の依存境界〈presentation はポートにしか依存しない〉に沿わせるための cast)。
+			(harness.repos as { uow: CollectionUnitOfWork }).uow = alwaysConflictingUow;
+		});
+
+		const RES = `/dav/calendars/${USERNAME}/calendar/conflict.ics`;
+
+		it("PUT(unconditional)でも UoW が競合を検知すれば 412 になる(If-Match 無しでも競合検知は効く)", async () => {
+			const res = await fetchApp(RES, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-conflict"),
+			});
+			// 【unconditional でも 412 にする設計を固定する】タスク仕様の「素の 412 で実装する」
+			// (If-Match を送らない unconditional PUT にも競合時 412)判断をここで固定する。
+			// ETagConditionError 系の 412(既存テスト)は「クライアントの申告と現在の ETag が
+			// 食い違う」場合だが、ConcurrencyConflictError は「クライアントの申告に関わらず、
+			// サーバー側で検知した書き込み競合」なので、条件節の有無を問わず常に 412 になるのが
+			// 正しい(put-preconditions R1〜R7 とも同じ 412 マッピング先に揃える)。
+			expect(res.status).toBe(412);
+		});
+
+		it("DELETE でも UoW が競合を検知すれば 412 になる", async () => {
+			const res = await fetchApp(RES, {
+				method: "DELETE",
+				headers: { authorization: authHeader() },
+			});
+			expect(res.status).toBe(412);
 		});
 	});
 

@@ -90,6 +90,15 @@ export class CalendarCollection {
 	private _syncCounter: SyncToken;
 	// 変更ログ本体(可変)。外部へは readonly ビュー(changes ゲッター)で見せる。
 	private readonly _changeLog: SyncChange[];
+	// R-7 (CAS 化): hydrate 時点(= このインスタンスがコンストラクトされた時点)の syncCounter を
+	// 「基準値」として固定で覚えておく。recordChange で _syncCounter は何度でも進みうるが、
+	// baseline は constructor 実行時の1回だけ確定し、以後この集約が生きている間は変わらない
+	// (readonly)。UoW(infrastructure/d1/repositories.ts)が CAS の UPDATE ... WHERE sync_counter =
+	// :expected の :expected にこの値を使う — 「hydrate してからこの集約が recordChange するまでの
+	// 間に、他プロセスが同じ行を書き換えていないか」を DB 側で検知するための唯一の手掛かりになる
+	// (この集約はメモリ上の値を無条件に信じて N+1 を計算するので、baseline を UoW に渡さないと
+	// 「自分が読んだ N」を UoW 側が知りようがない)。
+	readonly baselineSyncCounter: SyncToken;
 
 	constructor(init: CalendarCollectionInit) {
 		this.id = init.id;
@@ -100,6 +109,10 @@ export class CalendarCollection {
 		this.order = init.order;
 		this._syncCounter = init.syncCounter ?? SyncToken.initial();
 		this._changeLog = init.changeLog !== undefined ? [...init.changeLog] : [];
+		// 新規作成(init.syncCounter 省略)の場合は baseline も初期値(counter=0)。CAS の
+		// WHERE sync_counter = 0 は「まだこの行が無い/初期状態のまま」を意味し、INSERT 経路
+		// (calendar_collections がまだ無い MKCALENDAR 直後の初回 PUT)とも整合する。
+		this.baselineSyncCounter = this._syncCounter;
 	}
 
 	// ---------------------------------------------------------------------------

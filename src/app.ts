@@ -58,11 +58,12 @@ import {
 	UpdateCollectionProperties,
 } from "./application";
 import { Principal, collectionId, principalPath } from "./domain/caldav";
-import type {
-	CalendarCollectionRepository,
-	CalendarObjectResourceRepository,
-	CollectionUnitOfWork,
-	PrincipalRepository,
+import {
+	ConcurrencyConflictError,
+	type CalendarCollectionRepository,
+	type CalendarObjectResourceRepository,
+	type CollectionUnitOfWork,
+	type PrincipalRepository,
 } from "./application/ports";
 import { createD1Repositories, IcaljsRRuleIterator, OAuthPropsAuth, type OAuthPrincipalProps } from "./infrastructure";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
@@ -184,6 +185,11 @@ function errorResponse(error: unknown): Response {
 	if (error instanceof CollectionNotFoundError) return new Response("Collection not found", { status: 409 });
 	if (error instanceof CollectionAlreadyExistsError) return new Response("Collection already exists", { status: 405, headers: DAV_HEADERS });
 	if (error instanceof ETagConditionError || error instanceof DeleteETagMismatchError || error instanceof SyncTokenIfConditionError) return new Response("Precondition Failed", { status: 412 });
+	// R-7: UoW の CAS が検知した同時書き込み競合。RFC 4918 は precondition 失敗一般に 412 を使う
+	// 契約なので、If-Match 由来の ETagConditionError と同じ 412 へ素直にマッピングする(unconditional
+	// PUT でも競合時は 412 になる — put-preconditions R1〜R7 との整合を保つ意図的な判断。
+	// ports/index.ts の ConcurrencyConflictError コメント「再試行ロジックをここに持ち込まない判断」参照)。
+	if (error instanceof ConcurrencyConflictError) return new Response("Precondition Failed", { status: 412 });
 	if (error instanceof InvalidSyncTokenError) return xml(davError("valid-sync-token"), 403);
 	if (error instanceof CalDAVPreconditionError) {
 		const violation = error.violations[0];
