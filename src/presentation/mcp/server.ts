@@ -93,6 +93,7 @@ import {
 	StartEndTypeMismatchError,
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
+	InvalidUrlError,
 	eventFromOccurrence,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
@@ -1826,6 +1827,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		error instanceof RecurrenceWeekdaysRequireWeeklyError ||
 		error instanceof InvalidAlarmsError ||
 		error instanceof InvalidTravelMinutesError ||
+		error instanceof InvalidUrlError ||
 		error instanceof EventNotFoundError;
 
 	server.registerTool(
@@ -1949,6 +1951,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			title: "Update event",
 			description:
 				"既存 VEVENT(予定)の一部フィールドを更新する。指定したフィールドのみ変更し、他は維持する。" +
+				"通知(何分前アラーム)・繰り返し・URL・移動時間の追加/変更/削除もこのツールで行う" +
+				"(alarms/recurrence/url/travelMinutes を指定すれば更新、null で除去)。" +
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
 		},

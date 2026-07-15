@@ -208,6 +208,7 @@ export {
 	StartEndTypeMismatchError,
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
+	InvalidUrlError,
 	type CreateEventInput,
 	type CreateEventOutput,
 	type CreateEventError,

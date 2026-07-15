@@ -52,10 +52,12 @@ import {
 	InvalidEndError,
 	InvalidStartError,
 	InvalidTravelMinutesError,
+	InvalidUrlError,
 	StartAfterEndError,
 	StartEndTypeMismatchError,
 	validateAndBuildAlarms,
 	validateTravelMinutes,
+	validateUrl,
 } from "./create-event";
 import { nowStampFromDate } from "./now-stamp";
 import { eventFromVEvent, type Event } from "./event-dto";
@@ -132,6 +134,7 @@ export type UpdateEventError =
 	| RecurrenceWeekdaysRequireWeeklyError
 	| InvalidAlarmsError
 	| InvalidTravelMinutesError
+	| InvalidUrlError
 	| EventNotFoundError
 	| PutCalendarObjectError;
 
@@ -196,6 +199,8 @@ export class UpdateEvent {
 		const alarmsPatch: ReadonlyArray<{ minutesBefore: number; uid: string }> | null | undefined =
 			input.alarms === undefined ? undefined : input.alarms === null ? null : validateAndBuildAlarms(input.alarms);
 		if (input.travelMinutes !== undefined && input.travelMinutes !== null) validateTravelMinutes(input.travelMinutes);
+		// url も同じ「lookup 前の安価な失敗」に揃える(null=除去は検証不要・undefined=据え置きも同様)。
+		if (input.url !== undefined && input.url !== null) validateUrl(input.url);
 
 		const collectionId = mkCollectionId(input.calendarId ?? "calendar");
 		const looked = await lookupEvent(this.resourceRepo, input.owner, collectionId, input.eventId);

@@ -16,6 +16,7 @@ import {
 	EventNotFoundError,
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
+	InvalidUrlError,
 } from "../../src/application/usecases";
 import {
 	FakeCalendarCollectionRepository,
@@ -152,6 +153,20 @@ describe("event usecases", () => {
 		await expect(createEvent.execute({ ...base, travelMinutes: -3 })).rejects.toBeInstanceOf(InvalidTravelMinutesError);
 	});
 
+	// S-C(docs/modeling/12 §7.6): url はスキーム付き絶対 URI を要求する(§3.8.4.6 は URI の form を
+	// 標準化しないので http/https に限定しない — tel:/webex: 等の非 http スキームは許容する)。
+	it("url はスキーム付き絶対 URI のみ許可する(スキーム無しは InvalidUrlError・非 http スキームは許可)", async () => {
+		const base = { owner: TEST_OWNER, title: "x", start: "2026-07-15" } as const;
+		await expect(createEvent.execute({ ...base, url: "x.com" })).rejects.toBeInstanceOf(InvalidUrlError);
+		await expect(createEvent.execute({ ...base, url: "example.com/path" })).rejects.toBeInstanceOf(InvalidUrlError);
+		await expect(createEvent.execute({ ...base, url: "" })).rejects.toBeInstanceOf(InvalidUrlError);
+		// http/https 限定ではない(§3.8.4.6 原文が form を標準化しないため tel:/webex: も通す)。
+		const { event: telEvent } = await createEvent.execute({ ...base, url: "tel:+81-3-1234-5678" });
+		expect(telEvent.url).toBe("tel:+81-3-1234-5678");
+		const { event: webexEvent } = await createEvent.execute({ ...base, url: "webex:meeting-id" });
+		expect(webexEvent.url).toBe("webex:meeting-id");
+	});
+
 	// --- UpdateEvent -----------------------------------------------------------
 
 	async function seedEvent(args: Parameters<CreateEvent["execute"]>[0]): Promise<string> {
@@ -216,6 +231,13 @@ describe("event usecases", () => {
 		expect(cleared.event.url).toBeNull();
 		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
 		expect(stored[0]!.rawIcs).not.toContain("URL:");
+	});
+
+	it("update-event の url もスキーム付き絶対 URI を要求する(create-event と対称)", async () => {
+		const id = await seedEvent({ owner: TEST_OWNER, title: "URL検証", start: "2026-07-15" });
+		await expect(updateEvent.execute({ owner: TEST_OWNER, eventId: id, url: "x.com" })).rejects.toBeInstanceOf(InvalidUrlError);
+		// null(除去)は検証をスキップする(値を書かないので絶対 URI 制約は無関係)。
+		await expect(updateEvent.execute({ owner: TEST_OWNER, eventId: id, url: null })).resolves.toBeDefined();
 	});
 
 	it("start だけ変更しても既存 end との整合が検証される(逆転は StartAfterEndError)", async () => {

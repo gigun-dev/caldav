@@ -156,6 +156,33 @@ export class InvalidAlarmsError extends Error {
 	}
 }
 
+/**
+ * url(§3.8.4.6・URI 値型)が「スキーム付き絶対 URI」でないときのエラー。create/update-event 共有
+ * (docs/modeling/12 §7.6)。
+ *
+ * 【なぜ http/https に限定しないか】RFC 5545 §3.8.4.6 原文(docs/rfc/rfc5545.txt)は
+ * "This memo does not attempt to standardize the form of the URI" と明言している — URL プロパティは
+ * 値型が URI というだけで、スキームを http/https に絞る根拠は原文に無い。iOS カレンダーは
+ * tel:/webex:/msteams:/facetime: 等のスキームを URL に置く実例がある(会議リンク・電話番号)ため、
+ * ここで弾くと正当な入力を壊す。要求するのは「スキームがあること」(絶対 URI)だけ。
+ *
+ * 【なぜここ(application 層)で検証するか】既存の他フィールド検証(InvalidAlarmsError・
+ * InvalidTravelMinutesError・StartAfterEndError 等)が全てこの層にあり、同じ様式(kind タグ付き
+ * Error・create/update 共有関数・server.ts の isEventInputError で catch-all)に揃えるため。
+ * presentation の zod で弾く案もあったが、zod の .url() は http/https 限定のプリセットしか無く
+ * 「スキームの有無だけ」を表現するには結局カスタム refine が要る = ここに書くのと手間が同じ。
+ * かつ zod に置くと「なぜ http/https に限定しないか」という判断根拠(RFC 原文)が実装層から
+ * 遠くなる(presentation はプロトコル/入出力整形の層であり、RFC 値型の妥当性はドメイン寄りの
+ * 判断 — application に置く方が層の責務に合う)。
+ */
+export class InvalidUrlError extends Error {
+	readonly kind = "InvalidUrlError" as const;
+	constructor(readonly url: string) {
+		super(`url must be an absolute URI with a scheme (e.g. "https://..." or "tel:..."), got: "${url}"`);
+		this.name = "InvalidUrlError";
+	}
+}
+
 /** 移動時間(travelMinutes)が正整数でないときのエラー。 */
 export class InvalidTravelMinutesError extends Error {
 	readonly kind = "InvalidTravelMinutesError" as const;
@@ -177,6 +204,7 @@ export type CreateEventError =
 	| RecurrenceWeekdaysRequireWeeklyError
 	| InvalidAlarmsError
 	| InvalidTravelMinutesError
+	| InvalidUrlError
 	| PutCalendarObjectError;
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -207,6 +235,24 @@ export function validateAndBuildAlarms(alarms: number[]): Array<{ minutesBefore:
 export function validateTravelMinutes(travelMinutes: number): void {
 	if (!Number.isInteger(travelMinutes) || travelMinutes <= 0) {
 		throw new InvalidTravelMinutesError(travelMinutes);
+	}
+}
+
+/**
+ * url 入力(§3.8.4.6・URI 値型)を「スキーム付き絶対 URI」として検証する。create/update-event 共有。
+ * InvalidUrlError のコメントに判断根拠(なぜ http/https 限定でないか・なぜこの層か)を記載。
+ *
+ * 実装: `new URL(input)` で parse を試み、投げたら不正(相対 URI・空文字・壊れた形式を弾く)。
+ * WHATWG URL パーサは "scheme:..." の形式であれば任意スキームを受理する(tel:/webex: 等も通る)ので、
+ * parse 成功 = スキーム付き絶対 URI であることの十分条件になる(WHATWG URL の仕様上、パース成功する
+ * 入力は必ず scheme を含む — 相対参照は base URL 無しでは常に失敗する)。追加のスキーム許可リストは
+ * 意図的に持たない(InvalidUrlError のコメント参照)。
+ */
+export function validateUrl(url: string): void {
+	try {
+		new URL(url);
+	} catch {
+		throw new InvalidUrlError(url);
 	}
 }
 
@@ -245,9 +291,10 @@ export class CreateEvent {
 			recurrence = buildRecurrenceRule(input.recurrence, start.timeInfo);
 		}
 
-		// 通知(alarms)+ 移動時間(travelMinutes)の検証(lookup/PUT より前 = 安価な失敗)。
+		// 通知(alarms)+ 移動時間(travelMinutes)+ url の検証(lookup/PUT より前 = 安価な失敗)。
 		const alarms = input.alarms !== undefined ? validateAndBuildAlarms(input.alarms) : undefined;
 		if (input.travelMinutes !== undefined) validateTravelMinutes(input.travelMinutes);
+		if (input.url !== undefined) validateUrl(input.url);
 
 		// VTIMEZONE: start か end が時刻付き(DATE-TIME)なら生成する。窓は start/end/UNTIL/反復ホライズンを
 		// 覆う([min 開始, max 終了 + 3年 or UNTIL] ± 余白)。create-todo.ts と同じ発想で組む。
