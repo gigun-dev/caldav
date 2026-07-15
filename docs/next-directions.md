@@ -7,15 +7,18 @@
 > 第3版までの積層の生記録は git 履歴と docs/log.md にある)。
 > 時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
 
-**現在地(2026-07-15 棚卸し)**: E-2(todos の MCP App)が **UI v3 で実質クローズ**
-(a53f0be。本番検証は実施中 — ページ遷移/chips/ドラフト行の目視と D1 裏取りが残)。
+**現在地(2026-07-15 棚卸し)**: **E-2(todos の MCP App)クローズ ✅** — UI v3(a53f0be)の
+本番検証が全項目 PASS(ページ遷移/トーン/繰り返し chips→D1 裏取り/ドラフト行/後始末。
+v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ(クローズを覆す性質ではない)。
 サーバーは todo 系フル装備: update-todo に recurrence/location・move-todo・小粒是正
 (slug UUID fallback / recurrence strict / 孤立 VTIMEZONE 掃除 / sync レンズの edited 除外)まで済。
 **進行中**: E-3 S1(VEVENT 4 ツール+Event DTO — 設計は docs/modeling/12 が正・artisan 実装中)。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
-1. UI v3 本番検証の完了(実施中)→ ユーザー実機確認(claude.ai コネクタ再接続込み)→ **E-2 クローズ宣言**
+1. ~~UI v3 本番検証~~ ✅ 全 PASS → **E-2 クローズ宣言済み**。残: ユーザー実機確認
+   (claude.ai コネクタ再接続込み)+ 小 nit(placeholder「メモを追加」と同値の実データが
+   見分け不能 — 実害軽微・必要なら placeholder 文言変更で対処)
 2. **E-3**: S1(サーバー・実装中)→ S2(アジェンダカード。todos v3 文法の流用)
 3. **R-6(OAuth scope 分離)** — 公開前必須。Swift コンパニオン(第三者クライアント)の前提整備
    としても優先度上昇。E-3 と並行可(認証層で独立)。
