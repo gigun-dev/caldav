@@ -41,6 +41,10 @@ import { App } from "@modelcontextprotocol/ext-apps";
 import { computeSyncDiff, type SyncDiff } from "./events-diff-client";
 // 絵文字/文字グリフを lucide のインライン SVG へ統一する(icons.ts 冒頭コメント参照)。
 import { createIcon } from "./icons";
+// 行同一性の合成キー(modeling/12 §7.1・2026-07-16 実機FB)。展開 occurrence の id は全行
+// マスター UID なので、選択/スワイプ/DOM 特定は id 単独でなく rowKey(id+recurrenceId)で引く。
+// 二層分離の理由(mutate 状態はマスター id のまま)は row-key.ts の冒頭コメント参照。
+import { rowKey, idOfRowKey } from "./row-key";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
@@ -173,12 +177,18 @@ function isDraftId(id: string): boolean {
 }
 
 // --- 選択 / ドラフト / スワイプ / シート状態(todos v3 と同一文法。再描画を跨いで保持)-------------
+// 【2026-07-16 実機FB(§7.1)】selectedId / swipeId / sheetState.key が保持するのは
+// **rowKey(合成キー)** であって生 id ではない。生 id だと反復イベントの展開 occurrence
+// 全行(id は全部マスター UID)が同時に選択/スワイプ状態になってしまう。
+// mutate 系の状態(pendingIds 等)はマスター id 単位のまま — 理由は row-key.ts 冒頭。
 let selectedId: string | null = null;
 // draft: FAB で生やす「まだ送信していない新規イベント行」。既定は「今日・終日」(モック A のドラフト規約)。
 let draft: { id: string; title: string; notes: string } | null = null;
 let swipeId: string | null = null;
 // sheetState: 詳細ページ / リスト選択ページの「カード内ページ遷移」状態(list は event では move 未実装で省略)。
-let sheetState: { id: string; page: "detail"; create?: boolean } | null = null;
+// key は rowKey — 詳細ページは「タップされたその occurrence 行」を対象にする(先頭 occurrence に
+// すり替わると開始日時の表示・差分計算が別の日のものになる)。
+let sheetState: { key: string; page: "detail"; create?: boolean } | null = null;
 let sheetDraft: SheetDraft | null = null;
 // 選択行のタイトル/メモ入力への参照(commitSelection が renderAll 前の DOM 値を読むため renderRow がセット)。
 let selTitleInput: HTMLInputElement | null = null;
@@ -186,6 +196,11 @@ let selMemoInput: HTMLInputElement | null = null;
 
 // --- 表示用 becoming メタ(rebuildDisplay が組み立て、renderRow/announceBecoming が読む)-------------
 let affectedById = new Map<string, AffectedEntry>();
+// seenAffectedIds: renderAll の1描画パス内で「この id の becoming 装飾はもう出した」を記録する
+// (§7.1 系列集約)。renderAll 冒頭でリセットし、renderRow が最初の可視行でだけ装飾を許可する。
+// 【Why not renderRow へ引数で渡す】renderRow はドラフト行描画など複数箇所から呼ばれ、既存
+// シグネチャを崩さない方が差分が小さい。描画は単一スレッドの同期1パスなのでモジュール変数で安全。
+const seenAffectedIds = new Set<string>();
 let ghosts: EventSnapshot[] = [];
 // サーバー(+sync)由来の becoming 土台(楽観だけの再描画で重ねる基準)。
 let serverAffectedBase: AffectedEntry[] = [];
@@ -443,17 +458,27 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	if (ghosts.some((g) => g.id === ev.id)) return renderGhostRow(ev);
 
 	const li = document.createElement("li");
-	li.dataset.id = ev.id;
-	const sel = selectedId === ev.id;
+	// 行の DOM 特定・選択・スワイプは合成キー(§7.1)。data-id ではなく data-key を持たせる
+	// (グローバル click ハンドラの closest 判定も data-key で引く)。
+	const key = rowKey(ev);
+	li.dataset.key = key;
+	const sel = selectedId === key;
 	const isDraft = isDraftId(ev.id);
-	const swiped = swipeId === ev.id;
+	const swiped = swipeId === key;
 	if (sel) li.classList.add("selected");
 	if (swiped) li.classList.add("swiping");
 	// now バー: 進行中の1本だけ accent の左バー(色は増やさない。ドラフト/仮行は判定しない)。
 	if (!isDraft && !isOptimisticId(ev.id) && isInProgress(ev)) li.classList.add("now");
 
 	// becoming 装飾の決定(未知 kind は通常描画へ degrade)。
-	const aff = affectedById.get(ev.id);
+	// 【系列集約(§7.1・2026-07-16 実機FB)】affectedById はマスター id キーなので、反復イベントの
+	// 展開 occurrence 全行にヒットする。全行にバッジ/ハイライトを付けると「別イベントが4件増えた」
+	// ように見誤られたため、renderAll の1描画パス内で **最初の可視行にだけ** 装飾を付け、
+	// 2行目以降の同 id occurrence は完全無装飾にする(親裁定: 薄い残響も付けない・最小)。
+	// added も同じ機構に乗せる — 反復イベントの新規作成でも occurrence が複数行展開されるため。
+	const affRaw = affectedById.get(ev.id);
+	const aff = affRaw !== undefined && !seenAffectedIds.has(ev.id) ? affRaw : undefined;
+	if (aff !== undefined) seenAffectedIds.add(ev.id);
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
 	if (aff !== undefined) {
@@ -524,7 +549,8 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 			title.appendChild(noteMark);
 		}
 		head.appendChild(title);
-		head.addEventListener("click", () => setSelected(ev.id));
+		// 選択はタップされた occurrence 行だけ(合成キー)。id だと系列全行が同時選択になる(§7.1)。
+		head.addEventListener("click", () => setSelected(key));
 	}
 
 	// --- meta 行: 繰り返し ⟳ / 📍場所 / URL video / 跨ぎ日〜M/D / becoming ラベル(右端)-------------
@@ -559,8 +585,10 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		);
 		meta.appendChild(s);
 	}
-	// 繰り返しバッジ(⟳ + 短い日本語。degrade 時はアイコンのみ)。日時変更表示中は出さない(情報過多回避)。
-	if (ev.recurrence !== null && editPlan == null) {
+	// 繰り返しバッジ(⟳ + 短い日本語。degrade 時はアイコンのみ)。editPlan(日時変更)中も描く:
+	// 以前は「情報過多回避」で editPlan 中に消していたが、🔁 が消えると系列の occurrence 行が
+	// 別イベントに見誤られる実害の方が大きい(2026-07-16 実機FB・§7.1)。
+	if (ev.recurrence !== null) {
 		const recurText = formatRecurrence(ev.recurrence);
 		const recur = el("span", "recur");
 		recur.appendChild(createIcon("repeat"));
@@ -620,7 +648,9 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 			}
 			commitSelection();
 			selectedId = null;
-			const latest = events?.find((t) => t.id === ev.id) ?? ev;
+			// 最新行の引き直しも合成キーで(id だと系列の「先頭 occurrence」にすり替わり、
+			// 詳細ページの開始日時がタップした日と別の日になる — §7.1)。
+			const latest = events?.find((t) => rowKey(t) === key) ?? ev;
 			openSheet(latest);
 		});
 		rowMain.appendChild(info);
@@ -737,6 +767,8 @@ function renderAll(): void {
 	root.innerHTML = "";
 	selTitleInput = null;
 	selMemoInput = null;
+	// 系列集約(§7.1)のパス内状態をリセット(この描画パスで最初に出会った可視行だけが装飾を得る)。
+	seenAffectedIds.clear();
 	const baseEvents = events ?? [];
 	const todayKey = localDateKey(new Date());
 
@@ -858,12 +890,12 @@ interface UpdateEventChanges {
 	travelMinutes?: number | null;
 }
 
-/** setSelected: 行を選択(前の選択があれば確定 auto-save してから切替)。 */
-function setSelected(id: string): void {
-	if (selectedId === id) return;
+/** setSelected: 行を選択(前の選択があれば確定 auto-save してから切替)。key は rowKey(§7.1)。 */
+function setSelected(key: string): void {
+	if (selectedId === key) return;
 	commitSelection();
 	draft = null;
-	selectedId = id;
+	selectedId = key;
 	closeSwipe();
 	renderAll();
 	if (selTitleInput !== null) {
@@ -882,7 +914,8 @@ function commitSelection(): boolean {
 	selMemoInput = null;
 	if (selectedId === null) return false;
 	// ドラフト行(未送信の新規行)の確定 = create-event(タイトル非空のときだけ)。
-	if (draft !== null && selectedId === draft.id) {
+	// selectedId は rowKey なので、ドラフト(recurrenceId 無し)も rowKey({id}) で突き合わせる。
+	if (draft !== null && selectedId === rowKey({ id: draft.id })) {
 		const title = (inputTitle !== null ? inputTitle.value : draft.title).trim();
 		const notes = inputMemo !== null ? inputMemo.value : draft.notes;
 		if (title === "") return false;
@@ -890,7 +923,8 @@ function commitSelection(): boolean {
 		enqueueCreate(title, defaultCreateDetails(notes.trim()));
 		return true;
 	}
-	const ev = events?.find((t) => t.id === selectedId);
+	// 選択行の引き当ても rowKey(id だと系列の先頭 occurrence へすり替わる — §7.1)。
+	const ev = events?.find((t) => rowKey(t) === selectedId);
 	if (ev === undefined) return false;
 	const changes: UpdateEventChanges = {};
 	if (inputTitle !== null) {
@@ -908,7 +942,8 @@ function commitSelection(): boolean {
 /** FAB / Enter 継続で「末尾に空のドラフト行を選択状態で生やす」。 */
 function startDraft(): void {
 	draft = { id: `draft:${Math.random().toString(36).slice(2)}`, title: "", notes: "" };
-	selectedId = draft.id;
+	selectedId = rowKey({ id: draft.id }); // selectedId は常に rowKey(§7.1)
+
 	closeSwipe();
 	renderAll();
 	if (selTitleInput !== null) selTitleInput.focus();
@@ -960,11 +995,12 @@ function attachSwipe(li: HTMLElement, ev: EventItem): void {
 				tracking = false;
 				return;
 			}
-			if (dx < -40 && swipeId !== ev.id) {
-				swipeId = ev.id;
+			// スワイプ露出も合成キー単位(id だと系列全行の削除ボタンが一斉に開く — §7.1)。
+			if (dx < -40 && swipeId !== rowKey(ev)) {
+				swipeId = rowKey(ev);
 				tracking = false;
 				renderAll();
-			} else if (dx > 40 && swipeId === ev.id) {
+			} else if (dx > 40 && swipeId === rowKey(ev)) {
 				swipeId = null;
 				tracking = false;
 				renderAll();
@@ -977,7 +1013,7 @@ function attachSwipe(li: HTMLElement, ev: EventItem): void {
 	});
 	li.addEventListener("contextmenu", (e) => {
 		e.preventDefault();
-		swipeId = swipeId === ev.id ? null : ev.id;
+		swipeId = swipeId === rowKey(ev) ? null : rowKey(ev);
 		renderAll();
 	});
 }
@@ -1090,7 +1126,7 @@ function makeSheetDraft(ev: EventItem): SheetDraft {
 function openSheet(ev: EventItem): void {
 	if (isOptimisticId(ev.id)) return; // 仮行はサーバー id が無いので編集できない
 	sheetDraft = makeSheetDraft(ev);
-	sheetState = { id: ev.id, page: "detail" };
+	sheetState = { key: rowKey(ev), page: "detail" };
 	closeSwipe();
 	quickAddFab.hidden = true;
 	renderAll();
@@ -1100,7 +1136,7 @@ function openSheet(ev: EventItem): void {
 function openCreateSheet(): void {
 	if (draft === null) return;
 	sheetDraft = makeSheetDraft(draftToItem(draft));
-	sheetState = { id: draft.id, page: "detail", create: true };
+	sheetState = { key: rowKey({ id: draft.id }), page: "detail", create: true };
 	closeSwipe();
 	quickAddFab.hidden = true;
 	renderAll();
@@ -1117,10 +1153,11 @@ function closeSheet(): void {
 /** 現在ページが対象にしている表示行(楽観上書きが乗った display 行)。作成モードは draft の擬似行。 */
 function currentSheetEvent(): EventItem | null {
 	if (sheetState === null) return null;
-	const id = sheetState.id;
-	if (draft !== null && id === draft.id) return draftToItem(draft);
+	const key = sheetState.key;
+	if (draft !== null && key === rowKey({ id: draft.id })) return draftToItem(draft);
 	if (events === null) return null;
-	return events.find((t) => t.id === id) ?? null;
+	// rowKey で「開いたその occurrence 行」を引く(id だと先頭 occurrence にすり替わる — §7.1)。
+	return events.find((t) => rowKey(t) === key) ?? null;
 }
 
 /** v3 小型トグル(button.sw)。accent で ON を示す(todos と共通の見た目)。 */
@@ -1310,7 +1347,7 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 			}
 			sheetState = null;
 			sheetDraft = null;
-			selectedId = draft?.id ?? null;
+			selectedId = draft !== null ? rowKey({ id: draft.id }) : null;
 			quickAddFab.hidden = false;
 			renderAll();
 			return;
@@ -1792,13 +1829,25 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
 
 /**
  * 応答を状態に反映する唯一の関数(ontoolresult / fetchLatest / mutation 成功の3経路が通る)。
- * affected/removed が無い応答では Map/配列が空になる = becoming が消える(次の描画まで、のライフサイクル)。
+ *
+ * 【becoming の寿命(§7.2・2026-07-16 実機FB)】becoming(serverAffectedBase)のクリアは
+ * 「次のユーザー起点更新」= fetchLatest(手動/focus refetch)・ontoolresult(LLM 起点)・
+ * range/calendar 切替・別 mutate、に限定する。mutate 成功直後の自動 refresh-events
+ * (preserveBecoming: true で呼ばれる)では **保持** する。以前は「affected の無い応答が来たら
+ * 無条件で空に上書き」だったため、URL 追加直後に affected 無し refresh が挟まるとバッジが
+ * 全消えして 🔁 が復活する、という実装ムラが出ていた。
  */
-function applyStructuredContent(sc: unknown): void {
+function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean }): void {
 	const structuredContent = sc as EventsStructuredContent | undefined;
 	const nextEvents = structuredContent?.events ?? [];
-	const serverAffected = structuredContent?.affected ?? [];
-	const serverRemoved = structuredContent?.removed ?? [];
+	let serverAffected = structuredContent?.affected ?? [];
+	let serverRemoved = structuredContent?.removed ?? [];
+	// preserveBecoming: 応答自身が affected/removed を運んでいればそちらが最新(別 mutate =
+	// クリア経路の1つ)。何も運んでいないときだけ直前の becoming 土台を持ち越す。
+	if (opts?.preserveBecoming === true && serverAffected.length === 0 && serverRemoved.length === 0) {
+		serverAffected = serverAffectedBase;
+		serverRemoved = serverGhostsBase;
+	}
 
 	// --- システム起因(外部)変化の差分レンズ -------------------------------------------------
 	// 別コレクション / 別期間への遷移では差分レンズを回さない(全行が追加+削除の全差分ノイズになるため)。
@@ -1965,7 +2014,8 @@ async function retryFetch(): Promise<void> {
 /** mutate 応答の確定描画共通後処理: tasks(events)が乗っていれば適用、無ければ refresh で取り直す。 */
 async function applyMutateResult(structuredContent: EventsStructuredContent | undefined, failMsg: string): Promise<void> {
 	if (structuredContent?.events !== undefined) {
-		applyStructuredContent(structuredContent);
+		// mutate 起点の適用は becoming を保持(§7.2。応答が affected を運んでいればそちらが優先)。
+		applyStructuredContent(structuredContent, { preserveBecoming: true });
 		return;
 	}
 	try {
@@ -1987,9 +2037,11 @@ async function deleteEvent(ev: EventItem): Promise<void> {
 	if (optimisticDeletes.has(ev.id)) return;
 	optimisticDeletes.add(ev.id);
 	pendingIds.add(ev.id);
-	if (selectedId === ev.id) selectedId = null;
-	if (swipeId === ev.id) swipeId = null;
-	if (sheetState?.id === ev.id) closeSheet();
+	// delete-event はマスター id 単位(系列全 occurrence が消える)なので、選択/スワイプ/詳細ページが
+	// 系列の「どの occurrence」を指していても id が一致すれば畳む(rowKey 完全一致では取り逃す)。
+	if (selectedId !== null && idOfRowKey(selectedId) === ev.id) selectedId = null;
+	if (swipeId !== null && idOfRowKey(swipeId) === ev.id) swipeId = null;
+	if (sheetState !== null && idOfRowKey(sheetState.key) === ev.id) closeSheet();
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -2015,13 +2067,17 @@ async function deleteEvent(ev: EventItem): Promise<void> {
 			}
 			const rsc = refreshed.structuredContent as EventsStructuredContent | undefined;
 			const dsc = result.structuredContent as EventsStructuredContent | undefined;
-			applyStructuredContent({
-				events: rsc?.events ?? [],
-				calendarId: rsc?.calendarId,
-				timeZone: rsc?.timeZone,
-				range: rsc?.range,
-				removed: dsc?.removed,
-			});
+			// mutate 成功直後の自動 refresh は becoming を消さない(§7.2。removed が空でも土台を保持)。
+			applyStructuredContent(
+				{
+					events: rsc?.events ?? [],
+					calendarId: rsc?.calendarId,
+					timeZone: rsc?.timeZone,
+					range: rsc?.range,
+					removed: dsc?.removed,
+				},
+				{ preserveBecoming: true },
+			);
 		} catch (e) {
 			// 削除自体は成功(行は既に消えている)。再読み込み失敗として degrade。
 			rebuildFromConfirmed();
@@ -2045,22 +2101,36 @@ async function deleteEvent(ev: EventItem): Promise<void> {
 async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<void> {
 	if (isOptimisticId(ev.id)) return;
 	if (Object.keys(changes).length === 0) return;
-	if (pendingIds.has(ev.id)) return;
+	// pending はマスター id 単位の直列化(row-key.ts 冒頭の二層分離)。系列の別 occurrence への
+	// 連続編集はサーバー上も同一リソースなので順番待ちが正しいが、以前は無言 no-op で
+	// 「編集したのに保存されない」ように見えた(2026-07-16 実機FB・§7.1)→ バナーで可視化する。
+	if (pendingIds.has(ev.id)) {
+		showBanner(`「${ev.title}」は保存中です。完了後にもう一度お試しください`);
+		return;
+	}
 
 	// 楽観上書きを組み立てる。
+	// 【反復イベントでは start/end/recurrence の楽観適用をスキップ(§7.1)】optimisticEdits は
+	// マスター id キーなので rebuildDisplay が系列の全 occurrence 行に同じ値を貼る。title 等の
+	// 系列共通フィールドはそれで正しいが、日時は occurrence ごとに違う(マスターの新値を全行に
+	// 貼ると全 occurrence が同じ日時に潰れて壊れる)。recurrence 変更も展開行の増減を伴うので
+	// クライアントでは再現できない。→ pending 表示のみで refresh の確定値を待つ。
+	// 反復判定: recurrence があるか、確定一覧に同 id の occurrence が複数あるか(RRULE を外す
+	// 編集の最中など recurrence フィールドだけでは拾えないケースの保険)。
+	const isRecurring = ev.recurrence !== null || (confirmedEvents?.filter((t) => t.id === ev.id).length ?? 0) > 1;
 	const overrides: OptimisticEdit = {};
 	if (changes.title !== undefined) overrides.title = changes.title;
 	if (changes.notes !== undefined) overrides.notes = changes.notes === "" ? null : changes.notes;
-	if (changes.start !== undefined) {
+	if (!isRecurring && changes.start !== undefined) {
 		overrides.start = changes.start;
 		overrides.isAllDay = !changes.start.includes("T");
 	}
-	if (changes.end !== undefined) overrides.end = changes.end;
+	if (!isRecurring && changes.end !== undefined) overrides.end = changes.end;
 	if (changes.location !== undefined) overrides.location = changes.location;
 	if (changes.url !== undefined) overrides.url = changes.url;
 	if (changes.alarms !== undefined) overrides.alarms = changes.alarms === null ? [] : changes.alarms;
 	if (changes.travelMinutes !== undefined) overrides.travelMinutes = changes.travelMinutes;
-	if (changes.recurrence !== undefined) {
+	if (!isRecurring && changes.recurrence !== undefined) {
 		overrides.recurrence =
 			changes.recurrence.frequency === "none"
 				? null
@@ -2111,13 +2181,18 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 			}
 			const rsc = refreshed.structuredContent as EventsStructuredContent | undefined;
 			const usc = result.structuredContent as EventsStructuredContent | undefined;
-			applyStructuredContent({
-				events: rsc?.events ?? [],
-				calendarId: rsc?.calendarId,
-				timeZone: rsc?.timeZone,
-				range: rsc?.range,
-				affected: usc?.affected,
-			});
+			// mutate 成功直後の自動 refresh は becoming を消さない(§7.2。update 応答の affected が
+			// 空でも直前の becoming 土台を持ち越す — 「URL 追加でバッジ全消え」の実装ムラ対策)。
+			applyStructuredContent(
+				{
+					events: rsc?.events ?? [],
+					calendarId: rsc?.calendarId,
+					timeZone: rsc?.timeZone,
+					range: rsc?.range,
+					affected: usc?.affected,
+				},
+				{ preserveBecoming: true },
+			);
 		} catch (e) {
 			rebuildFromConfirmed();
 			renderAll();
@@ -2198,13 +2273,17 @@ async function createEventFor(optimisticId: string, title: string, details: Crea
 			}
 			const rsc = refreshed.structuredContent as EventsStructuredContent | undefined;
 			const csc = result.structuredContent as EventsStructuredContent | undefined;
-			applyStructuredContent({
-				events: rsc?.events ?? [],
-				calendarId: rsc?.calendarId,
-				timeZone: rsc?.timeZone,
-				range: rsc?.range,
-				affected: csc?.affected,
-			});
+			// mutate 成功直後の自動 refresh は becoming を消さない(§7.2)。
+			applyStructuredContent(
+				{
+					events: rsc?.events ?? [],
+					calendarId: rsc?.calendarId,
+					timeZone: rsc?.timeZone,
+					range: rsc?.range,
+					affected: csc?.affected,
+				},
+				{ preserveBecoming: true },
+			);
 		} catch (e) {
 			// 追加自体は成功(仮行は除去済み)。再読み込み失敗として degrade。
 			rebuildFromConfirmed();
@@ -2233,8 +2312,9 @@ quickAddFab.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
 	const target = e.target as HTMLElement;
 	if (sheetState !== null) return; // 詳細ページ表示中は一覧の選択/スワイプ処理に巻き込まない
-	const row = target.closest("li[data-id]") as HTMLElement | null;
-	const rowId = row?.dataset.id ?? null;
+	// 行の DOM 特定は data-key(rowKey・§7.1)。selectedId/swipeId も rowKey なので比較が揃う。
+	const row = target.closest("li[data-key]") as HTMLElement | null;
+	const rowId = row?.dataset.key ?? null;
 	if (selectedId !== null && rowId !== selectedId) {
 		commitSelection();
 		draft = null;

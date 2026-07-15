@@ -13,7 +13,18 @@
 //   (長い/表現が割れる値は「編集済み」バッジへ degrade — events-diff.ts のサーバー側と同じ判断)。
 //
 // 【型は import せず構造的に受ける】agenda-entry.ts の EventItem はこの DiffEvent を構造的に満たす。
+//
+// 【diff の粒度は id(系列)単位(modeling/12 §7.3・2026-07-16 実機FB)】
+//   events は「展開済み occurrence 列」なので同一 id が複数行来る。従来の
+//   `new Map(prev.map(e => [e.id, e]))` は同一 id を最後の1件に潰し、RRULE 化した系列の
+//   occurrence が added/removed のノイズとして噴き出すバグがあった。prev/next を
+//   `Map<id, occurrence[]>` にグルーピングし、id の新規出現= added / id の消滅= removed /
+//   既存 id は edited(消費側で捨てる規約は不変)とする。
+//   【Why not occurrence 単位 diff】RRULE 変更で occurrence が大量増減すると added/removed が
+//   ノイズの洪水になる。系列単位の方がシグナルが高く、Map 潰しバグも同時に解消できる。
 // =============================================================================
+
+import { groupById } from "./row-key";
 
 /** 差分計算に必要な最小フィールド(agenda-entry.ts の EventItem はこれを構造的に満たす)。 */
 export interface DiffEvent {
@@ -73,8 +84,9 @@ function instantDisplay(iso: string | null, isAllDay: boolean): string | undefin
  * explainedIds(サーバーの affected/removed で既に説明済み = ユーザー起因、+ pending 行)を除いた
  * 「システム起因の残差」を返す純関数。
  *
- * 【入出力の仕様(テスト代替のコメント固定)】
- *   - prev=[](初回)なら next 全件を added として返す(entry 側は初回描画では呼ばない = prev 無し差分なし)。
+ * 【入出力の仕様(events-diff-client.test.ts が What を固定。ここは要旨)】
+ *   - diff は id(系列)単位。同一 id の複数 occurrence は1系列として扱う(added/removed は id につき1件)。
+ *   - prev=[](初回)なら next の全 id を added として返す(entry 側は初回描画では呼ばない = prev 無し差分なし)。
  *   - edited の changes は start/end に短文 before/after を載せ、その他は field のみ(planEdit が degrade)。
  *   - removed のスナップショットは prev 行から作る(next にはもう無いので prev が唯一の情報源)。
  *   - undefined/null は正規化して比較する(replay スナップショットの旧 DTO でフィールド不在→偽陽性を防ぐ)。
@@ -84,26 +96,38 @@ export function computeSyncDiff(
 	next: readonly DiffEvent[],
 	explainedIds: ReadonlySet<string>,
 ): SyncDiff {
-	const prevById = new Map(prev.map((e) => [e.id, e]));
-	const nextById = new Map(next.map((e) => [e.id, e]));
+	// id(系列)単位のグルーピング(§7.3)。同一 id の occurrence 列を潰さず配列で保持する。
+	const prevById = groupById(prev);
+	const nextById = groupById(next);
 	const diff: SyncDiff = { added: [], edited: [], removed: [] };
 
-	for (const n of next) {
-		if (explainedIds.has(n.id)) continue;
-		const p = prevById.get(n.id);
-		if (p === undefined) {
-			diff.added.push(n.id);
+	for (const [id, occurrences] of nextById) {
+		if (explainedIds.has(id)) continue;
+		const prevOccurrences = prevById.get(id);
+		if (prevOccurrences === undefined) {
+			// id の新規出現 = added(id を1件だけ。occurrence が何行展開されても系列で1シグナル)。
+			diff.added.push(id);
 			continue;
 		}
+		// 既存 id は edited 候補。比較は「先頭 occurrence 同士」の代表比較で足りる:
+		// 消費側(agenda-entry の syncDiffToAffected)が edited を捨てる規約は不変なので、
+		// occurrence を recurrenceId で厳密に突き合わせる精度は不要(過剰実装を避ける)。
+		const p = prevOccurrences[0];
+		const n = occurrences[0];
+		if (p === undefined || n === undefined) continue; // groupById は空バケットを作らないが型のための防御
 		const changes = fieldChanges(p, n);
-		if (changes.length > 0) diff.edited.push({ id: n.id, changes });
+		if (changes.length > 0) diff.edited.push({ id, changes });
 	}
 
-	for (const p of prev) {
-		if (explainedIds.has(p.id)) continue;
-		if (nextById.has(p.id)) continue;
+	for (const [id, occurrences] of prevById) {
+		if (explainedIds.has(id)) continue;
+		if (nextById.has(id)) continue;
+		// id の消滅 = removed。ゴーストのスナップショットは代表 occurrence(先頭)1件から合成する
+		// (系列全 occurrence 分のゴーストを並べると削除ノイズの洪水になる — §7.3 と同じ判断)。
+		const p = occurrences[0];
+		if (p === undefined) continue;
 		diff.removed.push({
-			id: p.id,
+			id,
 			title: p.title,
 			...(instantDisplay(p.start, p.isAllDay) !== undefined ? { start: instantDisplay(p.start, p.isAllDay) } : {}),
 			...(instantDisplay(p.end, p.isAllDay) !== undefined ? { end: instantDisplay(p.end, p.isAllDay) } : {}),
