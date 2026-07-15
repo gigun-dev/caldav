@@ -27,5 +27,9 @@
   // エントリを追加するときは tsconfig.ui.json の include(*-entry.ts glob)だけで追従するので
   // この exclude は編集不要。※ 生成物 src/presentation/mcp/ui/*-bundle.ts(ただの文字列定数)は
   // 主コンパイル対象のまま(DOM 不要)。
-  "exclude": ["test/worker", "src/presentation/mcp/ui/*-entry.ts"]
+  // 【2026-07-15 icons.ts 追加】lucide アイコンを SVG DOM 要素として生成するヘルパー
+  // (document.createElementNS 等を使う)。*-entry.ts と同じ理由で DOM lib が要るため、
+  // *-entry.ts と揃えて主コンパイルから個別に除外し tsconfig.ui.json 側で見る
+  // (ui/ 内の他ヘルパー todos-diff-client.ts は DOM 非依存の純関数なので対象外のまま)。
+  "exclude": ["test/worker", "src/presentation/mcp/ui/*-entry.ts", "src/presentation/mcp/ui/icons.ts"]
 }

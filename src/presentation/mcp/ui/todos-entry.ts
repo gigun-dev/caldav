@@ -123,6 +123,9 @@ import { App } from "@modelcontextprotocol/ext-apps";
 // import は 'mcp-ui-is-terminal' の除外対象(ui/→ui/ は許可)。bun build がバンドル時に
 // inline するので生成物 todos-bundle.ts は1ファイルのまま。
 import { computeSyncDiff, type SyncDiff } from "./todos-diff-client";
+// 絵文字/文字グリフ(≡ ⟳ 📍 ⓘ ‹ › ⌄ ⌃ ＋ ✓)を lucide のインライン SVG へ統一する
+// (2026-07-15 ユーザーフィードバック。詳細は icons.ts 冒頭コメント)。
+import { createIcon } from "./icons";
 
 // --- 静的 DOM への参照(骨格は todos-app.ts の HTML 側にある)-----------------------
 // ヘッダ・バナー・ステータス行は「一覧の状態に依らず常時ある面」なので HTML 静的骨格に
@@ -852,7 +855,9 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	const circle = document.createElement("span");
 	circle.className = "circle";
 	circle.setAttribute("aria-hidden", "true");
-	circle.textContent = "✓"; // 未完時は CSS が color:transparent で隠す
+	// 未完時は CSS が color:transparent で隠す(SVG は stroke=currentColor なので同じ手法が効く。
+	// 2026-07-15: 絵文字 "✓" から lucide "check" のインライン SVG へ置換)。
+	circle.appendChild(createIcon("check"));
 	check.appendChild(circle);
 	// ドラフト行はまだサーバー上に存在しないので完了トグルできない(丸チェックは無効=disabled で描く)。
 	if (isDraft) {
@@ -873,6 +878,24 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 	if (sel) {
 		// 選択中: タイトルは枠なし input(下線なし・背景は CSS の .row.selected が担う)。
+		// 【2026-07-15 実機フィードバック修正】以前はこの分岐が input 単体だけを head に足しており、
+		// 非選択時に出ていた優先度 !記号(pri-inline)とメモ有りアイコン(note-mark)が選択した瞬間に
+		// 消えていた(「選択で UI が変わりすぎる」バグ)。あるべき差分は最小限(タイトル/メモが
+		// 編集可能になる・trailing に ⓘ と確定ボタンが増える、だけ)なので、非選択時と同じ
+		// pri-inline / note-mark を title-edit-row に並べて残す(値は変えず表示のみ)。
+		const titleRow = document.createElement("div");
+		titleRow.className = "title-edit-row";
+		const titlePriMarks = priorityMarks(task.priority);
+		if (titlePriMarks !== "" && editPlan?.priChange == null) {
+			const priInline = document.createElement("span");
+			priInline.className = "pri-inline";
+			priInline.textContent = titlePriMarks;
+			priInline.setAttribute(
+				"aria-label",
+				titlePriMarks === "!!!" ? "優先度 高" : titlePriMarks === "!!" ? "優先度 中" : "優先度 低",
+			);
+			titleRow.appendChild(priInline);
+		}
 		const ti = document.createElement("input");
 		ti.className = "title-edit";
 		ti.type = "text";
@@ -894,7 +917,15 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 				}
 			}
 		});
-		head.appendChild(ti);
+		titleRow.appendChild(ti);
+		if (task.notes !== null && task.notes.trim() !== "") {
+			const noteMark = document.createElement("span");
+			noteMark.className = "note-mark";
+			noteMark.appendChild(createIcon("text"));
+			noteMark.setAttribute("aria-label", "メモあり");
+			titleRow.appendChild(noteMark);
+		}
+		head.appendChild(titleRow);
 		selTitleInput = ti;
 
 		// 「メモを追加」行 = 枠なし単一行 input(空なら placeholder、既存メモがあれば値表示)。
@@ -922,7 +953,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		head.appendChild(mi);
 		selMemoInput = mi;
 	} else {
-		// 非選択: タイトル div(優先度 ! 記号 + 本文 + メモ有り ≡)。head タップで選択に入る。
+		// 非選択: タイトル div(優先度 ! 記号 + 本文 + メモ有りアイコン)。head タップで選択に入る。
 		const title = document.createElement("div");
 		title.className = "title";
 		const titlePriMarks = priorityMarks(task.priority);
@@ -940,7 +971,9 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		if (task.notes !== null && task.notes.trim() !== "") {
 			const noteMark = document.createElement("span");
 			noteMark.className = "note-mark";
-			noteMark.textContent = "≡";
+			// 2026-07-15: 絵文字 "≡"(ハンバーガーメニューに見えるとのフィードバック)から
+			// lucide "text" のインライン SVG へ置換(icons.ts のアイコン選定メモ参照)。
+			noteMark.appendChild(createIcon("text"));
 			noteMark.setAttribute("aria-label", "メモあり");
 			title.appendChild(noteMark);
 		}
@@ -949,7 +982,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		head.addEventListener("click", () => setSelected(task.id));
 	}
 
-	// --- meta 行: due / ⟳繰り返し / 📍場所 / becoming ラベル(右端)----------------------
+	// --- meta 行: due / 繰り返しバッジ / 場所チップ / becoming ラベル(右端)----------------------
 	// becoming ラベル(tag)は meta の右端(margin-left:auto)へ移設(モック要件1・④のずれ修正)。
 	// location チップは task.location が非空のとき新設(truncate)。
 	const dueInfo = formatDue(task, todayKey);
@@ -1004,20 +1037,25 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		more.textContent = `他${editPlan?.moreCount ?? 0}件`;
 		meta.appendChild(more);
 	}
-	// 繰り返しバッジ(⟳)。due の後ろ(iOS リマインダーの並び)。
+	// 繰り返しバッジ。due の後ろ(iOS リマインダーの並び)。2026-07-15: 絵文字 "⟳" から
+	// lucide "repeat" のインライン SVG へ置換(icons.ts 参照)。アイコンは常に付け、テキストは
+	// degrade 時("" のとき)は省く(旧仕様どおり)。
 	if (hasRecur && task.recurrence !== null) {
 		const recurText = formatRecurrence(task.recurrence);
 		const recur = document.createElement("span");
 		recur.className = "recur";
-		recur.textContent = recurText === "" ? "⟳" : `⟳ ${recurText}`;
+		recur.appendChild(createIcon("repeat"));
+		if (recurText !== "") recur.appendChild(document.createTextNode(` ${recurText}`));
 		recur.setAttribute("aria-label", recurText === "" ? "繰り返し" : `繰り返し ${recurText}`);
 		meta.appendChild(recur);
 	}
-	// 📍場所チップ(v2 新設・モック要件1)。truncate は CSS .meta .loc(overflow:hidden)。
+	// 場所チップ(v2 新設・モック要件1)。truncate は CSS .meta .loc(overflow:hidden)。
+	// 2026-07-15: 絵文字 "📍" から lucide "map-pin" のインライン SVG へ置換。
 	if (hasLoc && task.location !== null) {
 		const loc = document.createElement("span");
 		loc.className = "loc";
-		loc.textContent = `📍 ${task.location}`;
+		loc.appendChild(createIcon("map-pin"));
+		loc.appendChild(document.createTextNode(` ${task.location}`));
 		loc.setAttribute("aria-label", `場所 ${task.location}`);
 		meta.appendChild(loc);
 	}
@@ -1042,13 +1080,15 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	rowMain.appendChild(head);
 	if (tagEl !== null && !metaHasContent) rowMain.appendChild(tagEl);
 
-	// --- trailing: 選択中の行だけ ⓘ(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
+	// --- trailing: 選択中の行だけ info ボタン(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {
 		const info = document.createElement("button");
 		info.type = "button";
 		info.className = "info";
 		info.setAttribute("aria-label", `「${task.title}」の詳細`);
-		info.textContent = "ⓘ";
+		// 2026-07-15: 絵文字 "ⓘ" から lucide "info" のインライン SVG へ置換。ボタン自体に aria-label が
+		// あるため SVG は aria-hidden のまま(createIcon の既定)。
+		info.appendChild(createIcon("info"));
 		info.addEventListener("click", (e) => {
 			e.stopPropagation();
 			if (isDraft) {
@@ -1067,6 +1107,24 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			openSheet(latest);
 		});
 		rowMain.appendChild(info);
+
+		// 【2026-07-15 実機フィードバック: 選択の確定操作が可視でない】以前は選択解除=確定が
+		// 「行外タップ / Enter」という不可視のジェスチャーしかなく、確定手段が画面上に無かった。
+		// info と並ぶ小さな accent 円ボタンを追加し、押下で「行外タップと同じ確定経路」
+		// (commitSelection → draft/selectedId クリア → renderAll)を明示的に踏めるようにする。
+		const confirm = document.createElement("button");
+		confirm.type = "button";
+		confirm.className = "confirm";
+		confirm.setAttribute("aria-label", "編集を確定");
+		confirm.appendChild(createIcon("check"));
+		confirm.addEventListener("click", (e) => {
+			e.stopPropagation();
+			commitSelection();
+			draft = null;
+			selectedId = null;
+			renderAll();
+		});
+		rowMain.appendChild(confirm);
 	}
 
 	li.appendChild(rowMain);
@@ -1613,12 +1671,15 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	const isCreate = sheetState?.create === true;
 	const page = el("div", "detail-page");
 
-	// --- ヘッダ:「‹ 戻る(破棄)/ 保存(accent テキストリンク)」----------------------------------
+	// --- ヘッダ:「戻る(破棄)/ 保存(accent テキストリンク)」----------------------------------
 	const head = el("div", "page-head");
 	const back = document.createElement("button");
 	back.type = "button";
 	back.className = "link link-back";
-	back.textContent = "‹ 戻る";
+	// 2026-07-15: 絵文字 "‹" から lucide "chevron-left" のインライン SVG へ置換。ボタン自体に
+	// aria-label があるためアイコンは装飾(aria-hidden)のまま、視覚テキストだけ残す。
+	back.appendChild(createIcon("chevron-left"));
+	back.appendChild(document.createTextNode("戻る")); // 間隔は .link の gap で作る(CSS 側参照)
 	back.setAttribute("aria-label", isCreate ? "一覧のドラフト行へ戻る" : "破棄して一覧へ戻る");
 	back.addEventListener("click", () => {
 		if (isCreate) {
@@ -1769,7 +1830,7 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		}
 	}
 
-	// --- 繰り返し行(値 + ⌄。タップで行下にインライン展開)------------------------------------------
+	// --- 繰り返し行(値 + chevron。タップで行下にインライン展開)------------------------------------------
 	{
 		const row = el("div", "f-row");
 		// 展開時は下ヘアラインを省いて展開部と連続させる(モック C の border-bottom:none)。
@@ -1780,7 +1841,8 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		const val = el("span", d.recurPreset === "custom" ? "muted" : "val"); // 語彙外はグレー
 		val.textContent = recurValueText(d);
 		const chev = el("span", "chev");
-		chev.textContent = d.recurOpen ? "⌃" : "⌄";
+		// 2026-07-15: 絵文字 "⌄"/"⌃" から lucide "chevron-down"/"chevron-up" のインライン SVG へ置換。
+		chev.appendChild(createIcon(d.recurOpen ? "chevron-up" : "chevron-down"));
 		value.appendChild(val);
 		value.appendChild(chev);
 		row.appendChild(label);
@@ -1794,7 +1856,7 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	}
 	if (d.recurOpen) body.appendChild(buildRecurExpand(d));
 
-	// --- リスト行(値 + › → リスト選択ページ)。作成モードは移動概念が無いので読み取り専用にする ---------
+	// --- リスト行(値 + chevron → リスト選択ページ)。作成モードは移動概念が無いので読み取り専用にする ---------
 	{
 		const row = el("div", "f-row");
 		const label = el("span", "f-label");
@@ -1807,7 +1869,8 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		row.appendChild(value);
 		if (!isCreate) {
 			const goto = el("span", "goto");
-			goto.textContent = "›";
+			// 2026-07-15: 絵文字 "›" から lucide "chevron-right" のインライン SVG へ置換。
+			goto.appendChild(createIcon("chevron-right"));
 			row.appendChild(goto);
 			row.style.cursor = "pointer";
 			row.addEventListener("click", () => {
@@ -1892,14 +1955,16 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 }
 
 /** リスト選択ページ(モック D)。詳細ページと同じくページ差し替え(#root に直接描く)。
- *  ‹ 詳細へ戻る / コレクション行 + 現在地 ✓。選択で move-todo(現在地の選択は詳細へ戻るだけ)。 */
+ *  「詳細へ戻る」/ コレクション行 + 現在地チェック。選択で move-todo(現在地の選択は詳細へ戻るだけ)。 */
 function buildListPickerPage(task: TodoItem): HTMLElement {
 	const page = el("div", "list-page");
 	const head = el("div", "page-head");
 	const back = document.createElement("button");
 	back.type = "button";
 	back.className = "link link-back";
-	back.textContent = "‹ 詳細へ戻る";
+	// 2026-07-15: 絵文字 "‹" から lucide "chevron-left" のインライン SVG へ置換。
+	back.appendChild(createIcon("chevron-left"));
+	back.appendChild(document.createTextNode("詳細へ戻る")); // 間隔は .link の gap で作る(CSS 側参照)
 	back.addEventListener("click", () => {
 		if (sheetState !== null) sheetState = { id: sheetState.id, page: "detail", create: sheetState.create };
 		renderAll();
@@ -1935,7 +2000,8 @@ function buildListPickerPage(task: TodoItem): HTMLElement {
 			const isHere = c.id === currentCalendarId;
 			if (isHere) {
 				const check = el("span", "check");
-				check.textContent = "✓";
+				// 2026-07-15: 絵文字 "✓" から lucide "check" のインライン SVG へ置換。
+				check.appendChild(createIcon("check"));
 				row.appendChild(check);
 			}
 			row.addEventListener("click", () => {

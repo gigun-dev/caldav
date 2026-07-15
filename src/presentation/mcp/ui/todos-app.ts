@@ -137,6 +137,12 @@ export const TODOS_APP_HTML = `<!doctype html>
     }
   }
   * { box-sizing: border-box; }
+  /* lucide アイコン共通(2026-07-15 絵文字/文字グリフからの置換)。svg は既定 inline で
+   * ベースラインが文字より下に沈むため、テキストと同じ行に混在する箇所(.loc/.recur 以外の
+   * 素朴な inline 配置箇所)向けに軽い引き上げをデフォルトにしておく。flex コンテナ側で
+   * align-items:center している箇所(button.check/.info 等)ではこの vertical-align は無効なので
+   * 副作用は無い。 */
+  .lucide-icon { vertical-align: -0.125em; }
   /* HTML の hidden 属性を確実に効かせる。.banner/.status は display:flex/block を持つため、
    * その display 指定が hidden 属性(既定 display:none)を上書きしてしまい「中身が空でも
    * 赤い長方形が常時出る」バグが起きる(CSS の display が HTML hidden より優先される古典的な罠)。
@@ -155,9 +161,10 @@ export const TODOS_APP_HTML = `<!doctype html>
     /* 320px 幅からの崩れ防止: 固定 px の横幅指定を使わず padding も clamp() で
      * コンテナ幅に自然フィットさせる。 */
     padding: clamp(8px, 3vw, 16px);
-    /* 2026-07-14 UI フィードバック対応: 右下固定 FAB(56px + 余白)が最終行に被らないよう下余白を確保
-     * (FAB は position:fixed で通常フローに場所を取らないため、body 側で退避スペースを空ける)。 */
-    padding-bottom: 88px;
+    /* 2026-07-14 UI フィードバック対応: 右下固定 FAB が最終行に被らないよう下余白を確保
+     * (FAB は position:fixed で通常フローに場所を取らないため、body 側で退避スペースを空ける)。
+     * 2026-07-15: FAB を 56px→40px に縮小したのに合わせて退避量も比例して詰める。 */
+    padding-bottom: 64px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     font-size: 14px;
     color: var(--fg);
@@ -500,7 +507,7 @@ export const TODOS_APP_HTML = `<!doctype html>
     .skel, .skel * { animation: none; }
   }
 
-  /* --- 追加 FAB(+)。カード右下固定の 56px 円(≥44px タップ)------------------------------------
+  /* --- 追加 FAB(+)。カード右下固定の円(2026-07-15 に 56px→40px へ縮小・下記フィードバック参照)---
    * タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細/リスト選択ページ
    * 表示中は entry が hidden にして重なりを避ける。
    * 【v2→v3 で覆した点(経緯・財産)】v2 はこの FAB が position:fixed の quick-add ボトムシート
@@ -509,20 +516,26 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 自動リサイズと噛み合わず本文がスクロールできない/下部が見切れる)を quick-add シートも抱えており、
    * かつ「シートを開く」より「行末に空行が生えて即入力」の方が iOS のトーンに合うとのユーザー確定による。
    * 新規行は既存の選択状態 CSS(li.selected / .title-edit / .memo-line / .info)をそのまま流用するので、
-   * 追加専用の入力欄 CSS は不要になった。FAB 自身の見た目(円・accent・右下固定)は v2 から不変。 */
+   * 追加専用の入力欄 CSS は不要になった。FAB の色(accent)・右下固定・円形は v2 から不変、サイズのみ
+   * 2026-07-15 に縮小した。 */
+  /* 【2026-07-15 実機フィードバック: FAB が大きすぎる】56px の円は「常時目に入る主張の強すぎる
+   * ボタン」に見えるとの評価。新規追加は頻度の低い操作(既存行の操作の方が高頻度)なので、
+   * 存在は分かるが控えめな「静かな追加口」へ 40px に縮小する(44px タップ推奨をわずかに割るが、
+   * 円形の余白込みで実タップ領域はほぼ変わらず、かつ FAB は唯一の独立操作面で誤タップの実害が
+   * 小さいため許容)。アイコンも 30px 相当の主張から 18px へ絞る。 */
   .fab {
     position: fixed;
-    right: 16px;
-    bottom: 16px;
+    right: 12px;
+    bottom: 12px;
     z-index: 50;
-    width: 56px;
-    height: 56px;
+    width: 40px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 0;
     font-family: inherit;
-    font-size: 30px;
+    font-size: 18px;
     line-height: 1;
     color: #fff;
     background: var(--accent);
@@ -546,15 +559,19 @@ export const TODOS_APP_HTML = `<!doctype html>
 
   /* --- 繰り返しバッジ / メモ有りインジケータ(E-2 スライス⑤)---------------------------
    * どちらも「一覧の走査を妨げない控えめな記号」を狙う(iOS リマインダーのサブ情報の密度に寄せる)。
-   * 繰り返しは meta 行(due の隣)に ⟳ + 短い日本語。メモ有りはタイトル末尾に ≡ を薄く。 */
-  .recur { color: var(--muted); white-space: nowrap; }
-  /* メモ有り記号「≡」。タイトル本文と隣接するので少し間を空け、色を落として主張を抑える。 */
+   * 繰り返しは meta 行(due の隣)にアイコン + 短い日本語。メモ有りはタイトル末尾にアイコンを薄く。
+   * 2026-07-15: 絵文字(⟳ ≡)から lucide の svg へ置換したので、inline-flex + gap で
+   * アイコンとテキストの縦位置を揃える(絵文字は文字扱いでベースライン整列が自動だったが、
+   * svg は既定 inline で下端が微妙にズレるため明示的に align-items:center する)。 */
+  .recur { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); white-space: nowrap; }
+  /* メモ有りアイコン。タイトル本文と隣接するので少し間を空け、色を落として主張を抑える。 */
   .note-mark {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
     margin-left: 6px;
     color: var(--muted);
     font-size: 12px;
-    /* 記号だけがベースラインで浮かないよう、行の他要素と縦位置を揃える。 */
-    vertical-align: baseline;
   }
 
   /* --- 行タイトルのタップ開閉領域(E-2 スライス⑤・詳細展開)-----------------------------
@@ -629,9 +646,15 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 下線は出さない(ユーザー判断 2026-07-15。選択は bg-subtle 背景とメモ行・ⓘ の出現で十分伝わり、
    * キャレット(ネイティブカーソル)が担う情報の二重表現を避ける)。 */
   li.selected .row-main { background: var(--bg-subtle); border-radius: 10px; }
+  /* 【2026-07-15 実機フィードバック修正】選択時に優先度 !記号(pri-inline)とメモ有りアイコン
+   * (note-mark)が消えていたバグの修正で新設。非選択時の .title(pri-inline + テキスト + note-mark)と
+   * 同じ横並びを input と共存させるための行ラッパ(pri-inline はそのまま流用、真ん中の input だけ
+   * flex:1 で伸ばす)。 */
+  .title-edit-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
   .title-edit {
     display: block;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     font: inherit;
     color: var(--fg);
     border: none;
@@ -653,6 +676,28 @@ export const TODOS_APP_HTML = `<!doctype html>
   .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
   /* 選択行の ⓘ は accent 色で出す(存在自体が「詳細へ」の主導線)。 */
   li.selected button.info { color: var(--accent); }
+
+  /* --- 確定ボタン(選択行の trailing。info と並ぶ)------------------------------------------------
+   * 【2026-07-15 実機フィードバック】選択解除=確定(auto-save)には「行外タップ / Enter」という
+   * 不可視の操作しか無く、可視の確定アフォーダンスが要る、との指摘への対応。info(44px タップ・
+   * 装飾なし)とは役割を分け、こちらは「押せば確定する」ことが一目で分かるよう accent 塗りの
+   * 28px 円形ボタンにする(タップ判定は視覚サイズと同じ 28px — info ほど押下頻度が高くない
+   * 補助操作であり、行外タップ/Enter という主経路が既にあるため 44px 未満を許容する判断)。 */
+  button.confirm {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 14px;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+  }
 
   /* --- スワイプ削除(iOS 準拠。左スワイプ/長押しで右端に赤ボタンを露出)------------------------ */
   li.swiping { position: relative; overflow: hidden; }
@@ -697,7 +742,7 @@ export const TODOS_APP_HTML = `<!doctype html>
    * --border-hair/--text-3)へ写像している(要素側は自前変数だけを見る方針を維持)。
    * ------------------------------------------------------------------------- */
 
-  /* ヘッダ:「‹ 戻る(破棄)/ 保存」のテキストリンク2つ(v2 の丸ボタン ✕/✓ をやめ会話ログのトーンへ)。 */
+  /* ヘッダ:「戻る(破棄)/ 保存」のテキストリンク2つ(v2 の丸ボタン ✕/✓ をやめ会話ログのトーンへ)。 */
   .page-head {
     display: flex;
     align-items: center;
@@ -706,6 +751,11 @@ export const TODOS_APP_HTML = `<!doctype html>
     border-bottom: 1px solid var(--border-hair);
   }
   .link {
+    display: inline-flex;
+    align-items: center;
+    /* 2026-07-15: 絵文字 "‹" から lucide "chevron-left" へ置換したため、アイコンとテキストの
+     * 間隔を gap で管理する(以前は絵文字直後に半角スペースを直書きしていた名残の詰め方だった)。 */
+    gap: 2px;
     font: inherit;
     font-size: 13px;
     border: none;
@@ -795,10 +845,12 @@ export const TODOS_APP_HTML = `<!doctype html>
   .sw.on::after { left: auto; right: 2px; }
   /* 値行(繰り返し)→ タップで下にインライン展開(chevron の向きで開閉を示す)。 */
   .f-value .val { color: var(--accent); }
-  .f-value .chev { color: var(--text-3); font-size: 11px; }
+  /* 2026-07-15: 絵文字 "⌄/⌃"・"›" から lucide svg へ置換したので display:flex で中央揃えする
+   * (font-size 指定だった名残りは 1em 基準の svg サイズ指定に読み替え)。 */
+  .f-value .chev { display: flex; align-items: center; color: var(--text-3); font-size: 13px; }
   .f-value .muted { color: var(--text-3); }
   .f-row.readonly .f-value { color: var(--text-3); }
-  .f-row .goto { margin-left: auto; color: var(--text-3); }
+  .f-row .goto { display: flex; align-items: center; margin-left: auto; color: var(--text-3); }
 
   /* インライン展開部(繰り返しプリセット・曜日・終了)。浮遊させず行の下に流す(モック C)。
    * ラベル幅(5em)+ gap(10px)ぶん左インデントして「値に属する展開」であることを示す。 */
@@ -848,7 +900,8 @@ export const TODOS_APP_HTML = `<!doctype html>
     cursor: pointer;
   }
   .pick-row:first-of-type { border-top: none; }
-  .pick-row .check { margin-left: auto; color: var(--accent); font-weight: 700; }
+  /* 2026-07-15: 絵文字 "✓" から lucide "check" svg へ置換。 */
+  .pick-row .check { display: flex; align-items: center; margin-left: auto; color: var(--accent); }
 
 </style>
 </head>
@@ -883,7 +936,10 @@ export const TODOS_APP_HTML = `<!doctype html>
        フォーム + 段階的開示パネル)を開いていたが、詳細シートと同じ fixed+vh の実機バグとトーン
        不一致のため全廃し、iOS 準拠の「行末に空行が生えて即入力」へ置換した(entry の draft コメント参照)。
        type="button" で暗黙 submit を防ぐ(周囲に form は無いが規律として明示)。 -->
-  <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加">＋</button>
+  <!-- 2026-07-15: 絵文字 "＋" から lucide "plus" のインライン SVG へ置換(ユーザーフィードバック。
+       icons.ts と同じ path データを直書き — このファイルはサーバー側の静的文字列で DOM を持たないため
+       icons.ts の createIcon(DOM 生成関数)は使えず、生 SVG マークアップを直接埋め込む)。 -->
+  <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->
