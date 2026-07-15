@@ -133,8 +133,19 @@ Nextcloud は OAuth 対応済み製品なのに CalDAV では App Password に�
 
 1. **M2(iOS 向け)**: Basic over HTTPS + **App Password** を正式採用。
    - サーバー生成 32 文字級ランダム(`crypto.getRandomValues`)。ユーザーに選ばせない。
-   - D1 には **salt 付き強ハッシュ(Argon2id 推奨、無ければ bcrypt)のみ**保存。
-     ※ Workers は WebCrypto に Argon2 が無いため wasm ポートの検討が必要。
+   - D1 には **salt 付きハッシュを PHC 文字列1カラム**で保存。
+     **既定方式は salt 付き SHA-256(WebCrypto ネイティブ)**。
+     > **2026-07-15 更新(A-1 着手時に方針変更・ユーザー裁可済み):** 当初は
+     > 「Argon2id 推奨・無ければ bcrypt」としていたが、**App Password はサーバー生成の
+     > 32 文字級(約190bit)高エントロピー秘密**であり、KDF(ストレッチング)が守る脅威
+     > =「低エントロピーな人間パスワードの全探索・辞書攻撃」がそもそも存在しない。
+     > 一方 Basic は**毎リクエスト**資格情報が来る(iOS は数分おきに複数リクエスト)ため、
+     > Argon2id(wasm・m=19MiB/t=2 で数十ms + 初期化)を毎回払うのは CPU 課金・レイテンシ
+     > 両面で常時コストが重い。WebCrypto の SHA-256 なら <1ms。よって **既定を salt 付き
+     > SHA-256 に変更**する。保存は **PHC 文字列(`$<scheme>$<params>$<salt>$<hash>`)1カラム**
+     > にして方式を自己記述させ、将来 Web UI のマスターパスワード(低エントロピー・人間選択)を
+     > 同じテーブルで扱う場合は `$argon2id$…` 行を**混在**できる(方式変更は行単位で可逆)。
+     > Argon2 が要る脅威(人間パスワード)が現れるまで導入しない。
    - 発行は認証済み Web UI から。**一度だけ表示**、以降は失効・一覧のみ。
    - **レート制限**を認証エンドポイントに必須で入れる(Workers 内カウンター or
      Cloudflare Rate Limiting)。
