@@ -28,6 +28,7 @@ import {
 	type CalendarObjectResourceRepository,
 	type CollectionUnitOfWork,
 	type PrincipalRepository,
+	type ResourceWritePrecondition,
 } from "../../application/ports";
 
 interface CollectionRow {
@@ -248,49 +249,127 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 	constructor(private readonly db: D1Database) {}
 
 	/**
-	 * R-7: CAS (Compare-And-Swap) 化された saveResource/deleteResource が共有する batch 実行
-	 * ヘルパー。3文構成(①CAS UPDATE → ②sync_changes INSERT → ③object 側の書き込み)の後半
-	 * 2文は呼び出し側が組み立て、ここでは実行と結果判定だけを共通化する。
+	 * saveResource/deleteResource が共有する batch 実行ヘルパー。3文構成
+	 * (①採番 UPDATE → ②sync_changes INSERT → ③object 側の書き込み)の後半2文は呼び出し側が
+	 * 組み立て、ここでは実行と結果判定だけを共通化する。
 	 *
-	 * 【①の meta.changes === 0 判定を先頭に固定する理由】
-	 * ports/index.ts の ConcurrencyConflictError コメントに書いたとおり、①が空振り(0行更新)
-	 * したら②③は「baseline が古いまま書かれた」ことになるので、そもそも実行結果を信用しては
-	 * いけない。batch() は全文を1トランザクションとして実行するので、①が0行でも②③の SQL 文
-	 * 自体は(ガード条件次第で)空振りするか無害な形で走るが、その結果を UoW の成功として
-	 * 呼び出し元へ返してしまうと「実は競合していたのに 204/201 を返す」事故になる。よって
-	 * batch 結果の先頭要素だけを見て、0行なら即 throw する。
+	 * 【S-B (2026-07-16): R-7 のコレクション CAS を廃止した経緯】
+	 * R-7 では①を `UPDATE ... SET sync_counter = :new WHERE ... AND sync_counter = :baseline`
+	 * (hydrate 時点の baseline との比較 CAS)にしていたが、これは**別リソースへの並行書き込み
+	 * まで 412 にする過剰ガード**だと実機で判明した(iOS の PUT・LLM の update-event・カードの
+	 * 保存が別々のリソースでも重なると「変更を保存できません」— docs/modeling/12 §7.4)。
+	 * RFC 6578 が要求するのは「sync-token(counter)が単調に進み後退しないこと」であって、
+	 * 書き込みの CAS 比較粒度とは独立(コレクション CAS は 6578 由来でなく実装都合だった)。
+	 * よって:
+	 *   - 書き込みの競合検知は **リソース単位の ETag(If-Match/must-match)に一本化**する
+	 *     (put-calendar-object.ts Step 3 が唯一の前提条件。412 の唯一の意図経路)。
+	 *   - ①は baseline 条件なしの `SET sync_counter = sync_counter + 1`(アトミック
+	 *     インクリメント)にする。単調増加はこれだけで保たれる(後退しない・6578 は無傷)。
 	 *
-	 * 【②の PK 制約違反(sync_changes の重複 token)も同じエラーへ正規化する理由】
-	 * ①のガード(WHERE sync_counter = :baseline)と②の PK((owner, collection_id, token))は、
-	 * 同じ「baseline が古い」という事象を検知する二重の砦になっている。理論上は①が必ず先に
-	 * 空振りするはずだが、D1 の batch は複数文を1トランザクションで実行するため「①は通ったが
-	 * ②で PK 衝突する」という順序は起こらない設計だとしても、SQLite の制約チェックタイミングや
-	 * 将来の実装変更に対して余計な前提を置きたくない。①のガードだけに頼らず、②由来の
-	 * 制約違反例外も catch して同じ ConcurrencyConflictError に倒しておくことで、
-	 * 「①②のどちらが先に競合を捕まえても呼び出し元の見え方は同じ」という不変条件を保つ。
+	 * 【①の meta.changes === 0 判定を残す理由(意味は変わった)】
+	 * baseline 廃止後、①が0行になるのは「calendar_collections の行そのものが無い」とき
+	 * だけ(並行する MKCALENDAR 削除など極端なケース)。これは楽観ロック競合ではないが、
+	 * ②③が親不在のまま書かれる(sync_changes の token サブクエリが NULL になる等)のを
+	 * 成功として返してはいけないので、引き続き先頭要素を検査して throw する。
+	 * ConcurrencyConflictError(→412)ではなく素の Error(→500)に倒す: クライアントに
+	 * 「取得し直して再送」を促しても行が無ければ直らないため。
+	 *
+	 * 【②の制約違反 catch を残す理由(create 経路の TOCTOU + 最後の防波堤)】
+	 * ②の token は「①でインクリメントした後の counter」を同一トランザクション内のサブクエリで
+	 * 読むため、SQLite の書き込み直列化の下では PK (owner, collection_id, token) 衝突は
+	 * 原理的に起きないはず。それでも catch を残すのは:
+	 *   - S-B: create 経路(③が素の INSERT)で並行 create が先に入っていた場合、
+	 *     calendar_objects の PK 制約違反がここに来る(= 同一 URI への TOCTOU create を検知)。
+	 *   - D1 の実行モデルや将来の実装変更に余計な前提を置かない(R-7 で「偶発的な砦が生の 500 に
+	 *     なっていた」反省の再発防止)。
+	 * 万一ここに来たら ConcurrencyConflictError(412)に正規化する — クライアントが再送すれば
+	 * 直る種類の失敗として扱うのが 500 より安全。
+	 *
+	 * 【S-B: etagCas フラグで「0 行」の解釈を切り替える】
+	 * - etagCas=false(create/overwrite 経路): ①②③はゲート無しなので、①が0行 = コレクション行
+	 *   不在(競合ではなく構造異常)。素の Error(→500)に倒す — 再送しても直らないため。
+	 * - etagCas=true(match 経路): ①②③すべてを expected etag の EXISTS/AND でゲートしている。
+	 *   etag がずれていれば①②③とも0行 no-op になるので、**末尾③の 0 行**を見て
+	 *   ConcurrencyConflictError(→412)に倒す(= 同一リソースの TOCTOU を DB 側で検知)。
+	 *   ここでは①ではなく③を見る: match 経路で①が0行になるのは「行不在 or etag ずれ」の両方だが、
+	 *   どちらも「取得し直して再送」で解ける競合なので、③の0行=競合の一本判定で足りる。
 	 */
-	private async executeCasBatch(
+	private async executeWriteBatch(
 		owner: PrincipalRef,
 		id: CollectionId,
 		statements: D1PreparedStatement[],
+		etagCas: boolean,
 	): Promise<void> {
 		let results: D1Result[];
 		try {
 			results = await this.db.batch(statements);
 		} catch {
-			// 2026-07-15 R-7: sync_changes の PK (owner, collection_id, token) 制約違反は
-			// D1/SQLite が例外として投げる(batch 全体が reject される)。この PK は「同じ baseline
-			// から2つのリクエストが同時に N+1 を書こうとした」ときの第二の砦(以前はこの
-			// constraint error がそのまま呼び出し元まで伝播し、presentation 層で拾われず
-			// 生の 500 になっていた — R-7 タスクの背景で説明した「偶発的な砦」の正体)。
-			// ここで捕まえて意図した ConcurrencyConflictError に正規化する。
+			// PK 制約違反等(上のコメント【②の制約違反 catch を残す理由】)。
 			throw new ConcurrencyConflictError(owner, id);
 		}
-		// ①(先頭の CAS UPDATE)が0行 = baseline がすでに動いていた = 競合。
-		const casResult = results[0];
-		if (casResult?.meta.changes === 0) {
-			throw new ConcurrencyConflictError(owner, id);
+		if (etagCas) {
+			// match 経路: 末尾③(object 書き込み)が0行 = expected etag とずれた = 競合。
+			const objResult = results[results.length - 1];
+			if (objResult?.meta.changes === 0) {
+				throw new ConcurrencyConflictError(owner, id);
+			}
+		} else {
+			// create/overwrite 経路: ①(先頭の採番 UPDATE)が0行 = コレクション行不在(構造異常)。
+			const bumpResult = results[0];
+			if (bumpResult?.meta.changes === 0) {
+				throw new Error(
+					`calendar_collections row missing during write: ${owner} / ${id} (was it deleted concurrently?)`,
+				);
+			}
 		}
+	}
+
+	/**
+	 * ①採番 UPDATE + ②sync_changes INSERT を組み立てる(save/delete 共通)。
+	 * precondition が match のときだけ、①②を expected etag の EXISTS でゲートして
+	 * 「etag がずれていたら counter を進めず変更ログも書かない」ようにする(③だけをガードすると
+	 * batch は atomic でも 0 行は error でないため①②が commit されてしまい、counter だけ進んで
+	 * ③が空振りする不整合が起きる。だから①②③を揃ってゲートする — executeWriteBatch のコメント)。
+	 */
+	private bumpAndLogStatements(
+		owner: PrincipalRef,
+		id: CollectionId,
+		uri: ResourceUri,
+		kind: string,
+		precondition: ResourceWritePrecondition,
+	): D1PreparedStatement[] {
+		if (precondition.kind === "match") {
+			const expected = precondition.expectedEtag;
+			// EXISTS ゲート: 対象リソースの現在 etag が expected と一致するときだけ進む。
+			return [
+				this.db.prepare(
+					`UPDATE calendar_collections SET sync_counter = sync_counter + 1
+					 WHERE owner = ? AND id = ?
+					   AND EXISTS (SELECT 1 FROM calendar_objects
+					               WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ?)`,
+				).bind(owner, id, owner, id, uri, expected),
+				this.db.prepare(
+					`INSERT INTO sync_changes(owner, collection_id, token, uri, kind)
+					 SELECT owner, id, sync_counter, ?, ? FROM calendar_collections
+					 WHERE owner = ? AND id = ?
+					   AND EXISTS (SELECT 1 FROM calendar_objects
+					               WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ?)`,
+				).bind(uri, kind, owner, id, owner, id, uri, expected),
+			];
+		}
+		// create / overwrite: ゲート無しのアトミックインクリメント + サブクエリ採番。
+		// 別リソースへの並行書き込みが重なっても両方成功し、counter は +1 ずつ進む
+		// (単調増加 = RFC 6578 のトークン後退なしを維持)。token をメモリ値でなく DB 側で
+		// 採番する理由は下の②コメント参照。
+		return [
+			this.db.prepare(
+				"UPDATE calendar_collections SET sync_counter = sync_counter + 1 WHERE owner = ? AND id = ?",
+			).bind(owner, id),
+			this.db.prepare(
+				`INSERT INTO sync_changes(owner, collection_id, token, uri, kind)
+				 SELECT owner, id, sync_counter, ?, ? FROM calendar_collections WHERE owner = ? AND id = ?`,
+			).bind(uri, kind, owner, id),
+		];
 	}
 
 	async saveResource(
@@ -299,62 +378,97 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 		resource: CalendarObjectResource,
 		collection: CalendarCollection,
 		bounds: OccurrenceBounds,
+		precondition: ResourceWritePrecondition,
 	): Promise<void> {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("saveResource requires a recorded collection change");
-		const newCounter = collection.syncToken.counter;
-		const baselineCounter = collection.baselineSyncCounter.counter;
-		await this.executeCasBatch(owner, id, [
-			// ① CAS 本体: baseline(hydrate 時に読んだ値)のときだけ new へ進める。
-			this.db.prepare(
-				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ? AND sync_counter = ?",
-			).bind(newCounter, owner, id, baselineCounter),
-			// ② 変更ログ。PK (owner, collection_id, token) が第二の砦(executeCasBatch のコメント参照)。
-			this.db.prepare(
-				"INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)",
-			).bind(owner, id, change.token.counter, change.uri, change.kind),
-			// ③ オブジェクト upsert。①が空振り(=競合)だったときに書き込みが混入しないよう、
-			// サブクエリで「①が成功して sync_counter が new になっている」ことを再確認してから
-			// 実行する(SQLite の batch は複数文を条件分岐できないため、この自己参照 WHERE で
-			// ①の成否を③の実行条件へ橋渡しする — ports/index.ts の UoW コメント③参照)。
-			// INSERT ... SELECT ... ON CONFLICT は SQLite 3.24+ の UPSERT 構文がそのまま使える
-			// (VALUES 由来か SELECT 由来かを問わない)。
-			this.db.prepare(
-				`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
-				 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-				 WHERE (SELECT sync_counter FROM calendar_collections WHERE owner = ? AND id = ?) = ?
-				 ON CONFLICT(owner, collection_id, uri) DO UPDATE SET
-				 etag=excluded.etag, ics=excluded.ics, component_kind=excluded.component_kind,
-				 uid=excluded.uid, updated_at=excluded.updated_at,
-				 first_occurrence=excluded.first_occurrence, last_occurrence=excluded.last_occurrence`,
-			).bind(
-				owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
-				bounds.firstMillis, bounds.lastMillis,
-				owner, id, newCounter,
-			),
-		]);
+		// ①② 採番 + 変更ログ。
+		// 【②の token をメモリ値でなく DB 側で採番する理由】メモリ上の collection.syncToken.counter は
+		// 「hydrate 時点 + recordChange 回数」でしかなく、並行書き込みで DB 側が先に進んでいると
+		// 古い token を書いて PK 衝突する。DB 側でインクリメントした現在値を同一トランザクション内で
+		// 読めば、並行2本でも token は必ず別値になり PK (owner, collection_id, token) と整合する。
+		// 【なぜ RETURNING でなくサブクエリか】D1 の batch() は文間で結果を受け渡せない(①の
+		// RETURNING 値を②の bind に使えない)。batch は1トランザクションとして文順に実行される
+		// (D1 docs: "executed sequentially and atomically")ので、②のサブクエリは①適用後の値を
+		// 必ず読む — これが D1 で成立する唯一のアトミック採番。
+		const statements = this.bumpAndLogStatements(owner, id, resource.uri, change.kind, precondition);
+		// ③ オブジェクト書き込み。precondition ごとに文を変える(ports の ResourceWritePrecondition
+		// コメント参照)。
+		if (precondition.kind === "match") {
+			// S-B: etag CAS 更新。UPSERT ではなく UPDATE ... WHERE etag = :expected にすることで、
+			// 「lookup 時に読んだ etag のままのときだけ」書く(= 同一リソースの TOCTOU を閉じる)。
+			// UPDATE を使う理由: match 経路は必ず既存行を更新するので INSERT 分岐は不要で、
+			// WHERE に etag 条件を素直に書けて 0 行判定が明快になる(UPSERT だと row 不在時に
+			// INSERT が走ってしまい etag ずれ検知にならない)。
+			statements.push(
+				this.db.prepare(
+					`UPDATE calendar_objects
+					 SET etag = ?, ics = ?, component_kind = ?, uid = ?, updated_at = ?,
+					     first_occurrence = ?, last_occurrence = ?
+					 WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ?`,
+				).bind(
+					resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
+					bounds.firstMillis, bounds.lastMillis,
+					owner, id, resource.uri, precondition.expectedEtag,
+				),
+			);
+		} else if (precondition.kind === "create") {
+			// S-B: 新規作成。素の INSERT(ON CONFLICT なし)。並行 create が先に入っていれば PK
+			// 制約違反 → executeWriteBatch の catch で ConcurrencyConflictError(TOCTOU create を検知)。
+			statements.push(
+				this.db.prepare(
+					`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).bind(
+					owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
+					bounds.firstMillis, bounds.lastMillis,
+				),
+			);
+		} else {
+			// overwrite: 無条件上書き(unconditional / If-Match:*)。素の UPSERT で last-writer-wins。
+			statements.push(
+				this.db.prepare(
+					`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(owner, collection_id, uri) DO UPDATE SET
+					 etag=excluded.etag, ics=excluded.ics, component_kind=excluded.component_kind,
+					 uid=excluded.uid, updated_at=excluded.updated_at,
+					 first_occurrence=excluded.first_occurrence, last_occurrence=excluded.last_occurrence`,
+				).bind(
+					owner, id, resource.uri, resource.etag.hex, resource.rawIcs, resource.componentKind, resource.uid, Date.now(),
+					bounds.firstMillis, bounds.lastMillis,
+				),
+			);
+		}
+		await this.executeWriteBatch(owner, id, statements, precondition.kind === "match");
 	}
 
-	async deleteResource(owner: PrincipalRef, id: CollectionId, uri: ResourceUri, collection: CalendarCollection): Promise<void> {
+	async deleteResource(
+		owner: PrincipalRef,
+		id: CollectionId,
+		uri: ResourceUri,
+		collection: CalendarCollection,
+		precondition: ResourceWritePrecondition,
+	): Promise<void> {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("deleteResource requires a recorded collection change");
-		const newCounter = collection.syncToken.counter;
-		const baselineCounter = collection.baselineSyncCounter.counter;
-		await this.executeCasBatch(owner, id, [
-			// ① CAS 本体(saveResource と同じ)。
-			this.db.prepare(
-				"UPDATE calendar_collections SET sync_counter = ? WHERE owner = ? AND id = ? AND sync_counter = ?",
-			).bind(newCounter, owner, id, baselineCounter),
-			// ② 変更ログ。
-			this.db.prepare(
-				"INSERT INTO sync_changes(owner, collection_id, token, uri, kind) VALUES (?, ?, ?, ?, ?)",
-			).bind(owner, id, change.token.counter, change.uri, change.kind),
-			// ③ DELETE 側のガードも同じ自己参照サブクエリで①の成否を確認する。
-			this.db.prepare(
-				`DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?
-				 AND (SELECT sync_counter FROM calendar_collections WHERE owner = ? AND id = ?) = ?`,
-			).bind(owner, id, uri, owner, id, newCounter),
-		]);
+		const statements = this.bumpAndLogStatements(owner, id, uri, change.kind, precondition);
+		// ③ DELETE 本体。match(If-Match 付き削除)は etag 一致時のみ削除する CAS、
+		// それ以外(overwrite)は無条件削除。create は削除では使わない(ports コメント)。
+		if (precondition.kind === "match") {
+			statements.push(
+				this.db.prepare(
+					"DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ?",
+				).bind(owner, id, uri, precondition.expectedEtag),
+			);
+		} else {
+			statements.push(
+				this.db.prepare(
+					"DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?",
+				).bind(owner, id, uri),
+			);
+		}
+		await this.executeWriteBatch(owner, id, statements, precondition.kind === "match");
 	}
 }
 

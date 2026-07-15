@@ -34,10 +34,12 @@ import {
 // という動的 import を都度呼んでいた(理由の記載なし)。evaluateMustMatch を同期関数に
 // できるよう ETag を上の value import に合流させ、type-only import は削除した。
 import type { CollectionId, PrincipalRef, ResourceUri } from "../../domain/caldav";
-import type {
-	CalendarCollectionRepository,
-	CalendarObjectResourceRepository,
-	CollectionUnitOfWork,
+import {
+	ConcurrencyConflictError,
+	type CalendarCollectionRepository,
+	type CalendarObjectResourceRepository,
+	type CollectionUnitOfWork,
+	type ResourceWritePrecondition,
 } from "../ports";
 // G-3: PUT 時に first/last occurrence 索引(bounds)を計算する。RecurrenceIterator は
 // RRULE 反復だけを domain の外へ委譲する port(実装は infrastructure/recurrence の
@@ -261,6 +263,27 @@ export class ETagConditionError extends Error {
 		);
 		this.name = "ETagConditionError";
 	}
+}
+
+/**
+ * S-B (2026-07-16): 「同一リソースの書き込み競合」= update-event/update-todo が1回だけ
+ * 自動 re-read→re-patch する対象かを判定する共通述語。
+ *
+ * 競合は2つの層のどちらでも捕まりうる(ports の ConcurrencyConflictError コメントの正規化):
+ *   - ETagConditionError(condition=must-match): Step 3 のメモリ判定での早期弾き。
+ *   - ConcurrencyConflictError: UoW の DB 側 ETag CAS(③の0行)。メモリ判定通過後の TOCTOU。
+ * どちらも「lookup してから書くまでに同じリソースが動いた」ことを表し、意味的パッチの再適用で
+ * 安全に解ける。must-not-exist / must-exist の ETagConditionError は「そもそも作れない/無い」
+ * を表し再試行しても直らないのでリトライ対象にしない(condition.kind で絞る)。
+ *
+ * 【なぜ両 UC 共通の free 関数にするか】update-event と update-todo で完全に同じ判定なので、
+ * 判別ロジックの二重管理を避けてここ(両エラー型が定義されている put-calendar-object)に集約する。
+ * ConcurrencyConflictError は ports から import する(この関数のためだけの循環にはならない —
+ * put-calendar-object は既に ports を型で参照している)。
+ */
+export function isSameResourceConflict(error: unknown): boolean {
+	if (error instanceof ETagConditionError) return error.condition.kind === "must-match";
+	return error instanceof ConcurrencyConflictError;
 }
 
 /**
@@ -505,7 +528,26 @@ export class PutCalendarObject {
 		// recordChange でコレクションの状態を進め、その状態を UoW に渡して原子的に書く。
 		const changeKind = existing === null ? "created" : "modified";
 		collection.recordChange(uri, changeKind);
-		await this.uow.saveResource(input.owner, input.collectionId, resource, collection, bounds);
+
+		// S-B (2026-07-16): DB 側 ETag CAS の粒度(ResourceWritePrecondition)を Step 3 で
+		// 判定した condition と existing から導出する。Step 3 のメモリ判定は「安価な早期弾き
+		// (UX 上の即時 412)」、この DB 側 CAS は「lookup〜書き込みの TOCTOU 窓を閉じる最終
+		// 防波堤」— 役割が違うので二重でも矛盾しない(ports の ConcurrencyConflictError コメント)。
+		//   - must-match: 既存 etag(Step 3 通過 = existing 非 null かつ一致)で etag CAS 更新。
+		//     expected は「今まさに一致を確認した etag」= existing.etag.hex。lookup 後に他者が
+		//     書いていれば DB 側で etag がずれて 0 行 → ConcurrencyConflictError。
+		//   - must-not-exist: 新規作成(create)。並行 create は PK 違反で弾く。
+		//   - must-exist / unconditional: existing の有無で create か overwrite。overwrite は
+		//     クライアントが無条件上書きを要求した経路なので etag CAS を掛けず last-writer-wins。
+		const writePrecondition: ResourceWritePrecondition =
+			condition.kind === "must-match"
+				? { kind: "match", expectedEtag: (existing as CalendarObjectResource).etag.hex }
+				: condition.kind === "must-not-exist"
+					? { kind: "create" }
+					: existing === null
+						? { kind: "create" }
+						: { kind: "overwrite" };
+		await this.uow.saveResource(input.owner, input.collectionId, resource, collection, bounds, writePrecondition);
 
 		return {
 			etag: resource.etag,

@@ -35,6 +35,7 @@ import {
 	type CalendarCollectionRepository,
 	type CalendarObjectResourceRepository,
 	type CollectionUnitOfWork,
+	type ResourceWritePrecondition,
 } from "../../src/application/ports";
 import type { ComponentKind } from "../../src/domain/caldav";
 import { IcaljsRRuleIterator } from "../../src/infrastructure/recurrence/icaljs-rrule-iterator";
@@ -259,6 +260,15 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		this.store.delete(resourceKey(owner, collectionId, uri));
 	}
 
+	/**
+	 * 同期的に現在値を覗く(FakeCollectionUnitOfWork の ETag CAS 模倣専用)。
+	 * findByUri は async だが、UoW フェイクの前提条件判定は「書く直前に読み比べる」だけの
+	 * 同期処理にしたいので、ストアを直接読む sync ビューを別に用意する。
+	 */
+	peek(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): CalendarObjectResource | undefined {
+		return this.store.get(resourceKey(owner, collectionId, uri));
+	}
+
 	/** 全リソース数(テスト検証用)。 */
 	count(): number {
 		return this.store.size;
@@ -280,32 +290,30 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		private readonly collectionRepo: FakeCalendarCollectionRepository,
 	) {}
 
-	/**
-	 * R-7: D1CollectionUnitOfWork の CAS 契約(ports/index.ts の ConcurrencyConflictError
-	 * コメント参照)をインメモリでも再現する。契約テストを D1/フェイク間で共通化できるように
-	 * するための実装(タスク指示「インメモリ実装にも同じ CAS 意味論を実装する」)。
-	 *
-	 * ストア内の「現在の syncCounter」と、渡された collection の baselineSyncCounter(hydrate 時点
-	 * の値)を比較する。D1 の `UPDATE ... WHERE sync_counter = :baseline` と同じ判定を、
-	 * インメモリでは「保存前に読み比べる」形で行う(D1 と違い真の並行アクセスは無い単一スレッドの
-	 * フェイクなので、CAS を模すには「比較してから書く」の2ステップで十分 — 冒頭コメントの
-	 * 「実装の詳細を持たない最小限のシミュレーション」方針どおり)。
-	 */
-	private async assertBaselineMatches(owner: PrincipalRef, collectionId: CollectionId, collection: CalendarCollection): Promise<void> {
-		const stored = await this.collectionRepo.findById(owner, collectionId);
-		// stored が無い(=コレクションがまだ一度も保存されていない)場合、D1 側は
-		// 「行が無い」= WHERE sync_counter = 0 は成立しない(0行更新で ConcurrencyConflictError)
-		// はずだが、フェイクのテストでは「MKCALENDAR 相当のシード(collectionRepo.seed)を経ずに
-		// いきなり UoW を呼ぶ」ケースがある(既存テストの多くがそう)。この場合は「まだ何も
-		// 競合していない」とみなし baseline=0 と同一視して素通しする(D1 の実運用パスでは
-		// PutCalendarObject.execute が事前に collectionRepo.findById で存在確認しており、
-		// 存在しなければ CollectionNotFoundError で止まるため、UoW まで到達する時点で実際には
-		// 必ず行が存在する — フェイク側のこの緩和は「seed を省略した軽量テストを壊さない」ための
-		// 割り切りであり、D1 の挙動と完全に一致させるものではない)。
-		const storedCounter = stored?.syncToken.counter ?? 0;
-		if (storedCounter !== collection.baselineSyncCounter.counter) {
-			throw new ConcurrencyConflictError(owner, collectionId);
+	// 【S-B (2026-07-16): R-7 の assertBaselineMatches(コレクション CAS 模倣)は撤去し、
+	//  代わりにリソース単位 ETag CAS を模す】
+	// D1 実装がコレクション粒度 baseline CAS を廃止し(別リソースの並行書き込みまで 412 にする
+	// 過剰ガードだった — docs/modeling/12 §7.4)、③のリソース書き込みに DB 側 ETag CAS を入れた
+	// ため、フェイクも同じ意味論(precondition ごとの前提条件)を模す。単一スレッドのフェイクでは
+	// 真の並行アクセスは無いので「書く前に読み比べる」の2ステップで CAS を模せば十分。
+	// 通常の UC フロー(read→ すぐ write)では expected == 現在値なので発火せず、既存テストは無傷。
+	private assertPrecondition(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		uri: ResourceUri,
+		precondition: ResourceWritePrecondition,
+	): void {
+		const stored = this.resourceRepo.peek(owner, collectionId, uri);
+		if (precondition.kind === "create") {
+			// 新規のはずが既に在る = 並行 create(D1 の PK 制約違反相当)。
+			if (stored) throw new ConcurrencyConflictError(owner, collectionId);
+		} else if (precondition.kind === "match") {
+			// lookup 時の etag と現在値がずれた or 消えた = 同一リソースの TOCTOU 競合。
+			if (!stored || stored.etag.hex !== precondition.expectedEtag) {
+				throw new ConcurrencyConflictError(owner, collectionId);
+			}
 		}
+		// overwrite: 無条件(last-writer-wins)。何も検査しない。
 	}
 
 	async saveResource(
@@ -314,8 +322,9 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		resource: CalendarObjectResource,
 		collection: CalendarCollection,
 		bounds: OccurrenceBounds,
+		precondition: ResourceWritePrecondition,
 	): Promise<void> {
-		await this.assertBaselineMatches(owner, collectionId, collection);
+		this.assertPrecondition(owner, collectionId, resource.uri, precondition);
 		// リソースを保存(bounds も一緒に。D1 実装が同一行へ書くのと同じ扱い)。
 		this.resourceRepo.seed(owner, collectionId, resource, bounds);
 		// コレクション(syncCounter / changeLog 更新済みのはず)を保存。
@@ -327,8 +336,9 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		collectionId: CollectionId,
 		uri: ResourceUri,
 		collection: CalendarCollection,
+		precondition: ResourceWritePrecondition,
 	): Promise<void> {
-		await this.assertBaselineMatches(owner, collectionId, collection);
+		this.assertPrecondition(owner, collectionId, uri, precondition);
 		// リソースを削除。
 		this.resourceRepo.remove(owner, collectionId, uri);
 		// コレクションを保存。

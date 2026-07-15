@@ -49,7 +49,7 @@ import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/
 import { zoneResolverFor, type RecurrenceIterator } from "../../domain/ical/recurrence";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
 import { parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
-import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
+import { isSameResourceConflict, PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import { lookupTodo, TodoNotFoundError, type LookedUpTodo } from "./todo-lookup";
 import {
 	// buildRecurrenceRule と recurrence 3エラーは create-todo と共有する(2026-07-15 recurrence 対称化。
@@ -296,6 +296,27 @@ export class UpdateTodo {
 	) {}
 
 	async execute(input: UpdateTodoInput): Promise<UpdateTodoOutput> {
+		// --- S-B (2026-07-16): 同一リソース競合(ETag 不一致)時の自動リトライ(1回だけ) ---
+		// UpdateEvent.execute と対称(理由の詳細はあちらのコメント参照)。要点: この UC の入力は
+		// 意味的パッチなので、最新を re-read して再適用しても他クライアントの変更を巻き戻さない
+		// (lost update にならない)。2回目の競合はそのまま伝播(素の 412 が最後の砦)。
+		// 【反復完了経路(completeRecurringTodo)でもリトライが安全な理由】あちらは snapshot PUT →
+		// master PUT の2段書き込みだが、R-8 で snapshot UID を deterministic 化済みなので、
+		// 途中失敗後の再実行は同じ snapshot URI への冪等 upsert になり二重スナップショットは生まれない。
+		try {
+			return await this.attemptUpdate(input);
+		} catch (error) {
+			// 同一リソース競合(ETagConditionError=メモリ判定 / ConcurrencyConflictError=DB 側 CAS)を
+			// 1回だけリトライ。判定は UpdateEvent と共通の isSameResourceConflict(put-calendar-object)。
+			if (isSameResourceConflict(error)) {
+				return await this.attemptUpdate(input);
+			}
+			throw error;
+		}
+	}
+
+	/** 1回分の lookup → patch → PUT(must-match)。execute がリトライ制御込みで呼ぶ。 */
+	private async attemptUpdate(input: UpdateTodoInput): Promise<UpdateTodoOutput> {
 		// due の解析(format/timeZone/DST エラーは lookup 前に投げる = 安価な失敗)。
 		// 反復 VTODO の due 除去拒否だけは looked.vtodo.rrule を要するので lookup 後に行う。
 		const parsed = this.parseDuePatch(input);

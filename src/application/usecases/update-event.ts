@@ -36,7 +36,7 @@ import { stampUpdate } from "../../domain/ical/semantics";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
 import { parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
-import { PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
+import { isSameResourceConflict, PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import { lookupEvent, EventNotFoundError, type LookedUpEvent } from "./event-lookup";
 import {
 	buildRecurrenceRule,
@@ -157,6 +157,35 @@ export class UpdateEvent {
 	) {}
 
 	async execute(input: UpdateEventInput): Promise<UpdateEventOutput> {
+		// --- S-B (2026-07-16): 同一リソース競合(ETag 不一致)時の自動リトライ(1回だけ) ---
+		// lookup → patch → PUT(must-match)の間に他クライアント(iOS の PUT・カードの保存など)が
+		// 同じリソースを書くと ETag がずれて 412 相当(ETagConditionError)になる。この UC の入力は
+		// 「意味的パッチ」(title だけ・start だけ、のようなフィールド差分)なので、最新状態を
+		// 読み直して同じパッチを再適用しても他クライアントの変更を巻き戻さない(lost update に
+		// ならない)— ICS 全文を上書きする素の PUT との決定的な違いで、だからこそリトライは
+		// この UC(と対称の UpdateTodo)にだけ入れ、put-calendar-object 自体には入れない。
+		// 2回目も競合したら従来どおりエラーを伝播する(R-7 の「素の 412」を最後の砦に残す —
+		// 2連続competing はビジー状態のシグナルであり、無限に再適用し続ける方が危険)。
+		// attemptUpdate は lookup からやり直すので、再試行 = re-read → re-patch → 再 PUT になる。
+		try {
+			return await this.attemptUpdate(input);
+		} catch (error) {
+			// 同一リソース競合を1回だけリトライする。競合はどちらの層で捕まえても同じ扱い:
+			//   - ETagConditionError(must-match): put-calendar-object.ts Step 3 のメモリ判定で、
+			//     lookup した etag と DB の現在 etag がずれていた(早期弾き)。
+			//   - ConcurrencyConflictError: UoW の DB 側 ETag CAS が③の0行で捕まえた
+			//     (メモリ判定を通過した後、書き込み直前までに他者が書いた TOCTOU)。
+			// どちらも「lookup してから書くまでに同じリソースが動いた」= re-read→re-patch で解ける
+			// (ports の ConcurrencyConflictError コメントの正規化方針)。
+			if (isSameResourceConflict(error)) {
+				return await this.attemptUpdate(input);
+			}
+			throw error;
+		}
+	}
+
+	/** 1回分の lookup → patch → PUT(must-match)。execute がリトライ制御込みで呼ぶ。 */
+	private async attemptUpdate(input: UpdateEventInput): Promise<UpdateEventOutput> {
 		// start/end の parse(format/timeZone/DST エラーは lookup 前に投げる = 安価な失敗)。
 		const parsedStart = input.start !== undefined ? this.parseStart(input.start, input.timeZone) : undefined;
 		const parsedEnd = input.end !== undefined ? this.parseEnd(input.end, input.timeZone) : undefined;

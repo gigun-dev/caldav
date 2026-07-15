@@ -21,6 +21,7 @@ import type {
 	CalendarCollectionRepository,
 	CalendarObjectResourceRepository,
 	CollectionUnitOfWork,
+	ResourceWritePrecondition,
 } from "../ports";
 // 2026-07-14 R-2: splitEtagList を put-calendar-object.ts から共有する
 // (両 usecase で「If-Match ヘッダのカンマ区切り分解」ロジックが同一のため)。
@@ -158,6 +159,15 @@ export class DeleteCalendarObject {
 
 		// 変更ログ更新 + 原子的削除。
 		collection.recordChange(uri, "deleted");
-		await this.uow.deleteResource(input.owner, input.collectionId, uri, collection);
+
+		// S-B (2026-07-16): DB 側 ETag CAS の粒度。If-Match で具体的な etag が指定されていた場合
+		// (raw !== "*")は、その値と DB の現在 etag が一致するときだけ削除する(lookup〜削除の
+		// TOCTOU を閉じる)。expected は「上で一致を確認した etag」= existing.etag.hex。
+		// If-Match 無し / If-Match:* は「存在すれば消す」意味なので overwrite(無条件削除)。
+		const hasSpecificIfMatch = input.ifMatchEtag != null && input.ifMatchEtag.trim() !== "*";
+		const writePrecondition: ResourceWritePrecondition = hasSpecificIfMatch
+			? { kind: "match", expectedEtag: existing.etag.hex }
+			: { kind: "overwrite" };
+		await this.uow.deleteResource(input.owner, input.collectionId, uri, collection, writePrecondition);
 	}
 }

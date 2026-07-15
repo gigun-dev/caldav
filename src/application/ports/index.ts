@@ -204,34 +204,31 @@ export interface CalendarObjectResourceRepository {
 // =============================================================================
 
 /**
- * R-7: CollectionUnitOfWork が検知する楽観ロック競合(CAS 失敗)エラー。
+ * CollectionUnitOfWork が(防波堤として)投げる書き込み競合エラー。
  * - HTTP: 412 Precondition Failed(presentation 層でマッピング。app.ts の errorResponse 参照)。
  *
+ * 【S-B (2026-07-16): R-7 のコレクション CAS は廃止 — このエラーの役割は縮小した】
+ * R-7 では「collection の baseline counter を条件にした CAS UPDATE の空振り」を検知する
+ * 主役だったが、そのコレクション粒度 CAS は別リソースへの並行書き込みまで 412 にする
+ * 過剰ガードだと実機で判明した(docs/modeling/12 §7.4)。書き込みの競合検知は
+ * **リソース単位の ETag(put-calendar-object.ts Step 3 の must-match)に一本化**され、
+ * 412 の意図した経路は ETagConditionError になった。このエラー型が残っているのは:
+ *   - D1 実装で sync_changes の PK 制約違反等、理論上到達しないはずの競合の現れを
+ *     生の 500 でなく「再送すれば直る 412」へ正規化する最後の防波堤(repositories.ts の
+ *     executeWriteBatch コメント参照)。
+ *   - presentation 層の 412 マッピング(app.ts)自体は据え置きで害がない。
+ *
  * 【なぜ domain ではなく application/ports に置くのか】
- * 「同時に2つのリクエストが同じ syncCounter を基準に書き込もうとした」という事実は
- * 集約(CalendarCollection)のドメイン不変条件の話ではなく、永続化層が複数リクエストを
- * 直列化できない(D1 は行ロックを明示的に取れない)ことに起因する技術的関心事。
- * domain 層は「起きたことを記録する」役割だけを持ち、「記録が競合したときどうするか」は
- * infrastructure/application の責務なので、エラー型もここ(ports)に置く。
+ * 書き込みが競合したという事実は集約(CalendarCollection)のドメイン不変条件の話ではなく、
+ * 永続化層が複数リクエストを直列化できない(D1 は行ロックを明示的に取れない)ことに起因する
+ * 技術的関心事。domain 層は「起きたことを記録する」役割だけを持ち、「記録が競合したとき
+ * どうするか」は infrastructure/application の責務なので、エラー型もここ(ports)に置く。
  *
- * 【背景: TOCTOU の機序と、このエラーが埋める役割】
- * put-calendar-object.ts / delete-calendar-object.ts は (a) collection を hydrate
- * (baselineSyncCounter=N を記憶)→ (b) ETag precondition をメモリ判定 → (c) recordChange で
- * N+1 を計算 → (d) UoW.saveResource/deleteResource が DB へ書く、という順序で動く。
- * 並行する2リクエストが同じ N を hydrate すると両方が N+1 を書こうとする。CollectionUnitOfWork
- * 実装(D1CollectionUnitOfWork)は「①baseline=N を条件にした CAS UPDATE」→ 空振り(0 行更新)
- * したら、②の sync_changes PK 制約違反(token 重複)より前でも後でも、必ずこのエラーへ正規化
- * して throw する契約。呼び出し側 UC はこれを catch せず素通しし、presentation 層が 412 に写す
- * (put-preconditions R1〜R7 の 412 と同じマッピング先 — クライアントは「競合したので取得し
- * 直して再送してください」という通常の楽観ロック失敗として扱える)。
- *
- * 【再試行ロジックをここに持ち込まない判断】
- * RFC 4918 は precondition 失敗一般に 412 を使う契約なので、素の 412 を返すだけに留める。
- * サーバー側で自動リトライ(baseline を取り直して再 hydrate → 再 recordChange)する設計も
- * 検討したが、「呼び出し元が期待している ETag 検証をもう一度やり直す」処理を UoW 層に
- * 埋め込むのは責務が重すぎる(UoW は「保存する」ことだけを知っていればよい)。可逆な判断
- * なので、実測で iOS 側が不快な挙動(頻繁な 412 でユーザー操作が失われる等)を見せたら
- * UC 外側(presentation か application の呼び出し元)にリトライを足す。
+ * 【再試行ロジックをここに持ち込まない判断(R-7 から継続、S-B で一部変更)】
+ * UoW は「保存する」ことだけを知っていればよく、リトライは持たない。S-B で
+ * update-event/update-todo(意味的パッチを持つ UC)には「ETag 不一致時に1回だけ
+ * re-read→re-patch」の自動リトライを入れたが、それは UC 層の判断(パッチの再適用が
+ * 安全だと UC だけが知っている)であって UoW の責務ではない。
  */
 export class ConcurrencyConflictError extends Error {
 	readonly kind = "ConcurrencyConflictError" as const;
@@ -247,23 +244,22 @@ export class ConcurrencyConflictError extends Error {
 /**
  * カレンダーオブジェクトリソースの保存 + コレクションの変更ログ更新を原子的に行う UoW。
  *
- * 【R-7: CAS(Compare-And-Swap)契約】
- * saveResource/deleteResource は、渡された collection.baselineSyncCounter(hydrate 時点の
- * syncCounter)を「まだ DB 側の行がそこから動いていないこと」の条件として使う。
- * 実装(D1CollectionUnitOfWork)は
- *   ① `UPDATE calendar_collections SET sync_counter = :new WHERE owner=? AND id=? AND
- *      sync_counter = :baseline` を batch の先頭に置く(:new は collection.syncToken.counter =
- *      recordChange 後の値、:baseline は collection.baselineSyncCounter.counter)。
- *   ② batch 実行後 `results[0].meta.changes === 0` なら baseline がすでに動いている
- *      (=他プロセスが先に書いた)ということなので ConcurrencyConflictError を throw する。
- *   ③ ①が空振りしたときに calendar_objects への upsert/delete が実行されてしまわないよう、
- *      オブジェクト側の SQL にも sync_counter の一致条件をガードとして埋め込む(同一 batch 内で
- *      複数文にまたがる「条件付き実行」は SQLite に無いため、UPDATE 文の代わりに INSERT ...
- *      SELECT ... WHERE (SELECT sync_counter FROM calendar_collections WHERE owner=? AND id=?) =
- *      :new という形で自己参照サブクエリにより空振りを模す)。
- *   ④ ②の PK 制約違反(sync_changes の (owner, collection_id, token) 重複)も、同じ競合の
- *      別の現れなので ConcurrencyConflictError に正規化する(タイミング次第でどちらが先に
- *      検知するかは決まらないため、両方とも同じ結果に落とす)。
+ * 【S-B (2026-07-16) 契約: アトミック採番 + ETag 一本化(R-7 の CAS 契約を置換)】
+ * saveResource/deleteResource は競合検知をしない(書き込みの前提条件はリソース単位の ETag
+ * として put-calendar-object.ts Step 3 が判定済み)。実装(D1CollectionUnitOfWork)は
+ *   ① `UPDATE calendar_collections SET sync_counter = sync_counter + 1`(baseline 条件なしの
+ *      アトミックインクリメント)を batch の先頭に置く。別リソースへの並行書き込みは両方成功し、
+ *      counter はそれぞれ +1 ずつ進む(RFC 6578 のトークン単調性はこれだけで保たれる —
+ *      6578 が要求するのは「後退しないこと」であって、書き込みの比較粒度ではない)。
+ *   ② sync_changes の token は「①適用後の DB 側 counter」を同一トランザクション内の
+ *      サブクエリで読んで採番する(メモリ上の recordChange 後の値は並行時に古くなりうるため
+ *      使わない — repositories.ts の②コメント参照)。
+ *   ③ calendar_objects の upsert/delete は素の文(R-7 の自己参照ガードは①の CAS とともに撤去)。
+ *
+ * 【なぜ R-7 のコレクション CAS を捨てたか】別リソースへの並行書き込みまで 412 にする
+ * 過剰ガードだった(実機で iOS PUT × LLM update-event × カード保存が衝突 —
+ * docs/modeling/12 §7.4)。コレクション CAS は RFC 6578 由来ではなく実装都合であり、
+ * リソース単位 ETag が守るべき不変条件(lost update 防止)を過不足なく守る。
  *
  * 【ボツ案 (architect 却下): SELECT FOR UPDATE 相当のロック】
  * D1(SQLite ベース)には行ロックを明示的に取る構文が無く、batch() の原子性は「同一トランザクション
@@ -277,13 +273,24 @@ export class ConcurrencyConflictError extends Error {
  * 設計に昇格させる」)を大きく超える。将来の書き込みスループット要求次第では検討に値するが、
  * 今は YAGNI。
  *
- * 【ボツ案 (architect 却下): etag 列 CAS 単独】
- * calendar_objects.etag を CAS の対象にする案(「このリソースの ETag がまだ X のときだけ書く」)
- * は、PUT の ETag precondition(put-calendar-object.ts の Step 3)とほぼ同じ条件を DB 側でも
- * 二重に見ることになり、かつ「コレクション全体の syncCounter」という集約横断の整合性(SyncChange
- * のトークン採番の一意性)は守れない — 同じコレクションの別リソースへの同時書き込みが起きても
- * syncCounter の競合は検知できないままになる。CAS の対象は「集約が実際に不変条件を持つ列」
- * (calendar_collections.sync_counter)であるべき、という判断。
+ * 【S-B 追補 (2026-07-16): 同一リソースの整合検知は DB 側 ETag CAS で閉じた】
+ * R-7 は「etag 列 CAS 単独」案を採番の一意性を理由に却下したが、採番は上の①②(アトミック
+ * インクリメント + トランザクション内サブクエリ)で CAS なしに守れることが分かった。そこで
+ * S-B では③(calendar_objects への書き込み)に **expected etag 条件**を足し、リソース単位の
+ * TOCTOU 窓を DB 側で閉じた:
+ *   - must-match(更新)経路: ③を `... WHERE ... AND etag = :expectedOldEtag`(lookup 時に
+ *     読んだ etag)にし、①②も同じ etag の EXISTS でゲートする。etag がずれていれば①②③とも
+ *     0 行 no-op になり、実装は末尾③の 0 行を見て ConcurrencyConflictError を投げる。
+ *     → 「lookup してから書くまでに他者が同じリソースを書いた」を DB 側で検知(窓が閉じる)。
+ *   - must-not-exist(新規)経路: ③は素の INSERT(ON CONFLICT なし)。並行 create が先に
+ *     入っていれば PK 制約違反 → ConcurrencyConflictError(TOCTOU create も閉じる)。
+ *   - unconditional / must-exist(overwrite)経路: 従来どおり last-writer-wins(素の UPSERT/
+ *     DELETE)。クライアントが明示的に無条件上書きを要求した経路なので etag CAS は掛けない。
+ * **別リソースへの並行書き込みは etag(と uri)が別なので互いに影響せず、S-B の目的(R-7 の
+ * 過剰 412 の解消)はそのまま維持される** — ETag CAS はあくまで「同じ 1 リソース」への
+ * 競合だけを 412 にする。ETagConditionError(presentation のメモリ判定)と
+ * ConcurrencyConflictError(この DB 側 CAS)は、どちらで競合を捕まえても update-event/
+ * update-todo の自動リトライ(1回 re-read→re-patch)が発火するよう正規化されている。
  *
  * 【なぜ UoW インターフェースを別に切るのか】
  * CalendarObjectResource と CalendarCollection は別集約だが、「オブジェクトを PUT/DELETE する」
@@ -302,6 +309,23 @@ export class ConcurrencyConflictError extends Error {
  *   - 上記に伴い "UPDATE calendar_collections SET sync_counter = ? WHERE ..." +
  *                 "INSERT INTO sync_changes ..." を同一バッチで積む
  */
+
+/**
+ * S-B (2026-07-16): リソース書き込みの前提条件(DB 側 ETag CAS の粒度を決める)。
+ * put-calendar-object / delete-calendar-object が「メモリで読んだ ETagCondition と existing」から
+ * 導出して UoW に渡す。UoW 実装(D1CollectionUnitOfWork)はこれを③の SQL に写す。
+ *
+ * - `create`: リソースがまだ無い前提(If-None-Match:*)。③は素の INSERT で、並行 create の
+ *   PK 制約違反を ConcurrencyConflictError に写す。
+ * - `match`: 既存 etag が expectedEtag と一致する前提(If-Match:<etag>)。③に etag 条件を付け、
+ *   ①②も同 etag でゲートする。0 行 = ずれ = ConcurrencyConflictError。
+ * - `overwrite`: 無条件上書き(unconditional / If-Match:*)。etag CAS は掛けず last-writer-wins。
+ */
+export type ResourceWritePrecondition =
+	| { kind: "create" }
+	| { kind: "match"; expectedEtag: string }
+	| { kind: "overwrite" };
+
 export interface CollectionUnitOfWork {
 	/**
 	 * リソースを保存(upsert)してコレクションに変更を記録する。
@@ -309,12 +333,15 @@ export interface CollectionUnitOfWork {
 	 * @param collectionId - 保存先コレクション ID
 	 * @param resource - 保存する CalendarObjectResource
 	 * @param collection - 変更ログを更新したい CalendarCollection
-	 *   (recordChange を呼んだ後の状態を渡す。UoW 実装はこの状態を DB に書く)
+	 *   (recordChange を呼んだ後の状態を渡す。UoW 実装は末尾の変更(uri/kind)を変更ログへ書く。
+ *   token はメモリ値でなく DB 側で採番する — S-B、上の契約①②参照)
 	 * @param bounds - G-3: PUT 時に計算した first/last occurrence 索引値(occurrence-bounds.ts)。
 	 *   CalendarObjectResource 集約自体には持たせない(bounds は導出インデックスであって
 	 *   集約の状態ではない — 確定設計メモの判断)。D1 実装は calendar_objects の
 	 *   first_occurrence/last_occurrence 列へ書く。null は「未索引/期間概念なし」として
 	 *   NULL を書く(migrations/0002 のコメント参照)。
+	 * @param precondition - S-B: DB 側 ETag CAS の粒度(ResourceWritePrecondition)。
+	 *   create=新規 / match=etag 一致更新 / overwrite=無条件上書き。
 	 */
 	saveResource(
 		owner: PrincipalRef,
@@ -322,6 +349,7 @@ export interface CollectionUnitOfWork {
 		resource: CalendarObjectResource,
 		collection: CalendarCollection,
 		bounds: OccurrenceBounds,
+		precondition: ResourceWritePrecondition,
 	): Promise<void>;
 
 	/**
@@ -330,12 +358,16 @@ export interface CollectionUnitOfWork {
 	 * @param collectionId - 削除先コレクション ID
 	 * @param uri - 削除するリソースの URI
 	 * @param collection - 変更ログを更新したい CalendarCollection
-	 *   (recordChange を呼んだ後の状態を渡す。UoW 実装はこの状態を DB に書く)
+	 *   (recordChange を呼んだ後の状態を渡す。UoW 実装は末尾の変更(uri/kind)を変更ログへ書く。
+ *   token はメモリ値でなく DB 側で採番する — S-B、上の契約①②参照)
+	 * @param precondition - S-B: DB 側 ETag CAS の粒度。match=If-Match 付き削除(etag 一致時のみ)/
+	 *   overwrite=無条件削除。create は削除では使わない。
 	 */
 	deleteResource(
 		owner: PrincipalRef,
 		collectionId: CollectionId,
 		uri: ResourceUri,
 		collection: CalendarCollection,
+		precondition: ResourceWritePrecondition,
 	): Promise<void>;
 }
