@@ -241,6 +241,16 @@ repositories.ts`。要点: UoW の batch を3文構成(①CAS UPDATE WHERE sync_
 PK 制約違反を `ConcurrencyConflictError` → 412 に。`CalendarCollection.baselineSyncCounter` で
 hydrate 時の値を保持。R-8 名残(snapshot UID の deterministic 化)も同梱。
 
+> **2026-07-16 訂正(実機フィードバックで CAS 粒度の問題が発覚・modeling/12 §7.4)**:
+> コレクション `sync_counter` の baseline 比較 CAS は**別リソースへの並行書き込みまで 412 に
+> する過剰ガード**だった(iOS の PUT・LLM の update-event・カードの保存が重なると、対象が別
+> リソースでも「変更を保存できません」トースト)。→ **書き込みの前提条件をリソース単位 ETag
+> (If-Match 相当)に一本化し、コレクション CAS は廃止**。採番は `sync_counter = sync_counter + 1`
+> のアトミックインクリメント。RFC 6578 が要求するトークン単調性は counter の単調増加で保たれ、
+> CAS 比較粒度とは独立(コレクション CAS は 6578 由来でなく実装都合だった)。同一リソース競合
+> 時は update-event UC 内で1回だけ自動 re-read→re-patch、2回目失敗は isError(R-7「素の 412」を
+> 最後の砦に残す)。R-8 の snapshot UID deterministic 化は維持。実装は S-B スライス。
+
 ## §8 段階論(最小の第一歩)
 
 - **今(A-1・docs 化のみ完了。実装は未着手)**: 本ドキュメント確定。

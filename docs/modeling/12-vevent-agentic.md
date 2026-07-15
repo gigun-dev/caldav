@@ -45,6 +45,11 @@
 >   (lucide `video`)。開く手段は ext-apps の外部リンク API を調査し、不可なら URL テキスト
 >   表示+コピーに degrade。iOS 自身も URL から参加 UI を合成するため CONFERENCE 書き込みは
 >   引き続き起票のみ(読み取りは lossless 保持)。
+>   > **2026-07-16 訂正(実機フィードバックで発覚・§7 参照)**: 「iOS 自身も URL から参加 UI を
+>   > 合成する」は**実機未検証の仮定**だった(modeling/06 に実測項目なし)。実機で URL 付き
+>   > イベントを開いても表示されない報告あり。RFC 5545 §3.8.4.6 も URL の form を標準化せず、
+>   > 参加バナー化は Apple 非公開解釈。**iOS が何をトリガーにするか(URL 単体 / 特定ドメイン /
+>   > RFC 7986 CONFERENCE)は実機検証が先**(§7・modeling/06 へ)。この行の断定は保留。
 > - **詳細ページの編集モデル**: iOS は閲覧画面でもカレンダー/通知を直接変更できるが、
 >   我々の詳細ページは v3 で全フィールド編集ありき(read/編集の分離なし)なので**既に満たす**。
 
@@ -127,3 +132,100 @@ Event = {
 - Event DTO / EventsViewModel は claude.ai カードと SwiftUI の**両方の消費者**を持つ前提で
   語彙を決めた(§3 は UI 技術非依存)。サーバー側に Swift 専用の変更は不要。
 - R-6(OAuth scope 分離)は第三者クライアントが繋がる前提整備として優先度が上がった。
+
+## §7 実機フィードバック反映(2026-07-16・アジェンダ/todos カード)
+
+> 実機(claude.ai コネクタ + iOS ネイティブホスト swift-mcp-app)のフィードバックで、
+> アジェンダカードのデータ整合の異常が複数報告された。3調査(Explore)で機序を特定し、
+> Fable architect が統合修正を設計。**本番 D1 の生データは完全に正常**(単一マスター VEVENT +
+> 平日 RRULE、重複/override/EXDATE なし)で、**バグは全てカード側の表示状態管理**だった。
+> 以下は §3/§4 の実装規約を確定するもの(設計の正)。
+
+### §7.1 UI の行同一性(id 単独キーの是正)
+
+**症状**: 単発イベントを平日 RRULE に update-event で変更したら、展開された各日
+(7/16・17・20・21)の occurrence 行が**全て「編集済み」バッジ**を帯び、しかも 🔁 が消えて
+各日が別イベントの羅列に見えた。URL を足すと表示が正常に戻る(実装ムラ)。
+
+**機序**: 展開 occurrence の id は全行マスター UID(event-dto.ts の eventFromOccurrence、
+occurrence 識別は recurrenceId — §3 どおり)。だがカードが becoming/pending/楽観更新を
+`id` 単独キーで引いていた(affectedById / pendingIds / optimisticEdits / optimisticDeletes、
+events-diff-client の Map も同一 id を最後の1件に潰す)。→ affected はマスター UID 1件でも
+同じ id の全 occurrence 行にヒット。
+
+**確定規約(二層に分離)**:
+- **行の同一性** = 合成キー `rowKey = id + "\0" + (recurrenceId ?? "")`。DOM の dataset・
+  selectedId/swipeId の比較・描画の一意性はこのキー。ui/ 共有の純関数として新設(将来 todos は
+  recurrenceId=null で同関数を使える — §4 共有カーネル方針)。
+- **mutate・in-flight 状態** = マスター `id` 単位のまま(pendingIds / optimisticEdits /
+  optimisticDeletes / affectedById)。**Why not 合成キー化**: mutate 粒度はマスター単位
+  (§3「mutate は id(マスター)単位」)。系列への並行編集はサーバー上も同一リソースなので、
+  pending がマスター単位で直列化するのは正しい。バグは「無言 no-op」の UX であってキーではない。
+  → pending 中に系列の別 occurrence をタップしたら「保存中です」バナーで可視化する。
+- **楽観適用のルール**: title/location/notes/url/alarms/travelMinutes(系列共通フィールド)は
+  全 occurrence 行に適用。**start/end/recurrence の楽観適用は反復イベントではスキップ**
+  (occurrence ごとに日時が違い、マスターの新値を全行に貼ると壊れる)。pending 表示のみで
+  refresh 確定を待つ。
+- **edited バッジの系列集約**: renderAll の1パスで `seenEditedIds: Set` を持ち、
+  affected がヒットしても**最初の可視行にだけ**タグ/becoming-edit を付ける。他 occurrence 行は
+  完全無装飾(最小・親裁定 2026-07-16)。
+- **🔁 バッジ併記**: editPlan 中も繰り返しバッジを描く(agenda-entry.ts:563 の
+  `&& editPlan == null` を recur バッジ条件から外す)。「系列が別イベントに見誤られる実害」の方が
+  「編集中の情報過多」より大きい。
+
+### §7.2 becoming の寿命
+
+becoming(serverAffectedBase)は「導入した応答から、**次のユーザー起点更新**(手動 refresh・
+range/calendar 切替・別 mutate・LLM 起点の ontoolresult)でクリア」と規定する。**mutate 成功
+直後の自動 refresh-events では保持**(クリア経路を fetchLatest/ontoolresult に限定)。
+→ 症状3(URL 追加後に affected 無し refresh が挟まってバッジ全消え→🔁 復活)の実装ムラを解消。
+
+### §7.3 sync レンズ(computeSyncDiff)の粒度
+
+diff は **id 単位グルーピング**に変更する。prev/next を `Map<id, occurrence[]>` にまとめ、
+id の新規出現= added(代表 occurrence 1件)、id の消滅= removed、既存 id は edited(消費側で
+捨てる規約は不変)。**Why not occurrence 単位 diff**: RRULE 変更で occurrence が大量増減すると
+added/removed がノイズの洪水になる。系列単位の方がシグナルが高く、Map 潰しバグも同時に解消。
+
+### §7.4 R-7 CAS の作り直し(§2 の must-match を訂正)
+
+**§2 の update-event「must-match PUT」は ETag(リソース単位・If-Match 相当)を唯一の前提条件と
+する。R-7 で入れたコレクション `sync_counter` の baseline 比較 CAS は廃止**し、採番は
+`UPDATE ... SET sync_counter = sync_counter + 1` のアトミックインクリメントにする。
+- **根拠**: RFC 6578 §3.2/§3.3(docs/rfc/rfc6578.txt 原文確認済)が要求するのは「sync-token は
+  コレクションのプロパティで、応答は必ず新トークンを返す」こと。**トークンの単調性は counter の
+  単調増加で保たれ、書き込みの CAS 比較粒度とは独立**。コレクション CAS は 6578 由来でなく
+  実装都合の過剰ガードで、別リソースへの並行書き込みまで 412 にしていた(症状4=「変更を保存
+  できません」トースト)。ETag 条件の意味論は RFC 7232。
+- 同一リソース競合で 412 が出た場合、update-event UC 内で**1回だけ自動 re-read→re-patch**
+  (パッチは意味的差分なので再適用安全)。2回目失敗は isError(R-7「素の 412」を最後の砦に残す)。
+- modeling/13 §7(R-7 記述)も同時に訂正する。
+
+### §7.5 iOS 実機検証に切り出す項目(実装より先)
+
+1. **URL から参加バナーが合成されるか**(https / スキームなし `x.com` / meet URL で差があるか)。
+2. **CONFERENCE(RFC 7986 §5.11・スナップショット照合済)** を書いた場合の iOS 表示(1 の結果次第)。
+3. X-APPLE-TRAVEL-DURATION の受理・通知連動(既存起票の再掲)。
+結果は modeling/06 へ記録。
+
+### §7.6 サーバー小修正 + 運用
+
+- **URL バリデーション**: create/update-event で `new URL()` parse 可能 + scheme 必須のみ
+  要求(http/https に限定しない — §3.8.4.6 は URI の form を標準化しない)。既存の `URL:x.com` は
+  不正データとして残す(lossless 保持・修正は手動)。
+- **update-event description** に「通知・繰り返し・URL・移動時間も変更できる」を追記。
+- **notifications/tools/list_changed は見送り**(stateless HTTP でデプロイ時に届ける生きた
+  セッションが無い)。運用手順として「デプロイでツール追加したら claude.ai 側で再接続」を残す。
+
+### §7.7 UI/UX 修正(todos/agenda に CSS/DOM 完全重複・共有化は今回見送り)
+
+- 一覧メモ表示(デッドコード `.notes` 復活・非選択行 truncate)/ focus zoom 是正(全入力欄
+  16px・表示テキストは据え置き)/ 完了タスクの優先度 `!` に line-through が乗る副作用解消
+  (`.pri-inline { text-decoration: none }`)。
+- title 垂直ズレ: row-main を `align-items: flex-start` + check に margin-top(head が伸びても
+  title の1行目位置固定)。許容基準 =「メモ無し行の選択で『メモを追加』行が下に増える以外、
+  title の上下移動ゼロ」。
+- Done 位置: 行内 confirm を撤去しカード右上の単一 Done に(選択は常に高々1行)。
+- シマー完了合図: no-animation ドクトリンを緩めず、保存完了時にバナーで「保存しました」。
+- **CSS/DOM 共有化は今回見送り**(S-A〜S-E で両ファイルが揺れる最中の共有化はレビュー不能な
+  巨大差分になる)。今回**新規に書く純関数**(rowKey・系列グルーピング diff)のみ ui/ 共有配置。
