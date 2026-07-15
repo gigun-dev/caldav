@@ -817,6 +817,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   .meta { align-items: baseline; flex-wrap: nowrap; min-width: 0; }
   .meta .loc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .meta .tag { margin-left: auto; padding-left: 8px; flex: none; }
+  /* meta が実質空(due/⟳/📍 無し)の行では、becoming ラベルを rowMain 直下に置いて
+   * タイトル行と同じ高さで右端に出す(2026-07-15: due 無しタスクの完了/再開でラベルが
+   * 2段目に落ちて上下がずれる実機フィードバックの修正。entry の tagEl 配置分岐と対)。 */
+  .row-main > .tag { margin-left: auto; padding-left: 8px; flex: none; }
 
   /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)------------------------
    * 下線は出さない(ユーザー判断 2026-07-15。選択は bg-subtle 背景とメモ行・ⓘ の出現で十分伝わり、

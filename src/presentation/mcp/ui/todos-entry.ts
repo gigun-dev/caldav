@@ -1099,18 +1099,26 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		loc.setAttribute("aria-label", `場所 ${task.location}`);
 		meta.appendChild(loc);
 	}
-	// becoming マイクロラベル(meta 右端。margin-left:auto で押し出す)。読み上げ対象のテキスト
-	// (装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
+	// becoming マイクロラベル(通常は meta 右端。margin-left:auto で押し出す)。読み上げ対象の
+	// テキスト(装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
+	// 【2026-07-15 実機フィードバック: due 無しタスクの完了/再開でラベルが2段目に落ち上下がずれる】
+	// meta に他の中身(due/⟳/📍/差分)が無い行では、ラベルのためだけに空の meta 行が生まれ、
+	// タイトル(1行目)とラベル(2行目)が段違いになり円のセンタリングも狂って見えた。
+	// → meta が実質空なら、ラベルは meta ではなく rowMain 直下(head の後ろ)に置き、
+	//   タイトル行と同じ高さで右端に出す(CSS .row-main > .tag が margin-left:auto を担う)。
+	const metaHasContent = meta.childElementCount > 0;
+	let tagEl: HTMLElement | null = null;
 	if (tagText !== null) {
-		const tag = document.createElement("span");
-		tag.className = "tag";
-		tag.textContent = tagText;
-		meta.appendChild(tag);
+		tagEl = document.createElement("span");
+		tagEl.className = "tag";
+		tagEl.textContent = tagText;
+		if (metaHasContent) meta.appendChild(tagEl);
 	}
 	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
+	if (tagEl !== null && !metaHasContent) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ ⓘ(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {
@@ -2388,7 +2396,14 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
 	for (const id of diff.added) out.push({ id, kind: "added", sync: true });
 	for (const id of diff.completed) out.push({ id, kind: "completed", sync: true });
 	for (const id of diff.reopened) out.push({ id, kind: "reopened", sync: true });
-	for (const e of diff.edited) out.push({ id: e.id, kind: "edited", changes: e.changes, sync: true });
+	// 【2026-07-15 実機フィードバック: edited は sync レンズに出さない】claude.ai は会話再訪時に
+	// 古い tool 応答を replay してから focus refetch する。この機構の上では sync 差分は
+	// 「カードを最初に描いた時点からの変化」を意味し、「いま list しただけ」の体感とずれる —
+	// 特に edited は現在値が行に表示済みで情報量が薄く、「同期(編集)他1件」がほぼノイズだった。
+	// さらに DTO の形の進化(スライス⑤で recurrence/location 追加)により、古い replay スナップ
+	// ショット(フィールド不在)と新 DTO の比較が反復タスク全行で偽陽性の edited を出す実害も
+	// あった。追加/完了/再開/削除(高シグナルな出来事)だけ残し、edited は捨てる。
+	// computeSyncDiff 自体は edited を計算し続ける(契約は変えず、消費側で落とす=戻しやすい)。
 	return out;
 }
 

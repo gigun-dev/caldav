@@ -179,13 +179,16 @@ function fieldChanges(p: DiffTask, n: DiffTask): DiffChange[] {
 	// notes(E-2 スライス⑤): 外部でメモが編集/追加/削除されたら「編集済み」として拾う。before/after は
 	// 載せない — メモは長文で meta 行のインライン差分に収まらないため、entry の planEdit が field だけの
 	// 変更を「編集済み」バッジ + 「他N件」に degrade する(既存の title-only 編集と同じ扱い)。
-	if (p.notes !== n.notes) {
+	// undefined と null は正規化して比較する(2026-07-15)。claude.ai の replay は「その応答が
+	// 作られた時点の DTO」を渡すため、フィールド追加(スライス⑤の notes/recurrence 等)以前の
+	// スナップショットでは undefined になり、素朴比較だと全行が偽陽性の edited になる。
+	if ((p.notes ?? null) !== (n.notes ?? null)) {
 		changes.push({ field: "notes" });
 	}
 	// recurrence(E-2 スライス⑤): 反復設定の外部変更も同様に拾う。構造化オブジェクトなので等価判定は
 	// JSON 文字列化で行う(サーバー由来で両者のキー順は同一 = 安定比較。null 同士は "null" で一致)。
 	// before/after は載せない(繰り返しの整形は表示層依存で meta インラインに乗らない)→ 「編集済み」degrade。
-	if (JSON.stringify(p.recurrence) !== JSON.stringify(n.recurrence)) {
+	if (JSON.stringify(p.recurrence ?? null) !== JSON.stringify(n.recurrence ?? null)) {
 		changes.push({ field: "recurrence" });
 	}
 	return changes;
