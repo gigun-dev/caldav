@@ -68,6 +68,9 @@ import { createD1Repositories, IcaljsRRuleIterator, OAuthPropsAuth, type OAuthPr
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
 import { createMcpApp } from "./presentation/mcp/server";
+// R-6: OAuth scope 分離(read/write)。同意画面の既定 scope・表示文言、静的 Bearer の full access
+// props に使う。語彙は presentation/mcp/scopes.ts に一元化(index.ts の scopesSupported と同じ定義)。
+import { ALL_SCOPES, SCOPE_WRITE } from "./presentation/mcp/scopes";
 import {
 	collectionProps,
 	davError,
@@ -352,12 +355,33 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * R-6: このクライアントに許可する scope を確定する。requested が空(DCR クライアントが scope を
+ * 要求しなかった)なら現 UX 維持のため両 scope(ALL_SCOPES)を既定にする。要求があればそれを
+ * 尊重する(例: claudedav:read だけ要求 → 読み取り専用トークン)。
+ * 【provider が既に scopesSupported で検証している前提】parseAuthRequest は未対応 scope を弾く
+ * ので、ここに来る requested は広告済み scope の部分集合。追加のフィルタは掛けない。
+ */
+function resolveGrantedScopes(requested: readonly string[]): string[] {
+	return requested.length > 0 ? [...requested] : [...ALL_SCOPES];
+}
+
+/**
+ * R-6: 同意画面に出す scope の一言サマリ。「読み取りのみ」/「読み取り+書き込み」の2択で足りる
+ * (write scope の有無だけが実効的な差 — read は常に含まれる運用)。
+ */
+function describeScopes(grantedScopes: readonly string[]): string {
+	return grantedScopes.includes(SCOPE_WRITE) ? "読み取り + 書き込み" : "読み取りのみ";
+}
+
+/**
  * 同意フォームの HTML を組み立てる。GET(初回表示)と POST 失敗時(パスワード誤り再表示)の
  * 両方から呼ぶ共通 helper。テンプレートエンジンは使わない(単一フォーム・凝った UI 不要な
  * ミニマル運用なので、依存を増やすコストに見合わない)。
  */
-function authorizeFormHtml(input: { query: string; clientName: string; error?: string }): string {
+function authorizeFormHtml(input: { query: string; clientName: string; scopeSummary: string; error?: string }): string {
 	const safeClientName = escapeHtml(input.clientName);
+	// scopeSummary は describeScopes の固定文言(外部由来でない)だが、防御的に escape して埋める。
+	const safeScopeSummary = escapeHtml(input.scopeSummary);
 	// action の query 文字列には元の OAuth 認可リクエストパラメータ(client_id/redirect_uri/
 	// state/code_challenge 等)をそのまま持ち回す。hidden input で個別に持つより、
 	// 「provider が生成したクエリ文字列をそのまま POST でも parseAuthRequest にかけられる」
@@ -382,6 +406,7 @@ function authorizeFormHtml(input: { query: string; clientName: string; error?: s
 <body>
 <h1>caldav MCP への接続を許可しますか?</h1>
 <p>クライアント「<strong>${safeClientName}</strong>」が caldav MCP への接続を要求しています。</p>
+<p>許可する権限: <strong>${safeScopeSummary}</strong></p>
 ${errorHtml}
 <form method="POST" action="/authorize?${input.query}">
 	<label for="password">パスワード</label>
@@ -411,7 +436,9 @@ app.get("/authorize", async (c) => {
 		// lookupClient 失敗はログに残す価値はあるが、UI をブロックしてはいけない。
 	}
 	const query = new URL(c.req.url).search.replace(/^\?/, "");
-	return c.html(authorizeFormHtml({ query, clientName }));
+	// R-6: 要求 scope を確定して一言サマリで表示する(read/write の別を同意時に明示する)。
+	const grantedScopes = resolveGrantedScopes(oauthReqInfo.scope);
+	return c.html(authorizeFormHtml({ query, clientName, scopeSummary: describeScopes(grantedScopes) }));
 });
 
 app.post("/authorize", async (c) => {
@@ -447,11 +474,14 @@ app.post("/authorize", async (c) => {
 			// GET 側と同じくベストエフォート。
 		}
 		const query = new URL(c.req.url).search.replace(/^\?/, "");
-		return c.html(authorizeFormHtml({ query, clientName, error: "パスワードが違います。もう一度お試しください。" }), 401);
+		const grantedScopes = resolveGrantedScopes(oauthReqInfo.scope);
+		return c.html(authorizeFormHtml({ query, clientName, scopeSummary: describeScopes(grantedScopes), error: "パスワードが違います。もう一度お試しください。" }), 401);
 	}
 
 	// パスワード一致 = 同意成立。grant を確定し、provider が生成する redirect 先
 	// (authorization code 付きの client redirect_uri)へ 302 で返す。
+	// R-6: 許可する scope を確定する(要求どおり尊重・空要求は両 scope に既定化)。
+	const grantedScopes = resolveGrantedScopes(oauthReqInfo.scope);
 	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
 		request: oauthReqInfo,
 		// userId は grant の列挙・失効キー(listUserGrants/revokeGrant で使う)。単一ユーザー
@@ -461,13 +491,17 @@ app.post("/authorize", async (c) => {
 		// UI を作るときに「いつ許可したか」を出せるよう、付与日時だけ最小限に残しておく。
 		// Date は presentation 層での使用実績あり(xml.ts / mcp/server.ts 等)なので問題ない。
 		metadata: { grantedAt: new Date().toISOString() },
-		// スコープは要求どおり許可する(現状は claudedav:read のみを広告しているので
-		// 細分化した同意 UI にする必要はまだ無い。将来 write スコープを足したら要見直し)。
-		scope: oauthReqInfo.scope,
+		// R-6: 同意された scope を grant に記録する(provider の TokenData.scope になる)。
+		scope: grantedScopes,
 		// 第2スライスとの契約: OAuthPropsAuth(infrastructure/auth/oauth-props-auth.ts)が
-		// 復号後に読む形は { username } 固定(OAuthPrincipalProps)。ここを外すと
-		// /mcp への全呼び出しが 401 になる(このスライスのタスク仕様に明記の既知の落とし穴)。
-		props: { username: c.env.CALDAV_USERNAME } satisfies OAuthPrincipalProps,
+		// 復号後に読む形は { username }(OAuthPrincipalProps)。ここを外すと /mcp への全呼び出しが
+		// 401 になる(このスライスのタスク仕様に明記の既知の落とし穴)。
+		// R-6: additive に scopes を載せる。OAuthPropsAuth はこれを read/write 強制の材料として
+		// AuthResult.scopes まで運ぶ(props に scopes が無い旧 grant は grandfather=full access)。
+		// 【なぜ props にも scopes を載せるか(TokenData.scope があるのに)】apiHandler(mcpApiApp)が
+		// 実行時に受け取れるのは ctx.props だけで、TokenData.scope には直接アクセスできない
+		// (oauth-provider.d.ts の apiHandler 契約)。よって強制に使う scope は props で運ぶ必要がある。
+		props: { username: c.env.CALDAV_USERNAME, scopes: grantedScopes } satisfies OAuthPrincipalProps,
 	});
 	return c.redirect(redirectTo, 302);
 });
@@ -857,6 +891,9 @@ export async function resolveExternalTokenForMcp(input: {
 	const matches = await secureStringEqual(input.token, input.env.MCP_TOKEN);
 	if (!matches) return null;
 	// props は OAuthPropsAuth が読む形(OAuthPrincipalProps)に合わせる。
-	const props: OAuthPrincipalProps = { username: input.env.CALDAV_USERNAME };
+	// R-6: 静的 Bearer(MCP_TOKEN)= サーバー管理者自身のトークンなので full access(両 scope)を
+	// 明示的に載せる。scopes を明示することで oauth-props-auth の grandfather 警告(旧 grant 用)には
+	// 該当せず、かつ write ツールも通る(allowsWrite が write scope を見つける)。
+	const props: OAuthPrincipalProps = { username: input.env.CALDAV_USERNAME, scopes: [...ALL_SCOPES] };
 	return { props };
 }

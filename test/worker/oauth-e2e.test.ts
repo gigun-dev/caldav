@@ -262,6 +262,143 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 		expect(toolNames).toEqual(["complete-todo", "create-calendar", "create-event", "create-events", "create-todo", "create-todos", "delete-calendar", "delete-event", "delete-todo", "get-current-time", "get-freebusy", "list-calendars", "list-events-expanded", "list-todos", "move-todo", "refresh-events", "refresh-todos", "update-event", "update-todo"]);
 	});
 
+	// --- R-6: read/write scope 分離のツール別強制 ---------------------------------
+	// (b) の authorize は scope=claudedav:read で同意しているので、(c) の accessToken は
+	// **read-only トークン**。これを使って read/write ツールの強制を本物の provider 経路で検証する。
+
+	it("(h) R-6: read-only トークンで write ツール(create-todo)を呼ぶと明示 isError で拒否される", async () => {
+		const response = await callWorker(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 10,
+					method: "tools/call",
+					params: { name: "create-todo", arguments: { title: "should be denied" } },
+				}),
+			}),
+		);
+		// scope 拒否は HTTP 401 ではなく JSON-RPC の isError(認証は通っているが認可が足りない)。
+		expect(response.status).toBe(200);
+		const rpc = (await parseJsonRpcResponse(response)) as {
+			result?: { isError?: boolean; content?: Array<{ text?: string }> };
+		};
+		expect(rpc.result?.isError).toBe(true);
+		expect(rpc.result?.content?.[0]?.text).toContain("読み取り専用");
+	});
+
+	it("(i) R-6: read-only トークンでも read ツール(get-current-time)は成功する", async () => {
+		const response = await callWorker(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 11,
+					method: "tools/call",
+					params: { name: "get-current-time", arguments: {} },
+				}),
+			}),
+		);
+		expect(response.status).toBe(200);
+		const rpc = (await parseJsonRpcResponse(response)) as { result?: { isError?: boolean } };
+		expect(rpc.result?.isError).toBeFalsy();
+	});
+
+	it("(j) R-6: 両 scope を同意したトークンでは write ツール(create-todo)が成功する", async () => {
+		// 別の DCR→authorize(scope=read+write)→token フローを一気に走らせて full-access トークンを得る。
+		// grandfather(scopes 無しの旧 grant)は本物の provider 経路では作れない(この app の authorize は
+		// 常に props.scopes を載せるため)。grandfather の write 許可は test/presentation/mcp-api-wiring
+		// の bun test(ctx.props を直接注入して scopes:undefined を再現)で検証している。
+		const rwVerifier = generateCodeVerifier();
+		const rwChallenge = await deriveCodeChallengeS256(rwVerifier);
+
+		const regRes = await callWorker(
+			new Request("https://example.com/oauth/register", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "rw-client", token_endpoint_auth_method: "none" }),
+			}),
+		);
+		const rwClientId = ((await regRes.json()) as { client_id: string }).client_id;
+
+		const authorizeUrl = new URL("https://example.com/authorize");
+		authorizeUrl.searchParams.set("response_type", "code");
+		authorizeUrl.searchParams.set("client_id", rwClientId);
+		authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+		authorizeUrl.searchParams.set("code_challenge", rwChallenge);
+		authorizeUrl.searchParams.set("code_challenge_method", "S256");
+		authorizeUrl.searchParams.set("scope", "claudedav:read claudedav:write");
+		authorizeUrl.searchParams.set("state", "rw-state");
+
+		// 同意画面が権限サマリを出すことも軽く確認する(R-6 の同意 UI 追加)。
+		const getRes = await callWorker(new Request(authorizeUrl.toString()));
+		const consentHtml = await getRes.text();
+		expect(consentHtml).toContain("読み取り + 書き込み");
+
+		const postRes = await callWorker(
+			new Request(authorizeUrl.toString(), {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ password: TEST_DUMMY_SECRETS.CALDAV_PASSWORD }).toString(),
+				redirect: "manual",
+			}),
+		);
+		const rwCode = new URL(postRes.headers.get("location") as string, redirectUri).searchParams.get("code") as string;
+
+		const tokenRes = await callWorker(
+			new Request("https://example.com/oauth/token", {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					grant_type: "authorization_code",
+					code: rwCode,
+					code_verifier: rwVerifier,
+					client_id: rwClientId,
+					redirect_uri: redirectUri,
+				}).toString(),
+			}),
+		);
+		const rwAccessToken = ((await tokenRes.json()) as { access_token: string }).access_token;
+
+		// create-todo の保存先 "tasks" を用意する(todo-e2e.test.ts と同じ手: discovery PROPFIND を
+		// Basic 認証で1回叩くと principal + デフォルトコレクション("calendar"/"tasks")が冪等に作られる)。
+		const basicAuth = `Basic ${btoa(`admin:${TEST_DUMMY_SECRETS.CALDAV_PASSWORD}`)}`;
+		const provisionRes = await callWorker(
+			new Request("https://example.com/", { method: "PROPFIND", headers: { Authorization: basicAuth, Depth: "0" } }),
+		);
+		expect(provisionRes.status).toBe(207);
+
+		const callRes = await callWorker(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${rwAccessToken}`,
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 12,
+					method: "tools/call",
+					params: { name: "create-todo", arguments: { title: "allowed with write scope" } },
+				}),
+			}),
+		);
+		expect(callRes.status).toBe(200);
+		const rpc = (await parseJsonRpcResponse(callRes)) as { result?: { isError?: boolean } };
+		expect(rpc.result?.isError).toBeFalsy();
+	});
+
 	// --- 失敗系 --------------------------------------------------------------
 
 	it("(f) authorize: 誤ったパスワードでは同意が成立しない(401 + フォーム再表示)", async () => {

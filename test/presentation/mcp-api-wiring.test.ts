@@ -47,9 +47,11 @@ const ENV = {
 // resolveExternalTokenForMcp: MCP_TOKEN との照合ロジックの単体テスト
 // =============================================================================
 describe("resolveExternalTokenForMcp", () => {
-	it("正しい MCP_TOKEN なら { props: { username } } を返す", async () => {
+	it("正しい MCP_TOKEN なら { props: { username, scopes: 両scope } } を返す(R-6: 静的 Bearer=full access)", async () => {
+		// R-6: 静的 Bearer は管理者自身のトークンなので full access(両 scope)を props に載せる。
+		// これにより oauth-props-auth の grandfather 警告(旧 grant 用)には該当せず、write ツールも通る。
 		const result = await resolveExternalTokenForMcp({ token: MCP_TOKEN, env: ENV });
-		expect(result).toEqual({ props: { username: USERNAME } });
+		expect(result).toEqual({ props: { username: USERNAME, scopes: ["claudedav:read", "claudedav:write"] } });
 	});
 
 	it("不一致トークンは null", async () => {
@@ -94,12 +96,35 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 	// @cloudflare/workers-types の ExecutionContext は tracing 等も持つが、mcpApiApp 側の
 	// 局所キャスト(unknown 経由の narrow)は props フィールドしか見ないため、
 	// waitUntil/passThroughOnException だけ生やしたダミーで十分再現できる。
-	function fakeExecutionContextWithProps(props: { username?: string } | undefined) {
+	function fakeExecutionContextWithProps(props: { username?: string; scopes?: readonly string[] } | undefined) {
 		return {
 			props,
 			waitUntil() {},
 			passThroughOnException() {},
 		} as unknown as ExecutionContext;
+	}
+
+	// R-6: props に scopes を注入して write ツール(create-todo)を叩くヘルパ。
+	// scopes を undefined にすれば旧 grant(grandfather)経路も再現できる — 本番の
+	// OAuthProvider を介さず OAuthPropsAuth → server の read/write 強制まで一気通貫で exercise する。
+	async function callCreateTodo(scopes: readonly string[] | undefined) {
+		const req = new Request("https://example.com/mcp", {
+			method: "POST",
+			headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-todo", arguments: { title: "R-6 scope test", calendarId: "tasks" } },
+			}),
+		});
+		const res = await mcpApiApp.fetch(req, ENV, fakeExecutionContextWithProps({ username: USERNAME, scopes }));
+		expect(res.status).toBe(200); // scope 拒否は JSON-RPC の isError であって HTTP 401 ではない。
+		const text = await res.text();
+		const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
+		return JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text) as {
+			result?: { isError?: boolean; content?: Array<{ text?: string }> };
+		};
 	}
 
 	it("ctx.props に正しい username があれば OAuthPropsAuth 経由で principal が解決され tools/list が通る", async () => {
@@ -198,5 +223,53 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		const rpc = JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text);
 		expect(rpc.result.isError).toBeFalsy();
 		expect(rpc.result.structuredContent.busy).toHaveLength(1);
+	});
+
+	// --- R-6: ツール別 read/write scope 強制(本番の OAuthPropsAuth → server 経路を exercise)-----
+	describe("R-6 scope 強制", () => {
+		beforeEach(() => {
+			// create-todo の保存先 "tasks" を用意しておく(scope を通過した後に UC まで到達して
+			// 成功することを確認するため。scope 拒否ケースはここへ到達せず弾かれる)。
+			repos.collections.seed(new CalendarCollection({ id: collectionId("tasks"), owner: OWNER, displayName: "Tasks" }));
+		});
+
+		it("read-only scope(claudedav:read のみ)では write ツール(create-todo)が明示 isError で拒否される", async () => {
+			const rpc = await callCreateTodo(["claudedav:read"]);
+			expect(rpc.result?.isError).toBe(true);
+			// 文言に「読み取り専用」「再接続」を含む(server.ts の toolError メッセージ)。
+			expect(rpc.result?.content?.[0]?.text).toContain("読み取り専用");
+			expect(rpc.result?.content?.[0]?.text).toContain("再接続");
+		});
+
+		it("read-only scope でも read ツール(get-freebusy)は成功する", async () => {
+			const req = new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "get-freebusy", arguments: { timeMin: "2026-07-01T00:00:00Z", timeMax: "2026-08-01T00:00:00Z", calendarId: "tasks" } },
+				}),
+			});
+			const res = await mcpApiApp.fetch(req, ENV, fakeExecutionContextWithProps({ username: USERNAME, scopes: ["claudedav:read"] }));
+			expect(res.status).toBe(200);
+			const text = await res.text();
+			const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
+			const rpc = JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text);
+			expect(rpc.result.isError).toBeFalsy();
+		});
+
+		it("両 scope(claudedav:read + claudedav:write)では write ツール(create-todo)が成功する", async () => {
+			const rpc = await callCreateTodo(["claudedav:read", "claudedav:write"]);
+			expect(rpc.result?.isError).toBeFalsy();
+		});
+
+		it("旧 grant(props に scopes 無し)は grandfather で write ツールが成功する(現運用を壊さない)", async () => {
+			// scopes:undefined = 旧 grant / grandfather。OAuthPropsAuth が undefined を素通しし、
+			// server の allowsWrite(undefined) が true を返すため write が通る(再接続まで従来どおり動く)。
+			const rpc = await callCreateTodo(undefined);
+			expect(rpc.result?.isError).toBeFalsy();
+		});
 	});
 });

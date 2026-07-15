@@ -26,6 +26,11 @@
 
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { app, mcpApiApp, resolveExternalTokenForMcp } from "./app";
+// R-6: OAuth scope 分離(read/write)。authorization server metadata の scopes_supported に
+// 両 scope を広告する。語彙は presentation/mcp/scopes.ts に一元化(強制側と同じ定義を使い、
+// 「広告した scope」と「強制する scope」がズレない — index.ts はコンポジションルートなので
+// presentation からの import が許される)。
+import { ALL_SCOPES } from "./presentation/mcp/scopes";
 
 // =============================================================================
 // OAuthProvider — Worker のエントリポイント(default export)
@@ -61,10 +66,12 @@ export default new OAuthProvider<CloudflareBindings>({
 	// ものが多いため。docs 記載の「DCR は MAY 降格・CIMD 主流」は中長期方針であり、
 	// 今すぐ DCR を無効化する理由にはならない)。
 	clientRegistrationEndpoint: "/oauth/register",
-	// 現状の MCP ツール(get-current-time / list-events-expanded / get-freebusy)は
-	// すべて読み取り専用。将来 PUT 相当の書き込みツールを足すときに write スコープを追加する
-	// 前提で、今は read スコープのみを広告する(最小権限の原則)。
-	scopesSupported: ["claudedav:read"],
+	// R-6(2026-07-15): read/write scope を分離して両方広告する。以前は read のみを広告したまま
+	// write 系ツール(create/update/delete/complete/move 等)が実行できてしまっていた(公開前必須の
+	// 是正 + 第三者クライアント受け入れの前提整備)。read 名(claudedav:read)は既発行 grant との
+	// 整合のため変えない。強制(write ツールに claudedav:write を要求)は presentation/mcp が行い、
+	// ここは discovery metadata への広告に徹する(ALL_SCOPES = [claudedav:read, claudedav:write])。
+	scopesSupported: [...ALL_SCOPES],
 	// implicit フローは OAuth 2.1 で非推奨(トークンが URL fragment に露出し漏洩しやすい)。
 	// MCP クライアントは authorization code + PKCE を使うのが前提なので明示的に無効化する。
 	allowImplicitFlow: false,

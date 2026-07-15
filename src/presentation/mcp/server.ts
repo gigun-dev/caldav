@@ -108,6 +108,9 @@ import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } fr
 // formatDateOnly は list-events-expanded の応答整形を event-dto.eventFromOccurrence(application 層)へ
 // 移したため presentation では不要になった(2026-07-15 E-3 S1)。epochToIso は get-freebusy 等で継続使用。
 import { epochToIso, isValidIanaZone, parseIsoToEpoch } from "./format";
+// R-6: OAuth scope 分離のツール別強制。read/write の区分(READ_ONLY_TOOLS)と write 許可判定
+// (allowsWrite: undefined=grandfather/full access)を scopes.ts に集約する(scopes.ts 冒頭コメント参照)。
+import { allowsWrite, isWriteTool } from "./scopes";
 
 export interface McpAppDeps {
 	readonly auth: AuthenticationPort;
@@ -718,7 +721,10 @@ function toolError(message: string) {
 // 実行 colo が遠い(例: claude.ai バックエンド発 = IAD)ほど D1 直列往復のペナルティが線形に
 // 効く仮説の検証と、Smart Placement(wrangler.jsonc)導入後に実行 colo が D1 側へ寄ったことの
 // 確認は、このフィールドが唯一の計器になる。
-function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?: string): McpServer {
+// scopes: この呼び出しに許可された OAuth scope 集合(R-6。2026-07-15 追加)。
+// **undefined = full access(grandfather / 静的 Bearer 相当)**(AuthResult.scopes の契約 —
+// application/ports/authentication.ts)。write ツール実行時に allowsWrite(scopes) で強制する。
+function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: readonly string[] | undefined, requestColo?: string): McpServer {
 	const server = new McpServer({ name: "caldav-mcp", version: "1.0.0" });
 
 	// --- ツール別レイテンシ計測(2026-07-14 追加。POST /mcp wall p95≈1164ms 対策の効果測定用)-----
@@ -743,6 +749,19 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 	) => unknown;
 	server.registerTool = ((name: string, config: unknown, cb: (...args: unknown[]) => unknown) =>
 		rawRegisterTool(name, config, async (...args: unknown[]) => {
+			// --- R-6: ツール別 scope 強制 ------------------------------------------------
+			// write(mutation)ツールは claudedav:write が無いと実行させない。read/write の区分は
+			// scopes.ts の READ_ONLY_TOOLS(allowlist・未分類は write 扱いの safe default)に集約する。
+			// 【なぜ計測 try/finally の「外」でここに置くか】権限エラーは即返しでよく、レイテンシ計測の
+			// 対象(実際のユースケース実行)ではない。かつ isError レスポンスは正常な JSON-RPC 応答
+			// (throw ではない)なので、ここで早期 return して cb を呼ばないのが最小挙動。
+			// scopes === undefined(grandfather / 静的 Bearer)は allowsWrite が true を返すので
+			// この分岐に入らず、既存接続は再接続まで従来どおり動く(R-6 裁定)。
+			if (isWriteTool(name) && !allowsWrite(scopes)) {
+				return toolError(
+					"このトークンは読み取り専用です。コネクタを再接続して書き込み権限(claudedav:write)を許可してください。",
+				);
+			}
 			const startedAtMs = Date.now();
 			try {
 				return await cb(...args);
@@ -2084,7 +2103,9 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 		// request.cf は Workers ランタイムでのみ存在(bun test の素の Request には無い)ため
 		// optional chain で安全に取る。colo は計測ログ専用(認可・応答内容には一切影響しない)。
 		const cf = (c.req.raw as { cf?: { colo?: string } }).cf;
-		const server = buildMcpServer(deps, authResult.principal, cf?.colo);
+		// R-6: 認証で解決した scope 集合を buildMcpServer へ束ねる(write ツール強制の材料)。
+		// authResult.scopes は undefined(grandfather/静的 Bearer=full access)か、同意 scope 配列。
+		const server = buildMcpServer(deps, authResult.principal, authResult.scopes, cf?.colo);
 		const transport = new StreamableHTTPTransport();
 		await server.connect(transport);
 		const response = await transport.handleRequest(c);

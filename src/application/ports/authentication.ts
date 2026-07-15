@@ -49,9 +49,22 @@ export interface AuthContext {
  * 認証結果。成功なら解決済みの PrincipalRef、失敗なら 401 応答に添える WWW-Authenticate 値
  * (RFC 6750 の Bearer チャレンジ等)を任意で返す。判別可能ユニオンにして、呼び出し側が
  * ok の分岐で principal を型安全に取り出せるようにする。
+ *
+ * 【scopes を「運ぶ」だけの seam(R-6。2026-07-15 追加)】
+ * OAuth の read/write scope 分離のため、認証アダプタ(OAuthPropsAuth)が解決した scope 集合を
+ * ここに載せて presentation/mcp まで運ぶ。**application/domain はこの値の意味を一切解釈しない**
+ * (どのツールが write かの判断・強制は presentation/mcp の scopes.ts が担う。ここは純粋に
+ * 「アダプタ → 入口」の受け渡し口)。string[] にしているのは domain の値オブジェクトに
+ * 昇格させないため — scope はあくまで OAuth/MCP プロトコル層の関心事で、ドメインモデルではない。
+ *
+ * scopes の契約(presentation 側の解釈): **undefined は「full access(grandfather)」を意味する**。
+ *   - 旧 grant(scope 情報を props に持たない既存 OAuth トークン)→ undefined(現運用を壊さない)。
+ *   - 静的 Bearer(MCP_TOKEN)→ アダプタが full scope 配列を載せる(サーバー管理者自身のトークン)。
+ *   - 新 grant → 同意された scope の配列(厳密強制)。
+ * 詳細は infrastructure/auth/oauth-props-auth.ts と presentation/mcp/scopes.ts の allowsWrite。
  */
 export type AuthResult =
-	| { readonly ok: true; readonly principal: PrincipalRef }
+	| { readonly ok: true; readonly principal: PrincipalRef; readonly scopes?: readonly string[] }
 	| { readonly ok: false; readonly wwwAuthenticate?: string };
 
 /**

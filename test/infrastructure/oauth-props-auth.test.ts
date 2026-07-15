@@ -26,6 +26,23 @@ describe("OAuthPropsAuth", () => {
 		}
 	});
 
+	// --- R-6: scope の透過 + grandfather ---------------------------------------------
+	it("props.scopes があれば AuthResult.scopes にそのまま運ぶ(新 grant の厳密強制材料)", async () => {
+		const auth = new OAuthPropsAuth({ username: "admin", scopes: ["claudedav:read"] });
+		const result = await auth.authenticate(CTX);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.scopes).toEqual(["claudedav:read"]);
+	});
+
+	it("props.scopes が無い(旧 grant)場合は scopes を undefined で素通す(grandfather=full access)", async () => {
+		// undefined = full access の契約(authentication.ts / scopes.ts の allowsWrite)。
+		// oauth-props-auth は console.log 警告を出すが、認証自体は成功し scopes は undefined になる。
+		const auth = new OAuthPropsAuth({ username: "admin" });
+		const result = await auth.authenticate(CTX);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.scopes).toBeUndefined();
+	});
+
 	it("props が undefined なら 401 + WWW-Authenticate", async () => {
 		const auth = new OAuthPropsAuth(undefined);
 		const result = await auth.authenticate(CTX);

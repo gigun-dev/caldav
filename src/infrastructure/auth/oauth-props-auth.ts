@@ -55,6 +55,14 @@ function principalHrefFor(username: string): string {
  */
 export interface OAuthPrincipalProps {
 	readonly username?: string;
+	// R-6(2026-07-15): OAuth scope 分離(read/write)。completeAuthorization({props}) で同意された
+	// scope を props に載せて運び、ここで principal と一緒に AuthResult.scopes へ透過する。
+	// 【additive で {username} の暗黙契約を壊さない】既存 grant(scope 情報を持たない props)は
+	// scopes が undefined のまま到達する。その場合は下の authenticate() で「旧 grant = full access
+	// (grandfather)」として扱う(現運用の単一ユーザー接続を再接続まで生かす — R-6 裁定)。
+	// 静的 Bearer(MCP_TOKEN)経路は resolveExternalTokenForMcp(src/app.ts)が full scope 配列を
+	// 明示的に載せる(管理者自身のトークン = full access。旧 grant の警告とは区別する)。
+	readonly scopes?: readonly string[];
 }
 
 export class OAuthPropsAuth implements AuthenticationPort {
@@ -71,6 +79,27 @@ export class OAuthPropsAuth implements AuthenticationPort {
 			return { ok: false, wwwAuthenticate: 'Bearer realm="caldav-mcp"' };
 		}
 		const principal: PrincipalRef = principalPath(principalHrefFor(this.props.username));
-		return { ok: true, principal };
+
+		// --- R-6: scope の解決(grandfather 込み)-------------------------------------
+		// このアダプタは scope 文字列リテラル(claudedav:read/write)を一切知らない
+		// (層境界: infrastructure → presentation を import しない。強制は presentation/mcp の
+		// scopes.ts が担う)。ここは「props.scopes を透過する / 旧 grant は undefined で素通し」
+		// だけに徹する。AuthResult.scopes の契約(authentication.ts): undefined = full access。
+		if (this.props.scopes === undefined) {
+			// 旧 grant(scope 情報を持たない既存 OAuth トークン)。単一ユーザーの現運用を壊さないため
+			// full access(grandfather)として扱い、undefined を素通しする。再接続すれば新 grant として
+			// scopes 付きで発行され、以降は厳密強制に移行する。
+			// 【なぜ warning を出すか】grandfather はあくまで移行期間の互換措置。「まだ scope 情報を
+			// 持たない古いトークンが使われている」ことを運用者が気づけるよう console.log で警告する
+			// (個人データは載せない。再接続を促す判断材料)。静的 Bearer 経路はここに来ない
+			// (resolveExternalTokenForMcp が scopes を明示的に載せるため props.scopes !== undefined)。
+			console.log(JSON.stringify({
+				event: "oauth_grant_without_scopes",
+				note: "legacy grant (no scope info) — granted full access as grandfather; reconnect to enforce read/write scopes",
+			}));
+			return { ok: true, principal };
+		}
+		// 新 grant(または静的 Bearer)。同意された scope 配列をそのまま運ぶ(厳密強制対象)。
+		return { ok: true, principal, scopes: this.props.scopes };
 	}
 }
