@@ -17,6 +17,8 @@
 | 標準戦略の調査 | [09-standards-strategy.md](09-standards-strategy.md) | どの RFC に従い・切り・先行投資するか(方向性 J 一次資料 + G の優先度補正) |
 | メール統合の調査 | [10-email-integration.md](10-email-integration.md) | iMIP 送受信・予定抽出をどう実現するか(方向性 K 一次資料) |
 | agentic 露出面の調査 | [11-agentic-surfaces.md](11-agentic-surfaces.md) | MCP Apps / WebMCP をどう位置づけるか + 着手順の DDD 戦略設計(方向性 E 一次資料) |
+| VEVENT の agentic 入口 | [12-vevent-agentic.md](12-vevent-agentic.md) | E-3(VEVENT ツール + アジェンダカード)の設計の正・Event DTO / VALARM / 移動時間 |
+| マルチユーザー + アイデンティティ | [13-multiuser-identity.md](13-multiuser-identity.md) | 方向性 A の設計の正・2階建て認証 / 自前 SIWA ファースト / A-1 スキーマ / 権限表 / R-7 |
 
 一次資料の RFC: 5545(iCalendar)/ 7986(拡張プロパティ)/ 4918(WebDAV)/
 4791(CalDAV)/ 6578(sync-collection)/ 6764(探索)/ 5397(current-user-principal)/

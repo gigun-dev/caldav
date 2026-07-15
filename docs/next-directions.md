@@ -55,6 +55,12 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
    > 下=App Password)。**アイデンティティ戦略(自前 better-auth vs 外部 IdP・SIWA の位置づけ・
    > 分析要件・MCP OAuth との統合)を Fable architect が調査中**。結論が出てから A-1 スキーマの
    > アイデンティティ列を確定する(調査→設計の順序を守る)。ハッシュは SHA-256/PHC 確定(modeling/07)。
+   > **2026-07-15 追記: アイデンティティ戦略の調査完了 → docs/modeling/13 に設計の正を確定。**
+   > 採用 = 自前・SIWA ファースト(better-auth は seam 裏の将来オプション・Firebase 却下)。
+   > 認証は2階建て(上=IdentityPort/下=App Password)。分析は AnalyticsPort 分離で Firebase の
+   > バンドル加点は消える。ユーザー選択で「まず docs 化」→ 完了。**次の実装スライス(承認後)**:
+   > users テーブル + FK(principals/app_passwords → users)+ IdentityPort 型定義を migration に。
+   > SIWA 検証アダプタは companion アプリ計画に合わせて後。未確定の製品判断は modeling/13 §9。
 
 ## 今日までに完成しているもの(前提)
 
