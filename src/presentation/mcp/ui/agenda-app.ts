@@ -141,6 +141,11 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .meta .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; }
   .row-main > .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; color: var(--muted); align-self: center; }
   .note-mark { display: inline-flex; align-items: center; margin-left: 6px; color: var(--muted); font-size: 12px; }
+  /* 【S-D スライス①: 一覧でもメモを見たい(todos-app.ts と対称・todos 側は元々 .notes 定義済みだが
+   * デッドコードだった。agenda 側は定義自体が無かったので新設)】非選択行の head 直下に本文冒頭を
+   * 1行 truncate 表示する。note-mark アイコン(「メモがある」目印)とは役割を分けて併存させる
+   * (アイコン=走査時に速く気づく合図、本文プレビュー=内容を読む手掛かり)。 */
+  .notes { margin-top: 1px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* --- becoming --- */
   li.becoming-in .row-main { box-shadow: inset 2px 0 0 var(--add); background: linear-gradient(to right, var(--add-wake), transparent 55%); }
@@ -163,8 +168,13 @@ export const AGENDA_APP_HTML = `<!doctype html>
 
   /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)--- */
   li.selected .row-main { background: var(--bg-subtle); border-radius: 10px; margin: 0 -6px; padding: 6px; }
-  .title-edit { display: block; width: 100%; font: inherit; font-weight: 480; color: var(--fg); border: none; background: none; outline: none; padding: 0 0 1px; }
-  .memo-line { display: block; width: 100%; font: inherit; font-size: 12px; color: var(--text-3); border: none; background: none; outline: none; margin-top: 2px; padding: 0; }
+  /* 【S-D スライス②: focus zoom 是正(todos-app.ts と対称)】iOS Safari/WKWebView は 16px 未満の
+   * フォーカス可能入力でオートズームする。.title-edit/.memo-line を 16px 化し、行高が広がらない
+   * よう line-height を詰める(選択行だけ文字がわずかに大きく見えるのは親裁定で許容 §7.7)。
+   * 【S-D スライス④: padding 統一】todos-app.ts と揃えて 0 0 1px に統一済み(元々こちらが
+   * 最小値だったので変更なし。統一の判断根拠は todos-app.ts の同箇所コメント参照)。 */
+  .title-edit { display: block; width: 100%; font: inherit; font-size: 16px; font-weight: 480; color: var(--fg); border: none; background: none; outline: none; padding: 0 0 1px; }
+  .memo-line { display: block; width: 100%; font: inherit; font-size: 16px; line-height: 1.2; color: var(--text-3); border: none; background: none; outline: none; margin-top: 2px; padding: 0; }
   .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
   button.info {
     flex: none; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
@@ -204,7 +214,8 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .link-save { color: var(--accent); font-weight: 600; }
   .detail-body { padding: 2px 0 6px; }
   .d-title { display: block; width: 100%; font: inherit; font-size: 16px; font-weight: 600; color: var(--fg); border: none; background: none; outline: none; padding: 12px 0 2px; }
-  .d-notes { display: block; width: 100%; font: inherit; font-size: 13px; color: var(--fg); border: none; background: none; outline: none; resize: none; min-height: 30px; padding: 2px 0 12px; }
+  /* S-D スライス②: iOS auto-zoom 回避のため 16px 化(todos-app.ts の .d-notes と対称)。 */
+  .d-notes { display: block; width: 100%; font: inherit; font-size: 16px; line-height: 1.3; color: var(--fg); border: none; background: none; outline: none; resize: none; min-height: 30px; padding: 2px 0 12px; }
   .d-notes::placeholder, .d-title::placeholder { color: var(--text-3); }
   /* 参加行(URL video)。開けないホストに備えテキスト選択可能に degrade(user-select:text)。 */
   .join-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: var(--accent); }
@@ -212,13 +223,15 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .f-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 4px 0; border-top: 1px solid var(--border-hair); font-size: 13.5px; }
   .f-label { flex: none; width: 5em; color: var(--muted); }
   .f-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .naked { font: inherit; font-size: 13.5px; color: var(--accent); border: none; background: none; padding: 0; outline: none; }
+  /* S-D スライス②: date/time input(.naked)・URL 入力(.url-input)も iOS auto-zoom 回避で 16px 化
+   * (todos-app.ts の .naked と対称)。.f-value .val/.chev は表示専用テキストなので据え置き。 */
+  .naked { font: inherit; font-size: 16px; color: var(--accent); border: none; background: none; padding: 0; outline: none; }
   .naked::-webkit-calendar-picker-indicator { display: none; }
   .f-value .placeholder { color: var(--text-3); }
   .f-value .val { color: var(--accent); }
   .f-value .muted { color: var(--text-3); }
   .f-value .chev { display: flex; align-items: center; color: var(--text-3); font-size: 13px; }
-  .url-input { width: 100%; font: inherit; font-size: 13px; color: var(--fg); background: none; border: none; outline: none; padding: 0; }
+  .url-input { width: 100%; font: inherit; font-size: 16px; color: var(--fg); background: none; border: none; outline: none; padding: 0; }
   .url-input::placeholder { color: var(--text-3); }
   .f-expand { padding: 2px 0 12px 0; margin-left: calc(5em + 10px); }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -228,7 +241,8 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .chips + .chips { margin-top: 8px; }
   .chips .chips-label { font-size: 11px; color: var(--text-3); align-self: center; padding-right: 2px; }
   .chips.wd button { width: 28px; height: 28px; padding: 0; border-radius: 50%; }
-  .f-expand input[type="text"] { width: 100%; font: inherit; font-size: 13px; color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  /* S-D スライス②: 展開内テキスト入力も 16px 化(todos-app.ts と対称)。 */
+  .f-expand input[type="text"] { width: 100%; font: inherit; font-size: 16px; color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
   .sw { flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--border); position: relative; border: none; cursor: pointer; }
   .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
   .sw.on { background: var(--accent); }

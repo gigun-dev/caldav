@@ -549,6 +549,14 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 			title.appendChild(noteMark);
 		}
 		head.appendChild(title);
+		// 【S-D スライス①: 一覧でもメモを見たい(todos と対称)】非選択行でも本文冒頭1行を薄いテキストで
+		// truncate 表示する(CSS .notes。todos-entry.ts の同箇所コメント参照 — note-mark アイコンは
+		// 「メモがある」の目印として残しつつ、本文プレビューを併存させる判断は todos/agenda 共通)。
+		if (ev.notes !== null && ev.notes.trim() !== "") {
+			const notesPreview = el("div", "notes");
+			notesPreview.textContent = ev.notes.trim();
+			head.appendChild(notesPreview);
+		}
 		// 選択はタップされた occurrence 行だけ(合成キー)。id だと系列全行が同時選択になる(§7.1)。
 		head.addEventListener("click", () => setSelected(key));
 	}

@@ -894,6 +894,17 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			title.appendChild(noteMark);
 		}
 		head.appendChild(title);
+		// 【S-D スライス①: 一覧でもメモを見たい】.notes は元々 CSS だけ定義されデッドコードだった
+		// (note-mark アイコンだけが「メモがある」目印で、本文は選択して初めて読めた)。非選択行でも
+		// 冒頭1行を薄いテキストで truncate 表示する(CSS .notes の overflow:hidden/ellipsis/nowrap)。
+		// note-mark アイコンは「メモがある」の視覚的な目印として残す(削らない — 密なリストを
+		// ざっと走査するときはアイコンの方が本文より速く目に入るため、アイコン+本文プレビューを併存)。
+		if (task.notes !== null && task.notes.trim() !== "") {
+			const notesPreview = document.createElement("div");
+			notesPreview.className = "notes";
+			notesPreview.textContent = task.notes.trim();
+			head.appendChild(notesPreview);
+		}
 		// head タップ=選択(iOS 準拠)。仮行(create 未確定)は選択させても saveEdit が no-op なので許容。
 		head.addEventListener("click", () => setSelected(task.id));
 	}

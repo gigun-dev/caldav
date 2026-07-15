@@ -353,11 +353,19 @@ export const TODOS_APP_HTML = `<!doctype html>
   .pri { color: var(--pri); font-weight: 700; letter-spacing: 1px; }
   .due { }
   .due.overdue { color: var(--danger); }
+  /* 【S-D スライス①: 一覧でもメモを見たい】以前はここに定義だけあって renderRow から一度も
+   * 使われていないデッドコードだった(todos-entry.ts に .notes 生成コードが無かった)。
+   * 非選択行の head 直下に本文冒頭を1行 truncate 表示する用途で復活させる(entry 側の対応は
+   * renderRow の非選択ブロック参照)。overflow-wrap: break-word(折り返し)のままだと truncate
+   * にならないため、agenda-app.ts の .notes(1行 truncate)と揃えて overflow:hidden +
+   * text-overflow:ellipsis + white-space:nowrap に変更する(todos/agenda 二重適用で挙動を揃える)。 */
   .notes {
     margin-top: 1px;
     font-size: 12px;
     color: var(--muted);
-    overflow-wrap: break-word;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* --- becoming(変化の中間状態)------------------------------------------------
@@ -555,6 +563,13 @@ export const TODOS_APP_HTML = `<!doctype html>
     font-weight: 700;
     letter-spacing: 1px;
     margin-right: 4px;
+    /* 【S-D スライス③: 完了タスクの優先度「!」に取り消し線が乗る副作用の解消】
+     * li.done .title { text-decoration: line-through } は子孫の span.pri-inline にも
+     * text-decoration が継承され(text-decoration は継承プロパティ)、完了タスクの優先度記号に
+     * 打ち消し線が乗って読みづらくなっていた。取り消し線は「タイトル本文が完了した」ことを示す
+     * 記号であって優先度の意味を消したいわけではないため、pri-inline だけ明示的に none で
+     * 継承を打ち切る(agenda には優先度が無いので agenda-app.ts には対応箇所なし)。 */
+    text-decoration: none;
   }
 
   /* --- 繰り返しバッジ / メモ有りインジケータ(E-2 スライス⑤)---------------------------
@@ -651,22 +666,36 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 同じ横並びを input と共存させるための行ラッパ(pri-inline はそのまま流用、真ん中の input だけ
    * flex:1 で伸ばす)。 */
   .title-edit-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  /* 【S-D スライス②: focus zoom 是正】iOS Safari/WKWebView はフォーカス可能な入力の
+   * font-size が 16px 未満だとフォーカス時に自動ズームする(iOS の既知挙動。閾値ちょうど 16px)。
+   * .title-edit は以前 font:inherit(body の 14px を継承)で自動ズームの対象だったため 16px を
+   * 明示する。表示専用の .title(非入力)は据え置き(一覧の行密度を保つため、ズーム対策が
+   * 要らない要素まで拡大しない)。
+   * 【S-D スライス④: todos/agenda で padding 不一致(2px 0 と 0 0 1px)だったのを統一】
+   * S-E(title 垂直ズレ修正)の前提としてまず両カード同値に揃える。値は agenda 側の
+   * 最小値 0 0 1px を採用(揃えること自体が目的で、実際の行高調整は S-E に委ねる)。 */
   .title-edit {
     display: block;
     flex: 1;
     min-width: 0;
     font: inherit;
+    font-size: 16px;
     color: var(--fg);
     border: none;
     background: none;
     outline: none;
-    padding: 2px 0;
+    padding: 0 0 1px;
   }
+  /* .memo-line も同じ理由(iOS auto-zoom 回避)で 16px 化。元は 12px で .meta 相当の小さめ表示に
+   * 揃えていたが、フォーカス時ズームの実害の方が「メモ行がやや大きく見える」より優先度が高い
+   * (親裁定 §7.7: 選択行だけ文字がわずかに大きくなるのは許容)。行高が広がらないよう
+   * line-height を詰めて padding は変えない。 */
   .memo-line {
     display: block;
     width: 100%;
     font: inherit;
-    font-size: 12px;
+    font-size: 16px;
+    line-height: 1.2;
     color: var(--muted);
     border: none;
     background: none;
@@ -780,11 +809,14 @@ export const TODOS_APP_HTML = `<!doctype html>
     outline: none;
     padding: 12px 0 2px;
   }
+  /* .d-notes(メモ textarea)も iOS auto-zoom 回避のため 16px 化(S-D スライス②)。
+   * padding-bottom はそのまま(min-height 30px の余白と行間バランスを崩さない)。 */
   .d-notes {
     display: block;
     width: 100%;
     font: inherit;
-    font-size: 13px;
+    font-size: 16px;
+    line-height: 1.3;
     color: var(--fg);
     border: none;
     background: none;
@@ -807,10 +839,11 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
   .f-label { flex: none; width: 5em; color: var(--muted); }
   .f-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
-  /* 裸のネイティブ input(値表示=入力の一本化は v2 から継承)。picker-indicator を隠して値だけ見せる。 */
+  /* 裸のネイティブ input(値表示=入力の一本化は v2 から継承)。picker-indicator を隠して値だけ見せる。
+   * date/time input はフォーカス可能なので S-D スライス②の 16px 化対象(iOS auto-zoom 回避)。 */
   .naked {
     font: inherit;
-    font-size: 13.5px;
+    font-size: 16px;
     color: var(--accent);
     border: none;
     background: none;
@@ -876,11 +909,11 @@ export const TODOS_APP_HTML = `<!doctype html>
   .chips .chips-label { font-size: 11px; color: var(--text-3); align-self: center; padding-right: 2px; }
   /* 曜日は丸チップ(意味の違い=単一選択でなく複数選択、を形で分ける)。 */
   .chips.wd button { width: 28px; height: 28px; padding: 0; border-radius: 50%; }
-  /* 場所などのテキスト入力(展開内)。 */
+  /* 場所などのテキスト入力(展開内)。フォーカス可能なので S-D スライス②の 16px 化対象。 */
   .f-expand input[type="text"] {
     width: 100%;
     font: inherit;
-    font-size: 13px;
+    font-size: 16px;
     color: var(--fg);
     background: var(--bg-subtle);
     border: 1px solid var(--border);
