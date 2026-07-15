@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>caldav — agenda card v1(E-3 S2 提案モック)</title>
+<style>
+/* ============================================================
+   アジェンダカード(list-events-expanded 用)の提案モック。
+   todos v3 の言語(ヘアライン・静かなタイポ・accent 最小・
+   カード内ページ遷移・インライン chips・浮遊レイヤーなし)を継承。
+   todos との差分だけが新しい:
+   - 行 = [時刻列(開始/終了の2段・終日は「終日」)] [タイトル+meta]。
+     アジェンダの走査は「いつ」が第一キーなので時刻を先頭列に置く
+     (todos の丸チェック位置に相当する「行の錨」)。
+   - セクション = 日付見出し(今日 / 明日 / 7/18(土) …)。
+   - 完了概念なし。becoming は 追加/変更/削除/同期(…)。
+   - 詳細ページ: 開始・終了(各 日付+時刻の裸 input)+ 終日トグル。
+     優先度なし。繰り返し/場所/リストは todos v3 と同一部品。
+   ============================================================ */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, system-ui, "Hiragino Sans", sans-serif;
+  --fs-title: 14px; --fs-meta: 12px; --fs-section: 11px; --fs-micro: 10.5px;
+  --row-min-h: 44px; --row-pad-x: 14px; --card-radius: 14px;
+}
+.theme-light {
+  --bg:#fff; --bg-subtle:#f7f7f8;
+  --border:#e4e4e7; --border-hair:#eeeef0;
+  --text:#1c1c1e; --text-2:#8a8a8e; --text-3:#b4b4b8;
+  --accent:#2f6fed; --accent-soft:rgba(47,111,237,.14);
+  --add:#2f9e63; --add-wake:rgba(47,158,99,.07);
+  --edit:#b07300; --del:#d64545; --now:#d64545;
+}
+.theme-dark {
+  --bg:#1e1e20; --bg-subtle:#27272a;
+  --border:#3a3a3e; --border-hair:#2e2e32;
+  --text:#f2f2f4; --text-2:#98989e; --text-3:#5c5c62;
+  --accent:#6f9cf5; --accent-soft:rgba(111,156,245,.20);
+  --add:#55b884; --add-wake:rgba(85,184,132,.10);
+  --edit:#d9a441; --del:#e57373; --now:#e57373;
+}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--font);background:#d7dbe0;padding:24px 12px;
+     display:flex;flex-wrap:wrap;gap:28px;justify-content:center;align-items:flex-start}
+.card{width:100%;min-width:320px;max-width:380px;background:var(--bg);color:var(--text);
+      border:1px solid var(--border);border-radius:var(--card-radius);overflow:hidden;
+      box-shadow:0 1px 2px rgba(0,0,0,.05);font-size:var(--fs-title);line-height:1.4}
+.card-label{font-size:11px;color:var(--text-3);padding:10px var(--row-pad-x) 0}
+.card-header{display:flex;align-items:baseline;gap:8px;padding:12px var(--row-pad-x) 8px}
+.card-header h2{font-size:15px;font-weight:650;letter-spacing:-.01em}
+.card-header .count{font-size:var(--fs-meta);color:var(--text-2)}
+.section{padding:7px var(--row-pad-x) 4px;font-size:var(--fs-section);font-weight:600;
+         letter-spacing:.06em;color:var(--text-2);border-top:1px solid var(--border-hair)}
+.section:first-of-type{border-top:none}
+.section .sub{font-weight:400;letter-spacing:0;color:var(--text-3);padding-left:6px}
+
+/* ---- 行: [時刻列][head][(選択時)ⓘ] ---- */
+.row{padding:0 var(--row-pad-x)}
+.row + .row .row-main{border-top:1px solid var(--border-hair)}
+.row-main{display:flex;align-items:center;gap:12px;min-height:var(--row-min-h);padding:6px 0}
+/* 時刻列: 開始(上・本文色)/ 終了(下・muted)。終日は1段「終日」。幅固定で縦を揃える */
+.time{flex:none;width:48px;text-align:right;font-variant-numeric:tabular-nums;line-height:1.25}
+.time .st{font-size:12.5px;color:var(--text)}
+.time .en{font-size:11px;color:var(--text-3)}
+.time .allday{font-size:11px;color:var(--text-2);letter-spacing:.04em}
+/* 進行中(now)の左バー: 「いま」の1本だけ accent の縦バーで示す(色は増やさない) */
+.row.now .row-main{box-shadow:inset 2px 0 0 var(--accent)}
+.head{flex:1;min-width:0}
+.title{font-weight:480;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{display:flex;align-items:baseline;gap:0 8px;min-width:0;
+      font-size:var(--fs-meta);color:var(--text-2);margin-top:1px}
+.meta .loc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.meta .tag{margin-left:auto;flex:none;font-size:var(--fs-micro);letter-spacing:.03em;padding-left:8px}
+.becoming-in .row-main{box-shadow:inset 2px 0 0 var(--add);
+      background:linear-gradient(to right,var(--add-wake),transparent 55%)}
+.becoming-in .meta .tag{color:var(--add)}
+.meta .old{color:var(--text-3)} .meta .arrow{color:var(--text-3);padding:0 2px}
+.meta .new{color:var(--edit);font-weight:560}
+.becoming-edit .meta .tag{color:var(--edit)}
+.info{flex:none;width:28px;height:28px;border:none;background:none;cursor:pointer;
+      border-radius:50%;color:var(--accent);font-size:16px;
+      display:flex;align-items:center;justify-content:center}
+/* 選択状態(todos v3 と同一文法) */
+.row.selected .row-main{background:var(--bg-subtle);border-radius:10px;margin:0 -6px;padding:6px}
+.title-edit{font:inherit;font-weight:480;color:var(--text);width:100%;border:none;
+            background:none;outline:none;padding:0 0 1px}
+.memo-line{font-size:var(--fs-meta);color:var(--text-3);margin-top:2px}
+.card-footer{padding:8px var(--row-pad-x) 10px;border-top:1px solid var(--border-hair);
+             font-size:var(--fs-micro);color:var(--text-3)}
+
+/* ---- 詳細ページ(todos v3 と同一部品) ---- */
+.page-head{display:flex;align-items:center;justify-content:space-between;
+           padding:10px var(--row-pad-x);border-bottom:1px solid var(--border-hair)}
+.link{font:inherit;font-size:13px;border:none;background:none;cursor:pointer;padding:4px 2px}
+.link-back{color:var(--text-2)}
+.link-save{color:var(--accent);font-weight:600}
+.d-title{display:block;width:100%;font:inherit;font-size:16px;font-weight:600;color:var(--text);
+         border:none;background:none;outline:none;padding:12px var(--row-pad-x) 2px}
+.d-notes{display:block;width:100%;font:inherit;font-size:13px;color:var(--text);border:none;
+         background:none;outline:none;resize:none;min-height:30px;padding:2px var(--row-pad-x) 12px}
+.d-notes::placeholder{color:var(--text-3)}
+.f-row{display:flex;align-items:center;gap:10px;min-height:42px;
+       padding:4px var(--row-pad-x);border-top:1px solid var(--border-hair);font-size:13.5px}
+.f-label{flex:none;width:5em;color:var(--text-2)}
+.f-value{flex:1;min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.naked{font:inherit;font-size:13.5px;color:var(--accent);border:none;background:none;
+       padding:0;outline:none}
+.naked::-webkit-calendar-picker-indicator{display:none}
+.f-value .placeholder{color:var(--text-3)}
+.f-value .val{color:var(--accent)} .f-value .chev{color:var(--text-3);font-size:11px}
+.f-row .goto{margin-left:auto;color:var(--text-3)}
+.sw{flex:none;width:34px;height:20px;border-radius:10px;background:var(--border);
+    position:relative;border:none;cursor:pointer}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;
+           border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:auto;right:2px}
+.f-expand{padding:2px var(--row-pad-x) 12px 0;margin-left:calc(5em + 10px + var(--row-pad-x))}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chips button{font:inherit;font-size:12px;padding:5px 10px;border-radius:14px;
+              border:1px solid var(--border);background:var(--bg);color:var(--text-2);cursor:pointer}
+.chips button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+.chips button:disabled{color:var(--text-3);border-style:dashed;cursor:default}
+.chips + .chips{margin-top:8px}
+.chips .chips-label{font-size:11px;color:var(--text-3);align-self:center;padding-right:2px}
+.f-expand input[type=text]{width:100%;font:inherit;font-size:13px;color:var(--text);
+  background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
+</style>
+</head>
+<body>
+<script>
+const list = `
+  <div class="card-header"><h2>calendar</h2><span class="count">7/15〜7/21 · 最終更新 14:02</span></div>
+
+  <div class="section">今日<span class="sub">7/15(水)</span></div>
+  <div class="row">
+    <div class="row-main">
+      <span class="time"><span class="allday">終日</span></span>
+      <div class="head"><div class="title">粗大ゴミ回収日</div></div>
+    </div>
+  </div>
+  <div class="row now">
+    <div class="row-main">
+      <span class="time"><span class="st">13:00</span><br><span class="en">15:00</span></span>
+      <div class="head"><div class="title">設計レビュー</div>
+        <div class="meta"><span class="loc">📍 4F 会議室B</span></div></div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="row-main">
+      <span class="time"><span class="st">19:00</span><br><span class="en">20:00</span></span>
+      <div class="head"><div class="title">ジム</div>
+        <div class="meta"><span>⟳ 毎週 火・木</span><span class="loc">📍 アクトス本店</span></div></div>
+    </div>
+  </div>
+
+  <div class="section">明日<span class="sub">7/16(木)</span></div>
+  <div class="row becoming-in">
+    <div class="row-main">
+      <span class="time"><span class="st">10:00</span><br><span class="en">10:30</span></span>
+      <div class="head"><div class="title">歯医者</div>
+        <div class="meta"><span class="loc">📍 みどり歯科</span><span class="tag">追加</span></div></div>
+    </div>
+  </div>
+
+  <div class="section">7/18(土)</div>
+  <div class="row becoming-edit">
+    <div class="row-main">
+      <span class="time"><span class="st">11:00</span><br><span class="en">13:00</span></span>
+      <div class="head"><div class="title">ランチ会</div>
+        <div class="meta"><span class="old">7/17(金)</span><span class="arrow">→</span><span class="new">7/18(土)</span><span class="tag">日時変更</span></div></div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="row-main">
+      <span class="time"><span class="allday">終日</span></span>
+      <div class="head"><div class="title">旅行(1/2日目)</div>
+        <div class="meta"><span>〜7/19(日)</span></div></div>
+    </div>
+  </div>
+  <div class="card-footer">行タップ=選択(タイトル編集+ⓘ) / +=ドラフト行 / 削除=左スワイプ(todos と同一)</div>
+`;
+
+const listSelected = list.replace(
+  `<div class="row">
+    <div class="row-main">
+      <span class="time"><span class="st">19:00</span><br><span class="en">20:00</span></span>
+      <div class="head"><div class="title">ジム</div>`,
+  `<div class="row selected">
+    <div class="row-main">
+      <span class="time"><span class="st">19:00</span><br><span class="en">20:00</span></span>
+      <div class="head"><input class="title-edit" value="ジム"><div class="memo-line">メモを追加</div><div class="title" hidden>`
+).replace(
+  `<div class="meta"><span>⟳ 毎週 火・木</span><span class="loc">📍 アクトス本店</span></div></div>
+    </div>
+  </div>
+
+  <div class="section">明日`,
+  `<div class="meta"><span>⟳ 毎週 火・木</span><span class="loc">📍 アクトス本店</span></div></div>
+      <button class="info">ⓘ</button>
+    </div>
+  </div>
+
+  <div class="section">明日`
+);
+
+/* 詳細ページ: 開始/終了(日付+時刻の裸 input)・終日トグル・繰り返し・場所・リスト。
+   繰り返し行は展開状態で表示(chips は todos v3 と同一部品)。 */
+const detail = `
+  <div class="page-head">
+    <button class="link link-back">‹ 戻る</button>
+    <button class="link link-save">保存</button>
+  </div>
+  <div>
+    <input class="d-title" value="ジム">
+    <textarea class="d-notes" placeholder="メモを追加">タオルとシューズ。</textarea>
+
+    <div class="f-row">
+      <span class="f-label">終日</span>
+      <span class="f-value"></span>
+      <button class="sw"></button>
+    </div>
+    <div class="f-row">
+      <span class="f-label">開始</span>
+      <span class="f-value"><input class="naked" type="date" value="2026-07-16"><input class="naked" type="time" value="19:00"></span>
+    </div>
+    <div class="f-row">
+      <span class="f-label">終了</span>
+      <span class="f-value"><input class="naked" type="date" value="2026-07-16"><input class="naked" type="time" value="20:00"></span>
+    </div>
+    <div class="f-row" style="border-bottom:none">
+      <span class="f-label">繰り返し</span>
+      <span class="f-value"><span class="val">毎週 火・木</span><span class="chev">⌃</span></span>
+    </div>
+    <div class="f-expand">
+      <div class="chips">
+        <button>しない</button><button>毎日</button><button>平日</button><button>週末</button>
+        <button aria-pressed="true">毎週</button><button>隔週</button>
+      </div>
+      <div class="chips">
+        <button>毎月</button><button>3か月ごと</button><button>6か月ごと</button><button>毎年</button>
+        <button disabled>カスタム</button>
+      </div>
+      <div class="chips" style="margin-top:10px">
+        <span class="chips-label">曜日</span>
+        <button>日</button><button>月</button><button aria-pressed="true">火</button><button>水</button>
+        <button aria-pressed="true">木</button><button>金</button><button>土</button>
+      </div>
+      <div class="chips" style="margin-top:10px">
+        <span class="chips-label">終了</span>
+        <button aria-pressed="true">しない</button><button>日付</button>
+      </div>
+    </div>
+    <div class="f-row">
+      <span class="f-label">場所</span>
+      <span class="f-value"><span class="val">アクトスジム 本店</span></span>
+      <button class="sw on"></button>
+    </div>
+    <div class="f-row">
+      <span class="f-label">リスト</span>
+      <span class="f-value"><span class="val">calendar</span></span>
+      <span class="goto">›</span>
+    </div>
+    <div class="f-row" style="min-height:34px">
+      <span class="f-label" style="width:auto;font-size:11.5px;color:var(--text-3)">
+        ⟳ 繰り返し全体を編集します(この回だけの変更は未対応)</span>
+    </div>
+  </div>
+`;
+
+function card(theme, label, inner){
+  const el = document.createElement('div');
+  el.className = 'card ' + theme;
+  el.innerHTML = `<div class="card-label">${label}</div>` + inner;
+  document.body.appendChild(el);
+}
+card('theme-light','A. アジェンダ一覧(時刻列が行の錨・日付見出し・now バー)', list);
+card('theme-light','B. 行タップ=選択(todos と同一文法)', listSelected);
+card('theme-light','C. ⓘ → 詳細ページ(開始/終了+終日トグル・繰り返し展開)', detail);
+card('theme-dark','D. 一覧(ダーク)', list);
+card('theme-dark','E. 詳細(ダーク)', detail);
+</script>
+</body>
+</html>

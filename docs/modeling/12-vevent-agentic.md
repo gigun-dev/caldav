@@ -19,6 +19,34 @@
     クライアント設定側にもあるため優先度が低い)。
   - **get-event 詳細カード** — todos v3 でカード内詳細ページが確立したため、
     独立の詳細カードの必要性は下がった。起票のみ残す。
+  - **「参加」ボタン(ビデオ通話)** — iOS は URL/CONFERENCE から参加 UI を合成する。
+    カード内から外部リンクを開けるかは MCP Apps ホストの openLink 能力に依存するため、
+    URL の保持・表示(下記スコープ入り)までを今回とし、参加アフォーダンスは起票。
+  - **CONFERENCE(RFC 7986)** — 読み取り保持(lossless)は自然に満たすが、DTO 露出・
+    書き込みは起票(7986 は docs/rfc 原文照合を先に行う規律の対象)。
+  - **移動時間(X-APPLE-TRAVEL-DURATION)・通知(VALARM・予備の通知)** — 起票のみ
+    (VALARM は既存の据え置きスライスと同束。移動時間は Apple 拡張で iOS 側の意味論調査が先)。
+
+> **2026-07-15 更新(ユーザーフィードバック: iOS カレンダー編集画面との突き合わせ)**:
+> **URL(RFC 5545 §3.8.4.6)をスコープに追加** — DTO に `url: string | null`、
+> create-event に `url?: string`、update-event に `url?: string | null`(三値)、
+> 詳細ページに URL 行(場所の下)。実装時は docs/rfc/rfc5545.txt の §3.8.4.6 原文を確認。
+
+> **2026-07-15 更新2(ユーザー「全部欲しい」)**: 上の起票群を **S1.5(S1 直後の
+> サーバースライス)+ S2 反映**へ昇格する。
+> - **通知(VALARM)+ 予備の通知**: `alarms?: Array<{minutesBefore:number}>`(最大2件。
+>   0=開始時刻・iOS プリセット語彙 5/10/15/30/60/120/1440/2880/10080 分前に UI が丸める)。
+>   DTO は `alarms: number[]`(minutesBefore 列・表示順)。update は配列全置換 or null=全除去。
+>   VEVENT の VALARM は相対 TRIGGER(-PT{n}M)で書く(todo の絶対 UTC トリガーとは意図的に
+>   異なる — イベントは開始相対が iOS の語彙。実装時に docs/rfc 原文で TRIGGER 既定を確認)。
+> - **移動時間**: `travelMinutes?: number | null`(X-APPLE-TRAVEL-DURATION、ISO 8601
+>   duration で書く)。Apple 拡張のため iOS 実機での受理・通知連動は検証項目。
+> - **参加(ビデオ通話)アフォーダンス(S2)**: URL があれば詳細ページ先頭に「参加」行
+>   (lucide `video`)。開く手段は ext-apps の外部リンク API を調査し、不可なら URL テキスト
+>   表示+コピーに degrade。iOS 自身も URL から参加 UI を合成するため CONFERENCE 書き込みは
+>   引き続き起票のみ(読み取りは lossless 保持)。
+> - **詳細ページの編集モデル**: iOS は閲覧画面でもカレンダー/通知を直接変更できるが、
+>   我々の詳細ページは v3 で全フィールド編集ありき(read/編集の分離なし)なので**既に満たす**。
 
 ## §2 ツール語彙(todo 5 ツールと完全対称)
 
@@ -81,6 +109,9 @@ Event = {
   純関数(日付整形・recurrence 整形・差分)は ui/ 内共有モジュールへ抽出
   (mcp-ui-is-terminal は ui/→ui/ を許容済み)。**共有カーネル戦略の実践第1号**
   (この抽出は将来の WebUI/Swift が使う contract 整形関数の種になる)。
+- **アイコンは絵文字・文字グリフ禁止(2026-07-15 ユーザー確定)**: lucide のインライン SVG
+  (`ui/icons.ts`・自己完結バンドルに埋め込み)を使う。例外は優先度の `!` 記号
+  (iOS リマインダーの語彙 — ただし VEVENT に優先度行は無い)。todos カードも同基準に統一済み。
 
 ## §5 実装スライス
 
