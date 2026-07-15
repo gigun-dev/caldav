@@ -766,3 +766,30 @@
 - **Swift コンパニオン → swift-mcp-app(別リポ・private)へ**: caldav の開発基盤(CLAUDE.md/
   コメント規律/next-directions+SessionStart フック)を移植。その後ユーザーが別セッションで
   コア価値を「iOS 汎用 MCP Apps ホスト(路線B)」に転換(caldav 側は R-6 と契約の正の維持のみ)。
+
+## 2026-07-15(続き)R-7(CAS)完了 + A-1 の"上の階"問題の発見
+
+- **R-7(楽観ロックの CAS 化)完了(4c12374・artisan 実装 → main 検収)**: これまで put/delete の
+  UoW は無条件 UPDATE + sync_changes INSERT を batch で書いており、並行2リクエストが同じ
+  sync_counter を読むと sync_changes の PK 衝突で生の 500 が漏れていた(偶発的に lost update は
+  防げていたが意図した設計でなかった)。→ batch を3文構成に(①CAS UPDATE WHERE sync_counter=
+  baseline → ②sync_changes INSERT → ③自己参照サブクエリでガードした object upsert/delete)。
+  ①の meta.changes===0 or ②の PK 制約違反を ConcurrencyConflictError に正規化 → presentation で 412。
+  CalendarCollection に baselineSyncCounter(hydrate 時の値を1回固定)を追加。R-8 名残(snapshot UID
+  を SHA-256(masterUid+DTSTART/DUE)で deterministic 化)も同梱。テストは実 D1(workerd)で stale
+  baseline を意図的に作る決定的検知 + bun で 412 マッピング(miniflare ローカル D1 は逐次実行で
+  真の Promise.all レースは再現不可 → 決定的2分割が正解と判断)。
+- **A-1 戦略設計を Fable architect が実施**(A-1 スキーマ + 権限表 + R-7 の CAS 設計)。採用:
+  R-7 先行・スキーマは追加のみ1マイグレーション・権限は「owner は暗黙全権+grants は他者付与のみ」・
+  App Password ハッシュは **salt 付き SHA-256/PHC 形式**(Argon2id からの変更・ユーザー裁可済み。
+  サーバー生成190bit秘密に KDF 不要 + Basic 毎リクエスト検証で常時コストが重い。modeling/07 §5 更新)。
+- **A-1 の"上の階"問題(ユーザー指摘で発覚)**: 「マルチユーザーなら誰がどこでアカウント登録して
+  principal を作るのか? じゃないと App Password を誰に発行するか決まらない。Firebase? better-auth?
+  Sign in with Apple?」→ 正しい指摘。architect の A-1 は"下の階"(CalDAV デバイス資格情報=App
+  Password)だけで、"上の階"(アイデンティティ/サインアップの入口)が空白だった。**CalDAV の宿命**:
+  iOS の CalDAV クライアントは Basic しか喋れない → どの IdP を選んでも最終的に App Password が要る
+  (iCloud の app-specific password と同じ)。認証は必ず2階建て。ユーザー選択で「architect に戦略調査
+  させる」→ 製品前提(OSSキット self-host 維持 + swift-mcp-app SaaS・iOS/MCP 主入口)を渡して Fable
+  architect にアイデンティティ戦略を調査依頼(自前 better-auth vs 外部 IdP・SIWA・分析要件[Firebase の
+  バンドル価値は AnalyticsPort 分離で代替できるかの検証含む]・MCP OAuth 統合・IdentityPort seam)。
+  **結論が出てから A-1 スキーマのアイデンティティ列を確定**する(調査→設計の順序を守る)。

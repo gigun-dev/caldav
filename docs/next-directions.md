@@ -45,6 +45,16 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 5. 数日後: Smart Placement 効果再計測({mcpTool,ms,colo} ログ)→ 楽観 UI の再評価
    (ユーザー条件「1s 以内なら悲観でも」)・STATUS 列 migration の要否判断。
 6. その後 **A(マルチユーザー)+ R-7(CAS)** — 次の大きな山。
+   > **2026-07-15 更新: R-7(CAS)完了 ✅(4c12374)。A-1 は上位設計の調査待ちで一時保留。**
+   > R-7: UoW の楽観ロックを CAS 化(①CAS UPDATE WHERE sync_counter=baseline → ②sync_changes
+   > INSERT → ③自己参照ガード付き object write)。ConcurrencyConflictError → 412。CalendarCollection
+   > に baselineSyncCounter 追加。R-8 名残(snapshot UID の deterministic 化)も同梱。
+   > **A-1 の"上の階"問題(ユーザー指摘)**: マルチユーザーには「誰がどこでサインアップして
+   > principal を作るか」= アイデンティティ層が要るが、architect の A-1 設計は"下の階"(App Password)
+   > だけだった。CalDAV は iOS が Basic しか喋れない宿命で認証は必ず2階建て(上=アイデンティティ/
+   > 下=App Password)。**アイデンティティ戦略(自前 better-auth vs 外部 IdP・SIWA の位置づけ・
+   > 分析要件・MCP OAuth との統合)を Fable architect が調査中**。結論が出てから A-1 スキーマの
+   > アイデンティティ列を確定する(調査→設計の順序を守る)。ハッシュは SHA-256/PHC 確定(modeling/07)。
 
 ## 今日までに完成しているもの(前提)
 
