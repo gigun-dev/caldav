@@ -717,3 +717,52 @@
 - 設計は Fable が主導(git-diff版→ミニマル→操作タイプ→becoming の各モックを scratchpad に、③ refined が最終)。実アプリ調査: 「完了をその場に留める」中間状態は Things 3 くらいで先行例が薄い=差別化点。削除は実アプリだと Toast+Undo が定石だが **MCP App では不要**(becoming-gone で示す)。
 
 **削除 undo 論点(ユーザー実機観察・E-2 とは独立の CalDAV コア課題)**: iOS の振り取消が CalDAV アカウントで「一瞬復活→sync で再削除」。Fable 分析(docs/rfc 6578/4791 原文): RFC 6578 §3.5.1「delete→recreate 同一 URI は changed 報告 MUST/removed MUST NOT」。有力仮説 H-A=iOS の shake-undo はローカル限定でサーバーに何も送らない→ §3.5.2 準拠の removed 報告に iOS が整合して再削除(=我々のバグでない)。**Step 0 コード確認済**: 削除後の同一 UID 再 PUT は 201(索引掃除OK・H-B(b)否定)。**要実機キャプチャ**(make up DUMP=1 で undo 時に PUT が飛ぶか)→ H-A なら案C(記録して閉じる)/ PUT+4xx なら案A(直す)。tombstone(案B)は不採用。runbook は docs/modeling/06 記録待ち。
+
+## 2026-07-14 Codex レビュー是正(R-1〜R-5)+ E-2 スライス③〜⑥ + レイテンシ3弾
+
+(コミット列 fca8033〜f272b76 の生記録。詳細は各コミットログ = Why が正)
+
+- **Codex レビュー起票 R-1〜R-8** → 即日是正: R-1(parseSupported の VJOURNAL 拒否回帰)/
+  R-2(If-Match の RFC 7232 是正)/ R-3(If ヘッダ DAV:sync-token precondition・RFC 6578 §5 MUST)/
+  R-4/R-5(free-busy-query 構造検査・allprop 整理)。残: R-6(OAuth scope)・R-7(CAS)・R-8。
+- **E-2 スライス③〜⑥**: quick-add / becoming 差分レンズ(外部変更・システム起因)/
+  詳細展開・削除・繰り返しバッジ / 段階的開示。**ドクトリン改訂**: 楽観更新+失敗ロールバック+
+  バナーへ転換(ユーザー判断・「1s 以内なら悲観でも」の再評価条件付き)。
+- **ホスト実測(claude.ai)**: push なし・replay 確定・becoming 再演。view 上書きの機序は
+  push でなく「パネル再バインド」(main 直検証で訂正)。クライアント防御が正。
+- **レイテンシ3弾**: mutate 全件スキャン1回削減 → list-todos の SQL VTODO 絞り →
+  Smart Placement 有効化。ツール別計測ログ({mcpTool,ms,colo})を計器に。
+- shake-undo 論点は実機キャプチャで決着(H-A 棄却・サーバー RFC 6578 準拠・バグ無し)。
+- MCP ツール追加: list/create/delete-calendar・create-todos(バッチ)・move-todo・
+  update-todo の due 対称化・location/recurrence 書き込み。
+
+## 2026-07-15 UI v3(E-2 クローズ)+ E-3 完走 + R-6(OAuth scope 分離)
+
+- **UI v2 → v3**: v2(iOS 借景ボトムシート・c4c2e04)は実機3バグ(スクロール不可・下部見切れ・
+  picker 不発)= **fixed+vh が MCP Apps の iframe 自動リサイズと構造的に非互換**という学びに。
+  v3(a53f0be)= 浮遊レイヤーゼロ・**カード内ページ遷移 × v1 言語**で根治。quick-add シートも
+  廃止し「+ → 一覧末尾のインラインドラフト行」(iOS の新規行と同型)。
+  ユーザーフィードバック3点是正(136144c): FAB 縮小・選択解除の可視ボタン(check)・
+  選択中も優先度/メモ表示維持。**絵文字・文字グリフ禁止 → lucide インライン SVG(ui/icons.ts)**
+  に統一(例外: 優先度の `!`)。本番検証 全 PASS → **E-2 クローズ宣言**(f15bf9b)。
+- **E-3(VEVENT agentic)を設計〜本番検証まで1日で完走**:
+  - 設計: docs/modeling/12(agenda-v1.html モックでユーザー合意 → 実装)。
+    iOS カレンダー突き合わせで URL・通知・移動時間を「全部欲しい」→ S1.5 昇格。
+  - S1(db9664a): create/update/delete-event + Event DTO + EventsViewModel(list は range を
+    名乗る・mutate は名乗らない)。S1.5(07e2c14): 開始相対 VALARM×2(-PT{n}M・§3.8.6.3 原文照合)+
+    X-APPLE-TRAVEL-DURATION。S2(781c705): アジェンダカード + **共有カーネル抽出第1号**
+    (ui/format.ts・ui/recurrence.ts を todos/agenda 両 entry が import — WebUI/Swift の種)。
+  - 本番検証(main 直検証・Inspector+D1 バイト照合): アジェンダ描画・VALARM -PT10M/-PT60M・
+    TRAVEL PT15M・URL・delete-event removed 契約 全 PASS。ツール19本。
+  - **iOS 互換の裏付け**: iOS 自作イベントの生 ICS に `X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT5M`
+    を発見 — 我々の生成書式とバイト同一。検証残骸はユーザー確認後 delete-event で掃除
+    (D1 直はsync-token が進まないため必ず MCP 経由)。
+- **R-6(OAuth scope 分離)完了(4eee336・artisan 実装 → main 検収)**:
+  claudedav:read/write 分離。語彙・区分は presentation/mcp/scopes.ts に一元化
+  (read allowlist・未分類は write の safe default)。scope は props で運ぶ(apiHandler は
+  ctx.props しか受け取れない — workers-oauth-provider の契約上の発見)。旧 grant は
+  grandfather(full access + 警告ログ)で既存接続を壊さない。同意画面に権限サマリ。
+  本番 scopes_supported 反映確認済み。
+- **Swift コンパニオン → swift-mcp-app(別リポ・private)へ**: caldav の開発基盤(CLAUDE.md/
+  コメント規律/next-directions+SessionStart フック)を移植。その後ユーザーが別セッションで
+  コア価値を「iOS 汎用 MCP Apps ホスト(路線B)」に転換(caldav 側は R-6 と契約の正の維持のみ)。
