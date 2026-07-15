@@ -38,6 +38,7 @@ export {
 	patchVTodoFields,
 	shiftAbsoluteAlarmTriggers,
 	removeDueAnchoredAlarmTriggers,
+	pruneUnreferencedVTimezones,
 	type VTodoPatchFields,
 	type VTodoDuePatch,
 } from "./vtodo-patch";

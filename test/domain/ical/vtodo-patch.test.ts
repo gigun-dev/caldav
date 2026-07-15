@@ -8,7 +8,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyCompletion, applyReopen, patchVTodoFields, removeDueAnchoredAlarmTriggers } from "../../../src/domain/ical/semantics/vtodo-patch";
+import {
+	applyCompletion,
+	applyReopen,
+	patchVTodoFields,
+	pruneUnreferencedVTimezones,
+	removeDueAnchoredAlarmTriggers,
+} from "../../../src/domain/ical/semantics/vtodo-patch";
 import type { NowStamp } from "../../../src/domain/ical/semantics/vtodo-stamp";
 import { parse } from "../../../src/domain/ical/parse/parser";
 import type { Component } from "../../../src/domain/ical/structure/types";
@@ -262,6 +268,97 @@ describe("applyCompletion", () => {
 		expect(propValue(out, "SUMMARY")).toBe(propValue(vtodo, "SUMMARY"));
 		expect(propValue(out, "RRULE")).toBe(propValue(vtodo, "RRULE"));
 		expect(out.components).toEqual(vtodo.components);
+	});
+});
+
+describe("pruneUnreferencedVTimezones", () => {
+	// 2026-07-15 是正: update-todo で due+recurrence を両方外すと、どのプロパティからも
+	// TZID 参照されなくなった VTIMEZONE が VCALENDAR に取り残される(本番 D1 で確認)。
+	// この関数はそのケースの掃除役。VCALENDAR.components 相当の配列を受け取る。
+
+	function vtimezone(tzid: string): Component {
+		return {
+			name: "VTIMEZONE",
+			properties: [{ name: "TZID", parameters: [], value: tzid }],
+			components: [
+				{
+					name: "STANDARD",
+					properties: [
+						{ name: "DTSTART", parameters: [], value: "19700101T000000" },
+						{ name: "TZOFFSETFROM", parameters: [], value: "+0900" },
+						{ name: "TZOFFSETTO", parameters: [], value: "+0900" },
+					],
+					components: [],
+				},
+			],
+		};
+	}
+
+	test("due+recurrence 除去後(TZID 参照ゼロ)の VTIMEZONE は取り除かれる", () => {
+		// due/recurrence を外した後の VTODO(patchVTodoFields(due:"remove")+recurrence:null 相当の
+		// 結果を模した最終形): TZID 参照を持つプロパティが一つも無い。
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "SUMMARY", parameters: [], value: "no due, no recurrence" }],
+			components: [],
+		};
+		const components = [vtimezone("Asia/Tokyo"), vtodo];
+		const out = pruneUnreferencedVTimezones(components);
+		expect(out).toEqual([vtodo]);
+	});
+
+	test("DUE 以外(DTSTART)が TZID を参照していれば VTIMEZONE は消えない", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "DTSTART", parameters: [{ name: "TZID", values: ["Asia/Tokyo"] }], value: "20260715T090000" }],
+			components: [],
+		};
+		const tz = vtimezone("Asia/Tokyo");
+		const out = pruneUnreferencedVTimezones([tz, vtodo]);
+		expect(out).toEqual([tz, vtodo]);
+	});
+
+	test("VALARM(サブコンポーネント)からの TZID 参照でも消えない(再帰走査)", () => {
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "SUMMARY", parameters: [], value: "t" }],
+			components: [
+				{
+					name: "VALARM",
+					properties: [
+						{ name: "ACTION", parameters: [], value: "DISPLAY" },
+						// 通常 VALARM の TRIGGER は TZID を持たないが、走査ロジックが
+						// 「全コンポーネントの全プロパティ」を再帰的に見ることを確認する目的で
+						// 意図的に TZID パラメータを持つプロパティを仕込む。
+						{ name: "X-TEST-TZID-REF", parameters: [{ name: "TZID", values: ["Asia/Tokyo"] }], value: "dummy" },
+					],
+					components: [],
+				},
+			],
+		};
+		const tz = vtimezone("Asia/Tokyo");
+		const out = pruneUnreferencedVTimezones([tz, vtodo]);
+		expect(out).toEqual([tz, vtodo]);
+	});
+
+	test("複数 VTIMEZONE のうち、参照が残るものだけ選択的に残す", () => {
+		const tokyo = vtimezone("Asia/Tokyo");
+		const losAngeles = vtimezone("America/Los_Angeles");
+		const vtodo: Component = {
+			name: "VTODO",
+			properties: [{ name: "DTSTART", parameters: [{ name: "TZID", values: ["Asia/Tokyo"] }], value: "20260715T090000" }],
+			components: [],
+		};
+		// Asia/Tokyo は参照あり(残る)、America/Los_Angeles は参照なし(消える)。
+		const out = pruneUnreferencedVTimezones([tokyo, losAngeles, vtodo]);
+		expect(out).toEqual([tokyo, vtodo]);
+	});
+
+	test("VTIMEZONE 以外のコンポーネントの並び・内容は一切変えない", () => {
+		const vtodo1: Component = { name: "VTODO", properties: [{ name: "SUMMARY", parameters: [], value: "a" }], components: [] };
+		const vtodo2: Component = { name: "VTODO", properties: [{ name: "SUMMARY", parameters: [], value: "b" }], components: [] };
+		const out = pruneUnreferencedVTimezones([vtimezone("Asia/Tokyo"), vtodo1, vtodo2]);
+		expect(out).toEqual([vtodo1, vtodo2]);
 	});
 });
 

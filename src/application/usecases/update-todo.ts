@@ -39,6 +39,7 @@ import {
 	applyCompletion,
 	applyReopen,
 	patchVTodoFields,
+	pruneUnreferencedVTimezones,
 	removeDueAnchoredAlarmTriggers,
 	shiftAbsoluteAlarmTriggers,
 	stampUpdate,
@@ -434,6 +435,14 @@ export class UpdateTodo {
 				components = [...components, parsed.dueVTimezone];
 			}
 		}
+
+		// 孤立 VTIMEZONE の掃除(patch 経路限定、pruneUnreferencedVTimezones の JSDoc 参照)。
+		// due/recurrence 除去などで TZID 参照が無くなった VTIMEZONE(本番検証で確認した
+		// VTIMEZONE:Asia/Tokyo の取り残しケース)をここで一度だけ間引く。上の VTIMEZONE 追加
+		// (時刻付き due への変更)より後に置くことで、今まさに追加した VTIMEZONE を誤って
+		// 消してしまう競合を避ける(追加した TZID は当然 DTSTART/DUE から参照されているので
+		// 実際には消されないが、処理順を明示しておく)。
+		components = [...pruneUnreferencedVTimezones(components)];
 
 		const newVcalendar: Component = { ...vcalendar, components };
 		const ics = serialize(newVcalendar);

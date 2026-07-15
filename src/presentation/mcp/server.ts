@@ -168,16 +168,38 @@ const createCalendarInputShape = {
  * 【なぜ完全な slugify ライブラリを足さないか】このタスクはドメイン層に触れない制約があり、
  * 依存追加も避けたい。CollectionId の禁止事項(空文字・空白/制御文字・"/")さえ満たせば足りるので、
  * 素朴な正規化(小文字化・許容文字以外を "-" に畳む・前後の "-" を削る)で十分。
- * 【空文字にフォールバックする理由】displayName が絵文字だけ・記号だけ等で slug 化すると
- * 空文字になるケースがある(collectionId() は空文字を拒否する)。その場合は衝突の心配が無い
- * crypto.randomUUID() にフォールバックする(create-todo.ts の UID 生成と同じ発想)。
+ *
+ * 【2026-07-15 本番検証で発覚したバグ修正: 非 ASCII displayName の縮退】
+ * 元実装は `[^a-z0-9]+` にマッチした文字をまとめて "-" に畳んで前後の "-" だけ削っていたため、
+ * 日本語など非 ASCII の displayName(例「読書リスト2」)を渡すと日本語部分が丸ごと "-" に
+ * 潰れて "-2-" になり、trim 後に残る id が "2" という無意味な値になる事故を本番 D1 で確認した
+ * (元 displayName の情報をほぼ失った id が実際に作られていた)。「空文字にフォールバック」
+ * 条件だけでは、こういう「空ではないが情報量ゼロに近い」ケースを救えていなかったのが根本原因。
+ *
+ * 【フォールバック発火条件を「空」から「情報量が乏しい」へ拡張した判断】
+ * 完全な非 ASCII 対応 slugify(transliteration 等)を持ち込むのは依存追加・複雑化のコストが
+ * 見合わないと判断し、「素朴な正規化の結果が信頼できないほど乏しい」場合は潔く UUID
+ * フォールバックに倒す方針にした。具体的な判定:
+ *   - 空文字(元からの条件)
+ *   - 数字のみ(上記の "2" のような事故ケースそのもの — 元の displayName の文字情報が
+ *     一切残らず数字だけが偶然生き残った形跡)
+ *   - 長さ 3 未満(1〜2 文字の slug は URL セグメントとしては合法だが、非 ASCII displayName の
+ *     残骸である可能性が高く、視認性・衝突回避の両面で uuid の方が安全側に倒せる)
+ * 閾値 3 はマジックナンバーだが、"ab" 程度の短い英数字 displayName(稀)を UUID に倒しても
+ * 実害が薄い一方、"1","22" のような数字化けを確実に拾える下限として選んだ。
+ * 【フォールバック先が crypto.randomUUID() の理由】衝突の心配が無く create-todo.ts の
+ * UID 生成と同じ発想(先頭数文字に切り詰めない — CollectionId には文字数上限が特に無いため、
+ * フル UUID の方が衝突可能性がさらに低く安全)。
  */
-function slugifyForCollectionId(displayName: string): string {
+// テスト(server.test.ts)から直接呼べるよう export する(この関数だけを取り出して境界値を
+// 検証したいが、registerTool 経由だと McpServer 全体の配線が要るため単体テストが書きにくい)。
+export function slugifyForCollectionId(displayName: string): string {
 	const slug = displayName
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
-	return slug.length > 0 ? slug : crypto.randomUUID();
+	const isDegenerate = slug.length === 0 || /^[0-9]+$/.test(slug) || slug.length < 3;
+	return isDegenerate ? crypto.randomUUID() : slug;
 }
 
 // --- delete-calendar(検証運用の動機: 作ったリストを消すツールが無く D1 直で消したことがあった。

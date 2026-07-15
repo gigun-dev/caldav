@@ -377,6 +377,69 @@ export function removeDueAnchoredAlarmTriggers(vtodo: Component): Component {
 	return { ...vtodo, components };
 }
 
+// ---------------------------------------------------------------------------
+// pruneUnreferencedVTimezones — patch 経路で孤立した VTIMEZONE を掃除する
+// ---------------------------------------------------------------------------
+//
+// 【2026-07-15 本番検証で確認: 孤立 VTIMEZONE の残留】
+// update-todo で recurrence と due を両方外す(applyDuePatch(remove) で DTSTART/DUE を消し、
+// recurrence:null で RRULE も消す)と、どのプロパティからも TZID 参照されなくなった
+// VTIMEZONE:Asia/Tokyo だけが VCALENDAR に取り残されることを本番 D1 の ICS で確認した。
+// 無害(RFC 上「使われない定義が残っている」だけで不変条件違反ではない)だが、意味的な
+// 変更を加えた patch のついでに掃除しておく方が ICS が綺麗に保たれる。
+//
+// 【この関数を vtodo-patch.ts に置くが「VTODO 単体」ではなく VCALENDAR の components 配列を
+// 受け取る理由】このファイルの他の関数(patchVTodoFields 等)はファイル冒頭コメントのとおり
+// 「VTODO Component 単体」を返す設計だが、VTIMEZONE の要不要は VCALENDAR 全体(他の
+// VTODO/VEVENT が同じ TZID を参照しているかもしれない)を見ないと判定できない。よって
+// この関数だけは例外的に components 配列(VCALENDAR.components 相当)を受け取り、
+// 呼び出し側(update-todo.ts)が VTODO 差し替え + VTIMEZONE 追加を終えた「最終段」で
+// 一度だけ呼ぶ設計にした(タスク指示の「パッチ適用の最終段」はこの意味で解釈した)。
+//
+// 【ロスレス往復の原則との整合: patch 経路限定】
+// この関数は update-todo.ts の意味的変更パス(patchVTodoFields 等を通った後)からのみ
+// 呼ばれ、読み取り専用の GET や素通しの PUT(既存 ICS をそのまま受けて保存するだけの経路)
+// からは呼ばれない。iOS 実機など他クライアントが書いた VTIMEZONE を、サーバーが何も意味的な
+// 変更を加えていないのに勝手に間引くと「サーバーが受け取ったバイト列を書き換えた」ことになり、
+// PUT のロスレス往復(RFC 4791 §5.3.4 の ETag 前提)を壊す。patch で意味的な変更を加えた
+// ときに限り、その変更の副産物として不要になった VTIMEZONE を掃除するのは妥当という判断
+// (掃除しないと「patch の結果、参照ゼロの VTIMEZONE が新たに生まれる」という不衛生を
+// サーバー自身が作り出すことになるため、こちらは能動的に直す)。
+//
+// 【参照ありなら他クライアント由来でも絶対に消さない】
+// DUE だけでなく DTSTART/EXDATE/RDATE/RRULE:UNTIL 等、TZID パラメータを持ちうる全プロパティを
+// 対象コンポーネント全部(VTODO 本体・VALARM 等のサブコンポーネントも含む)から拾う。
+// 1つでも参照が残っていればそのTZIDのVTIMEZONEは残す(参照整合 I8 を壊さないため最優先)。
+/**
+ * VCALENDAR の components 配列から、どのプロパティ(TZID パラメータ)からも参照されなくなった
+ * VTIMEZONE コンポーネントを取り除く。非 VTIMEZONE コンポーネントの並び・内容は一切変えない
+ * (フィルタするだけで他要素の同一性は保つ — components.map で差分最小にする既存パターンに合わせる)。
+ */
+export function pruneUnreferencedVTimezones(components: readonly Component[]): readonly Component[] {
+	// 全コンポーネント(VTIMEZONE 自身は除く — VTIMEZONE 内の TZID プロパティは「宣言」であって
+	// 「参照」ではないので走査対象から外す。含めても実害は無いが意図を明確にするため除外する)を
+	// 再帰的に歩き、出現する TZID パラメータ値を集める。
+	const referencedTzids = new Set<string>();
+	const collectReferences = (c: Component): void => {
+		if (c.name === "VTIMEZONE") return;
+		for (const p of c.properties) {
+			const tzid = p.parameters.find((param) => param.name === "TZID")?.values[0];
+			if (tzid !== undefined) referencedTzids.add(tzid);
+		}
+		for (const sub of c.components) collectReferences(sub);
+	};
+	for (const c of components) collectReferences(c);
+
+	return components.filter((c) => {
+		if (c.name !== "VTIMEZONE") return true; // VTIMEZONE 以外は無条件で残す。
+		const tzid = c.properties.find((p) => p.name === "TZID")?.value;
+		// TZID プロパティ自体が無い VTIMEZONE(§3.6.5 の不変条件違反だが、この関数は掃除役に
+		// 徹し検証はしない)は「どの TZID かも判定不能」なので安全側に倒して残す。
+		if (tzid === undefined) return true;
+		return referencedTzids.has(tzid);
+	});
+}
+
 /**
  * UTC エポックミリ秒 → CalDateTime(kind:"utc")の年月日時分秒フィールド。
  * vtodo-recurrence.ts の withNewWallClockFields(template の kind を保つ汎用版)とは違い、
