@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>caldav MCP Apps — 差分 UI デザインパターン比較(A/B/C/D)</title>
+<style>
+  /* ===========================================================================
+   * 差分 UI の性格違い4パターン比較モック(製品コードではない)。
+   * Apple Design 原理を品質基準に、同一シナリオ(「牛乳を買う」を完了 /
+   * 「歯医者の予約」を追加 / 削除)を各パターンで再現し横断比較する。
+   *
+   * 全パターン共通(不変の土台):
+   *   - 丸チェック(iOS リマインダー語彙・確定)
+   *   - 打ち消し線 + 塗り丸 = 完了状態(恒久・diff クロームではない)
+   *   - 差分の視覚は「次の描画まで」持続(タイマーで消さない)
+   *
+   * spring の実装:
+   *   固定 duration の ease-* でなく "バネ" を使う(Apple「behavior over animation」)。
+   *   外部ライブラリ不可なので CSS の linear() easing で減衰振動を近似する。
+   *   --spring-soft  = critically damped 風(bounce 0・落ち着く)response ~0.35s
+   *   --spring-bounce= 軽い overshoot(damping ~0.8)勢いのある出現に
+   *   linear() の各点は「時間 t での正規化変位」をサンプルした近似(手計算の代表点)。
+   * =========================================================================== */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #767676;
+    --border: rgba(128, 128, 128, 0.25);
+    --surface: rgba(128, 128, 128, 0.12);
+    --accent: #007aff;
+    --danger: #ff3b30;
+    --pri: #ff9500;
+    --radius: 10px;
+    --hi: color-mix(in srgb, var(--accent) 9%, transparent);
+    /* critically damped 風(オーバーシュート無し・後半でゆっくり漸近)。 */
+    --spring-soft: linear(
+      0, 0.15 5%, 0.42 11%, 0.68 18%, 0.85 25%, 0.94 33%,
+      0.98 42%, 0.995 55%, 1 75%, 1);
+    /* 軽い bounce(~6% overshoot して戻る)。 */
+    --spring-bounce: linear(
+      0, 0.22 6%, 0.58 13%, 0.9 22%, 1.06 32%, 1.04 42%,
+      0.99 55%, 1.0 70%, 1);
+    --dur: 0.42s;
+  }
+  .dark {
+    color-scheme: dark;
+    --bg: #1c1c1e; --fg: #f2f2f2; --muted: #98989e;
+    --border: rgba(128,128,128,0.3); --surface: rgba(128,128,128,0.18);
+    --accent: #0a84ff; --danger: #ff453a; --pri: #ff9f0a;
+    --hi: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+  /* reduced-motion 実演: 実 media query に加え、.rm クラス(トグル)でも同じ抑制を当てる。
+   * spring/slide は crossfade か静的へ落とし、情報は色/打ち消し線が担保する。 */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.12s !important;
+        transition-timing-function: ease !important; }
+  }
+  .rm * , .rm *::before, .rm *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.12s !important;
+    transition-timing-function: ease !important;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; color: #1a1a1a; background: #ececf0;
+    /* 見出しは負トラッキング寄り・本文 0 付近(Apple typography)。 */
+    letter-spacing: 0;
+  }
+  .page-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 4px; }
+  .page-sub { color: #555; font-size: 13px; line-height: 1.6; margin: 0 0 16px; max-width: 760px; }
+  .toolbar {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    background: #fff; border: 1px solid #ccc; border-radius: 12px;
+    padding: 12px 16px; margin-bottom: 24px; max-width: 760px;
+  }
+  .toolbar .legend { font-size: 12px; color: #555; display: flex; gap: 16px; flex-wrap: wrap; }
+  .toolbar .swatch {
+    display: inline-block; width: 24px; height: 13px; border-radius: 3px;
+    background: rgba(0,122,255,.09); border: 1px solid rgba(0,122,255,.2);
+    vertical-align: middle; margin-right: 3px;
+  }
+  .rm-toggle { margin-left: auto; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  .grid { display: flex; flex-wrap: wrap; gap: 24px; }
+  .pattern { width: 360px; }
+  .pattern > h3 { font-size: 16px; letter-spacing: -0.01em; margin: 0 0 2px; }
+  .pattern > .charnote {
+    font-size: 12px; color: #555; line-height: 1.55; margin: 6px 0 10px;
+    background: #fff; border: 1px solid #ddd; border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .controls { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+  .controls button {
+    font: inherit; font-size: 12px; padding: 6px 12px; min-height: 34px;
+    border: 1px solid #bbb; border-radius: 999px; background: #fff; cursor: pointer;
+    transition: transform 0.12s var(--spring-soft);
+  }
+  .controls button:active { transform: scale(0.96); }
+  .controls .reset { color: #888; }
+
+  /* --- カード chrome ---------------------------------------------------------- */
+  .card {
+    background: var(--bg); color: var(--fg);
+    border: 1px solid #bbb; border-radius: 14px;
+    padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    overflow: hidden; /* 削除の height 畳みで隣がはみ出さない */
+  }
+  /* パターンC: vibrancy chrome。半透明 + backdrop-filter + 上端の light-catching エッジ。 */
+  .card.material {
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border-top: 1px solid rgba(255,255,255,0.55);
+    box-shadow: 0 6px 20px rgba(0,0,0,.12);
+  }
+  .dark.card.material, .card.material.dark { border-top-color: rgba(255,255,255,0.18); }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .app-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  .updated { font-size: 11px; color: var(--muted); }
+  section { margin-top: 8px; }
+  h2 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  section.sec-overdue h2 { color: var(--danger); }
+  details > summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 4px 0; min-height: 30px; display: flex; align-items: center;
+  }
+  ul { list-style: none; margin: 0; padding: 0; }
+
+  li {
+    display: flex; align-items: flex-start; gap: 4px;
+    padding: 2px 6px; border-bottom: 1px solid var(--border); border-radius: 8px;
+    position: relative;
+  }
+  li:last-child { border-bottom: none; }
+
+  button.check {
+    flex-shrink: 0; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0; background: none; border: none; cursor: pointer;
+    /* Response: pointer-down で即時 scale(遅延ゼロ)。 */
+    transition: transform 0.1s var(--spring-soft);
+  }
+  button.check:active { transform: scale(0.9); }
+  .circle {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; line-height: 1; color: transparent;
+    /* 完了トグルの塗りは spring で(prefers-reduced-motion で crossfade 化)。 */
+    transition: background 0.25s var(--spring-soft), border-color 0.25s var(--spring-soft),
+                color 0.2s ease, transform 0.3s var(--spring-bounce);
+  }
+  li.done .circle {
+    border-color: var(--accent); background: var(--accent); color: #fff;
+    /* 完了の瞬間だけ軽く弾ませる(Response の手応え)。 */
+    transform: scale(1);
+  }
+  .texts { min-width: 0; flex: 1; padding: 9px 0; }
+  .title { overflow-wrap: break-word; line-height: 1.35; }
+  li.done .title { text-decoration: line-through; color: var(--muted); }
+  .meta { margin-top: 1px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+  .pri { color: var(--pri); font-weight: 700; letter-spacing: 1px; }
+  .due.overdue { color: var(--danger); }
+
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* ===========================================================================
+   * パターン別の diff クローム
+   * =========================================================================== */
+
+  /* --- A: Quiet Highlight ---------------------------------------------------- */
+  /* 触った行に淡い中立ハイライトが入り、spring で "馴染む"(bg を hi→透明へ戻す)。
+   * .hi を付けた瞬間だけ濃く、settle クラスで transition を効かせて薄れる。 */
+  .pat-a li.hi { background: var(--hi); transition: background 0.6s var(--spring-soft); }
+  .pat-a li.hi.settle { background: transparent; } /* JS が次フレームで settle を付与 */
+
+  /* --- B: Motion-Led --------------------------------------------------------- */
+  /* ハイライト最小。差分はモーションで語る。
+   * 追加/完了で現れる行は translateY + opacity を spring で。 */
+  .pat-b li.enter {
+    animation: slideIn 0.5s var(--spring-bounce) both;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  /* 完了で「完了済み」へ滑り込む行: 一瞬横に流してからフェード(spatial: 入口が動く)。 */
+  .pat-b li.leaving {
+    animation: slideOutRight 0.42s var(--spring-soft) both;
+  }
+  @keyframes slideOutRight {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(16px); }
+  }
+
+  /* --- C: Material Edge ------------------------------------------------------- */
+  /* 触った行の先頭に細い半透明アクセントエッジ(light-catching)。spring で減衰。 */
+  .pat-c li.edge::before {
+    content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 3px;
+    border-radius: 3px;
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 90%, white),
+      var(--accent));
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
+    transform-origin: top;
+    animation: edgeIn 0.55s var(--spring-bounce) both;
+  }
+  @keyframes edgeIn {
+    from { transform: scaleY(0); opacity: 0; }
+    to   { transform: scaleY(1); opacity: 1; }
+  }
+
+  /* --- D: Focus Pull --------------------------------------------------------- */
+  /* 触った行が僅かに持ち上がり(elevation+scale)、周囲が一瞬 dim してから settle。 */
+  .pat-d li.lift {
+    animation: liftUp 0.6s var(--spring-bounce) both;
+    z-index: 2;
+  }
+  @keyframes liftUp {
+    0%   { transform: scale(1);    box-shadow: 0 0 0 rgba(0,0,0,0); }
+    35%  { transform: scale(1.035); box-shadow: 0 6px 16px rgba(0,0,0,.18); }
+    100% { transform: scale(1);    box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  }
+  .pat-d.dimming li:not(.lift) {
+    transition: opacity 0.5s var(--spring-soft);
+    opacity: 0.35;
+  }
+  .pat-d li { transition: opacity 0.5s var(--spring-soft); }
+
+  /* --- 削除の height 畳み(B/C/D 共通で使う。A は単純フェード) ------------------- */
+  li.collapsing {
+    overflow: hidden;
+    animation: collapse 0.42s var(--spring-soft) both;
+  }
+  @keyframes collapse {
+    from { max-height: 60px; opacity: 1; }
+    to   { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin: 0; border: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">差分 UI デザインパターン比較 — A / B / C / D</h1>
+<p class="page-sub">
+  同じシナリオ(「牛乳を買う」を今 完了 / 「歯医者の予約を取り直す」を今 追加 / 削除)を、
+  性格の違う4パターンで実演。<b>▶ 再生</b>で spring アニメを確認できます。
+  全パターン共通: 丸チェック / 打ち消し線+塗り丸=完了(恒久)/ 差分は「次の描画まで」。
+</p>
+<div class="toolbar">
+  <div class="legend">
+    <span><span class="swatch"></span> 今回触れた行(中立ハイライト/エッジ/モーション)</span>
+    <span><s>打ち消し線</s> = 完了(恒久)</span>
+  </div>
+  <label class="rm-toggle">
+    <input type="checkbox" id="rm" /> Reduced Motion で見る
+  </label>
+</div>
+
+<div class="grid" id="grid">
+
+  <!-- ================= A: Quiet Highlight ================= -->
+  <div class="pattern">
+    <h3>A — Quiet Highlight</h3>
+    <div class="controls" data-pat="a">
+      <button data-act="complete">▶ 完了</button>
+      <button data-act="add">▶ 追加</button>
+      <button data-act="delete">▶ 削除</button>
+      <button data-act="reset" class="reset">⟲ リセット</button>
+    </div>
+    <div class="card pat-a">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:24</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite" data-live></div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul data-list="overdue">
+          <li data-id="dentist"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/10 (金)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul data-list="today">
+          <li data-id="milk"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li data-id="report"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+        </ul>
+      </section>
+      <details data-done><summary>完了済み (<span data-donecount>0</span>)</summary><ul data-list="done"></ul></details>
+    </div>
+    <p class="charnote"><b>効かせた原理:</b> Simplicity・Quiet。触った行を淡い中立色で指し、
+      spring(soft, 0.6s)で通常へ馴染む。<b>長所:</b> 会話が意味を語る前提で最も静か・くどくない。
+      <b>トレードオフ:</b> 一覧が長いとハイライト行を見失いやすい(視線誘導が弱い=地味寄り)。</p>
+  </div>
+
+  <!-- ================= B: Motion-Led ================= -->
+  <div class="pattern">
+    <h3>B — Motion-Led</h3>
+    <div class="controls" data-pat="b">
+      <button data-act="complete">▶ 完了</button>
+      <button data-act="add">▶ 追加</button>
+      <button data-act="delete">▶ 削除</button>
+      <button data-act="reset" class="reset">⟲ リセット</button>
+    </div>
+    <div class="card pat-b">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:24</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite" data-live></div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul data-list="overdue">
+          <li data-id="dentist"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/10 (金)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul data-list="today">
+          <li data-id="milk"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li data-id="report"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+        </ul>
+      </section>
+      <details data-done><summary>完了済み (<span data-donecount>0</span>)</summary><ul data-list="done"></ul></details>
+    </div>
+    <p class="charnote"><b>効かせた原理:</b> Behavior over animation・Spatial consistency。
+      完了=行が「完了済み」へ spring で滑り出る / 追加=本来位置へ bounce で現れる /
+      削除=height を畳んで隣が詰まる。<b>長所:</b> 差分がどこで何が起きたか一目瞭然。
+      <b>トレードオフ:</b> 会話カード内でモーションが連続すると<b>過剰・酔い</b>のリスク。</p>
+  </div>
+
+  <!-- ================= C: Material Edge ================= -->
+  <div class="pattern">
+    <h3>C — Material Edge</h3>
+    <div class="controls" data-pat="c">
+      <button data-act="complete">▶ 完了</button>
+      <button data-act="add">▶ 追加</button>
+      <button data-act="delete">▶ 削除</button>
+      <button data-act="reset" class="reset">⟲ リセット</button>
+    </div>
+    <div class="card material pat-c">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:24</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite" data-live></div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul data-list="overdue">
+          <li data-id="dentist"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/10 (金)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul data-list="today">
+          <li data-id="milk"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li data-id="report"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+        </ul>
+      </section>
+      <details data-done><summary>完了済み (<span data-donecount>0</span>)</summary><ul data-list="done"></ul></details>
+    </div>
+    <p class="charnote"><b>効かせた原理:</b> Materials/depth・craft。触った行の先頭に light-catching な
+      半透明アクセントエッジ、カード chrome を vibrancy(blur+saturate)に。エッジは bounce で立ち上がる。
+      <b>長所:</b> full-bg より上品で「作り込み」感。<b>トレードオフ:</b> backdrop-filter は
+      ホスト iframe 背景が単色だと効果が薄い・GPU コスト。エッジは色1点に依存(色覚配慮は打ち消し線が担保)。</p>
+  </div>
+
+  <!-- ================= D: Focus Pull ================= -->
+  <div class="pattern">
+    <h3>D — Focus Pull</h3>
+    <div class="controls" data-pat="d">
+      <button data-act="complete">▶ 完了</button>
+      <button data-act="add">▶ 追加</button>
+      <button data-act="delete">▶ 削除</button>
+      <button data-act="reset" class="reset">⟲ リセット</button>
+    </div>
+    <div class="card pat-d">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:24</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite" data-live></div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul data-list="overdue">
+          <li data-id="dentist"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/10 (金)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul data-list="today">
+          <li data-id="milk"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li data-id="report"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+        </ul>
+      </section>
+      <details data-done><summary>完了済み (<span data-donecount>0</span>)</summary><ul data-list="done"></ul></details>
+    </div>
+    <p class="charnote"><b>効かせた原理:</b> Focus・depth。触った行が僅かに持ち上がり(elevation+scale,
+      bounce)、周囲が一瞬 dim してから settle。色に頼らず視線を差分へ引く。<b>長所:</b>
+      視線誘導が最強・単発操作で映える。<b>トレードオフ:</b> dim は「他が無効化された」と誤読されうる・
+      複数行同時変更で破綻しやすい(1操作1差分向き)。</p>
+  </div>
+
+</div>
+
+<script>
+/* ===========================================================================
+ * モック用の再生ロジック(製品では todos-entry.ts が structuredContent 差分から描く)。
+ * 各パターンで完了/追加/削除を実演。パターン差はクラス名の付け方だけで、
+ * DOM 操作の骨格は共通(spatial consistency: 完了は done セクションへ移動、削除はその場で畳む)。
+ * =========================================================================== */
+const html = document.documentElement;
+document.getElementById("rm").addEventListener("change", (e) => {
+  document.body.classList.toggle("rm", e.target.checked);
+});
+
+function liDone(id, title, extra) {
+  const li = document.createElement("li");
+  li.dataset.id = id; li.className = "done";
+  li.innerHTML = '<button class="check" aria-pressed="true"><span class="circle">✓</span></button>' +
+    '<div class="texts"><div class="title">' + title + '</div>' + (extra || "") + '</div>';
+  return li;
+}
+
+function updateDoneCount(card) {
+  const n = card.querySelectorAll('[data-list="done"] li').length;
+  card.querySelector("[data-donecount]").textContent = n;
+  const det = card.querySelector("[data-done]");
+  if (n > 0) det.open = true;
+}
+
+function announce(card, msg) {
+  card.querySelector("[data-live]").textContent = msg;
+}
+
+// 各パターンの初期 HTML を退避しておき、リセットで復元(実装差の比較を何度でも)。
+const cards = {};
+document.querySelectorAll(".controls").forEach((ctrl) => {
+  const pat = ctrl.dataset.pat;
+  const card = ctrl.parentElement.querySelector(".card");
+  cards[pat] = { el: card, html: card.innerHTML };
+});
+
+function complete(pat) {
+  const card = cards[pat].el;
+  const src = card.querySelector('[data-id="milk"]');
+  if (!src || src.classList.contains("done")) return;
+  const doneList = card.querySelector('[data-list="done"]');
+  const moved = liDone("milk", "牛乳を買う", '<div class="meta"><span class="due">今日 18:00</span></div>');
+
+  if (pat === "b") {
+    // Motion-Led: 元行を右へ流してから消し、完了リストへ enter で現れる。
+    src.classList.add("leaving");
+    src.addEventListener("animationend", () => {
+      src.remove();
+      moved.classList.add("hi"); doneList.appendChild(moved);
+      moved.classList.add("enter");
+      updateDoneCount(card);
+    }, { once: true });
+  } else {
+    src.remove();
+    doneList.appendChild(moved);
+    if (pat === "a") { moved.classList.add("hi"); requestAnimationFrame(() => requestAnimationFrame(() => moved.classList.add("settle"))); }
+    if (pat === "c") moved.classList.add("edge");
+    if (pat === "d") { moved.classList.add("lift"); card.classList.add("dimming");
+      setTimeout(() => card.classList.remove("dimming"), 650); }
+    updateDoneCount(card);
+  }
+  announce(card, "「牛乳を買う」を完了しました");
+}
+
+function add(pat) {
+  const card = cards[pat].el;
+  if (card.querySelector('[data-id="dentist-new"]')) return;
+  // 「歯医者の予約」を追加(本来のソート位置=期限切れの末尾)として挿入。
+  const list = card.querySelector('[data-list="overdue"]');
+  const li = document.createElement("li");
+  li.dataset.id = "dentist-new";
+  li.innerHTML = '<button class="check"><span class="circle">✓</span></button>' +
+    '<div class="texts"><div class="title">歯医者の予約を取り直す(再)</div>' +
+    '<div class="meta"><span class="pri">!!</span><span class="due overdue">7/9 (木)</span></div></div>';
+  list.appendChild(li);
+  if (pat === "a") { li.classList.add("hi"); requestAnimationFrame(() => requestAnimationFrame(() => li.classList.add("settle"))); }
+  if (pat === "b") li.classList.add("enter");
+  if (pat === "c") li.classList.add("edge");
+  if (pat === "d") { li.classList.add("lift"); card.classList.add("dimming");
+    setTimeout(() => card.classList.remove("dimming"), 650); }
+  announce(card, "「歯医者の予約を取り直す」を追加しました");
+}
+
+function del(pat) {
+  const card = cards[pat].el;
+  const target = card.querySelector('[data-id="report"]');
+  if (!target) return;
+  announce(card, "「週次レポート提出」を削除しました");
+  if (pat === "a") {
+    // Quiet: そっとフェードして消える(height 畳みは B/C/D、A は控えめ)。
+    target.style.transition = "opacity 0.35s var(--spring-soft)";
+    target.style.opacity = "0";
+    setTimeout(() => target.remove(), 360);
+  } else {
+    target.classList.add("collapsing");
+    target.addEventListener("animationend", () => target.remove(), { once: true });
+  }
+}
+
+document.querySelectorAll(".controls").forEach((ctrl) => {
+  const pat = ctrl.dataset.pat;
+  ctrl.addEventListener("click", (e) => {
+    const act = e.target.dataset.act;
+    if (!act) return;
+    if (act === "complete") complete(pat);
+    else if (act === "add") add(pat);
+    else if (act === "delete") del(pat);
+    else if (act === "reset") {
+      cards[pat].el.innerHTML = cards[pat].html;
+    }
+  });
+});
+</script>
+</body>
+</html>

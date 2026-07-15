@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>caldav MCP Apps — ミニマル diff UI モック(ハイライトのみ)</title>
+<style>
+  /* ===========================================================================
+   * ミニマル diff ドクトリンのレビュー用モック(製品コードではない)。
+   *
+   * 方針の転換(前回 git-diff 版 → 今回):
+   *   操作の意味(追加/完了/削除/変更)は「会話」が既に語っている。だから UI は
+   *   +/−/~ 記号・緑赤琥珀の色・diffstat バナーで意味を再エンコードしない。
+   *   「今の call で触った行はこれ」を "静かな背景ハイライト" だけで指す。
+   *
+   * 恒久 vs 一時の2レイヤ原則は維持:
+   *   レイヤ1(恒久) = 完了状態 = 打ち消し線 + 塗り丸チェック(iOS 共通のタスク状態。
+   *                    diff クロームではない)
+   *   レイヤ2(一時) = 今回 call のハイライト = 淡い1トーン背景。次の list では消える。
+   * =========================================================================== */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #767676;
+    --border: rgba(128, 128, 128, 0.25);
+    --surface: rgba(128, 128, 128, 0.12);
+    --accent: #007aff;   /* iOS systemBlue */
+    --danger: #ff3b30;   /* iOS systemRed(期限切れ due 用。diff クロームではない) */
+    --pri: #ff9500;      /* iOS systemOrange(優先度 !) */
+    --radius: 8px;
+    /* 変更行ハイライト = 中立の1トーン(意味で色を分けない)。
+     * accent(systemBlue)を極薄(8%)で敷く。青にしたのは:「今のあなたの操作の
+     * 結果ここ」を指す = システムの現在フォーカス色 = accent が最も中立で、
+     * 緑/赤/琥珀のような「良い/悪い/注意」の価値を含まないため。 */
+    --hi: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .dark {
+    color-scheme: dark;
+    --bg: #1c1c1e;
+    --fg: #f2f2f2;
+    --muted: #98989e;
+    --border: rgba(128, 128, 128, 0.3);
+    --surface: rgba(128, 128, 128, 0.18);
+    --accent: #0a84ff;
+    --danger: #ff453a;
+    --pri: #ff9f0a;
+    /* ダークは 8% だと沈むので 14% に上げる(下地が暗いぶんコントラストを稼ぐ)。 */
+    --hi: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; color: #1a1a1a; background: #ececf0;
+  }
+  .page-title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+  .page-sub { color: #555; font-size: 13px; margin: 0 0 16px; max-width: 720px; line-height: 1.6; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 12px 20px;
+    background: #fff; border: 1px solid #ccc; border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 28px; font-size: 13px; max-width: 720px;
+  }
+  .legend .swatch {
+    display: inline-block; width: 26px; height: 14px; border-radius: 3px;
+    background: rgba(0,122,255,.08); border: 1px solid rgba(0,122,255,.18);
+    vertical-align: middle; margin-right: 4px;
+  }
+  .frame { margin-bottom: 36px; }
+  .frame > h3 {
+    font-size: 14px; margin: 0 0 4px; color: #333;
+    border-top: 2px solid #bbb; padding-top: 14px; max-width: 720px;
+  }
+  .frame > .note { font-size: 12px; color: #666; margin: 0 0 10px; max-width: 720px; line-height: 1.6; }
+  .card {
+    width: 360px; background: var(--bg); color: var(--fg);
+    border: 1px solid #bbb; border-radius: 12px;
+    padding: clamp(8px, 3vw, 16px);
+    box-shadow: 0 1px 4px rgba(0,0,0,.12);
+  }
+  .card-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  .sublabel { font-size: 11px; color: #888; margin: 0 0 4px; font-weight: 600; }
+
+  /* --- todos-app.ts 由来の製品 CSS 語彙(移植) --------------------------------- */
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .app-title { font-size: 16px; font-weight: 700; }
+  .updated { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+  section { margin-top: 10px; }
+  section:first-child { margin-top: 0; }
+  h2 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  section.sec-overdue h2 { color: var(--danger); }
+  details > summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 4px 0; min-height: 32px; display: flex; align-items: center;
+  }
+
+  ul { list-style: none; margin: 0; padding: 0; }
+  /* 前回の「左ボーダー予約でガタつく」問題はハイライトのみなら発生しない:
+   * ボーダーを付けず背景だけ替えるのでレイアウトが動かない。padding-left の
+   * 予約も不要。これがミニマル化の副次的な勝ち。 */
+  li {
+    display: flex; align-items: flex-start; gap: 4px;
+    padding: 2px 4px; border-bottom: 1px solid var(--border);
+    border-radius: 6px; /* ハイライト時に角が丸く「そっと」見えるように */
+  }
+  li:last-child { border-bottom: none; }
+
+  button.check {
+    flex-shrink: 0; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0; background: none; border: none; cursor: pointer;
+  }
+  .circle {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; line-height: 1; color: transparent;
+  }
+  li.done .circle { border-color: var(--accent); background: var(--accent); color: #fff; }
+
+  .texts { min-width: 0; flex: 1; padding: 10px 0; }
+  .title { overflow-wrap: break-word; line-height: 1.35; }
+  li.done .title { text-decoration: line-through; color: var(--muted); }
+  .meta { margin-top: 1px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+  .pri { color: var(--pri); font-weight: 700; letter-spacing: 1px; }
+  .due.overdue { color: var(--danger); }
+  .notes { margin-top: 1px; font-size: 12px; color: var(--muted); overflow-wrap: break-word; }
+
+  /* ===========================================================================
+   * ミニマル diff クローム = これだけ。1クラス・1トーン・記号無し・ボーダー無し。
+   * added / completed / modified すべて同じ .hi(会話が意味を語るので無区別)。
+   * =========================================================================== */
+  li.hi { background: var(--hi); }
+
+  /* 削除ゴースト案(b): 打ち消し線 + 減光。色は付けず、ハイライトも敷かず、
+   * 「消えつつある」ことだけ形で示す(次の描画で行ごと消える一時表現)。 */
+  li.ghost .texts { opacity: 0.45; }
+  li.ghost .title { text-decoration: line-through; }
+  li.ghost .circle { border-style: dashed; }
+
+  /* 行内フィールド diff(色無し版): 旧値は打ち消し線のみ、新値は太字のみ。 */
+  .field-old { text-decoration: line-through; color: var(--muted); }
+  .field-new { font-weight: 600; }
+  .field-arrow { color: var(--muted); }
+
+  /* 視覚的に隠すが aria-live で読み上げる領域(バナー撤去の a11y 代替)。 */
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">caldav MCP Apps — ミニマル diff UI(ハイライトのみ)モック</h1>
+<p class="page-sub">
+  操作の意味は<b>会話が既に語っている</b>。UI は「今の call で触った行はこれ」を
+  <b>そっとした背景ハイライト1トーンだけ</b>で指す。記号(+/−/~)・意味色(緑赤琥珀)・
+  diffstat バナーは撤去。打ち消し線(=完了)は恒久のタスク状態として残す(diff ではない)。
+  丸チェック確定。
+</p>
+<div class="legend">
+  <span><span class="swatch"></span> 今回の操作で触れた行(次の一覧では消える)</span>
+  <span><s>打ち消し線 + 塗りチェック</s> = 完了状態(恒久・iOS 共通)</span>
+</div>
+
+<!-- ================= ① 通常の一覧 ================= -->
+<div class="frame">
+  <h3>① 通常の一覧(list)— ハイライト無し(基準)</h3>
+  <p class="note">前回と同じベースライン。差分クローム皆無の素の状態。</p>
+  <div class="card">
+    <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">10:24 更新</span></div></header>
+    <section class="sec-overdue">
+      <h2>期限切れ</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+            <div class="meta"><span class="pri">!!</span><span class="due overdue">7/10 (金)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">図書館の本を返却</div>
+            <div class="meta"><span class="due overdue">7/11 (土)</span></div></div></li>
+      </ul>
+    </section>
+    <section>
+      <h2>今日</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">週次レポート提出</div>
+            <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+      </ul>
+    </section>
+    <section>
+      <h2>今後</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">出張の新幹線を予約</div>
+            <div class="meta"><span class="pri">!!</span><span class="due">7/15 (水)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">母の誕生日プレゼントを選ぶ</div>
+            <div class="meta"><span class="due">7/20 (月)</span></div></div></li>
+      </ul>
+    </section>
+    <details><summary>完了済み (2)</summary>
+      <ul>
+        <li class="done"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">クリーニングを受け取る</div></div></li>
+        <li class="done"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">粗大ごみの回収を申し込む</div></div></li>
+      </ul>
+    </details>
+  </div>
+</div>
+
+<!-- ================= ② 追加 ================= -->
+<div class="frame">
+  <h3>② 追加(create)— 新規行をソート位置に挿入し、その行だけハイライト</h3>
+  <p class="note">記号も緑も無い。ハイライトされた行が「今追加した1件」。会話が「追加して」と言っている前提。aria-live に「粗大ごみシールを買う を追加しました」を仕込み(下記どのフレームも同様)。</p>
+  <div class="card">
+    <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">10:31 更新</span></div></header>
+    <div class="visually-hidden" role="status" aria-live="polite">「粗大ごみシールを買う」を追加しました</div>
+    <section>
+      <h2>今日</h2>
+      <ul><li><button class="check"><span class="circle">✓</span></button>
+        <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li></ul>
+    </section>
+    <section>
+      <h2>今後</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">出張の新幹線を予約</div>
+            <div class="meta"><span class="pri">!!</span><span class="due">7/15 (水)</span></div></div></li>
+        <li class="hi"><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">粗大ごみシールを買う</div>
+            <div class="meta"><span class="due">7/16 (木)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">母の誕生日プレゼントを選ぶ</div>
+            <div class="meta"><span class="due">7/20 (月)</span></div></div></li>
+      </ul>
+    </section>
+  </div>
+</div>
+
+<!-- ================= ③ 完了 ================= -->
+<div class="frame">
+  <h3>③ 完了(complete)— 完了行へ移動 + ハイライト(打ち消し線と重なる)</h3>
+  <p class="note">恒久の完了表現(打ち消し + 塗り丸)に、一時のハイライトが重なる。追加②と<b>同じハイライト色</b>だが、打ち消し線の有無で「追加された行」と「完了した行」は自然に見分く。完了セクションは一時展開。</p>
+  <div class="card">
+    <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">10:40 更新</span></div></header>
+    <div class="visually-hidden" role="status" aria-live="polite">「牛乳を買う」を完了しました</div>
+    <section>
+      <h2>今日</h2>
+      <ul><li><button class="check"><span class="circle">✓</span></button>
+        <div class="texts"><div class="title">週次レポート提出</div>
+          <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li></ul>
+    </section>
+    <details open><summary>完了済み (3) — 今回の操作で展開</summary>
+      <ul>
+        <li class="done hi"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">牛乳を買う</div><div class="meta"><span class="due">今日 18:00</span></div></div></li>
+        <li class="done"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">クリーニングを受け取る</div></div></li>
+        <li class="done"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">粗大ごみの回収を申し込む</div></div></li>
+      </ul>
+    </details>
+  </div>
+</div>
+
+<!-- ================= ④ 変更 ================= -->
+<div class="frame">
+  <h3>④ 変更(update)— 行内 diff の2案を比較(どちらも色無し)</h3>
+  <p class="note">論点3。左: <b>旧値を打ち消し線で残す</b>(<code>~~7/10~~ → 7/15</code>)/ 右: <b>新値だけ表示</b>(旧値は見せず行をハイライト)。会話が旧値を知っている前提なら右が最小。</p>
+  <div class="card-row">
+    <div>
+      <p class="sublabel">案A: 旧→新を打ち消し線で併記</p>
+      <div class="card">
+        <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">10:52 更新</span></div></header>
+        <div class="visually-hidden" role="status" aria-live="polite">「歯医者の予約を取り直す」の期日を 7月15日 に変更しました</div>
+        <section><h2>今後</h2>
+          <ul>
+            <li class="hi"><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+                <div class="meta"><span class="pri">!!</span>
+                  <span class="due">期日 <span class="field-old">7/10</span>
+                    <span class="field-arrow" aria-hidden="true">→</span>
+                    <span class="field-new">7/15</span></span></div></div></li>
+            <li class="hi"><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">週次レポート提出</div>
+                <div class="meta"><span>優先度 <span class="field-old">!!</span>
+                  <span class="field-arrow" aria-hidden="true">→</span>
+                  <span class="field-new"><span class="pri">!!!</span></span></span></div></div></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+    <div>
+      <p class="sublabel">案B: 新値のみ + 行ハイライト(旧値は会話が知っている)</p>
+      <div class="card">
+        <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">10:52 更新</span></div></header>
+        <div class="visually-hidden" role="status" aria-live="polite">「歯医者の予約を取り直す」の期日を 7月15日 に変更しました</div>
+        <section><h2>今後</h2>
+          <ul>
+            <li class="hi"><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+                <div class="meta"><span class="pri">!!</span><span class="due">7/15 (水)</span></div></div></li>
+            <li class="hi"><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">週次レポート提出</div>
+                <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ⑤ 削除 ================= -->
+<div class="frame">
+  <h3>⑤ 削除(delete)— (a) 何も残さず消す vs (b) ゴーストを一瞬残す</h3>
+  <p class="note">論点2(最難所)。左 (a): 一覧から居なくなるだけ(会話が「削除して」と言った以上、消えるのが自然)。右 (b): 打ち消し線 + 減光 + 破線円のゴーストを次の描画まで残す。</p>
+  <div class="card-row">
+    <div>
+      <p class="sublabel">案 (a): 消えるだけ(削除スナップショット不要)</p>
+      <div class="card">
+        <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">11:05 更新</span></div></header>
+        <div class="visually-hidden" role="status" aria-live="polite">「ジムの体験予約を調べる」を削除しました</div>
+        <section><h2>期日なし</h2>
+          <ul>
+            <li><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">確定申告の資料をまとめる</div>
+                <div class="meta"><span class="pri">!</span></div></div></li>
+            <!-- 「ジムの体験予約を調べる」は行ごと消えている(ゴースト無し) -->
+          </ul>
+        </section>
+      </div>
+    </div>
+    <div>
+      <p class="sublabel">案 (b): ゴーストを次の描画まで残す(スナップショット必要)</p>
+      <div class="card">
+        <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">11:05 更新</span></div></header>
+        <div class="visually-hidden" role="status" aria-live="polite">「ジムの体験予約を調べる」を削除しました</div>
+        <section><h2>期日なし</h2>
+          <ul>
+            <li><button class="check"><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">確定申告の資料をまとめる</div>
+                <div class="meta"><span class="pri">!</span></div></div></li>
+            <li class="ghost"><button class="check" disabled><span class="circle">✓</span></button>
+              <div class="texts"><div class="title">ジムの体験予約を調べる</div></div></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ⑥ ダークモード ================= -->
+<div class="frame">
+  <h3>⑥ ダークモード(.dark クラス。ハイライトは 14% に増量)</h3>
+  <p class="note">左: 追加 + 変更(案B・新値のみ)の混在。右: 完了。ダークでハイライトが沈まないか確認用。</p>
+  <div class="card-row">
+    <div class="card dark">
+      <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">21:10 更新</span></div></header>
+      <div class="visually-hidden" role="status" aria-live="polite">1件追加、1件変更しました</div>
+      <section><h2>今後</h2>
+        <ul>
+          <li class="hi"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">薬局で処方薬を受け取る</div>
+              <div class="meta"><span class="due">7/14 (火)</span></div></div></li>
+          <li class="hi"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">出張の新幹線を予約</div>
+              <div class="meta"><span class="pri">!!</span><span class="due">7/17 (金)</span></div></div></li>
+          <li><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">母の誕生日プレゼントを選ぶ</div>
+              <div class="meta"><span class="due">7/20 (月)</span></div></div></li>
+        </ul>
+      </section>
+    </div>
+    <div class="card dark">
+      <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">21:12 更新</span></div></header>
+      <div class="visually-hidden" role="status" aria-live="polite">「クリーニングを受け取る」を完了しました</div>
+      <section><h2>今日</h2>
+        <ul><li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">週次レポート提出</div>
+            <div class="meta"><span class="pri">!!!</span><span class="due">今日 17:00</span></div></div></li></ul>
+      </section>
+      <details open><summary>完了済み (1) — 今回の操作で展開</summary>
+        <ul><li class="done hi"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">クリーニングを受け取る</div></div></li></ul>
+      </details>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 無区別テスト ================= -->
+<div class="frame">
+  <h3>論点1 の検証: added / completed / modified を1画面に混在(全部同じハイライト)</h3>
+  <p class="note">記号も色も無く、追加・完了・変更が<b>同じ薄青</b>で並ぶ。それでも「打ち消し線の有無」「行の中身(新値/移動先セクション)」で読み分けられるか、実際に目で確認するフレーム。</p>
+  <div class="card">
+    <header class="bar"><div class="bar-left"><span class="app-title">リマインダー</span><span class="updated">11:20 更新</span></div></header>
+    <div class="visually-hidden" role="status" aria-live="polite">1件追加、1件変更、1件完了しました</div>
+    <section><h2>今後</h2>
+      <ul>
+        <li class="hi"><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">薬局で処方薬を受け取る</div>
+            <div class="meta"><span class="due">7/14 (火)</span></div></div></li>
+        <li class="hi"><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">出張の新幹線を予約</div>
+            <div class="meta"><span class="pri">!!</span><span class="due">7/17 (金)</span></div></div></li>
+      </ul>
+    </section>
+    <details open><summary>完了済み (1)</summary>
+      <ul><li class="done hi"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+        <div class="texts"><div class="title">牛乳を買う</div></div></li></ul>
+    </details>
+  </div>
+</div>
+
+</body>
+</html>

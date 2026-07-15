@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>caldav MCP Apps — 確定仕様の差分ハイライト比較(H1〜H4)</title>
+<style>
+  /* ===========================================================================
+   * 確定仕様の差分 UI 静止モック(製品コードではない・レビュー用)。
+   *
+   * ロック済み(全パターン共通・変えない):
+   *   - アニメ一切なし(遷移/フェード/spring 全部無し)。fresh-instance 描画では
+   *     before が無く遷移アニメを信頼発火できず、従属 UI で頻度も高いので抑制が結論。
+   *     → 静止画 = それが実物。
+   *   - ステートレス: mutate 応答は affected(UID配列)+ 確定一覧。UI は各行が
+   *     affected に含まれるかでハイライトを付けるだけ。before/after・削除スナップショット無し。
+   *   - 丸チェック / 打ち消し線=完了(恒久のタスク状態)/ セクション分け /
+   *     ハイライトは「次の描画(list)まで」残る(タイマー無し)。
+   *   - a11y: 視覚非表示の role="status" aria-live で操作結果を読み上げ。
+   *
+   * 見せる変数 = ハイライトの見せ方だけ(H1〜H4)。同一状況で横断比較する。
+   * =========================================================================== */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #767676;
+    --border: rgba(128, 128, 128, 0.25);
+    --surface: rgba(128, 128, 128, 0.12);
+    --accent: #007aff;   /* iOS systemBlue */
+    --danger: #ff3b30;   /* iOS systemRed(期限切れ due・diff ではない) */
+    --pri: #ff9500;      /* iOS systemOrange(優先度 !) */
+    --radius: 10px;
+
+    /* --- 各パターンのハイライト値(ここが比較の主役・実装スライス②へ渡す候補) --- */
+    /* H1 Neutral: 中立グレーサーフェス(既存 --surface と同系だがやや濃く) */
+    --hi-neutral: rgba(128, 128, 128, 0.14);
+    /* H2 Blue tint: systemBlue 極薄(ライト 8%) */
+    --hi-blue: color-mix(in srgb, var(--accent) 8%, transparent);
+    /* H3 極小: ほぼ気づかない地色 + 静的な細い先頭バー(アニメ無しの静的マーカー) */
+    --hi-faint: color-mix(in srgb, var(--accent) 4%, transparent);
+    --hi-bar: color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  .dark {
+    color-scheme: dark;
+    --bg: #1c1c1e; --fg: #f2f2f2; --muted: #98989e;
+    --border: rgba(128,128,128,0.3); --surface: rgba(128,128,128,0.18);
+    --accent: #0a84ff; --danger: #ff453a; --pri: #ff9f0a;
+    --hi-neutral: rgba(235, 235, 245, 0.12);
+    --hi-blue: color-mix(in srgb, var(--accent) 14%, transparent); /* ダークは沈むので増量 */
+    --hi-faint: color-mix(in srgb, var(--accent) 8%, transparent);
+    --hi-bar: color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; color: #1a1a1a; background: #ececf0;
+  }
+  body.pagedark { background: #000; color: #f2f2f2; }
+  .page-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 4px; }
+  .page-sub { font-size: 13px; line-height: 1.6; margin: 0 0 16px; max-width: 780px; opacity: .8; }
+  .toolbar {
+    display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid #bbb; border-radius: 12px;
+    padding: 12px 16px; margin-bottom: 24px; max-width: 780px;
+  }
+  .toolbar .legend { font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; opacity: .85; }
+  .toolbar .theme-toggle { margin-left: auto; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  .grid { display: flex; flex-wrap: wrap; gap: 24px; }
+  .pattern { width: 360px; }
+  .pattern > h3 { font-size: 16px; letter-spacing: -0.01em; margin: 0 0 6px; }
+  .pattern > .charnote {
+    font-size: 12px; line-height: 1.55; margin: 8px 0 0;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 8px 10px; opacity: .95;
+  }
+
+  .card {
+    background: var(--bg); color: var(--fg);
+    border: 1px solid #bbb; border-radius: 14px;
+    padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.12);
+  }
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .app-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  .updated { font-size: 11px; color: var(--muted); }
+
+  /* 削除の読み上げ文: 実際は視覚非表示(role=status aria-live)。モックでは
+   * 「仕組みが分かるように」淡色で見せる注記として表示する。 */
+  .live-note {
+    font-size: 11px; color: var(--muted); font-style: italic;
+    padding: 3px 6px; margin: 4px 0; border-radius: 6px;
+    background: var(--surface);
+    border: 1px dashed var(--border);
+  }
+  .live-note::before { content: "🔊 "; font-style: normal; }
+
+  section { margin-top: 8px; }
+  h2 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  section.sec-overdue h2 { color: var(--danger); }
+  details > summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 4px 0; min-height: 30px; display: flex; align-items: center;
+  }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: flex-start; gap: 4px;
+    padding: 2px 6px; border-bottom: 1px solid var(--border); border-radius: 8px;
+    position: relative;
+  }
+  li:last-child { border-bottom: none; }
+
+  button.check {
+    flex-shrink: 0; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0; background: none; border: none; cursor: pointer;
+  }
+  .circle {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; line-height: 1; color: transparent;
+  }
+  li.done .circle { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .texts { min-width: 0; flex: 1; padding: 9px 0; }
+  .title { overflow-wrap: break-word; line-height: 1.35; }
+  li.done .title { text-decoration: line-through; color: var(--muted); }
+  .meta { margin-top: 1px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+  .pri { color: var(--pri); font-weight: 700; letter-spacing: 1px; }
+  .due.overdue { color: var(--danger); }
+
+  /* ===========================================================================
+   * H1〜H4 のハイライト実装(アニメ無し・静的)。affected 行に .aff を付ける。
+   * =========================================================================== */
+  /* H1 Neutral: 中立グレー背景 */
+  .pat-h1 li.aff { background: var(--hi-neutral); }
+  /* H2 Blue tint: 極薄青背景 */
+  .pat-h2 li.aff { background: var(--hi-blue); }
+  /* H3 極小: ほぼ無色の地 + 静的な細い先頭バー(color だけに頼らない静的マーカー) */
+  .pat-h3 li.aff { background: var(--hi-faint); }
+  .pat-h3 li.aff::before {
+    content: ""; position: absolute; left: 0; top: 5px; bottom: 5px; width: 2.5px;
+    border-radius: 2px; background: var(--hi-bar);
+  }
+  /* H4 ハイライト無し: .aff があっても背景を付けない(内容だけで語る)。
+   * → クラスは付けるが視覚差分ゼロ。a11y の aria-live は残す。 */
+  .pat-h4 li.aff { background: transparent; }
+
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">確定仕様の差分ハイライト比較 — H1 / H2 / H3 / H4</h1>
+<p class="page-sub">
+  <b>ロック済み:</b> アニメ無し・ステートレス(affected UID + 確定一覧)・丸チェック・
+  打ち消し線=完了(恒久)・ハイライトは次の描画まで・削除は消えるだけ + 読み上げ。
+  <b>比較する変数はハイライトの見せ方だけ。</b>
+  各カードは「牛乳を完了 / 歯医者を追加 / レポートの期日を7/15に変更 / 会議メモを削除」した<b>直後の静止状態</b>(=実物)。
+</p>
+<div class="toolbar">
+  <div class="legend">
+    <span>affected = 今回の操作で触れた行</span>
+    <span><s>打ち消し線</s>=完了(恒久)</span>
+    <span>🔊 = 視覚非表示の aria-live 読み上げ(モックでは可視化)</span>
+  </div>
+  <label class="theme-toggle"><input type="checkbox" id="darktoggle" /> ダークで見る</label>
+</div>
+
+<div class="grid" id="grid">
+
+  <!-- テンプレは JS で4パターンぶん複製。ここに1つだけ雛形を置き、複製時に pat クラスと
+       ハイライト有無を差し替える。手書きの重複を避けつつ「同一状況」を保証する。 -->
+</div>
+
+<template id="cardtpl">
+  <div class="card">
+    <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:41 更新</span></div>
+    <div class="visually-hidden" role="status" aria-live="polite">「会議メモ」を削除しました。「牛乳を買う」を完了しました。「歯医者の予約」を追加しました。「週次レポート提出」の期日を7月15日に変更しました。</div>
+
+    <section class="sec-overdue"><h2>期限切れ</h2>
+      <ul>
+        <!-- 追加された行(本来のソート位置=期限切れ末尾)。affected。 -->
+        <li class="aff"><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+            <div class="meta"><span class="pri">!!</span><span class="due overdue">7/9 (木)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">図書館の本を返却</div>
+            <div class="meta"><span class="due overdue">7/11 (土)</span></div></div></li>
+      </ul>
+    </section>
+
+    <section><h2>今日</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">出社前にゴミ出し</div>
+            <div class="meta"><span class="due">今日 8:00</span></div></div></li>
+      </ul>
+    </section>
+
+    <section><h2>今後</h2>
+      <ul>
+        <!-- 変更された行(期日 7/17→7/15 新値のみ表示・旧値は出さない)。affected。 -->
+        <li class="aff"><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">週次レポート提出</div>
+            <div class="meta"><span class="pri">!!!</span><span class="due">7/15 (水)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">出張の新幹線を予約</div>
+            <div class="meta"><span class="pri">!!</span><span class="due">7/20 (月)</span></div></div></li>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">母の誕生日プレゼントを選ぶ</div>
+            <div class="meta"><span class="due">7/22 (水)</span></div></div></li>
+      </ul>
+    </section>
+
+    <section><h2>期日なし</h2>
+      <ul>
+        <li><button class="check"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">確定申告の資料をまとめる</div>
+            <div class="meta"><span class="pri">!</span></div></div></li>
+      </ul>
+    </section>
+
+    <!-- 削除された「会議メモ」はここに居ない(消えるだけ・ハイライト対象なし)。
+         下の 🔊 注記が読み上げの実体(実機では視覚非表示)。 -->
+    <div class="live-note">「会議メモ」を削除しました(この行はもう一覧に無い)</div>
+
+    <details open><summary>完了済み (2) — 完了直後は展開</summary>
+      <ul>
+        <!-- 完了した行(打ち消し=恒久 + affected ハイライト)。2レイヤの重ね掛け。 -->
+        <li class="done aff"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">牛乳を買う</div>
+            <div class="meta"><span class="due">今日 18:00</span></div></div></li>
+        <li class="done"><button class="check" aria-pressed="true"><span class="circle">✓</span></button>
+          <div class="texts"><div class="title">クリーニングを受け取る</div></div></li>
+      </ul>
+    </details>
+  </div>
+</template>
+
+<script>
+/* 4パターンを同一雛形から複製し、pat クラスとメモだけ差し替える(同一状況の保証)。 */
+const patterns = [
+  { id: "h1", title: "H1 — Neutral(中立グレー)",
+    note: "<b>効かせ方:</b> affected 行に中立グレーサーフェス(rgba 0.14)。<b>長所:</b> 色に意味を持たせず「触った場所」だけを示す・最も無害。<b>トレードオフ:</b> 既存 --surface(スケルトン/summary 地)と近く、区別が弱い場面がある。" },
+  { id: "h2", title: "H2 — Blue tint(systemBlue 極薄)",
+    note: "<b>効かせ方:</b> systemBlue 極薄(ライト8%/ダーク14%)。<b>長所:</b> 「今フォーカスしている場所」の中立色・iOS 選択色と地続き・グレーより見つけやすい。<b>トレードオフ:</b> 完了行(青い塗り丸)と地色が同系で僅かに賑やか。" },
+  { id: "h3", title: "H3 — 極小(barely-there + 静的バー)",
+    note: "<b>効かせ方:</b> ほぼ無色の地(4%)+ 静的な細い先頭バー(2.5px)。アニメ無しの静的マーカー。<b>長所:</b> 「そっと指す」の極North・色覚に依らず位置が分かる。<b>トレードオフ:</b> バーが git-diff の gutter を連想させる・地色は実質見えない。" },
+  { id: "h4", title: "H4 — ハイライト無し(内容だけ)",
+    note: "<b>効かせ方:</b> 行ハイライト一切なし。完了=打ち消し / 追加=新行 / 変更=新値、だけで見せる。<b>長所:</b> 最小・会話が意味を語る前提なら十分成立しうる。<b>トレードオフ:</b> 「どれが今の操作か」を目で追えない(スクロールで戻った時に迷子)・aria-live 頼み。" },
+];
+const grid = document.getElementById("grid");
+const tpl = document.getElementById("cardtpl");
+patterns.forEach((p) => {
+  const wrap = document.createElement("div");
+  wrap.className = "pattern";
+  const h = document.createElement("h3"); h.textContent = p.title; wrap.appendChild(h);
+  const card = tpl.content.firstElementChild.cloneNode(true);
+  card.classList.add("pat-" + p.id);
+  wrap.appendChild(card);
+  const note = document.createElement("p"); note.className = "charnote"; note.innerHTML = p.note;
+  wrap.appendChild(note);
+  grid.appendChild(wrap);
+});
+
+/* ダーク全体トグル: body 背景を黒に + 全カード/toolbar に .dark を当てて CSS 変数を切替。 */
+document.getElementById("darktoggle").addEventListener("change", (e) => {
+  const on = e.target.checked;
+  document.body.classList.toggle("pagedark", on);
+  document.querySelectorAll(".card, .toolbar, .charnote").forEach((el) => el.classList.toggle("dark", on));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>caldav MCP Apps — 差分の中間状態(becoming)比較</title>
+<style>
+  /* ===========================================================================
+   * 差分を「中間状態(becoming)の静的描画」で見せるモック(製品コードではない)。
+   *
+   * 中核アイデア:
+   *   差分は色ハイライトでなく「affected 行を "変化の途中" の静的状態で、
+   *   元の位置のまま描く」ことで見せる。form(取消線・丸の形態・減光)が第一言語、
+   *   色は副次。アニメではない(fresh-instance でも成立する静的描画。次の list で通常状態へ)。
+   *
+   * 最重要の設計課題:
+   *   completed の途中(取消線+点線丸+その場)と deleted の途中(becoming-gone)が
+   *   「取消線+点線丸+その場」で酷似する。色に頼らず form/質感で区別する。
+   *   → 3案で form 体系を変えて比較する。
+   *
+   * 制約(不変): 丸チェック / iOS 語彙・44px・system-ui / アニメ無し(:active のみ)/
+   *   会話従属(min 320px・派手にしない)/ ステートレス /
+   *   contract: affected:[{id,kind:"added"|"completed"|"reopened"|"edited"}] + removed:[{id,title,due?}]
+   * =========================================================================== */
+  :root {
+    color-scheme: light;
+    --bg:#fff; --fg:#1a1a1a; --muted:#767676;
+    --border:rgba(128,128,128,0.25); --surface:rgba(128,128,128,0.12);
+    --accent:#007aff; --danger:#ff3b30; --pri:#ff9500; --radius:10px;
+    /* becoming 用の副次色(あくまで補助・淡く)。form が主役。 */
+    --becoming-edit: color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  .dark {
+    color-scheme:dark;
+    --bg:#1c1c1e; --fg:#f2f2f2; --muted:#98989e;
+    --border:rgba(128,128,128,0.3); --surface:rgba(128,128,128,0.18);
+    --accent:#0a84ff; --danger:#ff453a; --pri:#ff9f0a;
+    --becoming-edit: color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:24px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    font-size:14px; color:#1a1a1a; background:#ececf0;
+  }
+  body.pagedark { background:#000; color:#f2f2f2; }
+  .page-title { font-size:22px; font-weight:700; letter-spacing:-0.02em; margin:0 0 4px; }
+  .page-sub { font-size:13px; line-height:1.6; margin:0 0 16px; max-width:840px; opacity:.85; }
+  .toolbar {
+    display:flex; gap:16px; align-items:center; flex-wrap:wrap;
+    background:var(--bg); color:var(--fg); border:1px solid #bbb; border-radius:12px;
+    padding:12px 16px; margin-bottom:24px; max-width:840px;
+  }
+  .toolbar .legend { font-size:12px; opacity:.9; }
+  .theme-toggle { margin-left:auto; font-size:13px; display:flex; align-items:center; gap:6px; cursor:pointer; }
+
+  .grid { display:flex; flex-wrap:wrap; gap:24px; }
+  .pattern { width:360px; }
+  .pattern > h3 { font-size:16px; letter-spacing:-0.01em; margin:0 0 6px; }
+  .charnote {
+    font-size:12px; line-height:1.55; margin:8px 0 0;
+    background:var(--bg); color:var(--fg); border:1px solid var(--border);
+    border-left:3px solid var(--accent); border-radius:8px; padding:8px 10px; opacity:.95;
+  }
+  .verdict {
+    font-size:12px; line-height:1.55; margin:6px 0 0; padding:8px 10px; border-radius:8px;
+    background:var(--bg); color:var(--fg); border:1px solid var(--border);
+  }
+  .verdict.good { border-left:3px solid #34c759; }
+  .verdict.warn { border-left:3px solid var(--pri); }
+
+  .card {
+    background:var(--bg); color:var(--fg); border:1px solid #bbb; border-radius:14px;
+    padding:12px 14px; box-shadow:0 1px 4px rgba(0,0,0,.12);
+  }
+  .bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+  .app-title { font-size:16px; font-weight:700; letter-spacing:-0.01em; }
+  .updated { font-size:11px; color:var(--muted); }
+  section { margin-top:8px; }
+  h2 { margin:0 0 2px; font-size:12px; font-weight:600; color:var(--muted); }
+  section.sec-overdue h2 { color:var(--danger); }
+  details > summary { cursor:pointer; font-size:12px; font-weight:600; color:var(--muted); padding:4px 0; min-height:30px; display:flex; align-items:center; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; align-items:flex-start; gap:4px; padding:2px 6px; border-bottom:1px solid var(--border); border-radius:8px; position:relative; }
+  li:last-child { border-bottom:none; }
+
+  button.check {
+    flex-shrink:0; width:44px; height:44px; display:flex; align-items:center; justify-content:center;
+    padding:0; background:none; border:none; cursor:pointer; transition:transform .1s ease;
+  }
+  button.check:active { transform:scale(.9); }
+  .circle {
+    width:22px; height:22px; border-radius:50%; border:1.5px solid var(--muted);
+    display:flex; align-items:center; justify-content:center; font-size:13px; line-height:1; color:transparent;
+  }
+  /* 恒久の完了(完了欄で実線塗り+白チェック)。becoming とは別物。 */
+  li.done .circle { border-color:var(--accent); background:var(--accent); color:#fff; }
+  .texts { min-width:0; flex:1; padding:9px 0; }
+  .title { overflow-wrap:break-word; line-height:1.35; }
+  li.done .title { text-decoration:line-through; color:var(--muted); }
+  .meta { margin-top:1px; font-size:12px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; }
+  .pri { color:var(--pri); font-weight:700; letter-spacing:1px; }
+  .due.overdue { color:var(--danger); }
+  .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+
+  /* ===========================================================================
+   * becoming の form 語彙(3案で差し替え)。共通の土台クラス:
+   *   li.b-complete  = この call で完了した(元の位置に留まる中間状態)
+   *   li.b-delete    = この call で削除された(元の位置に留まる becoming-gone)
+   *   li.b-add       = この call で追加された
+   *   li.b-edit      = この call で編集された(.field-new が新値)
+   * =========================================================================== */
+
+  /* completed / deleted 共通: その場・取消線。丸は点線ベース。 */
+  .b-complete .title { text-decoration:line-through; color:var(--muted); }
+  .b-complete .circle, .b-delete .circle { border-style:dashed; background:none; }
+
+  /* --- 追加(add)の中間状態(全案共通・丸には触らない=点線衝突回避) -----------------
+   * added は「今この場所に置かれた」= 丸は通常の実線空円のまま。
+   * 別 form で示す: 行頭に細い実線の "新規" マーカー(縦バー)+ タイトル先頭に淡いキャレット。
+   * completed/deleted が "点線丸" を使うのに対し、added は "実線丸のまま・行頭バー" で語彙を分ける。 */
+  .b-add::before {
+    content:""; position:absolute; left:0; top:5px; bottom:5px; width:2.5px; border-radius:2px;
+    background: var(--accent); opacity:.75;
+  }
+  .b-add .title::before {
+    content:"›"; color:var(--accent); font-weight:700; margin-right:4px; opacity:.7;
+  }
+
+  /* --- 編集(edit)の中間状態(全案共通)-----------------------------------------
+   * 変わったフィールド(新値)に "今書き換わった" キャレット風の下線 + 淡い強調。
+   * 丸は触らない(実線空円)。行頭バーも付けない(added と区別)。 */
+  .field-new {
+    border-bottom: 1.5px solid var(--becoming-edit);
+    padding-bottom: 1px; font-weight:600; color: var(--fg);
+  }
+  .field-new::after { content:"|"; color:var(--becoming-edit); font-weight:400; margin-left:1px; }
+
+  /* ===========================================================================
+   * 案1 — チェックの "入りかけ" vs 空+減光
+   *   completed: 点線丸に薄いチェックが入りかけ(becoming checked)・不透明度は通常
+   *   deleted:   点線丸は空 + 行全体が減光(becoming gone・フェードした佇まい)
+   * =========================================================================== */
+  .p1 .b-complete .circle { border-color:var(--accent); color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .p1 .b-complete .circle::after { content:"✓"; }
+  .p1 .b-delete { opacity:.5; }
+  .p1 .b-delete .circle { border-color:var(--muted); color:transparent; }
+
+  /* ===========================================================================
+   * 案2 — 破線の "密度" で区別
+   *   completed: 密な破線(実線に近い)+ 薄チェック → "もう少しで実体化"
+   *   deleted:   粗い点線(疎)+ 空 + わずかな減光 → "ほどけて消える"
+   * SVG background で破線密度を作る(border-style:dashed は密度を制御できないため)。
+   * =========================================================================== */
+  .p2 .b-complete .circle, .p2 .b-delete .circle { border:none; background:none; position:relative; }
+  .p2 .b-complete .circle::before, .p2 .b-delete .circle::before {
+    content:""; position:absolute; inset:0; border-radius:50%;
+    /* dash 円は conic/repeating では綺麗に出ないので、擬似的に border + mask 風の代替として
+     * outline-dasharray を SVG data-uri で描く。 */
+  }
+  /* 密破線(completed): stroke-dasharray を細かく */
+  .p2 .b-complete .circle {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22'><circle cx='11' cy='11' r='9.5' fill='none' stroke='%23007aff' stroke-width='1.6' stroke-dasharray='2.2 1.4'/></svg>");
+    color: color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  .p2 .b-complete .circle::after { content:"✓"; }
+  /* 粗点線(deleted): dash を疎に + 減光 */
+  .p2 .b-delete { opacity:.6; }
+  .p2 .b-delete .circle {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22'><circle cx='11' cy='11' r='9.5' fill='none' stroke='%23999' stroke-width='1.6' stroke-dasharray='1.2 3.4'/></svg>");
+    color:transparent;
+  }
+
+  /* ===========================================================================
+   * 案3 — 語彙を分ける: completed=取消線+入りかけチェック / deleted=行を×で "封" じ、
+   *        取消線でなく "斜線オーバーレイ" + インデント後退。丸は空実線(点線を completed 専用に)
+   *   → completed だけが点線丸+取消線を使い、deleted は別語彙(×封じ)にして根本から衝突回避。
+   * =========================================================================== */
+  .p3 .b-complete .circle { border-style:dashed; border-color:var(--accent); color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .p3 .b-complete .circle::after { content:"✓"; }
+  /* deleted: 点線丸を使わない。丸は実線グレーのまま disabled、行に薄い斜線ハッチを重ね、
+   * タイトルは取消線でなく "×" プレフィックス + 減光 + 右へインデントしない(むしろ左に × で封)。 */
+  .p3 .b-delete .circle { border-style:solid; border-color:var(--muted); color:transparent; }
+  .p3 .b-delete { opacity:.55; }
+  .p3 .b-delete .texts { position:relative; }
+  .p3 .b-delete .title::before {
+    content:"✕"; color:var(--danger); font-weight:700; margin-right:5px; opacity:.8;
+  }
+  .p3 .b-delete .title { text-decoration:none; } /* 取消線を使わない=completed と語彙を分ける */
+  .p3 .b-delete .texts::after {
+    /* 薄い斜線ハッチを行に重ね "封印/無効" を質感で示す */
+    content:""; position:absolute; inset:-9px -6px; pointer-events:none;
+    background: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--muted) 22%, transparent) 5px 6px);
+    border-radius:6px;
+  }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">差分の中間状態(becoming)— form で見せる3案比較</h1>
+<p class="page-sub">
+  差分を色でなく「<b>affected 行を"変化の途中"の静的状態で、元の位置のまま描く</b>」で見せる。
+  form(取消線・丸の形態・減光)が主役、色は副次。アニメ無し。
+  <b>最重要:</b> completed の途中 と deleted の途中 を form で区別できるか。
+  各カード: 牛乳を完了 / 会議メモを削除 / 歯医者を追加 / レポートの期日を編集(全て<b>その場</b>で中間状態)。
+</p>
+<div class="toolbar">
+  <div class="legend">完了=元の位置に留まり点線丸+取消線(完了欄へ飛ばさない)/ 削除=becoming-gone / 追加=行頭バー+実線丸 / 編集=新値にキャレット下線</div>
+  <label class="theme-toggle"><input type="checkbox" id="darktoggle" /> ダークで見る</label>
+</div>
+
+<div class="grid">
+
+  <!-- ================= 案1 ================= -->
+  <div class="pattern">
+    <h3>案1 — 入りかけチェック vs 空+減光</h3>
+    <div class="card p1">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:41 更新</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite">牛乳を買うを完了、会議メモを共有を削除、歯医者の予約を追加、週次レポートの期日を7月15日に編集しました</div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul>
+          <li class="b-add"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/9 (木)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul>
+          <!-- 完了: 完了欄へ飛ばさず "今日" のその場に留まる中間状態 -->
+          <li class="b-complete"><button class="check"><span class="circle"></span></button>
+            <div class="texts"><div class="title">牛乳を買う</div>
+              <div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li class="b-edit"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span>期日 <span class="field-new">7/15</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>期日なし</h2>
+        <ul>
+          <!-- 削除: その場に留まる becoming-gone -->
+          <li class="b-delete"><button class="check" disabled><span class="circle"></span></button>
+            <div class="texts"><div class="title" style="text-decoration:line-through">会議メモを共有</div></div></li>
+          <li><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">確定申告の資料をまとめる</div></div></li>
+        </ul>
+      </section>
+    </div>
+    <p class="charnote"><b>区別の手:</b> completed=点線丸に<b>薄チェック入りかけ</b>・不透明通常(前進の途中)/
+      deleted=点線丸は<b>空</b>+<b>行全体を減光</b>(退場の途中)。両者とも取消線だが「チェックの有無」と
+      「行の明度」で前進/退場が分かれる。</p>
+    <div class="verdict good"><b>自己評価:</b> 成功。チェック入りかけ=これから done、空+フェード=これから消える、が直感的。最も静か。</div>
+  </div>
+
+  <!-- ================= 案2 ================= -->
+  <div class="pattern">
+    <h3>案2 — 破線の密度(密=完了 / 疎=削除)</h3>
+    <div class="card p2">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:41 更新</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite">牛乳を買うを完了、会議メモを共有を削除、歯医者の予約を追加、週次レポートの期日を7月15日に編集しました</div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul>
+          <li class="b-add"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/9 (木)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul>
+          <li class="b-complete"><button class="check"><span class="circle"></span></button>
+            <div class="texts"><div class="title">牛乳を買う</div>
+              <div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li class="b-edit"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span>期日 <span class="field-new">7/15</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>期日なし</h2>
+        <ul>
+          <li class="b-delete"><button class="check" disabled><span class="circle"></span></button>
+            <div class="texts"><div class="title" style="text-decoration:line-through">会議メモを共有</div></div></li>
+          <li><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">確定申告の資料をまとめる</div></div></li>
+        </ul>
+      </section>
+    </div>
+    <p class="charnote"><b>区別の手:</b> completed=<b>密な破線</b>丸(実線に近い=もう少しで実体化)+薄チェック /
+      deleted=<b>粗い点線</b>丸(ほどけて消える)+空+わずか減光。破線の「密度」で前進/退場を質感化。</p>
+    <div class="verdict warn"><b>自己評価:</b> 概念は美しいが 22px の円で密/疎の差は視認が微妙。近接比較でないと気づきにくい。減光の助けが要る。</div>
+  </div>
+
+  <!-- ================= 案3 ================= -->
+  <div class="pattern">
+    <h3>案3 — 語彙を分ける(完了=点線丸+取消線 / 削除=×封じ+ハッチ)</h3>
+    <div class="card p3">
+      <div class="bar"><span class="app-title">リマインダー</span><span class="updated">10:41 更新</span></div>
+      <div class="visually-hidden" role="status" aria-live="polite">牛乳を買うを完了、会議メモを共有を削除、歯医者の予約を追加、週次レポートの期日を7月15日に編集しました</div>
+      <section class="sec-overdue"><h2>期限切れ</h2>
+        <ul>
+          <li class="b-add"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">歯医者の予約を取り直す</div>
+              <div class="meta"><span class="pri">!!</span><span class="due overdue">7/9 (木)</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>今日</h2>
+        <ul>
+          <li class="b-complete"><button class="check"><span class="circle"></span></button>
+            <div class="texts"><div class="title">牛乳を買う</div>
+              <div class="meta"><span class="due">今日 18:00</span></div></div></li>
+          <li class="b-edit"><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">週次レポート提出</div>
+              <div class="meta"><span class="pri">!!!</span>期日 <span class="field-new">7/15</span></div></div></li>
+        </ul>
+      </section>
+      <section><h2>期日なし</h2>
+        <ul>
+          <li class="b-delete"><button class="check" disabled><span class="circle"></span></button>
+            <div class="texts"><div class="title">会議メモを共有</div></div></li>
+          <li><button class="check"><span class="circle">✓</span></button>
+            <div class="texts"><div class="title">確定申告の資料をまとめる</div></div></li>
+        </ul>
+      </section>
+    </div>
+    <p class="charnote"><b>区別の手:</b> 点線丸+取消線を<b>completed 専用</b>に。deleted は取消線を使わず
+      <b>× プレフィックス + 斜線ハッチ(封印の質感)+ 減光</b>で別語彙に。根本から衝突を断つ。</p>
+    <div class="verdict good"><b>自己評価:</b> 区別は最も明快(語彙が別)。ただしハッチ+×は "becoming(途中)" より "無効化された(結果)" に寄り、静けさは案1に劣る。</div>
+  </div>
+
+</div>
+
+<p class="page-sub" style="margin-top:28px;">
+  <b>将来メモ(実装しない):</b> ユーザーが「リスト ⇄ カンバン ビュー切替」を将来案として言及(優先度低)。
+  中間状態 form はカンバンでも「カラム間を飛ばさず元カラムで becoming を示す」に転用しうるが今回スコープ外。
+</p>
+
+<script>
+  document.getElementById("darktoggle").addEventListener("change", (e) => {
+    const on = e.target.checked;
+    document.body.classList.toggle("pagedark", on);
+    document.querySelectorAll(".card, .toolbar, .charnote, .verdict").forEach((el) => el.classList.toggle("dark", on));
+  });
+</script>
+</body>
+</html>

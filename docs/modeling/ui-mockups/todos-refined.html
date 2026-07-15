@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>caldav — MCP Apps todo card (final refined)</title>
+<style>
+/* ============================================================
+   caldav MCP Apps todo カード — 最終形モック
+   前提: ステートレス(fresh-instance 描画で完結)・アニメーション無し。
+   差分は「変化の中間状態(becoming)」を静的な form で表現する。
+   - completed : その場で丸が埋まり、凍結した波紋リング + 取消線
+                 (完了欄へ飛ばさない。取消線=完了の恒久記号)
+   - deleted   : becoming-gone。破線の輪郭に還元され中身が薄れる
+                 (取消線は使わない → completed と form で区別)
+   - added     : becoming-in。左からの「入射の余韻」= 2px バー + 淡い wake
+   - edited    : 旧値→新値をインラインで凍結表示(7/14 → 7/18)
+   Why not 色ハイライト主体: 色だけの差分は「何が起きたか」を語らず、
+   ダーク/ライト双方でのコントラスト管理も脆い。form(輪郭・線・構造)を
+   主役にし、色は補助トーンに留める。
+   ============================================================ */
+
+:root {
+  /* ---- タイポ・寸法(会話ログ内の従属カード = 控えめ密度) ---- */
+  --font: -apple-system, BlinkMacSystemFont, system-ui, "Hiragino Sans", sans-serif;
+  --fs-title: 14px;        /* タスク名 */
+  --fs-meta: 12px;         /* 期日・注記 */
+  --fs-section: 11px;      /* セクション見出し(uppercase 相当の小型) */
+  --fs-micro: 10.5px;      /* becoming マイクロラベル */
+  --row-min-h: 44px;       /* iOS タップターゲット */
+  --row-pad-x: 14px;
+  --card-radius: 14px;     /* 会話バブルに馴染む半径 */
+  --circle-size: 19px;
+  --circle-stroke: 1.5px;
+}
+
+/* ---- ライトパレット(基準)。Things の紙白に近い低彩度 ---- */
+.theme-light {
+  --bg: #ffffff;
+  --bg-subtle: #f7f7f8;          /* セクション帯・deleted 背景 */
+  --border: #e4e4e7;
+  --border-hair: #eeeef0;        /* 行区切りヘアライン */
+  --text: #1c1c1e;
+  --text-2: #8a8a8e;             /* 期日・メタ */
+  --text-3: #b4b4b8;             /* 完了・削除後の残響 */
+  --accent: #2f6fed;             /* 丸チェック・完了。iOS 系ブルー寄り */
+  --accent-soft: rgba(47,111,237,.14);   /* completed の凍結リング */
+  --add: #2f9e63;                /* added。彩度控えめの緑 */
+  --add-wake: rgba(47,158,99,.07);
+  --edit: #b07300;               /* edited の新値強調(琥珀) */
+  --del-border: #c9c9ce;         /* deleted 破線 */
+  --overdue: #d64545;
+  --active-bg: rgba(0,0,0,.045); /* :active 押下即応 */
+}
+/* ---- ダークパレット。純黒を避け階調で浮かせる ---- */
+.theme-dark {
+  --bg: #1e1e20;
+  --bg-subtle: #27272a;
+  --border: #3a3a3e;
+  --border-hair: #2e2e32;
+  --text: #f2f2f4;
+  --text-2: #98989e;
+  --text-3: #5c5c62;
+  --accent: #6f9cf5;
+  --accent-soft: rgba(111,156,245,.20);
+  --add: #55b884;
+  --add-wake: rgba(85,184,132,.10);
+  --edit: #d9a441;
+  --del-border: #55555a;
+  --overdue: #e57373;
+  --active-bg: rgba(255,255,255,.06);
+}
+
+* { box-sizing: border-box; margin: 0; }
+body {
+  font-family: var(--font);
+  background: #d7dbe0;           /* デモ用の台紙(カード外) */
+  padding: 24px 12px;
+  display: flex; flex-wrap: wrap; gap: 28px; justify-content: center;
+}
+
+/* ============ カード外殻 ============ */
+.card {
+  width: 100%;
+  min-width: 320px;
+  max-width: 380px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  overflow: hidden;
+  /* Why not 強い drop-shadow: 会話ログ内の従属要素。浮かせず「置く」 */
+  box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  font-size: var(--fs-title);
+  line-height: 1.4;
+}
+
+/* ---- ヘッダ: リスト名 + 件数。iOS リマインダー準拠語彙 ---- */
+.card-header {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 12px var(--row-pad-x) 8px;
+}
+.card-header h2 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.card-header .count { font-size: var(--fs-meta); color: var(--text-2); }
+
+/* ---- 凡例: becoming の form を先に説明(文字最小・記号主体) ---- */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 10px 14px;
+  padding: 0 var(--row-pad-x) 10px;
+  font-size: var(--fs-micro); color: var(--text-2);
+}
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.lg-add    { border-left: 2px solid var(--add); padding-left: 5px; }
+.lg-edit em{ font-style: normal; color: var(--edit); }
+.lg-done s { color: var(--text-3); }
+.lg-del i  { font-style: normal; border: 1px dashed var(--del-border);
+             border-radius: 4px; padding: 0 4px; color: var(--text-3); }
+
+/* ---- セクション見出し(今日/今週/期限なし) ---- */
+.section {
+  padding: 7px var(--row-pad-x) 4px;
+  font-size: var(--fs-section);
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--text-2);
+  border-top: 1px solid var(--border-hair);
+}
+.section:first-of-type { border-top: none; }
+
+/* ============ 行(タスク) ============ */
+.row {
+  display: flex; align-items: center; gap: 11px;
+  min-height: var(--row-min-h);
+  padding: 6px var(--row-pad-x);
+  position: relative;
+}
+.row + .row { border-top: 1px solid var(--border-hair); }
+.row:active { background: var(--active-bg); }   /* アニメ無しの押下即応 */
+
+/* ---- 丸チェック。二重構造(外周 + 内芯)で質感を出す ---- */
+.circle {
+  flex: none;
+  width: var(--circle-size); height: var(--circle-size);
+  border: var(--circle-stroke) solid var(--text-3);
+  border-radius: 50%;
+  position: relative;
+}
+/* 完了: accent で塗り + 白チェック(SVG は行内 inline) */
+.circle.done {
+  border-color: var(--accent);
+  background: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.circle.done svg { width: 11px; height: 11px; }
+
+/* ---- タイトル・メタ ---- */
+.body { flex: 1; min-width: 0; }
+.title { font-size: var(--fs-title); font-weight: 480;
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta  { font-size: var(--fs-meta); color: var(--text-2); margin-top: 1px; }
+.meta .overdue { color: var(--overdue); }
+
+/* becoming マイクロラベル(右端・語彙は iOS 準拠の短い日本語) */
+.tag {
+  flex: none;
+  font-size: var(--fs-micro);
+  color: var(--text-2);
+  letter-spacing: .03em;
+}
+
+/* ============ becoming: completed ============
+   その場に留まり「いま完了した」を凍結表示。
+   form = 丸の外に静止した同心リング(波紋の1フレーム)+ 取消線。
+   Why not 行ごと薄緑ハイライト: 面のハイライトは「移動した/選択された」と
+   誤読されやすい。変化の主体は丸チェックなので、リングを丸に局在させる。 */
+.row.becoming-done .circle.done {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.row.becoming-done .title { text-decoration: line-through; color: var(--text-3); }
+.row.becoming-done .meta  { color: var(--text-3); }
+.row.becoming-done .tag   { color: var(--accent); }
+
+/* ============ becoming: deleted (becoming-gone) ============
+   contract の removed:[{id,title,due?}] から描画。
+   form = 中身が抜け「輪郭だけが残る」: 破線ボックス + 45% 減光 + 破線丸。
+   取消線を使わない(取消線=完了の恒久記号)ことで completed と form 分離。
+   縦 padding をわずかに詰め、行が畳まれつつある途中を示す。 */
+.row.becoming-gone {
+  margin: 4px 10px;
+  padding: 3px 8px;
+  min-height: 38px;               /* 44px 例外: 操作対象外(既に消えた行) */
+  border: 1px dashed var(--del-border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+.row.becoming-gone + .row { border-top: none; }
+.row.becoming-gone .circle { border-style: dashed; opacity: .45; }
+.row.becoming-gone .body   { opacity: .45; }
+.row.becoming-gone .title  { text-decoration: none; }
+
+/* ============ becoming: added (becoming-in) ============
+   form = 左端 2px バー + 右へ減衰する淡い wake(入射の残像)。
+   バーは角丸内側に収め、行構造は通常行と同一(すぐ日常に溶ける)。 */
+.row.becoming-in {
+  box-shadow: inset 2px 0 0 var(--add);
+  background: linear-gradient(to right, var(--add-wake), transparent 55%);
+}
+.row.becoming-in .tag { color: var(--add); }
+
+/* ============ becoming: edited ============
+   form = 変更フィールドの旧値→新値をインラインで凍結(7/14 → 7/18)。
+   旧値: 取消線ではなく減光のみ(取消線=完了、の一貫性を守る)。 */
+.meta .old { color: var(--text-3); }
+.meta .arrow { color: var(--text-3); padding: 0 2px; }
+.meta .new { color: var(--edit); font-weight: 560; }
+.row.becoming-edit .tag { color: var(--edit); }
+
+/* ---- フッタ: 将来案メモ(実装しない) ---- */
+.card-footer {
+  padding: 8px var(--row-pad-x) 10px;
+  border-top: 1px solid var(--border-hair);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+</style>
+</head>
+<body>
+
+<!-- ライト / ダークを同一マークアップで並置(ステートレス確認用)。
+     実装スライス②では prefers-color-scheme で :root に切替。 -->
+<template id="card-template"></template>
+
+<div class="card theme-light" id="light"></div>
+<div class="card theme-dark"  id="dark"></div>
+
+<script>
+/* モック限定のスクリプト: 同一カードを2テーマで複製するためだけに使う。
+   本実装は fresh-instance 描画(サーバー生成 HTML)でありランタイム JS 不要。 */
+const html = `
+  <div class="card-header">
+    <h2>買い物と用事</h2><span class="count">9件 · 更新 4件</span>
+  </div>
+  <div class="legend">
+    <span class="lg-add">追加</span>
+    <span class="lg-edit">編集 <em>旧 → 新</em></span>
+    <span class="lg-done"><s>完了</s></span>
+    <span class="lg-del"><i>削除</i></span>
+  </div>
+
+  <div class="section">今日</div>
+
+  <!-- completed: 牛乳。その場で凍結リング + 取消線 -->
+  <div class="row becoming-done">
+    <span class="circle done">
+      <svg viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5l2.5 2.5 4.5-5.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <div class="body">
+      <div class="title">牛乳を買う</div>
+      <div class="meta">今日</div>
+    </div>
+    <span class="tag">完了</span>
+  </div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">ゴミ出し(資源ごみ)</div>
+      <div class="meta"><span class="overdue">今日 8:00</span></div>
+    </div>
+  </div>
+
+  <!-- deleted: 会議メモ。removed:[{id,title,due?}] から becoming-gone で描画 -->
+  <div class="row becoming-gone">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">会議メモを清書</div>
+      <div class="meta">今日</div>
+    </div>
+    <span class="tag">削除</span>
+  </div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">母に電話</div>
+      <div class="meta">今日 19:00</div>
+    </div>
+  </div>
+
+  <div class="section">今週</div>
+
+  <!-- added: 歯医者。becoming-in(左バー + wake) -->
+  <div class="row becoming-in">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">歯医者を予約</div>
+      <div class="meta">7/15 火</div>
+    </div>
+    <span class="tag">追加</span>
+  </div>
+
+  <!-- edited: レポート。期日の旧→新を凍結表示 -->
+  <div class="row becoming-edit">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">レポート提出</div>
+      <div class="meta"><span class="old">7/14 月</span><span class="arrow">→</span><span class="new">7/18 金</span></div>
+    </div>
+    <span class="tag">期日変更</span>
+  </div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">請求書の支払い</div>
+      <div class="meta">7/16 水</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">ジムの予約を取り直す</div>
+      <div class="meta">7/17 木</div>
+    </div>
+  </div>
+
+  <div class="section">期限なし</div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">図書館に本を返却</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="circle"></span>
+    <div class="body">
+      <div class="title">ベランダの植木に肥料</div>
+    </div>
+  </div>
+
+  <div class="card-footer">将来案: リスト ⇄ カンバン表示切替(未実装)</div>
+`;
+document.getElementById('light').innerHTML = html;
+document.getElementById('dark').innerHTML = html;
+</script>
+</body>
+</html>

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>todos becoming — POV B「充填とストロークの文法」</title>
+<style>
+/* ============================================================
+   POV B: 「充填(fill)とストローク(stroke)の文法」で becoming を描く
+   ------------------------------------------------------------
+   もう一方の案(点線丸の密度/減光系)とは意図的に別の造形言語を採る。
+   このモックの体系:
+
+     丸(SVG)の状態     取消線の質          行の重み
+     ----------------  -----------------  ----------------
+     completed: 下半分  細い一本線(実線)   通常のまま留まる
+       が満ちた丸       = 「確定しつつある」 = まだ此処にいる
+     deleted:  中抜き+  破線ストライク       減光 + 4px 後退
+       細い×           = 「ほどけていく」   = 行ごと退場中
+     added:    3/4 弧   (なし)             通常
+       のリング         = 「描かれきる前」
+     edited:   通常の丸  変更フィールドに     通常
+                        下線 + キャレット▎
+
+   completed と deleted の一目区別は「丸の中身」(満ちる vs ×)と
+   「線の質」(一本実線 vs 破線)と「行の重心」(留まる vs 後退)の
+   三重で担保する。色はどちらも使わない(減光は輝度のみ)。
+
+   Why not アニメーション: 契約上ステートレス。次の list 描画で
+   これらは通常状態に収まるので、静的な「途中の一枚絵」で十分。
+   Why not 色ハイライト: 会話 UI に従属させるため。色は tint の
+   淡い補助(added の弧のみ system blue 相当)に留める。
+   ============================================================ */
+
+:root {
+  --row-h: 44px;            /* iOS HIG のタップ最小高 */
+  --tint: #007aff;          /* iOS systemBlue。added の弧だけに淡く使う */
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  background: #d7d9de;
+  padding: 24px 12px;
+  display: flex; flex-wrap: wrap; gap: 24px; justify-content: center;
+}
+
+/* ---- テーマは class で明示(ライト/ダークを1画面比較するため) ---- */
+.panel {
+  width: 340px; min-width: 320px;
+  border-radius: 14px; padding: 12px 0 6px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.12);
+}
+.panel.light { background: #fff; color: #1c1c1e;
+  --sub: #8e8e93; --line: rgba(60,60,67,.29); --stroke: #3c3c43; }
+.panel.dark  { background: #1c1c1e; color: #f2f2f7;
+  --sub: #98989e; --line: rgba(84,84,88,.6);  --stroke: #ebebf5; }
+
+.panel h2 {
+  font-size: 13px; font-weight: 600; color: var(--sub);
+  padding: 0 16px 8px; letter-spacing: .02em;
+}
+
+/* ---- 行。会話従属なので装飾は最小、区切り線のみ ---- */
+.row {
+  min-height: var(--row-h);
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 16px;
+}
+.row + .row { border-top: .5px solid var(--line); }
+.row .texts { flex: 1; min-width: 0; }
+.row .title { font-size: 16px; line-height: 1.3; }
+.row .due   { font-size: 13px; color: var(--sub); margin-top: 1px; }
+.row svg { flex: none; display: block; }
+
+/* ============ completed の becoming =============================
+   丸: 下半分だけ満ちる(半円 fill)。「チェック済みの塗り丸」に
+   なりきる手前の静止画。塗りは text 色と同系(色に頼らない)。
+   線: 細い一本の実線取消線。細さが「引かれたばかり」を語る。
+   行: 重さ・位置とも通常のまま = まだ完了欄へ移っていない。   */
+.completed .title {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;      /* 細い一本線 = 確定しつつある */
+}
+
+/* ============ deleted の becoming ===============================
+   丸: 中抜きリング + 細い×。「チェックとは別の運命」を記号で明示。
+   線: 破線ストライク(pseudo要素で描く。text-decoration は破線の
+       間隔制御が甘いため)。破線 = ほどけていく質感。
+   行: 全体を減光(opacity)+ 4px 右へ後退 = 行ごと退場の途中。
+   Why not 二重線: 二重線は「強い打ち消し」で completed の一本線と
+   強弱の差にしか見えず、質の差(実線/破線)の方が一目性が高かった。 */
+.deleted { opacity: .45; transform: translateX(4px); }
+.deleted .title { position: relative; display: inline-block; }
+.deleted .title::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%;
+  border-top: 1.5px dashed currentColor;  /* 破線 = ほどける */
+}
+
+/* ============ added の becoming =================================
+   丸: 3/4 だけ描かれた弧(SVG stroke-dasharray)。「リングが描かれ
+   きる前」= 生まれつつある。唯一 tint を淡く使う(生成の合図)。
+   テキストは通常。due 横に小さく「追加中」等は書かない(静的・
+   無ラベル主義。form だけで語る)。                              */
+
+/* ============ edited の becoming ================================
+   丸: 通常の空リング(状態は未完了のまま)。
+   変更されたフィールドだけに下線 + 末尾キャレット ▎(編集カーソル
+   が残っている静止画)。行の他要素は一切動かさない。
+   Why not 行全体の枠囲い: completed/deleted の「行の重み」文法と
+   干渉する。編集はフィールド粒度の出来事なのでフィールドに閉じる。 */
+.edited .changed {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.edited .caret {
+  display: inline-block; width: 2px; height: .95em;
+  background: currentColor; vertical-align: -.12em; margin-left: 1px;
+}
+</style>
+</head>
+<body>
+
+<!-- SVG 丸の定義。currentColor で描くのでテーマ非依存 -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <!-- 通常: 空リング -->
+    <g id="c-normal"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".45"/></g>
+    <!-- completed becoming: リング + 下半分が満ちる -->
+    <g id="c-completing">
+      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M 2.6 12 a 9.4 9.4 0 0 0 18.8 0 Z" fill="currentColor"/>
+    </g>
+    <!-- deleted becoming: 中抜きリング + 細い× -->
+    <g id="c-deleting">
+      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M 8.5 8.5 L 15.5 15.5 M 15.5 8.5 L 8.5 15.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+    </g>
+    <!-- added becoming: 3/4 弧(円周 ≈ 62.8、うち 47 だけ描く)-->
+    <g id="c-adding">
+      <circle cx="12" cy="12" r="10" fill="none" stroke="var(--tint)" stroke-width="1.5"
+              stroke-dasharray="47 62.8" stroke-linecap="round"
+              transform="rotate(-90 12 12)" opacity=".8"/>
+    </g>
+  </defs>
+</svg>
+
+<!-- ================= ライト ================= -->
+<div class="panel light">
+  <h2>今日のタスク — 変更を反映しました</h2>
+
+  <div class="row completed">
+    <svg width="24" height="24"><use href="#c-completing"/></svg>
+    <div class="texts"><div class="title">牛乳を買う</div></div>
+  </div>
+
+  <div class="row deleted">
+    <svg width="24" height="24"><use href="#c-deleting"/></svg>
+    <div class="texts"><div class="title">会議メモを清書</div></div>
+  </div>
+
+  <div class="row added">
+    <svg width="24" height="24"><use href="#c-adding"/></svg>
+    <div class="texts"><div class="title">歯医者を予約</div><div class="due">明日</div></div>
+  </div>
+
+  <div class="row edited">
+    <svg width="24" height="24"><use href="#c-normal"/></svg>
+    <div class="texts">
+      <div class="title">レポート提出</div>
+      <div class="due"><span class="changed">7月18日 17:00</span><span class="caret"></span></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <svg width="24" height="24"><use href="#c-normal"/></svg>
+    <div class="texts"><div class="title">植物に水やり(通常行の対照)</div></div>
+  </div>
+</div>
+
+<!-- ================= ダーク(同一マークアップ) ================= -->
+<div class="panel dark">
+  <h2>今日のタスク — 変更を反映しました</h2>
+
+  <div class="row completed">
+    <svg width="24" height="24"><use href="#c-completing"/></svg>
+    <div class="texts"><div class="title">牛乳を買う</div></div>
+  </div>
+
+  <div class="row deleted">
+    <svg width="24" height="24"><use href="#c-deleting"/></svg>
+    <div class="texts"><div class="title">会議メモを清書</div></div>
+  </div>
+
+  <div class="row added">
+    <svg width="24" height="24"><use href="#c-adding"/></svg>
+    <div class="texts"><div class="title">歯医者を予約</div><div class="due">明日</div></div>
+  </div>
+
+  <div class="row edited">
+    <svg width="24" height="24"><use href="#c-normal"/></svg>
+    <div class="texts">
+      <div class="title">レポート提出</div>
+      <div class="due"><span class="changed">7月18日 17:00</span><span class="caret"></span></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <svg width="24" height="24"><use href="#c-normal"/></svg>
+    <div class="texts"><div class="title">植物に水やり(通常行の対照)</div></div>
+  </div>
+</div>
+
+</body>
+</html>
