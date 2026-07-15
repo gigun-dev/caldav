@@ -24,13 +24,16 @@
 //   DTSTAMP/CREATED/LAST-MODIFIED だけを書く(生成プロパティの過剰生成を避ける)。
 // - 期日ではなく DTSTART(必須)+ DTEND(排他的終端・OPTIONAL)。VTODO の DUE/DTSTART 同値
 //   規約とは異なり、イベントは「開始と終了」という別々の意味を持つ2点なので同値化しない。
-// - VALARM は書かない(E-3 スコープ外 — VALARM 管理スライスに束ねる。docs/modeling/12 §1)。
+// - VALARM は「開始相対トリガー(-PT{n}M)」で書く(S1.5 で追加。生成の実体は vevent-alarm.ts に
+//   集約し write/patch/DTO で共有 — vtodo-write の絶対 UTC トリガーとは意図的に異なる。理由は
+//   vevent-alarm.ts 冒頭「VTODO の VALARM との違い」参照)。移動時間 X-APPLE-TRAVEL-DURATION も S1.5 で追加。
 // =============================================================================
 
 import type { Component, Parameter } from "../structure/types";
-import { upsertProperty } from "../structure/edit";
+import { appendSubComponent, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { formatRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
+import { buildStartRelativeAlarm } from "./vevent-alarm";
 import type { NowStamp } from "./vtodo-stamp";
 
 // PRODID(§3.7.3)。vtodo-write.ts の局所定数と同値(サーバー発 ICS の product identifier は
@@ -97,7 +100,24 @@ export interface VEventFields {
 	 * (chat 語彙からの変換は application 層 create-event.ts の責務)。
 	 */
 	recurrence?: RecurrenceRule;
+	/**
+	 * 通知(VALARM・開始相対トリガー)。省略・空配列なら VALARM を書かない。各要素は「開始の n 分前」
+	 * (minutesBefore)+ 採番済み uid。TRIGGER は `-PT{n}M`(vevent-alarm.ts の裁定・§3.8.6.3)。
+	 * 【件数・重複・負値の検証は application 層(create-event.ts)の責務】このファイルは「渡された
+	 * minutesBefore をそのまま VALARM 化する」に徹する(location/due の妥当性を UC に委ねるのと同じ)。
+	 * 最大2件という制約も UI/UC の都合であり、ドメインの組み立てとしては件数を縛らない。
+	 */
+	alarms?: ReadonlyArray<{ minutesBefore: number; uid: string }>;
+	/**
+	 * 移動時間(X-APPLE-TRAVEL-DURATION・Apple 拡張)。省略なら書かない。正整数の分。
+	 * `X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT{n}M` として書く(iOS の予定に付く「移動時間」に対応)。
+	 * 【値の妥当性(正整数)検証は application 層の責務】このファイルは分数値をそのまま DURATION 化する。
+	 */
+	travelMinutes?: number;
 }
+
+// X-APPLE-TRAVEL-DURATION の VALUE=DURATION パラメータ(Apple 拡張だが値型は RFC 5545 の DURATION)。
+const VALUE_DURATION_PARAMS: readonly Parameter[] = [{ name: "VALUE", values: ["DURATION"] }];
 
 /**
  * VEVENT の DTSTART/DTEND プロパティを1つ upsert するヘルパー(DATE/DATE-TIME の分岐を1箇所に)。
@@ -152,12 +172,24 @@ export function buildVEventCalendar(fields: VEventFields): Component {
 		// URL は URI 値型(§3.8.4.6)なので encodeText しない(生値のまま。VEventFields.url コメント参照)。
 		vevent = upsertProperty(vevent, "URL", fields.url);
 	}
+	if (fields.travelMinutes !== undefined) {
+		// 移動時間(Apple 拡張)。DURATION 値型で `PT{n}M`。§3.8.4.6 の URL と同じ「本体プロパティ群の後」に置く。
+		vevent = upsertProperty(vevent, "X-APPLE-TRAVEL-DURATION", `PT${fields.travelMinutes}M`, VALUE_DURATION_PARAMS);
+	}
 
 	// 生成プロパティ。VTODO の stampCreate(STATUS/X-APPLE-SORT-ORDER 込み)は流用せず、イベントに
 	// 必要な DTSTAMP/CREATED/LAST-MODIFIED だけを書く(ファイル冒頭「VTODO との違い」参照)。
 	vevent = upsertProperty(vevent, "DTSTAMP", fields.now.utcRaw);
 	vevent = upsertProperty(vevent, "CREATED", fields.now.utcRaw);
 	vevent = upsertProperty(vevent, "LAST-MODIFIED", fields.now.utcRaw);
+
+	// VALARM(開始相対トリガー)は本体プロパティ+生成プロパティが揃った後にサブコンポーネントとして足す
+	// (vtodo-write.ts が stampCreate の後段で VALARM を append するのと同じ並び)。
+	if (fields.alarms !== undefined) {
+		for (const alarm of fields.alarms) {
+			vevent = appendSubComponent(vevent, buildStartRelativeAlarm(alarm.minutesBefore, alarm.uid));
+		}
+	}
 
 	const vcalendar: Component = {
 		name: "VCALENDAR",

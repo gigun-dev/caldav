@@ -88,6 +88,8 @@ import {
 	InvalidEndError,
 	StartAfterEndError,
 	StartEndTypeMismatchError,
+	InvalidAlarmsError,
+	InvalidTravelMinutesError,
 	eventFromOccurrence,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
@@ -552,6 +554,20 @@ const createEventItemFieldsShape = {
 	recurrence: createTodoRecurrenceInputShape.optional().describe(
 		'反復指定(create-todo と同一語彙)。frequency:"none"=反復しない。DTSTART をアンカーにする。',
 	),
+	alarms: z
+		.array(z.number().int().min(0))
+		.max(2)
+		.optional()
+		.describe(
+			"通知(開始相対アラーム)。開始の何分前に鳴らすかの列(0=開始時刻ちょうど)。最大2件・重複不可・負値不可。" +
+				"iOS のプリセット語彙は 5/10/15/30/60/120/1440/2880/10080 分前。",
+		),
+	travelMinutes: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe("移動時間(X-APPLE-TRAVEL-DURATION・分)。正整数。省略なら設定しない。"),
 };
 
 const createEventInputShape = {
@@ -603,6 +619,22 @@ const updateEventInputShape = {
 	recurrence: updateTodoRecurrenceInputShape.optional().describe(
 		'反復の設定/変更/除去。省略=変更しない / frequency:"none"=反復を除去 / daily/weekly/... =その反復に全置換。',
 	),
+	alarms: z
+		.array(z.number().int().min(0))
+		.max(2)
+		.nullable()
+		.optional()
+		.describe(
+			"通知(開始相対アラーム)。省略=変更しない / null=全て外す / 配列=全置換(開始の n 分前の列・最大2件)。" +
+				"他クライアントが付けた絶対時刻/位置アラームは温存する。",
+		),
+	travelMinutes: z
+		.number()
+		.int()
+		.positive()
+		.nullable()
+		.optional()
+		.describe("移動時間(X-APPLE-TRAVEL-DURATION・分)。省略=変更しない / null=外す / 正整数=設定。"),
 };
 
 const deleteEventInputShape = {
@@ -1695,6 +1727,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 		error instanceof UnsupportedTimeZoneError ||
 		error instanceof RecurrenceCountUntilConflictError ||
 		error instanceof RecurrenceWeekdaysRequireWeeklyError ||
+		error instanceof InvalidAlarmsError ||
+		error instanceof InvalidTravelMinutesError ||
 		error instanceof EventNotFoundError;
 
 	server.registerTool(
@@ -1708,7 +1742,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
 			inputSchema: createEventInputShape,
 		},
-		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence }) => {
+		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes }) => {
 			try {
 				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
@@ -1724,6 +1758,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					url,
 					calendarId,
 					recurrence: normalizedRecurrence,
+					alarms,
+					travelMinutes,
 				});
 				const cid = calendarId ?? "calendar";
 				// timeZone は「そのまま echo」する(検証は UC 側が時刻付きイベントに対して既に済ませている。
@@ -1777,6 +1813,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 							url: item.url,
 							calendarId,
 							recurrence: normalizedRecurrence,
+							alarms: item.alarms,
+							travelMinutes: item.travelMinutes,
 						});
 						createdEvents.push(toWireEvent(event, cid, event.recurrence !== null));
 						succeeded.push({ id: event.id, kind: "added", event: snapshotFromEvent(event) });
@@ -1817,7 +1855,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
 		},
-		async ({ id, calendarId, title, notes, start, end, timeZone, location, url, recurrence }) => {
+		async ({ id, calendarId, title, notes, start, end, timeZone, location, url, recurrence, alarms, travelMinutes }) => {
 			try {
 				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
@@ -1836,6 +1874,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					// url も三値(undefined=変更なし / null=除去 / string=設定)をそのまま渡す。
 					url,
 					recurrence: normalizedRecurrence,
+					// alarms(三値: undefined/null/配列)・travelMinutes(三値)もそのまま渡す。
+					alarms,
+					travelMinutes,
 				});
 
 				// 「渡された(非 undefined)フィールド」を changed とみなす素朴判定(todos-diff.ts と同じ)。
@@ -1847,6 +1888,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				if (location !== undefined) provided.add("location");
 				if (url !== undefined) provided.add("url");
 				if (recurrence !== undefined) provided.add("recurrence");
+				if (alarms !== undefined) provided.add("alarms");
+				if (travelMinutes !== undefined) provided.add("travelMinutes");
 				const changes = before !== undefined ? buildEventEditedChanges(before, event, provided) : undefined;
 
 				const cid = calendarId ?? "calendar";

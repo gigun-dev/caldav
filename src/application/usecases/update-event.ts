@@ -10,7 +10,8 @@
 //
 // 【UpdateTodo との違い(スコープ)】
 // - status(完了/再開)は無い(イベントに完了は無い — docs/modeling/12 §4)。
-// - VALARM 追随も無い(create-event が VALARM を書かない = このスコープのイベントは VALARM を持たない)。
+// - 通知(alarms)は開始相対 VALARM の三値 patch(S1.5)。他クライアント由来の VALARM は温存し、
+//   相対トリガーゆえ start 変更で自動追従する(サーバーはトリガーを shift しない)。
 // - start は除去できない(§3.6.1: DTSTART REQUIRED)。end は除去できる(DTEND OPTIONAL)。
 // =============================================================================
 
@@ -47,10 +48,14 @@ import {
 } from "./create-todo";
 import {
 	EventTimeZoneRequiredError,
+	InvalidAlarmsError,
 	InvalidEndError,
 	InvalidStartError,
+	InvalidTravelMinutesError,
 	StartAfterEndError,
 	StartEndTypeMismatchError,
+	validateAndBuildAlarms,
+	validateTravelMinutes,
 } from "./create-event";
 import { nowStampFromDate } from "./now-stamp";
 import { eventFromVEvent, type Event } from "./event-dto";
@@ -96,6 +101,15 @@ export interface UpdateEventInput {
 	 * アンカーは DTSTART(常に存在するので RecurrenceRequiresDueError 相当は無い)。
 	 */
 	recurrence?: CreateTodoRecurrenceInput | null;
+	/**
+	 * 通知(開始相対 VALARM)。三値: 省略=変更しない / null=全除去 / 配列=全置換(minutesBefore の列・
+	 * 最大2件・重複/負値不可)。全置換は「開始相対 VALARM だけ」を差し替え、他クライアント由来の VALARM
+	 * (絶対・終了相対・位置)は温存する(vevent-patch.ts の applyAlarmsPatch)。start を変えても相対
+	 * トリガーは自動追従する(VALARM を触らずに済む)。
+	 */
+	alarms?: number[] | null;
+	/** 移動時間(X-APPLE-TRAVEL-DURATION・分)。三値: 省略=変更しない / null=除去 / 正整数=設定。 */
+	travelMinutes?: number | null;
 }
 
 // --- 出力 DTO ---
@@ -116,6 +130,8 @@ export type UpdateEventError =
 	| UnsupportedTimeZoneError
 	| RecurrenceCountUntilConflictError
 	| RecurrenceWeekdaysRequireWeeklyError
+	| InvalidAlarmsError
+	| InvalidTravelMinutesError
 	| EventNotFoundError
 	| PutCalendarObjectError;
 
@@ -145,6 +161,13 @@ export class UpdateEvent {
 		const parsedStart = input.start !== undefined ? this.parseStart(input.start, input.timeZone) : undefined;
 		const parsedEnd = input.end !== undefined ? this.parseEnd(input.end, input.timeZone) : undefined;
 
+		// 通知(alarms)+ 移動時間(travelMinutes)の三値を patch 指示へ解決(lookup 前 = 安価な失敗)。
+		//   alarms: undefined=触らない / null=全除去 / 配列=検証して {minutesBefore,uid} 列へ。
+		//   travelMinutes: undefined=触らない / null=除去 / 正整数=検証。
+		const alarmsPatch: ReadonlyArray<{ minutesBefore: number; uid: string }> | null | undefined =
+			input.alarms === undefined ? undefined : input.alarms === null ? null : validateAndBuildAlarms(input.alarms);
+		if (input.travelMinutes !== undefined && input.travelMinutes !== null) validateTravelMinutes(input.travelMinutes);
+
 		const collectionId = mkCollectionId(input.calendarId ?? "calendar");
 		const looked = await lookupEvent(this.resourceRepo, input.owner, collectionId, input.eventId);
 		if (looked === null) {
@@ -170,6 +193,8 @@ export class UpdateEvent {
 			start: parsedStart?.patch,
 			end: parsedEnd?.patch,
 			recurrence: recurrencePatch,
+			alarms: alarmsPatch,
+			travelMinutes: input.travelMinutes,
 		});
 
 		patched = stampUpdate(patched, nowStampFromDate(new Date()));

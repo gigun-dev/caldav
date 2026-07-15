@@ -14,6 +14,8 @@ import {
 	StartEndTypeMismatchError,
 	EventTimeZoneRequiredError,
 	EventNotFoundError,
+	InvalidAlarmsError,
+	InvalidTravelMinutesError,
 } from "../../src/application/usecases";
 import {
 	FakeCalendarCollectionRepository,
@@ -124,6 +126,32 @@ describe("event usecases", () => {
 		).rejects.toBeInstanceOf(EventTimeZoneRequiredError);
 	});
 
+	it("通知(alarms)を設定でき、DTO は minutesBefore を昇順で返す + 移動時間", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "通院",
+			start: "2026-07-15T10:00:00",
+			end: "2026-07-15T11:00:00",
+			timeZone: "Asia/Tokyo",
+			alarms: [30, 0], // 入力順は逆でも DTO は昇順。
+			travelMinutes: 45,
+		});
+		expect(event.alarms).toEqual([0, 30]);
+		expect(event.travelMinutes).toBe(45);
+		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		expect(stored[0]!.rawIcs).toContain("TRIGGER:-PT30M");
+		expect(stored[0]!.rawIcs).toContain("X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT45M");
+	});
+
+	it("alarms は最大2件・負値・重複を拒否する / travelMinutes は正整数のみ", async () => {
+		const base = { owner: TEST_OWNER, title: "x", start: "2026-07-15" } as const;
+		await expect(createEvent.execute({ ...base, alarms: [5, 10, 15] })).rejects.toBeInstanceOf(InvalidAlarmsError);
+		await expect(createEvent.execute({ ...base, alarms: [-5] })).rejects.toBeInstanceOf(InvalidAlarmsError);
+		await expect(createEvent.execute({ ...base, alarms: [10, 10] })).rejects.toBeInstanceOf(InvalidAlarmsError);
+		await expect(createEvent.execute({ ...base, travelMinutes: 0 })).rejects.toBeInstanceOf(InvalidTravelMinutesError);
+		await expect(createEvent.execute({ ...base, travelMinutes: -3 })).rejects.toBeInstanceOf(InvalidTravelMinutesError);
+	});
+
 	// --- UpdateEvent -----------------------------------------------------------
 
 	async function seedEvent(args: Parameters<CreateEvent["execute"]>[0]): Promise<string> {
@@ -196,6 +224,44 @@ describe("event usecases", () => {
 		await expect(
 			updateEvent.execute({ owner: TEST_OWNER, eventId: id, start: "2026-07-20" }),
 		).rejects.toBeInstanceOf(StartAfterEndError);
+	});
+
+	it("alarms を全置換→全除去でき、start 変更では相対トリガーが自動追従する(VALARM を触らない)", async () => {
+		const id = await seedEvent({
+			owner: TEST_OWNER,
+			title: "通知",
+			start: "2026-07-15T10:00:00",
+			end: "2026-07-15T11:00:00",
+			timeZone: "Asia/Tokyo",
+			alarms: [15],
+		});
+		// 全置換: [10, 60] へ。
+		const replaced = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, alarms: [10, 60] });
+		expect(replaced.event.alarms).toEqual([10, 60]);
+
+		// start だけ変更(既存 end 11:00 より前の 09:00)→ 相対トリガー(-PT10M/-PT60M)は文字列のまま
+		// = 自動追従。alarms は据え置き(サーバーはトリガーを shift しない)。
+		const moved = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, start: "2026-07-15T09:00:00", timeZone: "Asia/Tokyo" });
+		expect(moved.event.alarms).toEqual([10, 60]);
+		const stored1 = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		expect(stored1[0]!.rawIcs).toContain("TRIGGER:-PT10M");
+		expect(stored1[0]!.rawIcs).toContain("DTSTART;TZID=Asia/Tokyo:20260715T090000");
+
+		// null で全除去。
+		const cleared = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, alarms: null });
+		expect(cleared.event.alarms).toEqual([]);
+		const stored2 = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		expect(stored2[0]!.rawIcs).not.toContain("BEGIN:VALARM");
+	});
+
+	it("travelMinutes を三値で更新できる(設定→除去)", async () => {
+		const id = await seedEvent({ owner: TEST_OWNER, title: "移動", start: "2026-07-15" });
+		const set = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, travelMinutes: 20 });
+		expect(set.event.travelMinutes).toBe(20);
+		const cleared = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, travelMinutes: null });
+		expect(cleared.event.travelMinutes).toBeNull();
+		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		expect(stored[0]!.rawIcs).not.toContain("X-APPLE-TRAVEL-DURATION");
 	});
 
 	it("存在しない id は EventNotFoundError", async () => {

@@ -38,6 +38,13 @@ export {
 	type VEventEndPatch,
 } from "./vevent-patch";
 
+// E-3 スライス S1.5: 開始相対 VALARM(通知)プリミティブ(vevent-write/patch/event-dto の共有カーネル)。
+export {
+	buildStartRelativeAlarm,
+	isStartRelativeAlarm,
+	startRelativeAlarmMinutesBefore,
+} from "./vevent-alarm";
+
 // E-1 スライス②-b: 既存 VTODO の部分更新プリミティブ(UpdateTodo/CompleteTodo/DeleteTodo が使う
 // patch 方式。vtodo-write.ts の buildVTodoCalendar とは対称的に「既存 Component の一部だけ書き
 // 換える」ロスレス編集を担う)。

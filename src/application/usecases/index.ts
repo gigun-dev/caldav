@@ -206,6 +206,8 @@ export {
 	EventTimeZoneRequiredError,
 	StartAfterEndError,
 	StartEndTypeMismatchError,
+	InvalidAlarmsError,
+	InvalidTravelMinutesError,
 	type CreateEventInput,
 	type CreateEventOutput,
 	type CreateEventError,

@@ -16,8 +16,9 @@
 // =============================================================================
 
 import type { VEvent } from "../../domain/ical/semantics";
+import { startRelativeAlarmMinutesBefore } from "../../domain/ical/semantics";
 import type { CalDate, CalDateTime, Frequency, RecurrenceRule } from "../../domain/ical/values";
-import { decodeText, InvalidValueError } from "../../domain/ical/values";
+import { decodeText, InvalidValueError, parseDurationValue } from "../../domain/ical/values";
 import { calDateTimeToEpochMillis, getZoneOffsetMillis } from "../../domain/ical/timezone";
 import type { Occurrence } from "../../domain/ical/recurrence";
 
@@ -61,6 +62,16 @@ export interface Event {
 		count: number | null;
 		until: string | null;
 	} | null;
+	/**
+	 * 通知(開始相対 VALARM)の minutesBefore 列・昇順(0=開始時刻ちょうど)。開始相対以外の VALARM
+	 * (絶対トリガー・終了相対・位置トリガー)は数えない(vevent-alarm.ts の isStartRelativeAlarm 基準)。
+	 * 通知無しは空配列 [](null ではなく空配列 — UI は「0 件」を素直に描ける)。
+	 */
+	alarms: number[];
+	/**
+	 * 移動時間(X-APPLE-TRAVEL-DURATION)の分。未設定は null。Apple 拡張の DURATION を分に畳んで返す。
+	 */
+	travelMinutes: number | null;
 }
 
 function pad2(n: number): string {
@@ -168,7 +179,7 @@ function readEventMeta(
 	vevent: VEvent,
 	zoneOf: (tzid: string) => string,
 	timeZone: string,
-): Pick<Event, "id" | "title" | "location" | "url" | "notes" | "status" | "recurrence"> {
+): Pick<Event, "id" | "title" | "location" | "url" | "notes" | "status" | "recurrence" | "alarms" | "travelMinutes"> {
 	// URL(§3.8.4.6)。VEvent レンズに url アクセサが無い(vevent.ts は読み取り専用で変更しない方針)ため
 	// raw から直接読む(task-dto.ts が DESCRIPTION を raw から読むのと同じやり方)。URI 値型なので
 	// decodeText はしない(生値のまま返す — location/notes は TEXT で decodeText するのと非対称)。
@@ -183,7 +194,41 @@ function readEventMeta(
 		// STATUS は大文字化済み(VEvent.status getter)。3値以外の生値も握りつぶさず通す(degrade 方針)。
 		status: (vevent.status ?? null) as Event["status"],
 		recurrence: formatRecurrence(vevent, zoneOf, timeZone),
+		alarms: readStartRelativeAlarms(vevent),
+		travelMinutes: readTravelMinutes(vevent),
 	};
+}
+
+/**
+ * VEVENT の開始相対 VALARM から minutesBefore 列を昇順で読む(開始相対以外は数えない)。
+ * VEvent.raw.components を直接歩く(VAlarm レンズに trigger アクセサが無く vevent.ts は変更しない
+ * 方針のため — url を raw から読むのと同じやり方)。壊れた TRIGGER は undefined で除外(degrade)。
+ */
+function readStartRelativeAlarms(vevent: VEvent): number[] {
+	const minutes: number[] = [];
+	for (const c of vevent.raw.components) {
+		const m = startRelativeAlarmMinutesBefore(c);
+		if (m !== undefined) minutes.push(m);
+	}
+	// 昇順(表示の安定 + DTO 契約。docs/modeling/12 §3 の「minutesBefore 列・昇順」)。
+	return minutes.sort((a, b) => a - b);
+}
+
+/**
+ * X-APPLE-TRAVEL-DURATION(Apple 拡張の DURATION)を分に畳んで返す。未設定・壊れた値は null。
+ */
+function readTravelMinutes(vevent: VEvent): number | null {
+	const prop = vevent.raw.properties.find((p) => p.name === "X-APPLE-TRAVEL-DURATION");
+	if (prop === undefined) return null;
+	try {
+		const dur = parseDurationValue(prop.value);
+		// 移動時間は非負の前向き期間(符号は無視して総分にする)。分未満は丸めない前提だが防御的に round。
+		const total =
+			(dur.weeks ?? 0) * 7 * 24 * 60 + (dur.days ?? 0) * 24 * 60 + (dur.hours ?? 0) * 60 + (dur.minutes ?? 0) + (dur.seconds ?? 0) / 60;
+		return Math.round(total);
+	} catch {
+		return null; // 壊れた DURATION は未設定扱い(1件の壊れで list を落とさない degrade)。
+	}
 }
 
 /**

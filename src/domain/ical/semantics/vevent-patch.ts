@@ -5,8 +5,9 @@
 // 【この層の責務・vtodo-patch.ts との対称】
 // vtodo-patch.ts が「既存 VTODO の一部だけをロスレスに書き換える patch 方式」を担うのと
 // 完全に対称に、このファイルは VEVENT の patch を担う。upsertProperty/removeProperty
-// (structure/edit.ts)だけを使い、指定したプロパティ以外(VALARM・VTIMEZONE・X-APPLE-* 等)には
-// 一切触れない。呼び出し側(application/usecases/update-event.ts)が「patch した VEVENT」を
+// (structure/edit.ts)だけを使い、指定したフィールド以外(VTIMEZONE・未指定の X-APPLE-* 等)には
+// 一切触れない。通知(alarms)は指定時のみ「開始相対 VALARM だけ」を差し替え、他クライアント由来の
+// VALARM(絶対トリガー・終了相対・位置トリガー)は温存する(applyAlarmsPatch 参照)。呼び出し側(application/usecases/update-event.ts)が「patch した VEVENT」を
 // VCALENDAR.components 配列に差し戻すだけで、他のコンポーネントには触れない構造にする。
 //
 // 【DTEND⇄DURATION の lossless 原則(VTODO には無い VEVENT 固有の配慮)】
@@ -21,9 +22,10 @@
 // この判断は applyStartPatch/applyEndPatch のコメントに再掲する。
 // =============================================================================
 
-import type { Component } from "../structure/types";
-import { removeProperty, upsertProperty } from "../structure/edit";
+import type { Component, Parameter } from "../structure/types";
+import { appendSubComponent, removeProperty, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
+import { buildStartRelativeAlarm, isStartRelativeAlarm } from "./vevent-alarm";
 import { type CalDateTime } from "../values/cal-date-time";
 import { formatRecurrenceRule, parseRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { localFieldsToEpochMillis } from "../timezone";
@@ -31,6 +33,9 @@ import { rawValue } from "./helpers";
 
 // VALUE=DATE パラメータ(vtodo-patch.ts と同値。各ファイルが自己完結して読めるよう再定義する)。
 const VALUE_DATE_PARAMS = [{ name: "VALUE", values: ["DATE"] }] as const;
+
+// X-APPLE-TRAVEL-DURATION の VALUE=DURATION パラメータ(vevent-write.ts と同値・同理由)。
+const VALUE_DURATION_PARAMS: readonly Parameter[] = [{ name: "VALUE", values: ["DURATION"] }];
 
 /**
  * DTSTART への patch 指示(vtodo-patch.ts の VTodoDuePatch と対称。ただし start は除去不可)。
@@ -78,6 +83,23 @@ export interface VEventPatchFields {
 	 * update-event.ts が共有)。ここは RRULE 文字列を upsert/remove するだけ。
 	 */
 	recurrence?: RecurrenceRule | null;
+	/**
+	 * 通知(開始相対 VALARM)への patch(三値):
+	 *   - undefined = 触らない(既存 VALARM を全部そのまま残す)
+	 *   - null      = 開始相対 VALARM を全除去する(絶対トリガー・終了相対・位置トリガーは温存)
+	 *   - 配列      = 開始相対 VALARM を全置換する(既存の開始相対だけ捨て、渡された列を新規に足す。
+	 *                 開始相対以外は温存)
+	 * 【なぜ「全 VALARM 置換」でなく「開始相対のみ管理」か(安全側)】他クライアント(iOS 等)が
+	 * 書いた絶対トリガー/終了相対/位置トリガーの VALARM を、サーバーの通知編集で黙って壊さない
+	 * ため。管理対象の線引きは isStartRelativeAlarm(vevent-alarm.ts)。空配列 [] は null と同義
+	 * (開始相対を全部消して何も足さない = 全除去)になる。
+	 */
+	alarms?: ReadonlyArray<{ minutesBefore: number; uid: string }> | null;
+	/**
+	 * 移動時間(X-APPLE-TRAVEL-DURATION)への patch(三値): undefined=触らない / null=除去 /
+	 * 正整数=設定(`PT{n}M`)。location/url の三値と同じパターン(値の妥当性検証は application 層)。
+	 */
+	travelMinutes?: number | null;
 }
 
 /**
@@ -124,7 +146,36 @@ export function patchVEventFields(vevent: Component, fields: VEventPatchFields):
 	if (fields.end !== undefined) {
 		out = applyEndPatch(out, fields.end);
 	}
+	if (fields.travelMinutes !== undefined) {
+		if (fields.travelMinutes === null) {
+			out = removeProperty(out, "X-APPLE-TRAVEL-DURATION");
+		} else {
+			out = upsertProperty(out, "X-APPLE-TRAVEL-DURATION", `PT${fields.travelMinutes}M`, VALUE_DURATION_PARAMS);
+		}
+	}
+	if (fields.alarms !== undefined) {
+		out = applyAlarmsPatch(out, fields.alarms);
+	}
 
+	return out;
+}
+
+/**
+ * 開始相対 VALARM を全置換する(null または空配列 = 全除去)。
+ *
+ * 【開始相対以外は温存する(VEventPatchFields.alarms コメントの安全側方針)】まず既存の
+ * 「開始相対 VALARM」だけをサブコンポーネント列から除く(isStartRelativeAlarm=false のもの —
+ * 絶対トリガー・終了相対・位置トリガー・VALARM 以外 — は素通しで残す)。そのうえで渡された
+ * minutesBefore/uid の列を新しい開始相対 VALARM として末尾に足す。start(DTSTART)を patch しても
+ * これらは相対トリガーなので自動追従する(サーバーは何も shift しない — vevent-alarm.ts 冒頭参照)。
+ */
+function applyAlarmsPatch(vevent: Component, alarms: ReadonlyArray<{ minutesBefore: number; uid: string }> | null): Component {
+	// 既存の開始相対 VALARM を落とす(それ以外のサブコンポーネントは順序も含めそのまま残す)。
+	let out: Component = { ...vevent, components: vevent.components.filter((c) => !isStartRelativeAlarm(c)) };
+	if (alarms === null) return out; // 全除去(何も足さない)。
+	for (const alarm of alarms) {
+		out = appendSubComponent(out, buildStartRelativeAlarm(alarm.minutesBefore, alarm.uid));
+	}
 	return out;
 }
 

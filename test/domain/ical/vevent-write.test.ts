@@ -88,6 +88,35 @@ describe("buildVEventCalendar", () => {
 		expect(ev.rrule?.freq).toBe("WEEKLY");
 	});
 
+	test("通知(開始相対 VALARM)+ 移動時間(X-APPLE-TRAVEL-DURATION)が往復する", () => {
+		const component = buildVEventCalendar({
+			uid: "ev-5",
+			now: NOW,
+			summary: "通院",
+			start: { type: "DATE-TIME", raw: "20260715T100000", tzid: "Asia/Tokyo" },
+			end: { type: "DATE-TIME", raw: "20260715T110000", tzid: "Asia/Tokyo" },
+			vtimezone: buildVTimezone("Asia/Tokyo", { startMillis: Date.parse("2026-07-01T00:00:00Z"), endMillis: Date.parse("2026-08-01T00:00:00Z") }),
+			// 30分前 + 開始ちょうど(0)の2件。
+			alarms: [
+				{ minutesBefore: 30, uid: "alarm-a" },
+				{ minutesBefore: 0, uid: "alarm-b" },
+			],
+			travelMinutes: 45,
+		});
+		const ics = serialize(component);
+		// TRIGGER は開始相対の負 DURATION(0 は -PT0M)。VALUE/RELATED は付けない(既定=DURATION/START)。
+		expect(ics).toContain("TRIGGER:-PT30M");
+		expect(ics).toContain("TRIGGER:-PT0M");
+		expect(ics).toContain("ACTION:DISPLAY");
+		// 移動時間は Apple 拡張の DURATION 値型。
+		expect(ics).toContain("X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT45M");
+
+		const reparsed = ICalendarObject.fromComponent(parse(ics));
+		expect(reparsed.validate()).toEqual([]); // VALARM の ACTION=DISPLAY→DESCRIPTION 必須も満たす。
+		const ev = reparsed.events()[0]!;
+		expect(ev.alarms()).toHaveLength(2);
+	});
+
 	test("DATE-TIME start なのに vtimezone 未指定は防御的に throw する(§3.6.5)", () => {
 		expect(() =>
 			buildVEventCalendar({

@@ -45,7 +45,7 @@ export function snapshotFromEvent(event: Event): EventSnapshot {
  * update-event の「変更されたフィールド」から edited の changes 配列を作る(todos-diff.ts の
  * buildEditedChanges と対称)。start/end/location は短文 before/after、notes/recurrence は field のみ。
  *
- * @param provided title/notes/start/end/location/recurrence のうち、ツール引数で指定された(非 undefined)フィールド名。
+ * @param provided title/notes/start/end/location/url/recurrence/alarms/travelMinutes のうち、ツール引数で指定された(非 undefined)フィールド名。
  */
 export function buildEventEditedChanges(before: Event, after: Event, provided: ReadonlySet<string>): AffectedEvent["changes"] {
 	const changes: NonNullable<AffectedEvent["changes"]> = [];
@@ -87,6 +87,16 @@ export function buildEventEditedChanges(before: Event, after: Event, provided: R
 
 	if (provided.has("recurrence")) {
 		changes.push({ field: "recurrence" });
+	}
+
+	if (provided.has("alarms")) {
+		// 通知は件数/分の列で before/after を短文化しづらい(かつ UI は最新スナップショットの
+		// alarms を直接読める)ので field のみ。todos の notes/recurrence と同じ degrade 判断。
+		changes.push({ field: "alarms" });
+	}
+
+	if (provided.has("travelMinutes")) {
+		changes.push({ field: "travelMinutes" });
 	}
 
 	return changes.length > 0 ? changes : undefined;

@@ -72,7 +72,18 @@ export interface CreateEventInput {
 	calendarId?: string;
 	/** 反復指定(create-todo と同一 shape)。DTSTART をアンカーにする(§3.8.5.3)。 */
 	recurrence?: CreateTodoRecurrenceInput;
+	/**
+	 * 通知(開始相対 VALARM)。minutesBefore の列(0=開始時刻ちょうど)。最大2件・重複不可・負値不可。
+	 * 省略または空配列なら VALARM を書かない。TRIGGER は `-PT{n}M`(vevent-alarm.ts の裁定)。
+	 */
+	alarms?: number[];
+	/** 移動時間(X-APPLE-TRAVEL-DURATION・分)。正整数のみ。省略なら書かない。 */
+	travelMinutes?: number;
 }
+
+// alarms の上限件数(docs/modeling/12 §1「最大2件」= 通知 + 予備の通知)。UI/UC の都合の制約で
+// ドメイン組み立て(vevent-write)は件数を縛らない — 検証はここ application 層に置く。
+const MAX_ALARMS = 2;
 
 // --- 出力 DTO ---
 
@@ -133,6 +144,27 @@ export class StartEndTypeMismatchError extends Error {
 	}
 }
 
+/**
+ * 通知(alarms)の入力が不正なときのエラー(件数超過・負値/非整数・重複を1エラー種別にまとめる)。
+ * reason で細分(create/update-event 共通。MCP はメッセージをそのまま toolError に載せる)。
+ */
+export class InvalidAlarmsError extends Error {
+	readonly kind = "InvalidAlarmsError" as const;
+	constructor(readonly reason: "too-many" | "negative" | "non-integer" | "duplicate", message: string) {
+		super(message);
+		this.name = "InvalidAlarmsError";
+	}
+}
+
+/** 移動時間(travelMinutes)が正整数でないときのエラー。 */
+export class InvalidTravelMinutesError extends Error {
+	readonly kind = "InvalidTravelMinutesError" as const;
+	constructor(readonly travelMinutes: number) {
+		super(`travelMinutes must be a positive integer (minutes): ${travelMinutes}`);
+		this.name = "InvalidTravelMinutesError";
+	}
+}
+
 export type CreateEventError =
 	| InvalidStartError
 	| InvalidEndError
@@ -143,10 +175,40 @@ export type CreateEventError =
 	| UnsupportedTimeZoneError
 	| RecurrenceCountUntilConflictError
 	| RecurrenceWeekdaysRequireWeeklyError
+	| InvalidAlarmsError
+	| InvalidTravelMinutesError
 	| PutCalendarObjectError;
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME_LOCAL_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/;
+
+/**
+ * alarms 入力(minutesBefore の列)を検証し、VEventFields 用の {minutesBefore, uid} 列へ変換する。
+ * create-event / update-event で共有(検証規律の二重管理を避ける)。空配列は空配列を返す。
+ *
+ * 検証: 最大2件(MAX_ALARMS)/ 各要素は非負整数(負値・非整数を拒否)/ 重複拒否。
+ * uid は VALARM ごとに採番する(vevent-alarm.ts が UID==X-WR-ALARMUID に使う)。
+ */
+export function validateAndBuildAlarms(alarms: number[]): Array<{ minutesBefore: number; uid: string }> {
+	if (alarms.length > MAX_ALARMS) {
+		throw new InvalidAlarmsError("too-many", `at most ${MAX_ALARMS} alarms are allowed, got ${alarms.length}`);
+	}
+	const seen = new Set<number>();
+	for (const n of alarms) {
+		if (!Number.isInteger(n)) throw new InvalidAlarmsError("non-integer", `alarm minutesBefore must be an integer, got ${n}`);
+		if (n < 0) throw new InvalidAlarmsError("negative", `alarm minutesBefore must be >= 0 (0 = at start), got ${n}`);
+		if (seen.has(n)) throw new InvalidAlarmsError("duplicate", `duplicate alarm minutesBefore: ${n}`);
+		seen.add(n);
+	}
+	return alarms.map((minutesBefore) => ({ minutesBefore, uid: crypto.randomUUID() }));
+}
+
+/** travelMinutes 入力(正整数)を検証する(不正なら InvalidTravelMinutesError)。create/update 共有。 */
+export function validateTravelMinutes(travelMinutes: number): void {
+	if (!Number.isInteger(travelMinutes) || travelMinutes <= 0) {
+		throw new InvalidTravelMinutesError(travelMinutes);
+	}
+}
 
 // 「時刻付き start/end のパース結果」。VEventDateValue(vevent-write に渡す形)+ epoch(比較・窓用)+
 // dueTimeInfo(recurrence の UNTIL 値型を DTSTART に合わせるための壁時計 + TZID)を束ねる。
@@ -183,6 +245,10 @@ export class CreateEvent {
 			recurrence = buildRecurrenceRule(input.recurrence, start.timeInfo);
 		}
 
+		// 通知(alarms)+ 移動時間(travelMinutes)の検証(lookup/PUT より前 = 安価な失敗)。
+		const alarms = input.alarms !== undefined ? validateAndBuildAlarms(input.alarms) : undefined;
+		if (input.travelMinutes !== undefined) validateTravelMinutes(input.travelMinutes);
+
 		// VTIMEZONE: start か end が時刻付き(DATE-TIME)なら生成する。窓は start/end/UNTIL/反復ホライズンを
 		// 覆う([min 開始, max 終了 + 3年 or UNTIL] ± 余白)。create-todo.ts と同じ発想で組む。
 		let vtimezone: Component | undefined;
@@ -217,6 +283,8 @@ export class CreateEvent {
 			location: input.location,
 			url: input.url,
 			recurrence,
+			alarms,
+			travelMinutes: input.travelMinutes,
 		};
 		const component = buildVEventCalendar(fields);
 		const ics = serialize(component);
