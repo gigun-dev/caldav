@@ -129,9 +129,12 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
+			"create-event",
+			"create-events",
 			"create-todo",
 			"create-todos",
 			"delete-calendar",
+			"delete-event",
 			"delete-todo",
 			"get-current-time",
 			"get-freebusy",
@@ -140,6 +143,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"list-todos",
 			"move-todo",
 			"refresh-todos",
+			"update-event",
 			"update-todo",
 		]);
 	});

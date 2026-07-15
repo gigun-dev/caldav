@@ -191,3 +191,37 @@ export {
 	type MoveTodoOutput,
 	type MoveTodoError,
 } from "./move-todo";
+
+// Event DTO(E-3 UI-ready。CreateEvent/UpdateEvent/DeleteEvent/list-events-expanded 共通)
+export { eventFromOccurrence, eventFromVEvent, type Event } from "./event-dto";
+
+// eventId(UID) → リソース解決の共有ヘルパー(E-3 S1。Update/DeleteEvent 共通)
+export { lookupEvent, EventNotFoundError, type LookedUpEvent } from "./event-lookup";
+
+// MCP create-event(E-3 スライス S1)
+export {
+	CreateEvent,
+	InvalidStartError,
+	InvalidEndError,
+	EventTimeZoneRequiredError,
+	StartAfterEndError,
+	StartEndTypeMismatchError,
+	type CreateEventInput,
+	type CreateEventOutput,
+	type CreateEventError,
+} from "./create-event";
+
+// MCP update-event(E-3 スライス S1)
+export {
+	UpdateEvent,
+	type UpdateEventInput,
+	type UpdateEventOutput,
+	type UpdateEventError,
+} from "./update-event";
+
+// MCP delete-event(E-3 スライス S1)
+export {
+	DeleteEvent,
+	type DeleteEventInput,
+	type DeleteEventOutput,
+} from "./delete-event";

@@ -168,7 +168,9 @@ describe("/mcp", () => {
 	// カードが N 枚積まれる語彙の穴を塞ぐ)を追加したため 12→13 に更新。
 	// 2026-07-15 追記: move-todo(UI 詳細シート「リスト ›」からの VTODO コレクション間移動。
 	// move-todo.ts 冒頭コメント参照)を追加したため 13→14 に更新。
-	it("正しい Bearer で tools/list に14ツールが並ぶ(move-todo 追加分。visibility:[\"app\"] でも tools/list には出る)", async () => {
+	// 2026-07-15 E-3 S1 追記: create-event/create-events/update-event/delete-event(VEVENT の MCP
+	// 書き込みツール一式。docs/modeling/12)を追加したため 14→18 に更新。
+	it("正しい Bearer で tools/list に18ツールが並ぶ(E-3 event ツール4本追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -176,9 +178,12 @@ describe("/mcp", () => {
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
+			"create-event",
+			"create-events",
 			"create-todo",
 			"create-todos",
 			"delete-calendar",
+			"delete-event",
 			"delete-todo",
 			"get-current-time",
 			"get-freebusy",
@@ -187,6 +192,7 @@ describe("/mcp", () => {
 			"list-todos",
 			"move-todo",
 			"refresh-todos",
+			"update-event",
 			"update-todo",
 		]);
 	});
@@ -974,4 +980,89 @@ describe("/mcp", () => {
 			expect("view" in rpc.result.structuredContent).toBe(false);
 		});
 	});
+
+	// =============================================================================
+	// E-3 スライス S1: event 系ツール(create/create-events/update/delete-event)の presentation テスト。
+	// application UC の挙動は event-usecases.test.ts が担保済みなので、ここでは structuredContent が
+	// EventsViewModel 契約(events/calendarId/timeZone/affected/removed/range)どおりに載るかを最小に確認する。
+	// =============================================================================
+	describe("event 系ツールの EventsViewModel", () => {
+		function seedCalendarCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+		}
+		async function callEvent(name: string, args: Record<string, unknown>): Promise<any> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent;
+		}
+
+		it("create-event: events + affected(added)を返し range は名乗らない(mutate 判別シグナル)", async () => {
+			seedCalendarCollection();
+			const sc = await callEvent("create-event", { title: "会議", start: "2026-07-15T10:00:00", end: "2026-07-15T11:00:00", timeZone: "Asia/Tokyo" });
+			expect(sc.events).toHaveLength(1);
+			// Event DTO(id/title)+ legacy 別名(uid/summary)が additive に載る。
+			expect(sc.events[0].id).toBe(sc.affected[0].id);
+			expect(sc.events[0].uid).toBe(sc.events[0].id);
+			expect(sc.events[0].title).toBe("会議");
+			expect(sc.events[0].summary).toBe("会議");
+			expect(sc.events[0].start).toBe("2026-07-15T10:00:00+09:00");
+			expect(sc.affected).toMatchObject([{ kind: "added", event: { title: "会議" } }]);
+			expect("range" in sc).toBe(false);
+		});
+
+		it("create-event: URL(URI 値型)が Event.url に載りエスケープされない", async () => {
+			seedCalendarCollection();
+			const sc = await callEvent("create-event", { title: "リンク付き", start: "2026-07-15", url: "https://example.com/x?a=1&b=2" });
+			expect(sc.events[0].url).toBe("https://example.com/x?a=1&b=2");
+		});
+
+		it("create-events: 複数件を1応答にまとめ affected に N 件の added を積む", async () => {
+			seedCalendarCollection();
+			const sc = await callEvent("create-events", { items: [{ title: "A", start: "2026-07-15" }, { title: "B", start: "2026-07-16" }] });
+			expect(sc.affected).toHaveLength(2);
+			expect(sc.events).toHaveLength(2);
+		});
+
+		it("list-events-expanded: range を echo し events は Event DTO(id/title)+ legacy(uid/summary)", async () => {
+			await seedEvent("uid-agenda-1", "予定X");
+			const sc = await callEvent("list-events-expanded", { timeMin: "2026-07-01T00:00:00Z", timeMax: "2026-08-01T00:00:00Z", calendarId: "calendar" });
+			expect(sc.range).toEqual({ from: "2026-07-01T00:00:00Z", to: "2026-08-01T00:00:00Z" });
+			expect(sc.calendarId).toBe("calendar");
+			expect(sc.events[0].id).toBe("uid-agenda-1");
+			expect(sc.events[0].uid).toBe("uid-agenda-1");
+			expect(sc.events[0].title).toBe("予定X");
+			expect(sc.events[0].summary).toBe("予定X");
+			// 非反復イベントの recurrenceId は null(旧「常に ISO」から §3 契約へ変更)。
+			expect(sc.events[0].recurrenceId).toBeNull();
+		});
+
+		it("update-event: affected=edited + changes(start/location は provided フィールドとして載る)", async () => {
+			seedCalendarCollection();
+			const created = await callEvent("create-event", { title: "旧", start: "2026-07-15", location: "旧地" });
+			const id = created.events[0].id;
+			const sc = await callEvent("update-event", { id, title: "新", location: "新地" });
+			expect(sc.affected[0].kind).toBe("edited");
+			const fields = sc.affected[0].changes.map((c: { field: string }) => c.field).sort();
+			expect(fields).toEqual(["location", "title"]);
+			expect(sc.events[0].title).toBe("新");
+		});
+
+		it("delete-event: events 空 + removed(ghost)を返す", async () => {
+			seedCalendarCollection();
+			const created = await callEvent("create-event", { title: "消す", start: "2026-07-15" });
+			const id = created.events[0].id;
+			const sc = await callEvent("delete-event", { id });
+			expect(sc.events).toHaveLength(0);
+			expect(sc.removed).toMatchObject([{ title: "消す" }]);
+		});
+
+		it("create-event: end <= start は isError", async () => {
+			seedCalendarCollection();
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-event", arguments: { title: "逆転", start: "2026-07-18", end: "2026-07-15" } } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+	});
+
 });

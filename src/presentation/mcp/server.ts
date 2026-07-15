@@ -49,10 +49,13 @@ import type { AuthenticationPort, CollectionUnitOfWork } from "../../application
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
 // Task 型は findTaskById 廃止(2026-07-14 レイテンシ改善)で presentation から直接参照しなくなった
 // (before/removed は UC が返す。差分整形は todos-diff.ts が Task を受ける)。ここでは型 import しない。
-import type { CreateTodoRecurrenceInput } from "../../application/usecases";
+import type { CreateTodoRecurrenceInput, Event } from "../../application/usecases";
 // E-2 スライス②: mutate 系ツールが返す差分レンズ付き確定一覧の contract と、その表示用整形。
 import type { AffectedTask, TaskSnapshot, TodosViewModel } from "./todos-view-model";
 import { buildEditedChanges, snapshotFromTask } from "./todos-diff";
+// E-3 スライス S1: event 系ツールの structuredContent 契約と表示用整形(todos 版と対称)。
+import type { AffectedEvent, EventSnapshot } from "./events-view-model";
+import { buildEventEditedChanges, snapshotFromEvent } from "./events-diff";
 import {
 	CompleteTodo,
 	ComputeFreeBusy,
@@ -75,6 +78,17 @@ import {
 	TodoNotFoundError,
 	UnsupportedTimeZoneError,
 	UpdateTodo,
+	// E-3 スライス S1: event 系ユースケース(create/update/delete-event)+ エラー型。
+	CreateEvent,
+	UpdateEvent,
+	DeleteEvent,
+	EventNotFoundError,
+	EventTimeZoneRequiredError,
+	InvalidStartError,
+	InvalidEndError,
+	StartAfterEndError,
+	StartEndTypeMismatchError,
+	eventFromOccurrence,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
 import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
@@ -86,7 +100,9 @@ import { CollectionAlreadyExistsError, CreateCollection, ListCollections } from 
 // delete-calendar(検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機。
 // DAV DELETE 経路とは別の薄い専用 UC — delete-collection.ts 冒頭コメント参照)。
 import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } from "../../application/usecases";
-import { epochToIso, formatDateOnly, isValidIanaZone, parseIsoToEpoch } from "./format";
+// formatDateOnly は list-events-expanded の応答整形を event-dto.eventFromOccurrence(application 層)へ
+// 移したため presentation では不要になった(2026-07-15 E-3 S1)。epochToIso は get-freebusy 等で継続使用。
+import { epochToIso, isValidIanaZone, parseIsoToEpoch } from "./format";
 
 export interface McpAppDeps {
 	readonly auth: AuthenticationPort;
@@ -513,6 +529,87 @@ const moveTodoInputShape = {
 	toCalendarId: z.string().describe("移動先コレクション ID(list-calendars/create-calendar が返す id)。"),
 };
 
+// --- create-event / create-events / update-event / delete-event(E-3 スライス S1)--------------
+// 【create-todo 系の shape 語彙を最大限踏襲する】recurrence は create/update それぞれ todos の
+// shape(createTodoRecurrenceInputShape / updateTodoRecurrenceInputShape)をそのまま再利用する
+// (判別ロジックの二重管理を避ける — normalizeCreateTodoRecurrenceInput 等も共有できる)。
+// start/end の形式規約は create-todo の due と同じ("YYYY-MM-DD" 終日 / "...T..." 時刻付き)。
+const createEventItemFieldsShape = {
+	title: z.string().describe("SUMMARY(タイトル)。"),
+	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
+	start: z.string().describe(
+		'開始(DTSTART・必須)。2形態: "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone と組)。' +
+			"offset 付き ISO8601 は不可(TZID を一意に導出できないため)。",
+	),
+	end: z.string().optional().describe(
+		'終了(DTEND・省略可・排他的終端)。start と同じ2形態で、値型(終日/時刻付き)は start と一致させること。' +
+			"start より後でなければならない。終日1日イベントや開始のみのイベントは end を省略してよい。",
+	),
+	location: z.string().optional().describe("LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義。"),
+	url: z.string().optional().describe(
+		"URL(§3.8.4.6・URI 値型)。予定に紐づく詳細ページ/ミーティングリンク等。空文字は未設定と同義。",
+	),
+	recurrence: createTodoRecurrenceInputShape.optional().describe(
+		'反復指定(create-todo と同一語彙)。frequency:"none"=反復しない。DTSTART をアンカーにする。',
+	),
+};
+
+const createEventInputShape = {
+	...createEventItemFieldsShape,
+	timeZone: z.string().optional().describe(
+		'start/end が時刻付きのときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須(省略時エラー・暗黙 UTC 禁止)。' +
+			"DST ゾーンは VTIMEZONE 生成 Phase 1 未対応でエラー(固定オフセットゾーンのみ)。終日のときは無視する。",
+	),
+	calendarId: z.string().optional().describe('保存先コレクション ID。省略時は "calendar"。'),
+};
+
+// create-events(バッチ)。create-todos と同じ規律(≤25・timeZone/calendarId はバッチ共通)。
+const createEventsInputShape = {
+	items: z
+		.array(z.object(createEventItemFieldsShape))
+		.min(1)
+		.max(25)
+		.describe(
+			"追加するイベントの配列(1〜25件)。各要素は create-event と同じ語彙(title/start 必須)。" +
+				"25件を超える場合は入力エラー(D1 書込み/sync token への負荷を抑える上限)。",
+		),
+	calendarId: z.string().optional().describe('保存先コレクション ID(全 item 共通)。省略時は "calendar"。'),
+	timeZone: z.string().optional().describe(
+		'items[].start/end が時刻付きのときの IANA タイムゾーン名(全 item 共通)。create-event と同じ制約。',
+	),
+};
+
+const updateEventInputShape = {
+	id: z.string().describe("更新対象の VEVENT UID(create-event/list-events-expanded が返す id)。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "calendar"。'),
+	title: z.string().optional().describe("SUMMARY。省略時は変更しない。"),
+	notes: z.string().optional().describe("DESCRIPTION。省略時は変更しない。"),
+	start: z.string().optional().describe(
+		'開始(DTSTART)。省略=変更しない / "YYYY-MM-DD"(終日)/ "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone と組)。' +
+			"開始は除去できない(イベントに開始は必須)。",
+	),
+	end: z.string().nullable().optional().describe(
+		"終了(DTEND)。省略=変更しない / null=終了を外す(開始のみのイベントにする)/ 文字列=設定(start と同2形態)。",
+	),
+	timeZone: z.string().optional().describe(
+		'start/end が時刻付きのときの IANA タイムゾーン名。create-event と同じ制約(省略時エラー・DST 未対応)。',
+	),
+	location: z.string().nullable().optional().describe(
+		"LOCATION。省略=変更しない / null=場所を外す / 文字列=差し替え。",
+	),
+	url: z.string().nullable().optional().describe(
+		"URL(§3.8.4.6)。省略=変更しない / null=URL を外す / 文字列=差し替え。",
+	),
+	recurrence: updateTodoRecurrenceInputShape.optional().describe(
+		'反復の設定/変更/除去。省略=変更しない / frequency:"none"=反復を除去 / daily/weekly/... =その反復に全置換。',
+	),
+};
+
+const deleteEventInputShape = {
+	id: z.string().describe("削除対象の VEVENT UID。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "calendar"。'),
+};
+
 const listTodosInputShape = {
 	includeCompleted: z.boolean().optional().describe("完了済み(STATUS:COMPLETED)を含めるか。既定は未完了のみ(false)。"),
 	dueBefore: z.string().optional().describe("DUE がこの offset 付き ISO8601 より前の TODO だけに絞る(due 無しは除外)。"),
@@ -546,6 +643,24 @@ async function resolveCollectionIds(
 	if (calendarId !== undefined) return [mkCollectionId(calendarId)];
 	const collections = await deps.collectionRepo.findAllByOwner(owner);
 	return collections.map((c) => c.id);
+}
+
+/**
+ * Event DTO を list-events-expanded / event mutate ツールの wire 形へ整える(E-3 スライス S1)。
+ * Event DTO(§3)に legacy 別名(uid=id / summary=title / description=notes)+ calendarId +
+ * isRecurring を additive に併記する。legacy 別名は「旧 list-events-expanded 応答(uid/summary)を
+ * 読む既存の非 UI 消費者/テスト」を壊さないための後方互換(server.ts の list-events-expanded 内
+ * コメント参照)。アジェンダカード(S2)は Event DTO 側(id/title/notes/recurrence 等)を読む。
+ */
+function toWireEvent(event: Event, calendarId: string, isRecurring: boolean): Record<string, unknown> {
+	return {
+		...event,
+		uid: event.id,
+		summary: event.title,
+		description: event.notes,
+		calendarId,
+		isRecurring,
+	};
 }
 
 /** MCP ツールハンドラの共通エラー整形。isError:true + content にメッセージを詰める。 */
@@ -715,38 +830,36 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				if (entries.length > limit) truncated = true;
 				const clipped = entries.slice(0, limit);
 
+				// 【E-3 スライス S1: 応答を EventsViewModel 形へ整える(additive・後方互換)】
+				// 旧応答は各 event を {uid, summary, description, isRecurring, recurrenceId(常に ISO), ...} で
+				// 返していた。E-3 でアジェンダカードが読む Event DTO(id/title/notes/recurrence/
+				// recurrenceId=非反復は null)へ主軸を移すが、既存の非 UI 消費者(uid/summary を見るテスト等)を
+				// 壊さないよう、Event DTO に legacy 別名(uid=id / summary=title / description=notes /
+				// calendarId / isRecurring)を additive に併記する(toWireEvent)。recurrenceId の意味は
+				// 「常に ISO」から §3 の「非反復は null / occurrence は開始 ISO」へ変える(既存 UI 無し[カードは S2]。
+				// §3 契約に正しく合致する。旧「常に ISO」を見るテストは無いことを確認済み)。
 				const events = clipped.map(({ uid, calendarId: cid, occurrence }) => {
-					// isAllDay: recurrenceId が CalDate(DATE 値)なら "kind" フィールドを持たない
-					// (CalDateTime は kind: "floating"|"utc"|"zoned" を持つ判別可能ユニオン。
-					// cal-date-time.ts のコメント参照)。よって kind の有無で判別できる。
-					const isAllDay = !("kind" in occurrence.recurrenceId);
-					const start = isAllDay ? formatDateOnly(occurrence.startMillis, zone) : epochToIso(occurrence.startMillis, zone);
-					const end = isAllDay ? formatDateOnly(occurrence.endMillis, zone) : epochToIso(occurrence.endMillis, zone);
-					const component = occurrence.component;
-					// isRecurring は「master が rrule か rdate を持つか」で近似する(要件どおり)。
-					// 本来は master 側のプロパティを見るべきだが、Occurrence.component は
-					// source="override" なら上書き VEvent(rrule/rdate を持たない)になる。
-					// ListOccurrences は master そのものを DTO として露出しないため、ここでは
-					// 「override 由来 or マスター自身が rrule/rdate を持つ」で近似する
-					// (override が存在する時点でマスターは反復イベントであるはずなので、
-					// occurrence.source === "override" も real recurring の十分条件として使える)。
-					const isRecurring = occurrence.source === "override" || component.rrule !== undefined || component.rdate.length > 0;
-					return {
-						uid,
-						calendarId: cid,
-						summary: component.summary,
-						start,
-						end,
-						isAllDay,
-						isRecurring,
-						recurrenceId: isAllDay ? formatDateOnly(occurrence.startMillis, zone) : epochToIso(occurrence.startMillis, zone),
-						status: component.status,
-						location: component.location,
-						description: component.description,
-					};
+					// eventFromOccurrence(application 層)が occurrence → Event DTO を組む。zoneOf は
+					// occurrence が展開時点で tzid を失っているため identity(tzid=>tzid)で足りる
+					// (表示ゾーンは応答基準 zone。§3「イベント自身のゾーン」との差は最終報告で親に返す)。
+					const event = eventFromOccurrence(uid, occurrence, (tzid) => tzid, zone);
+					// isRecurring は旧実装と同じ近似(override 由来 or マスターが rrule/rdate を持つ)。
+					const isRecurring =
+						occurrence.source === "override" ||
+						occurrence.component.rrule !== undefined ||
+						occurrence.component.rdate.length > 0;
+					return toWireEvent(event, cid, isRecurring);
 				});
 
-				const result = { timeZone: zone, events, truncated };
+				// range echo(EventsViewModel.range)。mutate 応答は range を名乗らない(判別シグナル)ので
+				// range を載せるのは照会系のここだけ。calendarId は作成先の既定(全コレクション横断は "calendar")。
+				const result = {
+					events,
+					calendarId: calendarId ?? "calendar",
+					timeZone: zone,
+					range: { from: timeMin, to: timeMax },
+					truncated,
+				};
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(result) }],
 					structuredContent: result,
@@ -1554,6 +1667,232 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 				if (error instanceof MoveTodoSameCollectionError) return toolError(error.message);
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
 				if (error instanceof CollectionNotFoundError) return toolError(error.message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- event 系ツール(E-3 スライス S1: create-event/create-events/update-event/delete-event)-----
+	// 【registerTool(registerAppTool ではない)理由】アジェンダカード(ui://caldav/agenda.html)は
+	// S2 の担当。S1 はサーバー契約(EventsViewModel + affected/removed)を確定させるところまでで、
+	// ui:// 紐付けは S2 で list-events-expanded と一緒に配線する。よってここでは素の registerTool。
+	// EventsViewModel は閉じた contract 型なので SDK の structuredContent(index signature 要求)へは
+	// 境界で cast する(todos の toTodosToolResponse と同じ判断)。
+	const eventsToolResponse = (vm: Record<string, unknown>) => ({
+		content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+		structuredContent: vm as { [key: string]: unknown },
+	});
+
+	// create/update-event が投げる「入力起因の kind タグ付きエラー」をまとめて toolError に倒す判定
+	// (create-todo の catch と同じ流儀。メッセージが自己説明的なのでそのまま返す)。
+	const isEventInputError = (error: unknown): boolean =>
+		error instanceof InvalidStartError ||
+		error instanceof InvalidEndError ||
+		error instanceof EventTimeZoneRequiredError ||
+		error instanceof StartAfterEndError ||
+		error instanceof StartEndTypeMismatchError ||
+		error instanceof InvalidTimeZoneError ||
+		error instanceof UnsupportedTimeZoneError ||
+		error instanceof RecurrenceCountUntilConflictError ||
+		error instanceof RecurrenceWeekdaysRequireWeeklyError ||
+		error instanceof EventNotFoundError;
+
+	server.registerTool(
+		"create-event",
+		{
+			title: "Create event",
+			description:
+				"新規 VEVENT(予定)を作成する。UID/DTSTAMP はサーバーが生成する。" +
+				'start は "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone 必須)、end は排他的終端(省略可)。' +
+				'calendarId 省略時は "calendar" コレクションに作成する。' +
+				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
+			inputSchema: createEventInputShape,
+		},
+		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence }) => {
+			try {
+				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const createEvent = new CreateEvent(putCalendarObject);
+				const { event } = await createEvent.execute({
+					owner: principal,
+					title,
+					notes,
+					start,
+					end,
+					timeZone,
+					location,
+					url,
+					calendarId,
+					recurrence: normalizedRecurrence,
+				});
+				const cid = calendarId ?? "calendar";
+				// timeZone は「そのまま echo」する(検証は UC 側が時刻付きイベントに対して既に済ませている。
+				// resolveTimeZone で再検証すると、既に PUT 済みの終日イベントで junk timeZone を渡された場合に
+				// 事後エラーになり部分状態を生むため — 素直に timeZone ?? "UTC" を echo する)。
+				const vm = {
+					events: [toWireEvent(event, cid, event.recurrence !== null)],
+					calendarId: cid,
+					timeZone: timeZone ?? "UTC",
+					affected: [{ id: event.id, kind: "added", event: snapshotFromEvent(event) } satisfies AffectedEvent],
+				};
+				return eventsToolResponse(vm);
+			} catch (error) {
+				if (isEventInputError(error)) return toolError((error as Error).message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	server.registerTool(
+		"create-events",
+		{
+			title: "Create events (batch)",
+			description:
+				"複数の予定(VEVENT)をまとめて追加する。2件以上の追加は必ずこちらを使うこと。" +
+				"各 item は create-event と同じ語彙(title/start 必須)。calendarId/timeZone は全 item 共通。",
+			inputSchema: createEventsInputShape,
+		},
+		async ({ items, calendarId, timeZone }) => {
+			try {
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const createEvent = new CreateEvent(putCalendarObject);
+
+				const cid = calendarId ?? "calendar";
+				const createdEvents: ReturnType<typeof toWireEvent>[] = [];
+				const succeeded: AffectedEvent[] = [];
+				const failed: { title: string; reason: string }[] = [];
+
+				// create-todos と同じく直列実行(D1 の同一コレクション PUT 競合・sync token 順序を守る)。
+				for (const item of items) {
+					try {
+						const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(item.recurrence);
+						const { event } = await createEvent.execute({
+							owner: principal,
+							title: item.title,
+							notes: item.notes,
+							start: item.start,
+							end: item.end,
+							timeZone,
+							location: item.location,
+							url: item.url,
+							calendarId,
+							recurrence: normalizedRecurrence,
+						});
+						createdEvents.push(toWireEvent(event, cid, event.recurrence !== null));
+						succeeded.push({ id: event.id, kind: "added", event: snapshotFromEvent(event) });
+					} catch (error) {
+						// create-todos と同じ「そこまでの成功分は残す」方針(部分成功を隠さない)。
+						failed.push({ title: item.title, reason: error instanceof Error ? error.message : String(error) });
+					}
+				}
+
+				const vm: Record<string, unknown> = {
+					events: createdEvents,
+					calendarId: cid,
+					timeZone: timeZone ?? "UTC",
+				};
+				if (succeeded.length > 0) vm.affected = succeeded;
+
+				const summaryLines = [`${succeeded.length}/${items.length} 件の予定を作成しました。`];
+				if (failed.length > 0) {
+					summaryLines.push("失敗した項目:");
+					for (const f of failed) summaryLines.push(`- "${f.title}": ${f.reason}`);
+				}
+				return {
+					content: [{ type: "text" as const, text: summaryLines.join("\n") }],
+					structuredContent: vm as { [key: string]: unknown },
+				};
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	server.registerTool(
+		"update-event",
+		{
+			title: "Update event",
+			description:
+				"既存 VEVENT(予定)の一部フィールドを更新する。指定したフィールドのみ変更し、他は維持する。" +
+				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
+			inputSchema: updateEventInputShape,
+		},
+		async ({ id, calendarId, title, notes, start, end, timeZone, location, url, recurrence }) => {
+			try {
+				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
+				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
+				const updateEvent = new UpdateEvent(putCalendarObject, deps.resourceRepo);
+				const { event, before } = await updateEvent.execute({
+					owner: principal,
+					eventId: id,
+					calendarId,
+					title,
+					notes,
+					start,
+					// end は三値(undefined=変更なし / null=除去 / string=設定)をそのまま渡す。
+					end,
+					timeZone,
+					location,
+					// url も三値(undefined=変更なし / null=除去 / string=設定)をそのまま渡す。
+					url,
+					recurrence: normalizedRecurrence,
+				});
+
+				// 「渡された(非 undefined)フィールド」を changed とみなす素朴判定(todos-diff.ts と同じ)。
+				const provided = new Set<string>();
+				if (title !== undefined) provided.add("title");
+				if (notes !== undefined) provided.add("notes");
+				if (start !== undefined) provided.add("start");
+				if (end !== undefined) provided.add("end");
+				if (location !== undefined) provided.add("location");
+				if (url !== undefined) provided.add("url");
+				if (recurrence !== undefined) provided.add("recurrence");
+				const changes = before !== undefined ? buildEventEditedChanges(before, event, provided) : undefined;
+
+				const cid = calendarId ?? "calendar";
+				const affected: AffectedEvent = {
+					id: event.id,
+					kind: "edited",
+					event: snapshotFromEvent(event),
+					...(changes !== undefined ? { changes } : {}),
+				};
+				const vm = {
+					events: [toWireEvent(event, cid, event.recurrence !== null)],
+					calendarId: cid,
+					timeZone: timeZone ?? "UTC",
+					affected: [affected],
+				};
+				return eventsToolResponse(vm);
+			} catch (error) {
+				if (isEventInputError(error)) return toolError((error as Error).message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	server.registerTool(
+		"delete-event",
+		{
+			title: "Delete event",
+			description: "VEVENT(予定)を削除する。常に無条件削除(ETag 条件なし — delete-event.ts 冒頭コメント参照)。",
+			inputSchema: deleteEventInputShape,
+		},
+		async ({ id, calendarId }) => {
+			try {
+				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
+				const deleteEvent = new DeleteEvent(deleteCalendarObject, deps.resourceRepo);
+				const { removed } = await deleteEvent.execute({ owner: principal, eventId: id, calendarId });
+				const cid = calendarId ?? "calendar";
+				// delete 応答は events を空にし removed(ghost)を載せる(range も affected も名乗らない)。
+				const vm = {
+					events: [] as unknown[],
+					calendarId: cid,
+					timeZone: "UTC",
+					removed: [snapshotFromEvent(removed)] satisfies EventSnapshot[],
+				};
+				return eventsToolResponse(vm);
+			} catch (error) {
+				if (error instanceof EventNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},
