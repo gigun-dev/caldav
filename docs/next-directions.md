@@ -31,10 +31,17 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
    (claude.ai コネクタ再接続込み)+ 小 nit(placeholder「メモを追加」と同値の実データが
    見分け不能 — 実害軽微・必要なら placeholder 文言変更で対処)
 2. **E-3**: S1(サーバー・実装中)→ S2(アジェンダカード。todos v3 文法の流用)
-3. **R-6(OAuth scope 分離)** — 公開前必須。Swift コンパニオン(第三者クライアント)の前提整備
+3. ~~**R-6(OAuth scope 分離)**~~ ✅ — 公開前必須。Swift コンパニオン(第三者クライアント)の前提整備
    としても優先度上昇。E-3 と並行可(認証層で独立)。
-4. Swift コンパニオン(caldav-companion)の初期設計 — サーバー変更ゼロで着手可。授業の制約
-   (期限・チーム・評価観点)確定待ち。
+   > **2026-07-15 更新: R-6 完了(4eee336)。** claudedav:read/write 分離・語彙と区分は
+   > presentation/mcp/scopes.ts に一元化(read allowlist・未分類は write の safe default)。
+   > scope は props で運ぶ(apiHandler は ctx.props しか受け取れない — provider 契約)。
+   > 旧 grant は grandfather(full access+警告ログ `oauth_grant_without_scopes`)で既存接続を
+   > 壊さない。静的 Bearer は full scope 明示。同意画面に権限サマリ表示。E2E 3ケース込み。
+   > 既存 claude.ai / Inspector 接続は再接続すると新 grant として厳密強制に移行する。
+4. ~~Swift コンパニオン(caldav-companion)の初期設計~~ — 別リポジトリ **swift-mcp-app**(private)
+   としてユーザーが別セッションで進行中。コア価値は「iOS 汎用 MCP Apps ホスト(路線B)」に転換済み。
+   caldav 側の関与は R-6 ✅(前提整備)と契約の正(server.ts / modeling/12)の維持のみ。
 5. 数日後: Smart Placement 効果再計測({mcpTool,ms,colo} ログ)→ 楽観 UI の再評価
    (ユーザー条件「1s 以内なら悲観でも」)・STATUS 列 migration の要否判断。
 6. その後 **A(マルチユーザー)+ R-7(CAS)** — 次の大きな山。
@@ -189,8 +196,9 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 
 ## レビュー起票の残(2026-07-13 Codex レビュー。R-1〜R-5 は是正 ✅・詳細は git 履歴)
 
-- **R-6【high・公開前必須】** OAuth scope 分離(read/write + props に scope + ツール別強制 + E2E)。
-  AuthenticationPort の seam 内で閉じる。Swift コンパニオンで優先度上昇(頭の優先順位 3)。
+- ~~**R-6【high・公開前必須】** OAuth scope 分離(read/write + props に scope + ツール別強制 + E2E)。
+  AuthenticationPort の seam 内で閉じる。Swift コンパニオンで優先度上昇(頭の優先順位 3)。~~ ✅
+  > **2026-07-15 更新:** 完了(4eee336)。詳細は頭の優先順位 3 の更新ブロック参照。
 - **R-7【high・A-1 と同時】** ETag/sync counter の TOCTOU → UoW を CAS 型
   (`UPDATE ... WHERE sync_counter = ?` + 0件→412)へ。並行書込みテストを workerd レーンに。
   実装時に R-8 の名残(deterministic snapshot UID で反復完了の再試行重複防止)を軽く入れる。
