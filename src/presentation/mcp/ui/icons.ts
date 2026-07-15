@@ -29,7 +29,7 @@
 /** 使用するアイコンの path/shape データ。要素種別ごとに tag と属性を持つ最小表現。
  *  lucide の SVG ソースをほぼそのまま(d 属性等)書き写しているだけで、独自の座標計算はしない。 */
 interface IconShape {
-	tag: "path" | "circle" | "line" | "polyline";
+	tag: "path" | "circle" | "line" | "polyline" | "rect";
 	attrs: Record<string, string>;
 }
 
@@ -82,6 +82,16 @@ const ICONS: Record<string, IconShape[]> = {
 	],
 	// チェック円の完了マーク・リスト選択ページの現在地マーク。lucide "check"。
 	check: [{ tag: "path", attrs: { d: "M20 6 9 17l-5-5" } }],
+	// アジェンダ(E-3 S2)の「参加(ビデオ通話)」行・URL があるイベント行の video アイコン。lucide "video"。
+	video: [
+		{
+			tag: "path",
+			attrs: {
+				d: "m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5",
+			},
+		},
+		{ tag: "rect", attrs: { x: "2", y: "6", width: "14", height: "12", rx: "2" } },
+	],
 };
 
 /**

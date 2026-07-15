@@ -39,6 +39,13 @@ const TARGETS = [
 		out: join(UI_DIR, "todos-bundle.ts"),
 		constName: "TODOS_BUNDLE_JS",
 	},
+	// E-3 スライス S2: アジェンダカード(list-events-expanded 用)。todos と同じ生成規律で
+	// agenda-entry.ts → agenda-bundle.ts を出力する(TARGETS は配列なので1行足すだけ)。
+	{
+		entry: join(UI_DIR, "agenda-entry.ts"),
+		out: join(UI_DIR, "agenda-bundle.ts"),
+		constName: "AGENDA_BUNDLE_JS",
+	},
 ] as const;
 
 async function buildOne(target: (typeof TARGETS)[number]): Promise<void> {

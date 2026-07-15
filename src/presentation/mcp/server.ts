@@ -44,6 +44,9 @@ import { z } from "zod";
 // ui/ 配下への import は許可される(.dependency-cruiser.cjs の mcp-ui-is-terminal は
 // 「ui/ から他 src への import」だけを禁止する末端ルールで、ui/ へ入る import は対象外)。
 import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
+// E-3 スライス S2: list-events-expanded が描画するアジェンダカードの ui:// URI と HTML 本体
+// (agenda-app.ts → agenda-bundle.ts 自動生成を経由)。todos と同じく server.ts から ui/ への import は許可。
+import { AGENDA_APP_HTML, AGENDA_UI_URI } from "./ui/agenda-app";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
@@ -788,6 +791,39 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 		}),
 	);
 
+	// --- agenda ui:// リソース(E-3 スライス S2)------------------------------------
+	// list-events-expanded / refresh-events が _meta.ui.resourceUri で参照するアジェンダカードの
+	// HTML 本体を登録する(todos の "Todos View" と対称)。自己完結バンドルなので CSP 許可は不要。
+	registerAppResource(
+		server,
+		"Agenda View",
+		AGENDA_UI_URI,
+		{
+			title: "アジェンダ(予定一覧)UI",
+			description: "list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async () => ({
+			contents: [
+				{
+					uri: AGENDA_UI_URI,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: AGENDA_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
 	// --- get-current-time -----------------------------------------------------
 	server.registerTool(
 		"get-current-time",
@@ -821,17 +857,20 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 		},
 	);
 
-	// --- list-events-expanded --------------------------------------------------
-	server.registerTool(
-		"list-events-expanded",
-		{
-			title: "List expanded events",
-			description: "指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。calendarId 省略時は全カレンダーを横断する。",
-			inputSchema: listEventsExpandedInputShape,
-		},
-		async ({ timeMin, timeMax, timeZone, calendarId, maxEvents }) => {
-			try {
-				const zone = resolveTimeZone(timeZone);
+	// --- list-events-expanded / refresh-events(E-3 スライス S2 で ui:// 紐付け + app 専用 refresh 追加)--
+	// 【list-todos ↔ refresh-todos と同じ構造】照会系(list-events-expanded)と UI 専用の再読み込み
+	// (refresh-events)は同一の展開ロジックを共有する。todos の runListTodos と同じく、handler 本体を
+	// runListEvents クロージャに切り出し、両ツールから呼ぶ(コピペで契約がズレる事故を防ぐ)。
+	const runListEvents = async (input: {
+		timeMin: string;
+		timeMax: string;
+		timeZone?: string;
+		calendarId?: string;
+		maxEvents?: number;
+	}) => {
+		const { timeMin, timeMax, timeZone, calendarId, maxEvents } = input;
+		try {
+			const zone = resolveTimeZone(timeZone);
 				const rangeStartMillis = parseIsoToEpoch(timeMin);
 				const rangeEndMillis = parseIsoToEpoch(timeMax);
 				const limit = maxEvents ?? DEFAULT_MAX_EVENTS;
@@ -892,14 +931,53 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, requestColo?:
 					range: { from: timeMin, to: timeMax },
 					truncated,
 				};
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
-					structuredContent: result,
-				};
-			} catch (error) {
-				return toolError(error instanceof Error ? error.message : String(error));
-			}
+			return {
+				content: [{ type: "text" as const, text: JSON.stringify(result) }],
+				structuredContent: result,
+			};
+		} catch (error) {
+			return toolError(error instanceof Error ? error.message : String(error));
+		}
+	};
+
+	// list-events-expanded: モデルからも呼べる照会ツール。E-3 S2 でアジェンダカード(agenda.html)を紐付ける
+	// (todos の list-todos が registerAppTool 化されたのと同じ流儀。_meta の2キー併記も同一)。
+	registerAppTool(
+		server,
+		"list-events-expanded",
+		{
+			title: "List expanded events",
+			description: "指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。calendarId 省略時は全カレンダーを横断する。",
+			inputSchema: listEventsExpandedInputShape,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
 		},
+		async ({ timeMin, timeMax, timeZone, calendarId, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, timeZone, calendarId, maxEvents }),
+	);
+
+	// refresh-events(E-3 S2: UI 専用の再読み込みツール)。visibility:["app"] でモデルには見せず、
+	// アジェンダカードの focus refetch / mutation 後の取り直しが callServerTool で叩く用
+	// (refresh-todos と完全に対称。handler は runListEvents 共通クロージャ)。inputSchema は
+	// list-events-expanded と同じ listEventsExpandedInputShape にして UI が保持した currentRange を渡せる。
+	registerAppTool(
+		server,
+		"refresh-events",
+		{
+			title: "Refresh events",
+			description:
+				"UI(アジェンダ App)専用の再読み込みツール。UI が保持する現在の期間(timeMin/timeMax)を引数で受け取り、" +
+				"その期間の最新の展開済み一覧を返す。モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得用。",
+			inputSchema: listEventsExpandedInputShape,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI, visibility: ["app"] },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
+		},
+		async ({ timeMin, timeMax, timeZone, calendarId, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, timeZone, calendarId, maxEvents }),
 	);
 
 	// --- get-freebusy -----------------------------------------------------------

@@ -126,6 +126,24 @@ import { computeSyncDiff, type SyncDiff } from "./todos-diff-client";
 // 絵文字/文字グリフ(≡ ⟳ 📍 ⓘ ‹ › ⌄ ⌃ ＋ ✓)を lucide のインライン SVG へ統一する
 // (2026-07-15 ユーザーフィードバック。詳細は icons.ts 冒頭コメント)。
 import { createIcon } from "./icons";
+// 共有カーネル(docs/modeling/12 §4)。日付/時刻整形と recurrence 整形・プリセット写像は
+// agenda-entry.ts と全く同じロジックなので ui/format.ts・ui/recurrence.ts へ集約し、両 entry が
+// import する(二重管理で片方だけ直す事故を防ぐ)。bun build がバンドル時に inline するので
+// 生成物 todos-bundle.ts は1ファイルのまま。
+import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff } from "./format";
+import {
+	type RecurrenceSummary,
+	type RecurPreset,
+	type RecurArgs,
+	WEEKDAY_JA,
+	RECUR_EVERY,
+	formatRecurrence,
+	PRESET_LABEL,
+	PRESET_MENU_ORDER,
+	presetToArgs,
+	recurrenceToPreset,
+	recurValueText,
+} from "./recurrence";
 
 // --- 静的 DOM への参照(骨格は todos-app.ts の HTML 側にある)-----------------------
 // ヘッダ・バナー・ステータス行は「一覧の状態に依らず常時ある面」なので HTML 静的骨格に
@@ -149,16 +167,9 @@ const appTitleEl = document.getElementById("app-title") as HTMLElement;
 // シート方式は全廃し、FAB は「新規ドラフト行を生やす」トリガーに変えた(draft 宣言のコメント参照)。
 const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElement;
 
-/** RRULE 要約(task-dto.ts の Task.recurrence と同型を写経)。frequency は通常 chat 語彙
- *  (daily/weekly/monthly/yearly)だが、degrade 時は生 RRULE / 生 FREQ が入りうる
- *  (task-dto.ts の degrade 方針参照)。UI の formatRecurrence がその degrade を吸収する。 */
-interface TodoRecurrence {
-	frequency: string;
-	interval: number;
-	weekdays: string[] | null;
-	count: number | null;
-	until: string | null;
-}
+/** RRULE 要約(task-dto.ts の Task.recurrence と同型)。共有カーネル ui/recurrence.ts の
+ *  RecurrenceSummary と同一。既存の多数の参照名(TodoRecurrence)を保つためのローカル別名。 */
+type TodoRecurrence = RecurrenceSummary;
 
 /** structuredContent.tasks の要素。型 import をしない方針のためここでローカル定義する
  *  (契約は冒頭コメント参照。task-dto.ts の Task とフィールドを一致させること)。
@@ -493,37 +504,7 @@ function clearBanner(): void {
 // 日付境界の分類だけは絶対時刻ベース(下記 dayDiff)なので、ゾーン差があっても
 // 「期限切れなのに今後に出る」ような実害のある誤分類はしない。
 
-/** ローカル(閲覧デバイス)の "YYYY-MM-DD"。Date#toISOString は UTC になってしまい
- *  日本の朝などで日付がズレるため、getFullYear 系で手組みする。 */
-function localDateKey(d: Date): string {
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, "0");
-	const day = String(d.getDate()).padStart(2, "0");
-	return `${y}-${m}-${day}`;
-}
-
-/** due の「日付部分」("YYYY-MM-DD")。終日はそのまま、時刻付きは todo ゾーンの壁時計日付。 */
-function wallDatePart(due: string): string {
-	return due.slice(0, 10);
-}
-
-/** 時刻付き due の壁時計 "HH:MM"(offset ISO の T 以降先頭5文字)。 */
-function wallTimePart(due: string): string {
-	const t = due.split("T")[1];
-	return t === undefined ? "" : t.slice(0, 5);
-}
-
-/** "YYYY-MM-DD" 同士の日数差(a - today)。両方を UTC 深夜として引き算する
- *  (ローカル深夜だと DST 切替日に ±1h ずれて日数が壊れるため UTC で計算)。 */
-function dayDiff(dateKey: string, todayKey: string): number {
-	const toUtc = (k: string): number => {
-		const [y, m, d] = k.split("-").map(Number);
-		return Date.UTC(y ?? 0, (m ?? 1) - 1, d ?? 1);
-	};
-	return Math.round((toUtc(dateKey) - toUtc(todayKey)) / 86_400_000);
-}
-
-const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+// localDateKey / wallDatePart / wallTimePart / dayDiff / WEEKDAYS は ui/format.ts へ移設(共有カーネル)。
 
 /** due を相対表現に整形する。例: 「今日 18:00」「昨日」「7/20(月)」「2027/1/5(火) 9:00」。
  *  ±1日は今日/明日/昨日、それ以外は M/D(曜)(年が違うときだけ YYYY/ を前置)。
@@ -604,74 +585,9 @@ function priorityToSegment(priority: number): number {
 // 優先度は PRIORITY_SEGMENTS(下の定数)を buildDetailPage が直接 chips へ展開し、日付は f-row の
 // 裸 input(.naked)で表現する。共通部品を挟まないぶん、モックのマークアップと1対1で対応させやすい。
 
-// =============================================================================
-// 繰り返し(RRULE 要約)の人間可読整形(E-2 スライス⑤)
-// =============================================================================
-// 【なぜ UI 側の純関数か】人間可読文への整形(「毎週 月・水」等)は表示層の仕事、という
-// task-dto.ts の判断と対になる。DTO は chat 語彙(daily/weekly...)+ 構造化フィールドを
-// ロスレスに渡し、UI が閲覧者の言語(日本語)へ整形する。整形ルールが変わっても DTO は不変。
-
-/** BYDAY の weekday コード → 日本語1文字。序数付き("2MO" 等)はここに無い = degrade シグナル。 */
-const WEEKDAY_JA: Record<string, string> = { SU: "日", MO: "月", TU: "火", WE: "水", TH: "木", FR: "金", SA: "土" };
-/** frequency(chat 語彙)→ 「毎日/毎週/毎月/毎年」。語彙外(生 RRULE/生 FREQ)はここに無い。 */
-const RECUR_EVERY: Record<string, string> = { daily: "毎日", weekly: "毎週", monthly: "毎月", yearly: "毎年" };
-/** interval>1 のときの単位。「2週ごと」の「週」等。monthly は「か月」。 */
-const RECUR_UNIT: Record<string, string> = { daily: "日", weekly: "週", monthly: "か月", yearly: "年" };
-
-/**
- * 繰り返しバッジのテキスト部分(⟳ アイコンは呼び出し側が前置する)を返す。
- * 返り値 "" = アイコンのみに degrade(テキストは出さない)。仕様(E-2 スライス⑤):
- *   - daily → 毎日 / weekly+weekdays → 毎週 月・水 / monthly → 毎月 / yearly → 毎年
- *   - interval>1 → 「2週ごと」等(単位は RECUR_UNIT)
- *   - 語彙外 frequency(生 RRULE / 生 FREQ degrade)→ "" (アイコンのみ)
- *   - 序数付き BYDAY("2MO" 等・月/週の複雑形)→ "" (アイコンのみ)
- * 【なぜ複雑形をアイコンのみに degrade するか】序数付き BYDAY や語彙外 FREQ を無理に日本語化
- * すると誤訳(「第2月曜」を「月」と誤読)や語彙のでっち上げになる。バッジは「反復がある」ことを
- * ⟳ で最小限に示し、詳細(完全表記)は formatRecurrenceFull と展開 UI に委ねる安全側 degrade。
- */
-function formatRecurrence(rec: TodoRecurrence): string {
-	// 語彙外 frequency(task-dto.ts の degrade ケース1/2: 生 RRULE 全体 or 生 FREQ)→ アイコンのみ。
-	if (!(rec.frequency in RECUR_EVERY)) return "";
-	// 序数付き BYDAY(例 "2MO")が1つでも混ざる = 月/週の複雑形 → アイコンのみに degrade。
-	if (rec.weekdays !== null && rec.weekdays.some((w) => !(w in WEEKDAY_JA))) return "";
-	// INTERVAL>1 は曜日より先に「N単位ごと」で丸める(バッジは短さ優先。完全表記は展開 UI が担う)。
-	if (rec.interval > 1) {
-		return `${rec.interval}${RECUR_UNIT[rec.frequency] ?? ""}ごと`;
-	}
-	// weekly + 曜日指定 → 「毎週 月・水」。曜日は WEEKDAY_JA 順ではなく RRULE の並び順を尊重する。
-	if (rec.frequency === "weekly" && rec.weekdays !== null && rec.weekdays.length > 0) {
-		const days = rec.weekdays.map((w) => WEEKDAY_JA[w]).join("・");
-		return `${RECUR_EVERY[rec.frequency]} ${days}`;
-	}
-	return RECUR_EVERY[rec.frequency] ?? "";
-}
-
-/** until("YYYY-MM-DD" or offset ISO)→ 表示用日付(時刻付きなら " HH:MM" を添える)。
- *  完全表記の終了条件「〜まで」に使う。相対化(今日/明日)はしない — 遠い未来の終了日が
- *  多く、絶対日付の方が確認しやすい(バッジの due 相対表現とは役割が違う)。 */
-function formatUntilDate(until: string): string {
-	const datePart = until.slice(0, 10);
-	const hasTime = until.includes("T");
-	if (!hasTime) return datePart;
-	const time = until.split("T")[1]?.slice(0, 5) ?? "";
-	return time === "" ? datePart : `${datePart} ${time}`;
-}
-
-/**
- * 繰り返しの完全表記(詳細展開用)。終了条件(count/until)込みで1文にする。
- * 例: 「毎週 月・水・10回まで」「毎日・2026-07-31 まで」。
- * バッジがアイコンのみに degrade する複雑形(語彙外 FREQ・序数 BYDAY)では、基部を
- * 「繰り返し(生値)」にして情報を失わない(バッジは黙るが詳細は生値を見せる)。
- */
-function formatRecurrenceFull(rec: TodoRecurrence): string {
-	const badge = formatRecurrence(rec);
-	// 基部: バッジが出せるならそれを使い、degrade なら生値を括弧付きで見せる(何も分からないより良い)。
-	const base = badge !== "" ? badge : `繰り返し(${rec.frequency})`;
-	const parts = [base];
-	if (rec.count !== null) parts.push(`${rec.count}回まで`);
-	if (rec.until !== null) parts.push(`${formatUntilDate(rec.until)} まで`);
-	return parts.join("・");
-}
+// 繰り返し(RRULE 要約)の人間可読整形は ui/recurrence.ts へ移設(共有カーネル)。
+// WEEKDAY_JA / RECUR_EVERY / formatRecurrence は import 済み。formatUntilDate / formatRecurrenceFull /
+// RECUR_UNIT は todos では未使用(agenda 側の詳細で使う)ため import せず recurrence.ts に置くだけにした。
 
 // =============================================================================
 // セクション分けとソート
@@ -1299,122 +1215,9 @@ function formatCompletedAt(iso: string): string {
 	return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
 }
 
-// =============================================================================
-// 繰り返しプリセット(iOS リマインダー語彙 ⇄ ツール引数)の相互写像(v2)
-// =============================================================================
-// モックのプリセットメニュー(しない/毎日/平日/週末/毎週/隔週/毎月/3か月ごと/6か月ごと/毎年)を
-// update-todo の recurrence 引数({frequency,interval?,weekdays?,count?,until?})への糖衣として扱う。
-// 語彙外(序数 BYDAY・複雑形・語彙外 FREQ)は「カスタム」表示にして編集送信しない(安全側 degrade)。
-
-/** メニュー選択状態を表すキー。custom は「既存値が語彙外」= グレー表示・選択不可の第3状態。 */
-type RecurPreset =
-	| "none"
-	| "daily"
-	| "weekday"
-	| "weekend"
-	| "weekly"
-	| "biweekly"
-	| "monthly"
-	| "quarterly"
-	| "halfyearly"
-	| "yearly"
-	| "custom";
-
-/** update-todo の recurrence 引数(サーバー契約: "none"=除去・全置換・due 必須)。 */
-interface RecurArgs {
-	frequency: "none" | "daily" | "weekly" | "monthly" | "yearly";
-	interval?: number;
-	weekdays?: string[];
-	count?: number;
-	until?: string;
-}
-
-/** プリセット → 表示ラベル(メニューと g-value 表示で共用)。 */
-const PRESET_LABEL: Record<RecurPreset, string> = {
-	none: "しない",
-	daily: "毎日",
-	weekday: "平日",
-	weekend: "週末",
-	weekly: "毎週",
-	biweekly: "隔週",
-	monthly: "毎月",
-	quarterly: "3か月ごと",
-	halfyearly: "6か月ごと",
-	yearly: "毎年",
-	custom: "カスタム",
-};
-/** メニューに並べる順(モック準拠。custom は現在値が custom のときだけ末尾に選択状態で見せる)。 */
-const PRESET_MENU_ORDER: readonly RecurPreset[] = [
-	"none",
-	"daily",
-	"weekday",
-	"weekend",
-	"weekly",
-	"biweekly",
-	"monthly",
-	"quarterly",
-	"halfyearly",
-	"yearly",
-];
-
-/** プリセット → RecurArgs(モック要件4のマップ)。custom は null(送信しない印)。 */
-function presetToArgs(preset: RecurPreset, weekdays: string[]): RecurArgs | null {
-	switch (preset) {
-		case "none":
-			return { frequency: "none" };
-		case "daily":
-			return { frequency: "daily" };
-		case "weekday":
-			return { frequency: "weekly", weekdays: ["MO", "TU", "WE", "TH", "FR"] };
-		case "weekend":
-			return { frequency: "weekly", weekdays: ["SA", "SU"] };
-		case "weekly":
-			return { frequency: "weekly", ...(weekdays.length > 0 ? { weekdays } : {}) };
-		case "biweekly":
-			return { frequency: "weekly", interval: 2, ...(weekdays.length > 0 ? { weekdays } : {}) };
-		case "monthly":
-			return { frequency: "monthly" };
-		case "quarterly":
-			return { frequency: "monthly", interval: 3 };
-		case "halfyearly":
-			return { frequency: "monthly", interval: 6 };
-		case "yearly":
-			return { frequency: "yearly" };
-		case "custom":
-			return null; // 語彙外 = 触らない(送信しない)
-	}
-}
-
-/** 逆写像: 既存 Task.recurrence → メニュー選択状態(preset)+ 曜日チップの選択曜日。
- *  語彙外 frequency / 序数 BYDAY("2MO" 等)/ 想定外 interval は "custom"(グレー・編集送信しない)。 */
-function recurrenceToPreset(rec: TodoRecurrence | null): { preset: RecurPreset; weekdays: string[] } {
-	if (rec === null) return { preset: "none", weekdays: [] };
-	const known = (rec.weekdays ?? []).every((w) => w in WEEKDAY_JA);
-	if (!(rec.frequency in RECUR_EVERY) || !known) {
-		return { preset: "custom", weekdays: (rec.weekdays ?? []).filter((w) => w in WEEKDAY_JA) };
-	}
-	const wd = rec.weekdays ?? [];
-	const iv = rec.interval;
-	if (rec.frequency === "daily") return iv === 1 ? { preset: "daily", weekdays: [] } : { preset: "custom", weekdays: [] };
-	if (rec.frequency === "yearly") return iv === 1 ? { preset: "yearly", weekdays: [] } : { preset: "custom", weekdays: [] };
-	if (rec.frequency === "monthly") {
-		if (iv === 1) return { preset: "monthly", weekdays: [] };
-		if (iv === 3) return { preset: "quarterly", weekdays: [] };
-		if (iv === 6) return { preset: "halfyearly", weekdays: [] };
-		return { preset: "custom", weekdays: [] };
-	}
-	// weekly
-	if (iv === 2) return { preset: "biweekly", weekdays: wd };
-	if (iv === 1) {
-		const set = new Set(wd);
-		const isWeekday = wd.length === 5 && ["MO", "TU", "WE", "TH", "FR"].every((d) => set.has(d));
-		const isWeekend = wd.length === 2 && ["SA", "SU"].every((d) => set.has(d));
-		if (isWeekday) return { preset: "weekday", weekdays: wd };
-		if (isWeekend) return { preset: "weekend", weekdays: wd };
-		return { preset: "weekly", weekdays: wd };
-	}
-	return { preset: "custom", weekdays: wd };
-}
+// 繰り返しプリセット(iOS 語彙 ⇄ ツール引数)の相互写像は ui/recurrence.ts へ移設(共有カーネル)。
+// RecurPreset / RecurArgs / PRESET_LABEL / PRESET_MENU_ORDER / presetToArgs / recurrenceToPreset /
+// recurValueText は import 済み。agenda-entry.ts と同一ロジックを1本化した。
 
 // 【v2→v3 で覆した点(経緯・財産)】priorityLabel / PRIORITY_MENU(値メニュー用の表示語・選択肢)と
 // ポップアップメニュー(openMenu/closeMenu/openMenuEl/MenuOption)は v3 で全廃した。v2 は繰り返し/
@@ -1534,20 +1337,7 @@ function makeSwitch(on: boolean, ariaLabel: string, onClick: () => void): HTMLBu
 	return b;
 }
 
-/** 繰り返し値行の表示テキスト(「毎週 日・土」「毎月」「しない」等)。custom(語彙外)は「カスタム」。 */
-function recurValueText(d: SheetDraft): string {
-	const base = PRESET_LABEL[d.recurPreset];
-	if ((d.recurPreset === "weekly" || d.recurPreset === "biweekly") && d.weekdays.length > 0) {
-		// 曜日は WEEKDAY_JA の並び(日→土)で「・」連結(バッジの formatRecurrence と同じ語彙)。
-		const order = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
-		const days = order
-			.filter((c) => d.weekdays.includes(c))
-			.map((c) => WEEKDAY_JA[c])
-			.join("・");
-		return `${base} ${days}`;
-	}
-	return base;
-}
+// recurValueText は ui/recurrence.ts へ移設(共有カーネル)。呼び出しは recurValueText(d.recurPreset, d.weekdays)。
 
 /** 繰り返し行のインライン展開部(モック C)。プリセット chips + 曜日丸チップ(毎週/隔週)+ 終了 chips。
  *  浮遊させず行の下に流す(f-expand)。プリセット選択・曜日トグル・終了切替はいずれも draft を書き換えて
@@ -1839,7 +1629,7 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		label.textContent = "繰り返し";
 		const value = el("span", "f-value");
 		const val = el("span", d.recurPreset === "custom" ? "muted" : "val"); // 語彙外はグレー
-		val.textContent = recurValueText(d);
+		val.textContent = recurValueText(d.recurPreset, d.weekdays);
 		const chev = el("span", "chev");
 		// 2026-07-15: 絵文字 "⌄"/"⌃" から lucide "chevron-down"/"chevron-up" のインライン SVG へ置換。
 		chev.appendChild(createIcon(d.recurOpen ? "chevron-up" : "chevron-down"));

@@ -126,6 +126,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// 2026-07-14 追記: delete-calendar(list-calendars/create-calendar の対)を追加。
 		// 2026-07-14 追記2: create-todos(複数件バッチ追加ツール)を追加。
 		// 2026-07-15 追記: move-todo(VTODO のコレクション間移動)を追加。
+		// 2026-07-15 E-3 S1/S2 追記: create/update/delete-event + refresh-events(アジェンダ app ツール)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
@@ -142,6 +143,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"list-events-expanded",
 			"list-todos",
 			"move-todo",
+			"refresh-events",
 			"refresh-todos",
 			"update-event",
 			"update-todo",

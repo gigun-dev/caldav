@@ -170,7 +170,9 @@ describe("/mcp", () => {
 	// move-todo.ts 冒頭コメント参照)を追加したため 13→14 に更新。
 	// 2026-07-15 E-3 S1 追記: create-event/create-events/update-event/delete-event(VEVENT の MCP
 	// 書き込みツール一式。docs/modeling/12)を追加したため 14→18 に更新。
-	it("正しい Bearer で tools/list に18ツールが並ぶ(E-3 event ツール4本追加分)", async () => {
+	// 2026-07-15 E-3 S2 追記: refresh-events(アジェンダカード専用の再読み込み app ツール。refresh-todos と
+	// 対称。visibility:["app"] でも tools/list には出る)を追加したため 18→19 に更新。
+	it("正しい Bearer で tools/list に19ツールが並ぶ(E-3 S2 refresh-events 追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -191,6 +193,7 @@ describe("/mcp", () => {
 			"list-events-expanded",
 			"list-todos",
 			"move-todo",
+			"refresh-events",
 			"refresh-todos",
 			"update-event",
 			"update-todo",

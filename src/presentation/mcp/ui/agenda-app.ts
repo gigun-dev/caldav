@@ -1,0 +1,265 @@
+// =============================================================================
+// presentation/mcp/ui/agenda-app.ts — list-events-expanded 用 MCP Apps(ui://)HTML(自己完結バンドル版)
+// =============================================================================
+// 【位置づけ】todos-app.ts と同じ役割の agenda 版。ui:// リソースの HTML 静的骨格 + CSS を持ち、
+//   動的な中身は agenda-entry.ts(→ agenda-bundle.ts)が DOM API で組み立てる。なぜ presentation/mcp/ui に
+//   置くか・なぜ自己完結バンドルか・なぜ内部スクロールコンテナを作らないか・テーマ変数の方針は
+//   todos-app.ts 冒頭コメントと完全に同一なので、詳細はそちらを参照(重複させない)。
+//
+// 【デザインの語彙(モック docs/modeling/ui-mockups/agenda-v1.html。ユーザー GO 済み)】
+//   todos v3 の静かなヘアライン言語を継承し、差分だけが新しい:
+//   - 行 = [時刻列(開始/終了2段・終日は「終日」)] [タイトル + meta]。アジェンダの走査は「いつ」が
+//     第一キーなので時刻を先頭列(行の錨)に置く(todos の丸チェック位置に相当)。
+//   - セクション = 日付見出し(今日 / 明日 / M/D(曜))。完了概念なし。becoming は 追加/日時変更/削除/同期。
+//   - now バー = 進行中の1本だけ accent の左バー(色は増やさない)。
+//   - 詳細ページ: 参加行(URL video)・終日トグル・開始/終了(裸 input)・繰り返し/通知/移動時間/場所/URL。
+//   テーマは todos-app.ts と同じホスト注入変数 + fallback 戦略へ写像する(要素側は自前変数だけを見る)。
+// =============================================================================
+
+import { AGENDA_BUNDLE_JS } from "./agenda-bundle";
+
+/** list-events-expanded ツールが描画する MCP Apps リソースの URI。
+ *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を使う。 */
+export const AGENDA_UI_URI = "ui://caldav/agenda.html";
+
+/**
+ * list-events-expanded の structuredContent(EventsViewModel)を受け取り、アジェンダとして描画する HTML。
+ * 静的骨格(ヘッダ・バナー・ステータス行・#root・FAB・aria-live)はここ、動的な中身は agenda-entry.ts。
+ */
+export const AGENDA_APP_HTML = `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --bg-subtle: var(--color-background-secondary, #f7f7f8);
+    --fg: var(--color-text-primary, #1c1c1e);
+    --muted: var(--color-text-secondary, #8a8a8e);
+    --text-3: #b4b4b8;
+    --border: var(--color-border-secondary, #e4e4e7);
+    --border-hair: var(--color-border-secondary, #eeeef0);
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #2f6fed;
+    --accent-soft: rgba(47, 111, 237, 0.14);
+    --danger: #d64545;
+    --now: #d64545;
+    /* becoming 補助トーン(モック agenda-v1 の theme-light 実測値)。 */
+    --add: #2f9e63;
+    --add-wake: rgba(47, 158, 99, 0.07);
+    --edit: #b07300;
+    --del-border: #c9c9ce;
+    --radius: var(--border-radius-md, 8px);
+    --row-min-h: 44px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--color-background-primary, #1e1e20);
+      --bg-subtle: var(--color-background-secondary, #27272a);
+      --fg: var(--color-text-primary, #f2f2f4);
+      --muted: var(--color-text-secondary, #98989e);
+      --text-3: #5c5c62;
+      --border: var(--color-border-secondary, #3a3a3e);
+      --border-hair: var(--color-border-secondary, #2e2e32);
+      --accent: #6f9cf5;
+      --accent-soft: rgba(111, 156, 245, 0.2);
+      --danger: #e57373;
+      --now: #e57373;
+      --add: #55b884;
+      --add-wake: rgba(85, 184, 132, 0.1);
+      --edit: #d9a441;
+      --del-border: #55555a;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  .lucide-icon { vertical-align: -0.125em; }
+  [hidden] { display: none !important; }
+  body {
+    padding: clamp(8px, 3vw, 16px);
+    padding-bottom: 64px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Hiragino Sans", sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--fg);
+    background: var(--bg);
+  }
+
+  /* --- ヘッダ(タイトル + 期間 + 最終更新)--- */
+  .bar { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .app-title { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+  .range { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .updated { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+
+  /* --- 診断/エラーバナー(todos と同じ)--- */
+  .status { font-size: 12px; color: var(--muted); padding: 4px 0; }
+  .banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin: 4px 0; padding: 8px 10px; font-size: 12px; color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    border-radius: var(--radius); overflow-wrap: anywhere;
+  }
+  .banner button {
+    flex-shrink: 0; min-height: 32px; padding: 2px 10px; font-size: 12px; font-family: inherit;
+    color: var(--fg); background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer;
+  }
+
+  /* --- 日付見出しセクション(今日 / 明日 / M/D(曜))--- */
+  .section {
+    padding: 7px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    color: var(--muted); border-top: 1px solid var(--border-hair); margin-top: 2px;
+  }
+  .section:first-of-type { border-top: none; margin-top: 0; }
+  .section .sub { font-weight: 400; letter-spacing: 0; color: var(--text-3); padding-left: 6px; }
+
+  /* --- 行 --- */
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; flex-direction: column; }
+  li + li .row-main { border-top: 1px solid var(--border-hair); }
+  .row-main { display: flex; align-items: center; gap: 12px; min-height: var(--row-min-h); padding: 6px 0; }
+  /* 時刻列(行の錨): 開始(上・本文色)/ 終了(下・muted)。終日は1段「終日」。幅固定で縦を揃える。 */
+  .time { flex: none; width: 48px; text-align: right; font-variant-numeric: tabular-nums; line-height: 1.25; }
+  .time .st { font-size: 12.5px; color: var(--fg); }
+  .time .en { font-size: 11px; color: var(--text-3); }
+  .time .allday { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
+  /* now バー: 進行中の1本だけ accent の左バー(色は増やさない)。 */
+  li.now .row-main { box-shadow: inset 2px 0 0 var(--accent); }
+  .head { flex: 1; min-width: 0; }
+  .title { font-weight: 480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta {
+    display: flex; align-items: baseline; gap: 0 8px; min-width: 0; flex-wrap: nowrap;
+    font-size: 12px; color: var(--muted); margin-top: 1px;
+  }
+  .meta .loc { display: inline-flex; align-items: center; gap: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .meta .recur { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .meta .vid { display: inline-flex; align-items: center; color: var(--muted); }
+  .meta .span { white-space: nowrap; }
+  .meta .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; }
+  .row-main > .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; color: var(--muted); align-self: center; }
+  .note-mark { display: inline-flex; align-items: center; margin-left: 6px; color: var(--muted); font-size: 12px; }
+
+  /* --- becoming --- */
+  li.becoming-in .row-main { box-shadow: inset 2px 0 0 var(--add); background: linear-gradient(to right, var(--add-wake), transparent 55%); }
+  li.becoming-in .meta .tag, li.becoming-in .row-main > .tag { color: var(--add); }
+  li.becoming-in.inflight .row-main { background-size: 200% 100%; animation: wake-sweep 1.2s linear infinite; }
+  @keyframes wake-sweep { from { background-position: -100% 0; } to { background-position: 100% 0; } }
+  @media (prefers-reduced-motion: reduce) { li.becoming-in.inflight .row-main { animation: none; background-position: 0 0; } }
+  .meta .old { color: var(--text-3); }
+  .meta .arrow { color: var(--text-3); padding: 0 2px; }
+  .meta .new { color: var(--edit); font-weight: 560; }
+  .meta .diff { display: inline-flex; align-items: baseline; }
+  li.becoming-edit .meta .tag, li.becoming-edit .row-main > .tag { color: var(--edit); }
+  /* removed: becoming-gone(削除ゴースト)。 */
+  li.becoming-gone { margin: 4px 0; }
+  li.becoming-gone .row-main {
+    padding: 6px 8px; border: 1px dashed var(--del-border); border-radius: var(--radius);
+    background: var(--surface); opacity: 0.7;
+  }
+  li.becoming-gone .row-main > .tag { color: var(--muted); }
+
+  /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)--- */
+  li.selected .row-main { background: var(--bg-subtle); border-radius: 10px; margin: 0 -6px; padding: 6px; }
+  .title-edit { display: block; width: 100%; font: inherit; font-weight: 480; color: var(--fg); border: none; background: none; outline: none; padding: 0 0 1px; }
+  .memo-line { display: block; width: 100%; font: inherit; font-size: 12px; color: var(--text-3); border: none; background: none; outline: none; margin-top: 2px; padding: 0; }
+  .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
+  button.info {
+    flex: none; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    padding: 0; font-size: 16px; color: var(--accent); background: none; border: none; border-radius: 50%; cursor: pointer;
+  }
+  button.confirm {
+    flex: none; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    padding: 0; font-size: 14px; color: #fff; background: var(--accent); border: none; border-radius: 50%; cursor: pointer;
+  }
+
+  /* --- スワイプ削除(iOS 準拠)--- */
+  li.swiping { position: relative; overflow: hidden; }
+  li.swiping .row-main { transform: translateX(-76px); position: relative; z-index: 1; background: var(--bg); }
+  .swipe-del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: none; background: var(--danger); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+
+  /* --- 空/スケルトン --- */
+  .empty { color: var(--muted); padding: 12px 0; }
+  .skel { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
+  .skel-circle { width: 22px; height: 22px; border-radius: 50%; background: var(--surface); margin: 0 11px; }
+  .skel-line { height: 12px; border-radius: 6px; background: var(--surface); }
+  .skel, .skel * { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  @media (prefers-reduced-motion: reduce) { .skel, .skel * { animation: none; } }
+
+  /* --- 追加 FAB(+)--- */
+  .fab {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+    font-family: inherit; font-size: 18px; color: #fff; background: var(--accent);
+    border: none; border-radius: 50%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28); cursor: pointer;
+  }
+
+  /* --- 詳細ページ(モック C。todos v3 と同一部品)--- */
+  .page-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-hair); }
+  .link { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: 13px; border: none; background: none; cursor: pointer; padding: 4px 2px; }
+  .link-back { color: var(--muted); }
+  .link-save { color: var(--accent); font-weight: 600; }
+  .detail-body { padding: 2px 0 6px; }
+  .d-title { display: block; width: 100%; font: inherit; font-size: 16px; font-weight: 600; color: var(--fg); border: none; background: none; outline: none; padding: 12px 0 2px; }
+  .d-notes { display: block; width: 100%; font: inherit; font-size: 13px; color: var(--fg); border: none; background: none; outline: none; resize: none; min-height: 30px; padding: 2px 0 12px; }
+  .d-notes::placeholder, .d-title::placeholder { color: var(--text-3); }
+  /* 参加行(URL video)。開けないホストに備えテキスト選択可能に degrade(user-select:text)。 */
+  .join-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: var(--accent); }
+  .join-link { color: var(--accent); font-size: 13px; text-decoration: none; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+  .f-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 4px 0; border-top: 1px solid var(--border-hair); font-size: 13.5px; }
+  .f-label { flex: none; width: 5em; color: var(--muted); }
+  .f-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .naked { font: inherit; font-size: 13.5px; color: var(--accent); border: none; background: none; padding: 0; outline: none; }
+  .naked::-webkit-calendar-picker-indicator { display: none; }
+  .f-value .placeholder { color: var(--text-3); }
+  .f-value .val { color: var(--accent); }
+  .f-value .muted { color: var(--text-3); }
+  .f-value .chev { display: flex; align-items: center; color: var(--text-3); font-size: 13px; }
+  .url-input { width: 100%; font: inherit; font-size: 13px; color: var(--fg); background: none; border: none; outline: none; padding: 0; }
+  .url-input::placeholder { color: var(--text-3); }
+  .f-expand { padding: 2px 0 12px 0; margin-left: calc(5em + 10px); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chips button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
+  .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chips button:disabled { color: var(--text-3); border-style: dashed; cursor: default; }
+  .chips + .chips { margin-top: 8px; }
+  .chips .chips-label { font-size: 11px; color: var(--text-3); align-self: center; padding-right: 2px; }
+  .chips.wd button { width: 28px; height: 28px; padding: 0; border-radius: 50%; }
+  .f-expand input[type="text"] { width: 100%; font: inherit; font-size: 13px; color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  .sw { flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--border); position: relative; border: none; cursor: pointer; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
+  .sw.on { background: var(--accent); }
+  .sw.on::after { left: auto; right: 2px; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-left">
+      <!-- 対象カレンダー名。entry が vm.calendarId を書き込む。データ到着前は「カレンダー」。 -->
+      <span id="app-title" class="app-title">カレンダー</span>
+      <!-- 期間(M/D〜M/D)。entry が vm.range を書き込む。 -->
+      <span id="range" class="range"></span>
+    </div>
+    <!-- 最終更新 HH:mm。 -->
+    <span id="updated" class="updated"></span>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div id="status" class="status" hidden></div>
+  <!-- 一覧 / 詳細ページ本体(カード内ページ遷移)。entry が sheetState に応じて書き換える。 -->
+  <div id="root"></div>
+  <!-- 追加 FAB(+)。タップで末尾に空のドラフト行を生やす。lucide plus の生 SVG(サーバー側静的文字列なので createIcon は使えない)。 -->
+  <button id="quick-add-fab" class="fab" type="button" aria-label="予定を追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+  <!-- 操作結果の読み上げ専用(視覚非表示)。 -->
+  <div id="live" class="sr-only" role="status"></div>
+
+<script type="module">
+${AGENDA_BUNDLE_JS}
+</script>
+</body>
+</html>
+`;
