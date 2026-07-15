@@ -13,6 +13,17 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 サーバーは todo 系フル装備: update-todo に recurrence/location・move-todo・小粒是正
 (slug UUID fallback / recurrence strict / 孤立 VTIMEZONE 掃除 / sync レンズの edited 除外)まで済。
 **進行中**: E-3 S1(VEVENT 4 ツール+Event DTO — 設計は docs/modeling/12 が正・artisan 実装中)。
+
+> **2026-07-15 更新: E-3 実装完了・本番検証 PASS。** S1(4ツール+URL・db9664a)→
+> S1.5(通知×2=開始相対 VALARM+移動時間 X-APPLE-TRAVEL-DURATION・07e2c14)→
+> S2(アジェンダカード+共有カーネル ui/format・ui/recurrence 抽出・781c705)。ツール19本。
+> 本番検証(main 直検証): アジェンダカード描画 PASS(期間ヘッダ・日付見出し・時刻2段・
+> video/📍/⟳ アイコン)、D1 バイト照合 PASS(VALARM -PT10M/-PT60M・TRAVEL PT15M・URL・
+> VTIMEZONE)、delete-event の removed スナップショット契約 PASS。todos カードも lucide
+> アイコン化+選択 UI 是正3点(136144c)。**残る実機確認**: カード内操作(詳細ページ・
+> chips・ドラフト行 — iframe は automation 不可)と iOS の移動時間/通知表示。
+> カレンダーに検証由来の可能性があるイベント(「移動時間(30分)」「ミーティング」重複)が
+> 残っており、ユーザーの意図物か確認して掃除する。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
