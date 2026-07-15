@@ -500,38 +500,16 @@ export const TODOS_APP_HTML = `<!doctype html>
     .skel, .skel * { animation: none; }
   }
 
-  /* --- quick-add(E-2 スライス③: タイトル1行の素早い追加)-------------------------
-   * 一覧の末尾に常設する入力行。iOS リマインダーの「新規リマインダー」入力に語彙を寄せる
-   * (プレースホルダ・末尾配置)。入力とボタンはどちらも 44px 高でタッチターゲットを確保する。
-   * 【2026-07-14 ドクトリン改訂: 送信中も入力可能のまま維持】
-   * 旧実装は create-todo 応答待ちの間 input/button を disabled にして二重送信を防いでいた。
-   * 楽観更新へ転換したので、送信即・入力をクリアして入力可能のまま維持し、仮タスクを
-   * その場に挿入する(連続投入できる)。disabled による見た目のブロックはしない
-   * (:disabled スタイルは失敗ロールバック等の将来用途に残すが、通常フローでは当たらない)。 */
-  /* 【E-2 スライス⑥前半: 段階的開示】1行目(入力+詳細トグル+追加)を .quick-add-row に包み、
-   * その下に詳細パネル(#quick-add-detail)を縦に積む構造へ変えた。既定は1行目だけ表示=高速パス。
-   * 詳細を開いても入力欄の位置(会話に一番近い操作面)は動かない。 */
-  /* 2026-07-14 UI フィードバック対応: quick-add をボトムシート化(FAB で開閉)。以前はカード下端に
-   * 常時インラインで置いていた(margin-top/border-top)。常時表示の「詳細」トグルが行の詳細表示と
-   * 誤認される原因だったため、既定 hidden にして FAB タップ時だけ position:fixed の下部シートとして
-   * 開く。開閉アニメは無し(ドクトリン)= hidden 属性の有無だけ。z-index はシート 40 / FAB 50 で、
-   * becoming 装飾や詳細展開(#root 内の通常フロー)より前面に出す。 */
-  .quick-add {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 40;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
-  }
-  .quick-add-row { display: flex; gap: 8px; }
-  /* 追加 FAB。56px 円(≥44px タップ)。カード右下固定。開いている間は entry が hidden にする。 */
+  /* --- 追加 FAB(+)。カード右下固定の 56px 円(≥44px タップ)------------------------------------
+   * タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細/リスト選択ページ
+   * 表示中は entry が hidden にして重なりを避ける。
+   * 【v2→v3 で覆した点(経緯・財産)】v2 はこの FAB が position:fixed の quick-add ボトムシート
+   * (.quick-add / .quick-add-row / .quick-add-input / .quick-add button + 段階的開示パネル)を開いていた。
+   * それら quick-add シートの CSS はすべて削除した — 詳細シートと同じ fixed+vh の実機バグ(iframe 高さ
+   * 自動リサイズと噛み合わず本文がスクロールできない/下部が見切れる)を quick-add シートも抱えており、
+   * かつ「シートを開く」より「行末に空行が生えて即入力」の方が iOS のトーンに合うとのユーザー確定による。
+   * 新規行は既存の選択状態 CSS(li.selected / .title-edit / .memo-line / .info)をそのまま流用するので、
+   * 追加専用の入力欄 CSS は不要になった。FAB 自身の見た目(円・accent・右下固定)は v2 から不変。 */
   .fab {
     position: fixed;
     right: 16px;
@@ -553,35 +531,6 @@ export const TODOS_APP_HTML = `<!doctype html>
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
     cursor: pointer;
   }
-  .quick-add-input {
-    flex: 1;
-    min-width: 0;
-    min-height: 44px;
-    padding: 0 10px;
-    font-family: inherit;
-    font-size: 14px;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-  /* フォーカスリングはブラウザ既定を残す(outline:none は書かない — アクセシビリティ要件)。 */
-  .quick-add-input:disabled { opacity: 0.5; }
-  .quick-add button {
-    flex-shrink: 0;
-    min-height: 44px;
-    min-width: 44px;
-    padding: 0 14px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    color: #fff;
-    background: var(--accent);
-    border: none;
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  .quick-add button:disabled { opacity: 0.5; cursor: default; }
 
   /* --- 優先度インライン記号(E-2 スライス③: タイトル前に表示)-----------------------
    * iOS リマインダーは優先度の「!」記号をタイトルの左に置く。このプロトタイプは以前 meta 行
@@ -627,187 +576,41 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
   /* フォーカスリングはブラウザ既定を残す(role=button のキーボード操作可視化。outline:none は書かない)。 */
 
-  /* --- 詳細展開パネル(E-2 スライス⑤)--------------------------------------------------
-   * header の下(texts 内)に開くインライン詳細。開閉アニメは無し(ドクトリン)= DOM の
-   * 有無だけで表現する。左に薄い罫線を引いて「この行に属する詳細」であることを示す。 */
-  .detail {
-    /* 2026-07-14 UI フィードバック対応: detail は li 直下(row-main の下)に移ったので、check の幅
-     * (44px)ぶん左インデントして「タイトルに属する詳細」であることを示す(以前は texts 内にあり
-     * 自然に字下げされていた)。 */
-    margin: 4px 0 8px 44px;
-    padding: 8px 0 4px 10px;
-    border-left: 2px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: 13px;
-    color: var(--fg);
-  }
-  /* メモ全文: 改行を保持(pre-wrap)し、長文は max-height + 縦スクロールで畳む
-   * (カード全体が長大化してホストの会話スクロールを圧迫しないため)。 */
-  .detail-notes {
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    max-height: 200px;
-    overflow-y: auto;
-    color: var(--muted);
-  }
-  .detail-row { color: var(--muted); overflow-wrap: anywhere; }
-  .detail-label { color: var(--fg); }
-  /* 削除ボタン: danger 系。展開内のみに置くこと自体が確認段階(confirm ダイアログは出さない)。
-   * 幅は内容ぴったり(align-self:flex-start)にして、行いっぱいの赤帯で威圧しない。44px 高で
-   * タッチターゲットを確保する。塗りつぶしではなく danger 枠 + danger 文字にして、破壊操作だが
-   * 「一段深い場所に自分で降りてきて押す」前提の落ち着いた見た目にする。 */
-  .detail-delete {
-    align-self: flex-start;
-    min-height: 44px;
-    padding: 0 16px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  .detail-delete:disabled { opacity: 0.5; cursor: default; }
-
-  /* --- 段階的開示・共通フォーム部品(E-2 スライス⑥前半)-------------------------------
-   * quick-add の詳細パネルと詳細展開の編集フォームで同じ入力部品(日付 input・優先度
-   * セグメント・textarea)を使い回す。iOS リマインダーの新規/編集フォームが同じ見た目の
-   * 語彙で date/優先度/メモを出す語彙に寄せる。全部品 44px 高でタッチターゲットを確保する。
-   * 【なぜカスタム日付ピッカーを作らないか】ネイティブ input(type="date"/"datetime-local")に
-   * 委ねる。自前ピッカーはタイムゾーン/ロケール/アクセシビリティ/reduced-motion を全部
-   * 自前で背負う羽目になり、サンドボックス iframe 内での品質保証コストが見合わない
-   * (iOS/各ホストのネイティブピッカーの方が学習コストもゼロ)。 */
-  .field-date, .field-text {
-    min-height: 44px;
-    padding: 0 10px;
-    font-family: inherit;
-    font-size: 14px;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    /* iOS Safari が date/datetime-local を独自スタイルで潰さないよう最低限の見た目を担保する。 */
-    min-width: 0;
-  }
-  .field-text { flex: 1; }
-  .field-textarea {
-    min-height: 66px;
-    padding: 8px 10px;
-    font-family: inherit;
-    font-size: 14px;
-    line-height: 1.4;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    /* 縦方向だけリサイズ可(横に広げるとカード幅を壊すため)。 */
-    resize: vertical;
-  }
-  /* フォーカスリングはブラウザ既定を残す(outline:none は書かない — アクセシビリティ要件)。 */
-
-  /* 詳細トグル / 時刻指定トグル等の控えめな2次ボタン(塗りつぶさない・muted 文字)。 */
-  .mini-toggle {
-    flex-shrink: 0;
-    min-height: 44px;
-    min-width: 44px;
-    padding: 0 10px;
-    font-family: inherit;
-    font-size: 12px;
-    color: var(--muted);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  /* 開いている/有効化している状態は文字色を上げて示す(塗りつぶしにはしない=控えめさを保つ)。 */
-  .mini-toggle[aria-expanded="true"], .mini-toggle[aria-pressed="true"] { color: var(--fg); }
-
-  /* 優先度セグメント(なし・!・!!・!!!)。iOS のセグメンテッドコントロールに寄せる。
-   * 選択中は accent 塗り+白字。! 系(seg-pri)は未選択時にオレンジ文字(優先度=オレンジの語彙)。 */
-  .seg {
-    display: flex;
-    align-self: flex-start;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-  .seg button {
-    min-height: 44px;
-    min-width: 44px;
-    padding: 0 12px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--fg);
-    background: var(--bg);
-    border: none;
-    border-left: 1px solid var(--border);
-    cursor: pointer;
-  }
-  .seg button:first-child { border-left: none; }
-  .seg button.seg-pri { color: var(--pri); }
-  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-
-  /* quick-add 詳細パネルと詳細編集フォームの1フィールド(ラベル + 入力を縦積み)。 */
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field-label { font-size: 12px; color: var(--muted); }
-  /* 期日フィールドの行(日付 input + 時刻トグルを横並び。狭幅で折り返す)。 */
-  .due-field-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-
-  /* quick-add 詳細パネル本体。開閉アニメは無し(ドクトリン)= hidden 属性の有無だけで表現する。 */
-  .qa-detail { display: flex; flex-direction: column; gap: 10px; padding: 2px 0; }
-
-  /* 詳細展開内の編集フォーム(E-2 スライス⑥前半・仕様B)。読み取り行(繰り返し/場所/完了時刻)と
-   * 削除ボタンの上に置く。保存ボタンは accent 塗り(quick-add の「追加」と同じ確定色)。 */
-  .detail-edit { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
-  .detail-save {
-    align-self: flex-start;
-    min-height: 44px;
-    padding: 0 16px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    color: #fff;
-    background: var(--accent);
-    border: none;
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-  .detail-save:disabled { opacity: 0.5; cursor: default; }
+  /* --- 旧・行内インライン詳細 + quick-add/編集フォーム共通部品(v3 で全廃)---------------------
+   * 【v2→v3 で覆した点(経緯・財産)】ここには2世代ぶんの死んだ CSS があったので削除した:
+   *   ① E-2 スライス⑤の行内インライン詳細(.detail / .detail-notes / .detail-row / .detail-label /
+   *      .detail-delete)— 行の下に開く詳細展開。v2 で「行選択 → ⓘ で詳細シート」へ作り替えた時点で
+   *      既に未使用になっていた(整理漏れ)。
+   *   ② E-2 スライス⑥前半の共通フォーム部品(.field-date/.field-text/.field-textarea/.mini-toggle/
+   *      .seg/.seg-pri/.field/.field-label/.due-field-row/.qa-detail/.detail-edit/.detail-save)—
+   *      quick-add 詳細パネルと v2 詳細フォームで共用していた入力部品。v3 で quick-add シートを廃止し
+   *      (FAB→ドラフト行)、詳細ページを裸 input + 行内 chips の素の DOM に作り替えたため全て未使用に。
+   * v3 の詳細ページの見た目は上の「v3 詳細ページ / リスト選択ページ」ブロック(.f-row/.naked/.sw/
+   * .chips/.f-expand 等)に集約した。新規行は既存の選択状態 CSS(li.selected / .title-edit /
+   * .memo-line)を流用するので、追加専用の入力部品 CSS も要らなくなった。 */
 
   /* ===========================================================================
-   * v2(選択モデル + 詳細セミモーダル + スワイプ削除)追加スタイル。
+   * v2(選択モデル + スワイプ削除)追加スタイル(一覧行が使う。詳細セミモーダル系は v3 で別ブロックへ)。
    * 正 = scratchpad/todos-refined-v2.html。既存のテーマ変数戦略(ホスト注入 var + fallback)に
    * 合わせるため、モックの theme-light/theme-dark クラス変数はここで :root + prefers-color-scheme に
    * 落とし込む。要素側はこの自前変数だけを見る(冒頭「テーマ変数の方針」と一貫)。
    * ------------------------------------------------------------------------- */
   :root {
-    /* 選択行の淡い背景・シート面・入力インセット・細い罫線・第3テキスト色・トグル色・scrim。
-     * bg-subtle/inset はホスト注入 secondary 背景に乗れるものは乗せ、無ければ iOS 実測値。 */
+    /* 選択行の淡い背景・細い罫線・第3テキスト色。bg-subtle はホスト注入 secondary 背景に乗れれば
+     * 乗せ、無ければ iOS 実測値。
+     * 【v2→v3 で覆した点】--bg-inset / --sheet-bg / --scrim / --toggle-on(iOS システムグリーン)/
+     * --toggle-off は v2 のボトムシート + 緑トグル + inset 白箱 + scrim 専用だったので削除した
+     * (v3 はカード内ページ遷移で scrim もシート面も不要、トグルは accent の button.sw に統一。
+     * 廃止理由の詳細は下の v3 詳細ページ CSS のヘッダコメント参照)。 */
     --bg-subtle: var(--color-background-secondary, #f7f7f8);
-    --bg-inset: #f2f2f4;
-    --sheet-bg: #f2f2f6;
     --border-hair: var(--color-border-secondary, #eeeef0);
     --text-3: #b4b4b8;
-    --scrim: rgba(0, 0, 0, 0.28);
-    --toggle-on: #34c759; /* iOS システムグリーン(トグル ON) */
-    --toggle-off: #d1d1d6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg-subtle: var(--color-background-secondary, #27272a);
-      --bg-inset: #2a2a2e;
-      --sheet-bg: #161618;
       --border-hair: var(--color-border-secondary, #2e2e32);
       --text-3: #5c5c62;
-      --scrim: rgba(0, 0, 0, 0.5);
-      --toggle-on: #30d158;
-      --toggle-off: #4a4a4f;
     }
   }
 
@@ -873,150 +676,180 @@ export const TODOS_APP_HTML = `<!doctype html>
     cursor: pointer;
   }
 
-  /* --- 詳細セミモーダル(ボトムシート)-----------------------------------------------------
-   * quick-add FAB シートと同じ position:fixed の重ね方に倣う(内部にスクロールコンテナを作らない
-   * ドクトリンとは別枠 — モーダルは会話フローの上に重なる面で、本文は sheet-body が内部スクロールする)。
-   * height は max-height:88vh でコンテンツに応じて伸び、超えたら本文が内部スクロール(iframe が短くても破綻しない)。 */
-  .scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 60; }
-  .sheet {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    max-height: 88vh;
-    z-index: 61;
-    display: flex;
-    flex-direction: column;
-    background: var(--sheet-bg);
-    border-top-left-radius: 14px;
-    border-top-right-radius: 14px;
-    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
-  }
-  .grabber { width: 36px; height: 4px; border-radius: 2px; background: var(--text-3); opacity: 0.5; margin: 8px auto 2px; }
-  .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px 8px; }
-  .sheet-head .h-title { font-size: 14px; font-weight: 600; color: var(--fg); }
-  .icon-btn {
-    width: 32px;
-    height: 32px;
-    border: none;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 14px;
-    font-family: inherit;
+  /* ===========================================================================
+   * v3 詳細ページ / リスト選択ページ(カード内ページ遷移)。
+   * 正 = scratchpad/todos-refined-v3.html(ユーザー承認済みモック)。
+   * 【v2→v3 で覆した点(経緯・財産として残す)】v2 は詳細を position:fixed + max-height:88vh の
+   * ボトムシート(.scrim / .sheet / .grabber / .sheet-body 内部スクロール)+ 浮遊ポップオーバー
+   * (.menu-pop を fixed 座標で配置)+ iOS 設定画面パスティーシュ(.group 白箱 / 緑 .toggle /
+   * 絵文字 .g-icon / .value-input)で作っていた。これらは本番 claude.ai の実機で次の実害を出したため
+   * 全廃した(docs/log.md の実機検証):
+   *   ① MCP Apps の iframe はホストがコンテンツ高さに自動リサイズするため vh が信用できず、
+   *      max-height:88vh のシート本文が内部スクロールできない/下部の行(優先順位・場所)が見切れる。
+   *   ② menu-pop(fixed 座標のポップオーバー)が出ない/画面外に描かれる。
+   *   ③ 緑トグル・絵文字アイコン・inset 白箱は「iOS 設定画面の借景」で、会話ログ内の従属カードの
+   *      トーン(v1 = todos-refined の静かなヘアライン言語)と衝突する、とのユーザー評価。
+   * v3 はオーバーレイをやめ、詳細/リスト選択を #root(通常フロー)へ描く「カード内ページ遷移」にした。
+   * 通常フローなので高さ=コンテンツで iframe 自動リサイズと常に整合し(①解消)、浮遊レイヤーが
+   * ゼロになり(②解消)、トーンは v1 言語(ヘアライン・静かなタイポ・accent 最小・絵文字/緑トグル無し)で
+   * 一貫する(③解消)。保存モデル(変更フィールドだけ update-todo・楽観適用・失敗ロールバック)は不変。
+   * 変数はモックの theme-light/dark を既存のテーマ変数(--fg/--muted/--accent/--border/--bg/--bg-subtle/
+   * --border-hair/--text-3)へ写像している(要素側は自前変数だけを見る方針を維持)。
+   * ------------------------------------------------------------------------- */
+
+  /* ヘッダ:「‹ 戻る(破棄)/ 保存」のテキストリンク2つ(v2 の丸ボタン ✕/✓ をやめ会話ログのトーンへ)。 */
+  .page-head {
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-hair);
   }
-  .btn-x { background: var(--bg-inset); color: var(--muted); }
-  .btn-ok { background: var(--accent); color: #fff; font-weight: 700; }
-  .sheet-body { flex: 1; overflow-y: auto; padding: 4px 12px 16px; display: flex; flex-direction: column; gap: 12px; }
-  .group { background: var(--bg); border-radius: 12px; overflow: hidden; }
-  .g-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 12px; font-size: 13.5px; color: var(--fg); }
-  .g-row + .g-row { border-top: 1px solid var(--border-hair); }
-  .g-row .g-icon { flex: none; width: 20px; text-align: center; color: var(--muted); }
-  .g-row .g-label { flex: 1; min-width: 0; display: flex; align-items: center; }
-  .g-row .g-value { flex: none; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
-  /* 値=メニュー(pull-down)の行には小さな ⌵ を添える(iOS の値メニューの記号)。 */
-  .g-row .g-value.menu::after { content: "⌵"; font-size: 11px; color: var(--text-3); }
-  .g-value.readonly { color: var(--text-3); cursor: default; }
-  /* タイトル+メモ グループ(大きめタイトル入力 + メモ placeholder)。 */
-  .title-input {
+  .link {
     font: inherit;
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--fg);
-    width: 100%;
+    font-size: 13px;
     border: none;
     background: none;
-    padding: 12px 12px 2px;
-    outline: none;
+    cursor: pointer;
+    padding: 4px 2px;
   }
-  .notes-input {
+  .link-back { color: var(--muted); }
+  .link-save { color: var(--accent); font-weight: 600; }
+
+  .detail-body { padding: 2px 0 6px; }
+  /* タイトル・メモ: 枠なし入力。ヘアラインで区切るだけ(inset 箱は作らない)。 */
+  .d-title {
+    display: block;
+    width: 100%;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg);
+    border: none;
+    background: none;
+    outline: none;
+    padding: 12px 0 2px;
+  }
+  .d-notes {
+    display: block;
+    width: 100%;
     font: inherit;
     font-size: 13px;
     color: var(--fg);
-    width: 100%;
     border: none;
     background: none;
-    padding: 2px 12px 12px;
     outline: none;
     resize: none;
-    min-height: 34px;
+    min-height: 30px;
+    padding: 2px 0 12px;
   }
-  .notes-input::placeholder, .title-input::placeholder { color: var(--text-3); }
-  /* iOS 風トグル。 */
-  .toggle { flex: none; width: 44px; height: 26px; border-radius: 13px; background: var(--toggle-off); position: relative; cursor: pointer; }
-  .toggle::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  .d-notes::placeholder, .d-title::placeholder { color: var(--text-3); }
+
+  /* フィールド行: [ラベル][値(入力)…][操作子]。絵文字アイコンなし・フラット・ヘアライン区切り。 */
+  .f-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding: 4px 0;
+    border-top: 1px solid var(--border-hair);
+    font-size: 13.5px;
   }
-  .toggle.on { background: var(--toggle-on); }
-  .toggle.on::after { left: auto; right: 2px; }
-  /* 値=入力の一本化(枠なし・accent 色のネイティブ input を「値の位置」に置く)。カレンダー/時計
-   * ピッカーはネイティブ(iOS ホイール等)にそのまま委ねる。::-webkit-calendar-picker-indicator は
-   * 非表示にして「値テキストだけ」に見せる(モック要件3)。 */
-  .value-input {
+  .f-label { flex: none; width: 5em; color: var(--muted); }
+  .f-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  /* 裸のネイティブ input(値表示=入力の一本化は v2 から継承)。picker-indicator を隠して値だけ見せる。 */
+  .naked {
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13.5px;
     color: var(--accent);
     border: none;
     background: none;
     padding: 0;
     outline: none;
-    margin-left: 8px;
   }
-  .value-input::-webkit-calendar-picker-indicator { display: none; }
-  /* 場所などテキスト系はトグル ON 時に枠付き入力行を出す(自由入力は枠の方が編集可能性が伝わる)。 */
-  .g-input { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px 42px; }
-  .g-input input[type="text"] {
-    flex: 1;
-    min-width: 0;
-    font: inherit;
-    font-size: 13px;
-    color: var(--fg);
-    background: var(--bg-inset);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 8px;
+  .naked::-webkit-calendar-picker-indicator { display: none; }
+  .f-value .placeholder { color: var(--text-3); }
+  /* 操作子: 小型トグル。OS 緑ではなく accent(v1 言語の唯一の彩度)で統一。 */
+  .sw {
+    flex: none;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--border);
+    position: relative;
+    border: none;
+    cursor: pointer;
   }
-  /* 曜日チップ(繰り返し=毎週/隔週のとき)。 */
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 12px 10px 42px; }
+  .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  .sw.on { background: var(--accent); }
+  .sw.on::after { left: auto; right: 2px; }
+  /* 値行(繰り返し)→ タップで下にインライン展開(chevron の向きで開閉を示す)。 */
+  .f-value .val { color: var(--accent); }
+  .f-value .chev { color: var(--text-3); font-size: 11px; }
+  .f-value .muted { color: var(--text-3); }
+  .f-row.readonly .f-value { color: var(--text-3); }
+  .f-row .goto { margin-left: auto; color: var(--text-3); }
+
+  /* インライン展開部(繰り返しプリセット・曜日・終了)。浮遊させず行の下に流す(モック C)。
+   * ラベル幅(5em)+ gap(10px)ぶん左インデントして「値に属する展開」であることを示す。 */
+  .f-expand {
+    padding: 2px 0 12px 0;
+    margin-left: calc(5em + 10px);
+  }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chips button {
     font: inherit;
     font-size: 12px;
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
+    padding: 5px 10px;
+    border-radius: 14px;
     border: 1px solid var(--border);
-    background: var(--bg-inset);
+    background: var(--bg);
     color: var(--muted);
     cursor: pointer;
   }
   .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-  /* --- 繰り返し/終了/優先度のポップアップメニュー(iOS pull-down)。fixed 配置(JS が座標を書く)。 */
-  .menu-pop {
-    position: fixed;
-    width: 200px;
-    z-index: 70;
-    background: var(--bg);
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
-    border: 1px solid var(--border-hair);
+  /* カスタム(語彙外)や既存 count は disabled 破線チップ(選択状態表示だけで送信はしない第3状態)。 */
+  .chips button:disabled { color: var(--text-3); border-style: dashed; cursor: default; }
+  .chips + .chips { margin-top: 8px; }
+  .chips .chips-label { font-size: 11px; color: var(--text-3); align-self: center; padding-right: 2px; }
+  /* 曜日は丸チップ(意味の違い=単一選択でなく複数選択、を形で分ける)。 */
+  .chips.wd button { width: 28px; height: 28px; padding: 0; border-radius: 50%; }
+  /* 場所などのテキスト入力(展開内)。 */
+  .f-expand input[type="text"] {
+    width: 100%;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
   }
-  .menu-pop .m-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 13.5px; cursor: pointer; color: var(--fg); }
-  .menu-pop .m-row + .m-row { border-top: 1px solid var(--border-hair); }
-  .menu-pop .m-row .m-check { width: 14px; color: var(--accent); font-weight: 700; }
-  .menu-pop .m-row.m-sep { border-top: 6px solid var(--bg-inset); }
-  .menu-pop .m-row.m-disabled { color: var(--text-3); cursor: default; }
+
+  /* リスト選択ページ(詳細からの2段目。同じくページ差し替え。モック D)。 */
+  .pick-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding: 4px 0;
+    border-top: 1px solid var(--border-hair);
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .pick-row:first-of-type { border-top: none; }
+  .pick-row .check { margin-left: auto; color: var(--accent); font-weight: 700; }
+
 </style>
 </head>
 <body>
@@ -1038,58 +871,19 @@ export const TODOS_APP_HTML = `<!doctype html>
   <div id="banner" class="banner" hidden></div>
   <!-- 接続フェーズの診断行(iOS WebView にコンソールが無いための画面デバッグ導線)。 -->
   <div id="status" class="status" hidden></div>
-  <!-- 一覧本体。entry が skeleton → sections で書き換える。 -->
+  <!-- 一覧 / 詳細ページ / リスト選択ページ本体(v3 カード内ページ遷移)。entry が sheetState に応じて
+       skeleton / sections / 詳細ページ / リスト選択ページのどれかを innerHTML で書き換える。
+       【v2→v3 で覆した点】v2 は詳細を #sheet-root への position:fixed ボトムシートで重ねていたが、
+       MCP Apps の iframe 高さ自動リサイズと vh が噛み合わず実機で内部スクロール不能・下部見切れの
+       バグが出たため全廃し、詳細も #root に通常フローで描く(entry の renderAll コメント参照)。 -->
   <div id="root"></div>
-  <!-- quick-add(E-2 スライス③): タイトル1行だけの素早い追加口。#root の外(常時ある操作面)に
-       置くのはヘッダと同じ理由 — #root は再描画のたびに innerHTML で作り直されるので、その中に
-       入力欄を置くと再描画のたびに未確定の入力文字が消える。ここに置けば描画に巻き込まれない。
-       【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復の指定はチャット(create-todo を
-       LLM が呼ぶ)の領分にする — フォームに詰め込むと timeZone 選択・日付ピッカー等①の外の複雑さを
-       一気に抱える(todos-entry.ts の「作成フォームを持たない理由」も同旨)。素早い1行投入だけを担う。
-       form 要素にするのは Enter 送信を素直に拾うため(submit を entry が listen し、IME 変換確定の
-       Enter は isComposing で弾く)。 -->
-  <!-- E-2 スライス⑥前半: quick-add に段階的開示を足す。1行目(.quick-add-row)は従来どおりの
-       高速パス(タイトル+追加)。その脇に小さな「詳細」トグルを置き、押すと #quick-add-detail
-       (期日/優先度/メモ)が下に開く。詳細パネルの中身(ネイティブ日付 input・優先度セグメント・
-       メモ textarea)は entry 側が JS で1回だけ組み立てて append する — 静的 HTML で書かず JS 構築に
-       するのは、日付 input の type 切替(date⇄datetime-local)や優先度セグメントの選択状態を
-       素直に扱うため。#quick-add は #root の外なので再描画に巻き込まれず、組み立てた部品の
-       入力値・展開状態は list 再描画で消えない(ヘッダと同じ理由)。 -->
-  <!-- 2026-07-14 UI フィードバック対応: quick-add を FAB 化。フォームは既定で hidden の「ボトムシート」。
-       カード右下固定の ＋ FAB(#quick-add-fab)をタップしたときだけ開き(入力へ自動フォーカス)、
-       送信 or 外側タップで閉じる(iOS リマインダーの作法)。仮行の楽観挿入・シマー・IME ガード等の
-       既存挙動は不変(submitQuickAdd はそのまま)。「詳細」トグルはフォーム内に残す(常時表示だった
-       ことが「quick-add の詳細ボタン=行の詳細表示」との誤認の原因だったので、開いたときだけ見える)。 -->
-  <form id="quick-add" class="quick-add" hidden>
-    <div class="quick-add-row">
-      <input
-        id="quick-add-input"
-        type="text"
-        class="quick-add-input"
-        autocomplete="off"
-        placeholder="新しいリマインダー"
-        aria-label="新しいリマインダーのタイトル"
-      />
-      <!-- 詳細トグル(disclosure)。type="button" で form の暗黙 submit を起こさない。 -->
-      <button
-        id="quick-add-detail-toggle"
-        type="button"
-        class="mini-toggle"
-        aria-expanded="false"
-        aria-controls="quick-add-detail"
-      >詳細</button>
-      <button id="quick-add-btn" type="submit">追加</button>
-    </div>
-    <!-- 詳細パネル(既定 hidden)。中身は entry の buildQuickAddDetail() が append する。 -->
-    <div id="quick-add-detail" class="qa-detail" hidden></div>
-  </form>
-  <!-- 追加 FAB(2026-07-14 UI フィードバック対応)。カード右下固定。タップで上の quick-add シート
-       を開く。開いている間は entry が hidden にして重なりを避ける。type="button" で暗黙 submit を防ぐ。 -->
+  <!-- 追加 FAB(+)。カード右下固定。タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の
+       startDraft)。詳細/リスト選択ページ表示中は entry が hidden にして重なりを避ける。
+       【v2→v3 で覆した点】v2 は FAB タップで position:fixed の quick-add ボトムシート(#quick-add
+       フォーム + 段階的開示パネル)を開いていたが、詳細シートと同じ fixed+vh の実機バグとトーン
+       不一致のため全廃し、iOS 準拠の「行末に空行が生えて即入力」へ置換した(entry の draft コメント参照)。
+       type="button" で暗黙 submit を防ぐ(周囲に form は無いが規律として明示)。 -->
   <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加">＋</button>
-  <!-- v2 詳細セミモーダル(ボトムシート)の描画先。#root(一覧)とは独立した常設コンテナで、
-       一覧再描画(renderAll の innerHTML)に巻き込まれない。todos-entry.ts の openSheet/closeSheet が
-       この中に scrim + sheet を出し入れする(空のうちは何も描かれない)。 -->
-  <div id="sheet-root"></div>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->
