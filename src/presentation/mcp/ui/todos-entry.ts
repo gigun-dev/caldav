@@ -1271,7 +1271,7 @@ function commitSelection(): boolean {
 	return false;
 }
 
-/** FAB(+)/ Enter 継続で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へフォーカスする
+/** FAB(+)で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へフォーカスする
  *  (iOS の新規行と同じ体感)。draft は due/優先度/繰り返し等を持たない最小の {title,notes}(構造化
  *  フィールドは作成モード詳細ページで編集する)。 */
 function startDraft(): void {
@@ -1283,18 +1283,19 @@ function startDraft(): void {
 	if (selTitleInput !== null) selTitleInput.focus();
 }
 
-/** ドラフト行での Enter = 「確定 → 次の空ドラフト行」(iOS の Enter で次の行)。タイトル非空なら
- *  create し、続けて新しい空ドラフトを生やす(テンポよく連続投入できる)。空なら編集を終える。 */
+/** ドラフト行での Enter = 「確定して追加モードを終える」(= 完了ボタン header-done と同一挙動)。
+ *  【2026-07-16 実機FBで単発化: 旧「Enter で次の空ドラフトを連続生成」を撤回】旧実装は Enter 確定後
+ *  すぐ startDraft() で次の空行を生やす連続投入だったが、ユーザーの求める体感は「FAB で1件編集 → 確定
+ *  したらその1件がその場に表示されて追加モードは終わる(空の入力行が下に残らない)」= 単発追加だった
+ *  (実機FB: 追加したのに空ドラフト行が下に残り、追加した item が上に「増えた別行」に見える違和感)。
+ *  Enter も完了ボタンも「1件確定 → 追加モード終了」に揃える。連続で足したいときは再度 FAB を押す。
+ *  確定した仮行は enqueueQuickAdd 経由で becoming-in(その場でシマー)し、sectionize の末尾ピン
+ *  (§7.8 add の inPlace)でドラフトが在った位置=一覧末尾にそのまま出る。 */
 function commitDraftEnter(): void {
-	const created = commitSelection(); // enqueueQuickAdd を発火した(=新規行が生まれた)なら true
-	if (created) {
-		draft = null;
-		startDraft(); // 次の空行(Enter で次の行)
-	} else {
-		draft = null;
-		selectedId = null;
-		renderAll();
-	}
+	commitSelection(); // タイトル非空なら enqueueQuickAdd を発火(空なら何も作らず静かに終える)
+	draft = null;
+	selectedId = null;
+	renderAll();
 }
 
 /** closeSwipe: スワイプ露出を畳む(state のみ。renderAll は呼び出し側)。 */
