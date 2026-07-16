@@ -29,9 +29,11 @@ describe("isCommitting", () => {
 		expect(isCommitting(startedAt + 1201, startedAt)).toBe(false);
 	});
 
-	test("定数は §7.8 確定値どおり(cycleMs=1200 / animCycles=1 / hardTimeoutMs=10000)", () => {
+	// 2026-07-16 撤回(item 1): hardTimeoutMs(T_hard=10s 待ち警告バナー)は廃止した。実測で 10s 超過は
+	// claude.ai transport 起因と判明し、楽観 done 表示への「保存中」重畳は情報を運ばないため取り下げた
+	// (feedback.ts の FEEDBACK コメント参照)。よって定数の残り 2 値だけを固定する。
+	test("定数は §7.8 確定値どおり(cycleMs=1200 / animCycles=1)", () => {
 		expect(FEEDBACK.cycleMs).toBe(1200);
 		expect(FEEDBACK.animCycles).toBe(1);
-		expect(FEEDBACK.hardTimeoutMs).toBe(10_000);
 	});
 });

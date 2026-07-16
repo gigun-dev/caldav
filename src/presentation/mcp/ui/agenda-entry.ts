@@ -162,10 +162,13 @@ const animUntil = new Map<string, number>();
 
 /**
  * mutate 開始時に pendingIds へ startedAt を積み、寿命(FEEDBACK.cycleMs×animCycles)満了時の
- * 再描画と、T_hard(10s)超過時の警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
- * todos-entry.ts の同名関数と設計は完全同型(clearTimeout をしない Why not も同一 —
- * 発火時に `pendingIds.has(id)` を再確認する冪等ガードで足りる。詳細は todos-entry.ts 参照)。
+ * 再描画を1本 setTimeout で仕込む。todos-entry.ts の同名関数と設計は完全同型
+ * (clearTimeout をしない Why not も同一。詳細は todos-entry.ts 参照)。
  * 【2026-07-16 v2.1】animUntil も同時にセットする(寿命分離。上のコメント参照)。
+ * 【2026-07-16 撤回: T_hard(10s)警告バナーのタイマーを廃止した(item 1)】旧実装はここで
+ * 2本目の setTimeout を仕込み 10s 超過で「保存に時間がかかっています」を出していたが、計器実測で
+ * 10s 超過は claude.ai transport 起因(Worker 実処理は最大 4s)と判明し、楽観表示への待ち重畳は
+ * 情報を運ばないため取り下げた(todos-entry.ts / feedback.ts の撤回コメントと同一判断)。
  */
 function startCommitting(id: string): void {
 	const startedAt = Date.now();
@@ -180,13 +183,6 @@ function startCommitting(id: string): void {
 			renderAll();
 		}
 	}, FEEDBACK.cycleMs * FEEDBACK.animCycles);
-	// T_hard(10s)超過 → まだ確定していなければ警告バナー(§7.8「共通」節)。「再読み込み」は
-	// fetchLatest 相当(mutate は再送しない = 二重書き込みリスク回避。showBanner の label 引数参照)。
-	setTimeout(() => {
-		if (pendingIds.has(id)) {
-			showBanner("保存に時間がかかっています", () => void retryFetch(), "再読み込み");
-		}
-	}, FEEDBACK.hardTimeoutMs);
 }
 
 // editingIds = 悲観パス(§7.8 判定則②: 反復イベントの start/end/recurrence 変更)の in-flight 行 id。

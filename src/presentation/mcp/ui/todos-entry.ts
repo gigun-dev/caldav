@@ -270,36 +270,34 @@ const animUntil = new Map<string, number>();
 
 /**
  * mutate 開始時に pendingIds へ startedAt を積み、animUntil へ寿命の満了時刻(=startedAt+cycleMs×
- * animCycles)を積む。寿命満了時の再描画(committing クラスを外す)と、T_hard(10s)超過時の
- * 警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
+ * animCycles)を積む。寿命満了時の再描画(committing クラスを外す)を1本 setTimeout で仕込む。
  *
- * 【なぜタイマーの解除(clearTimeout)をしないか(Why not)】
- * T_hard タイマーは発火時に `pendingIds.has(id)` を再確認してから作用する。mutate がタイマーより
- * 先に成功/失敗すれば pendingIds.delete(id) 済みなので発火時は no-op になる(「まだ pending なら」
- * だけバナーを出す)。id ベースの冪等ガードで足りるため、setTimeout の参照を保持して明示的に clear
- * する複雑さを持ち込まない(行の使い回しは無い — id は mutate 対象の実 todo id か quick-add の仮
- * optimistic:id で、同一 id が並行して2回 committing に入ることは二重送信ガード(pendingIds.has
- * チェック)が防ぐ)。満了タイマーは pendingIds を見ない(animUntil 自身の寿命だけで無条件に発火・
- * renderAll する — pendingIds が既に delete 済み=サーバー確定済みでも、アニメの残り時間分は
- * committing 表現を続ける必要があるため、pendingIds の有無で分岐すると旧バグに逆戻りする)。
+ * 【2026-07-16 撤回: T_hard(10s)警告バナーのタイマーを廃止した(item 1)】
+ * 旧実装はここで2本目の setTimeout を仕込み、10s 超過かつ `pendingIds.has(id)` なら「保存に時間が
+ * かかっています」の警告バナーを出していた。計器実測で Worker 実処理は最大 4s、10s 超過は
+ * claude.ai transport 起因と判明し、楽観で done 済みに見せている行に待ち表示を重ねてもユーザーに
+ * 運べる情報が無い(=誤報に近い)ため取り下げた。満了タイマー(animUntil)と pendingIds ロジックは
+ * 維持する。安全網は「fetch reject → ロールバック+エラーバナー」(各 mutate の catch)と
+ * 「refresh / fresh-instance の確定描画」に一本化済み。詳細は feedback.ts の FEEDBACK コメント。
+ *
+ * 【なぜ満了タイマーの解除(clearTimeout)をしないか(Why not)】
+ * 満了タイマーは pendingIds を見ない(animUntil 自身の寿命だけで無条件に発火・renderAll する —
+ * pendingIds が既に delete 済み=サーバー確定済みでも、アニメの残り時間分は committing 表現を
+ * 続ける必要があるため、pendingIds の有無で分岐すると旧バグ(確定が速いとアニメが途中で切れる)に
+ * 逆戻りする)。id の使い回しは無い(実 todo id か quick-add の仮 optimistic:id)ので、setTimeout の
+ * 参照を保持して明示 clear する複雑さは持ち込まない。
  */
 function startCommitting(id: string): void {
 	const startedAt = Date.now();
 	pendingIds.set(id, startedAt);
 	const lifespan = FEEDBACK.cycleMs * FEEDBACK.animCycles;
 	animUntil.set(id, startedAt + lifespan);
-	// committing 満了(寿命1周)→ animUntil を消して再描画(committing クラスが外れ静的 becoming/
-	// 「保存中…」タグへ収束する)。pendingIds はここでは触らない(サーバー確定と無関係な寿命なので)。
+	// committing 満了(寿命1周)→ animUntil を消して再描画(committing クラスが外れ静的 becoming へ
+	// 収束する)。pendingIds はここでは触らない(サーバー確定と無関係な寿命なので)。
 	setTimeout(() => {
 		animUntil.delete(id);
 		renderAll();
 	}, lifespan);
-	// T_hard(10s)超過 → まだ確定していなければ警告バナー(§7.8「共通」節)。
-	setTimeout(() => {
-		if (pendingIds.has(id)) {
-			showBanner("保存に時間がかかっています", () => void retryFetch(), "再読み込み");
-		}
-	}, FEEDBACK.hardTimeoutMs);
 }
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
 // --- 楽観更新の in-flight state(2026-07-14 ドクトリン改訂)---------------------------
@@ -427,16 +425,34 @@ function resetPositionMemory(): void {
 	stickyData.clear();
 	positionSeq = 0;
 }
-/** 位置記憶に無い新規行の自然セクション(due/completed 規則)。sectionize の per-item ロジックと
- *  揃える(becoming-done の in-place は位置記憶が担うのでここでは completed→"completed" で素直に)。 */
+/** 位置記憶に無い新規行の自然セクション(due/completed 規則)。初出時の配置と、非 manual 経路の
+ *  per-item ロジックに揃える。completed は "completed"(初出時に既に完了していた行だけがここに来て
+ *  完了済み <details> の受け皿になる。位置不変 item 3 の選択肢(b)= セッション中に done した行は
+ *  「初出時 未完了」なので dueSection の元セクションに留まる)。 */
 function naturalSection(task: TodoItem, todayKey: string): SectionKey {
 	if (task.completed) return "completed";
+	return dueSection(task, todayKey);
+}
+/** 完了状態を無視した「期日ベースのセクション」。位置不変(item 3・要件5)の「due 編集でセクションを
+ *  跨いだか」判定に使う — done/undo(completed 変化)は naturalSection を "completed" へ動かすが、位置は
+ *  動かしてはならないので、跨ぎ判定は completed を無視した dueSection どうしで行う(完了に伴うセクション
+ *  変化を再配置トリガーにしないための分離。要件3 と要件5 を両立させる鍵)。 */
+function dueSection(task: TodoItem, todayKey: string): Exclude<SectionKey, "completed"> {
 	if (task.due === null) return "noDue";
 	const diff = dayDiff(wallDatePart(task.due), todayKey);
 	if (diff < 0) return "overdue";
 	if (diff === 0) return "today";
 	return "upcoming";
 }
+// sortMode の seam(将来の表示順序設定に備える。docs/modeling/12 §7.8 v2.2)。iOS リマインダーは
+// 表示順序を「手動 / 期限 / 作成日 / 優先順位 / タイトル」から選べる。既定は「手動」で、位置不変
+// (一度現れた行はその場に留め状態だけ更新)はこの「手動」モードの挙動そのもの。今回は "manual" 固定で、
+// 他モード(期限順など)の実装はしない — 既存の compareTasks を「非 manual 時の比較関数」として温存し、
+// renderAll の並べ替え段だけを `sortMode === "manual" ? 位置記憶順 : compareTasks 系` で分岐できる構造に
+// しておく。設定 UI・永続化(sortMode を選ばせて保存する)は別スライス(今回スコープ外)。
+// 【なぜ let でなく const か】今回は切替 UI が無いので再代入は起きない。将来 UI を足すときに let へ
+// 昇格 + 永続化を配線する(その1点だけの変更で他モードへ道が通る、という seam の置き場所)。
+const sortMode: "manual" = "manual";
 // currentCalendarId(E-2 スライス③): この一覧が今どのコレクションを表示しているか。
 // 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
 // ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
@@ -523,13 +539,12 @@ function clearStatus(): void {
 	statusEl.hidden = true;
 	statusEl.textContent = "";
 }
-/** エラーバナーを出す。retry を渡すと「再試行」ボタン付きになる。 */
-/**
- * @param label ボタン文言。既定は失敗バナーの「再試行」(= mutate 再送)。§7.8 の T_hard
- *   警告バナーだけは「再読み込み」(= fetchLatest 相当。mutate は再送しない — 中断もロール
- *   バックもしない設計なので「再試行」を出すと二重書き込みリスクを生む。startCommitting 参照)。
- */
-function showBanner(msg: string, retry?: () => void, label = "再試行"): void {
+/** エラーバナーを出す。retry を渡すと「再試行」ボタン付きになる。
+ *  【2026-07-16 撤回: label 引数を削除(item 1)】label は T_hard 警告バナー専用の「再読み込み」
+ *  文言を渡すためだけに存在したが、T_hard バナー自体を廃止した(startCommitting 参照)ため
+ *  呼び出しが無くなった。残る呼び出しはすべて失敗バナー(mutate 再送の「再試行」)なので、
+ *  ボタン文言を「再試行」固定に縮退させた。 */
+function showBanner(msg: string, retry?: () => void): void {
 	bannerEl.hidden = false;
 	bannerEl.textContent = "";
 	const span = document.createElement("span");
@@ -538,7 +553,7 @@ function showBanner(msg: string, retry?: () => void, label = "再試行"): void 
 	if (retry) {
 		const btn = document.createElement("button");
 		btn.type = "button";
-		btn.textContent = label;
+		btn.textContent = "再試行";
 		btn.addEventListener("click", () => {
 			clearBanner();
 			retry();
@@ -689,68 +704,165 @@ interface Sections {
 	completed: TodoItem[];
 }
 
-/** タスクを5セクションへ振り分ける。completed 判定は DTO の completed(boolean)を正とする
- *  (status 文字列の再解釈はしない — サーバーが既に STATUS/PERCENT-COMPLETE から導出済み)。
- *  時刻付きで「今日だがもう過ぎた」は期限切れではなく今日に置く(formatDue コメント参照)。 */
+/** 完了済みセクションの並び「新しく完了したものが上」(completedAt 降順)。完了直後に自分の操作の
+ *  結果が折り畳みを開いた先頭に見える方が操作→確認の導線として自然。manual 経路では「初出時に
+ *  既に完了していた行」の初回採番順にだけ使う(以後は位置記憶順で不変)。 */
+function completedDesc(a: TodoItem, b: TodoItem): number {
+	const ca = a.completedAt ?? "";
+	const cb = b.completedAt ?? "";
+	if (ca !== cb) return ca < cb ? 1 : -1; // ISO 文字列の辞書順 = 時刻順(同一形式前提)
+	return a.title.localeCompare(b.title, "ja");
+}
+
+/** タスクを5セクションへ振り分ける(**非 manual(将来の期限順など)経路の比較関数**)。completed 判定は
+ *  DTO の completed(boolean)を正とする。時刻付きで「今日だがもう過ぎた」は期限切れでなく今日に置く。
+ *  【2026-07-16 撤回: inPlaceDone / pinnedAdded* の特例を削除(item 3・位置不変)】
+ *  旧実装はここに2つの特例を持っていた:
+ *   - inPlaceDone: becoming-done(いま完了した行)を完了折り畳みへ飛ばさず due の元セクションに留める。
+ *   - pinnedAdded*: becoming-in(いま追加された optimistic 行)を通常ソートから外し各セクション末尾へ
+ *     投入順でピンする(空 due 行が title.localeCompare で draft から離れた位置へ飛ぶのを防ぐ)。
+ *  どちらも「一度現れた行はその場に留める」の部分的な応急処置で、位置記憶(positionMemory)の
+ *  一般化 = sectionizeManual がインスタンス生存中の全行について包含する(done-in-place は memory の
+ *  元セクション + sticky で、add は natural セクション末尾ピンで実現)。よって manual 経路ではこの
+ *  関数は使われず、非 manual 経路のための純粋な compareTasks 整列だけに縮退させた(affectedById を
+ *  もう読まない = affectedById は becoming の視覚専用に純化)。非 manual(期限順など)は今回未実装
+ *  なので、この関数は温存されるだけで実行経路に乗らない。 */
 function sectionize(items: TodoItem[], todayKey: string): Sections {
 	const s: Sections = { overdue: [], today: [], upcoming: [], noDue: [], completed: [] };
-	// 【2026-07-16 §7.8 add の inPlace】becoming-in(いま追加された optimistic 行)を、
-	// inPlaceDone と同型の理由で通常ソートから除外して別バケットに集め、後で各セクションの
-	// 末尾へ「投入順のまま」ピンする(下の pinnedAdded* / sort 直後の push を参照)。
-	// Why: compareTasks は空 due 行を title.localeCompare で並べる → 新規行が既存の no-due
-	// 群の中のアルファベット位置に挿さり、入力していた draft から離れた場所へ「飛ぶ」(FB の症状)。
-	// iOS リマインダーは「typed した行がそのまま item・新しい空行がその直下」なので、末尾ピンで
-	// 一致させる。サーバー確定後の次の全再描画(optimisticRows から抜けて confirmedTasks 経由になる)
-	// で通常の compareTasks 整列に自然収束させてよい(inPlaceDone が「次回描画で完了欄へ移る」のと
-	// 同じ「確定後の整列は次描画に委ねる」原則。becoming-in のアニメがジャンプを覆う想定)。
-	const pinnedAddedOverdue: TodoItem[] = [];
-	const pinnedAddedToday: TodoItem[] = [];
-	const pinnedAddedUpcoming: TodoItem[] = [];
-	const pinnedAddedNoDue: TodoItem[] = [];
 	for (const t of items) {
-		// becoming-done(いま完了した行)は完了折り畳みへ飛ばさず「その場」= due ベースの
-		// 元のセクションに留める(モックの設計: 押した場所から行が消えると操作の因果が
-		// 切れる)。次の応答(affected 無し)で通常どおり完了欄へ移る。
-		const inPlaceDone = t.completed && affectedById.get(t.id)?.kind === "completed";
-		const isAdded = isOptimisticId(t.id) && affectedById.get(t.id)?.kind === "added";
-		if (t.completed && !inPlaceDone) {
-			s.completed.push(t);
-		} else if (t.due === null) {
-			if (isAdded) pinnedAddedNoDue.push(t);
-			else s.noDue.push(t);
-		} else {
-			const diff = dayDiff(wallDatePart(t.due), todayKey);
-			if (diff < 0) {
-				if (isAdded) pinnedAddedOverdue.push(t);
-				else s.overdue.push(t);
-			} else if (diff === 0) {
-				if (isAdded) pinnedAddedToday.push(t);
-				else s.today.push(t);
-			} else {
-				if (isAdded) pinnedAddedUpcoming.push(t);
-				else s.upcoming.push(t);
-			}
-		}
+		if (t.completed) s.completed.push(t);
+		else s[dueSection(t, todayKey)].push(t);
 	}
 	s.overdue.sort(compareTasks);
 	s.today.sort(compareTasks);
 	s.upcoming.sort(compareTasks);
 	s.noDue.sort(compareTasks);
-	// pinnedAdded* は items の走査順 = displayTasks の並び順 = optimisticRows の投入順
-	// (rebuildDisplay が optimisticRows を末尾 push するため)。よって単純末尾 concat で
-	// 「複数連続追加(zzz→aaa)が投入順で積み上がる」が成立する(並べ替えは一切しない)。
-	s.overdue.push(...pinnedAddedOverdue);
-	s.today.push(...pinnedAddedToday);
-	s.upcoming.push(...pinnedAddedUpcoming);
-	s.noDue.push(...pinnedAddedNoDue);
-	// 完了済みだけは「新しく完了したものが上」(completedAt 降順)。完了直後に自分の操作の
-	// 結果が折り畳みを開いた先頭に見える方が、操作→確認の導線として自然。
-	s.completed.sort((a, b) => {
-		const ca = a.completedAt ?? "";
-		const cb = b.completedAt ?? "";
-		if (ca !== cb) return ca < cb ? 1 : -1; // ISO 文字列の辞書順 = 時刻順(同一形式前提)
-		return a.title.localeCompare(b.title, "ja");
-	});
+	s.completed.sort(completedDesc);
+	return s;
+}
+
+/**
+ * 位置不変(item 3・「手動」表示順序モード)の並べ替え。docs/modeling/12 §7.8 v2.2・2026-07-14 確定仕様
+ * (positionMemory / stickyData 宣言のコメントに残る仕様)の完成。**状態機械ではなく配置規則**:
+ *
+ *  1. 初出時に一度だけ配置: このカードインスタンスで初めて描画される行は naturalSection でセクションを
+ *     決め positionSeq++ で順位採番する。**初出時のセクション内相対順は compareTasks(completed は
+ *     completedDesc)で決めてから採番**する(インスタンス誕生時の初回描画だけクリーン整列)。
+ *  2. 以後は positionMemory の order 昇順のみで並べる(サーバーが tasks をどの順で返そうが既出行は不動)。
+ *  3. done/undo は位置に作用しない: completed になっても memory のセクション・順位は不変(取消線+塗り円で
+ *     状態だけ変わる)。既定(未完了)ビューでは確定 vm から行が抜けるので、stickyData の last-known で
+ *     その場に描き続ける(=「操作履歴を残す UI」の本体)。
+ *  4. add は natural セクション(タイトルのみなら noDue)末尾に採番され確定後もそこ(下記 transient 経由の
+ *     optimistic 行と、確定後の実行が最新 order で末尾に付くことで「同じ場所」を保つ)。
+ *  5. 唯一の例外 = due 編集のセクション跨ぎ: dueSection が memory.section と変わる編集のときだけ再配置
+ *     (旧エントリ削除 → 新セクション末尾に再採番)。done/undo・同一セクション内の due 変更・タイトル/
+ *     メモ/優先度編集は不動(completed を無視した dueSection どうしの比較なので done で動かない)。
+ *  6. delete は消滅(applyStructuredContent が removed で positionMemory/stickyData を削除済み)。ghost 行は
+ *     memory を失っているので transient として natural セクション末尾に1描画だけ出して becoming-gone で消える。
+ *  7. クリーン再セクショニングの唯一の契機 = インスタンス境界(fresh render / calendarId・view 切替の
+ *     resetPositionMemory)。この関数はそれ以外では既出行の memory を書き換えない。
+ *  8. 完了済み <details> は選択肢(b): 「インスタンス誕生時に既に完了していた項目」だけの受け皿。初出時
+ *     completed の行だけ naturalSection が "completed" を返し memory.section=completed → details へ入る。
+ *     セッション中に done した行は「初出時 未完了」なので memory.section は dueSection の元のまま=その場に
+ *     取消線で残り details に入らない。summary 件数は details 内の実数(s.completed.length)のみ。
+ *
+ * 【引数の分担】
+ *   realLive   = 位置記憶で管理する「実在の確定/楽観重ね行」(confirmedTasks 由来。full data)。sticky を更新する。
+ *   synthDone  = 案X の completed 合成(既定ビューで tasks から抜けた done-in-place の一過性フレーム行)。
+ *                memory は既存(初出は未完了時)なので位置は memory 由来。sticky は「無ければ」だけ埋める
+ *                (低忠実度の synth で、楽観フレームで入った full-data sticky を上書きしないため)。
+ *   transient  = memory に載せない一過性行(optimistic 追加行・ghost)。natural セクション末尾に投入順で付く。
+ *
+ * 【なぜ optimistic 行を memory に載せないか(Why not・id 引き継ぎの割り切り)】optimistic:xxx の仮 id は
+ *   create 確定で実 id へ置き換わるが、両者を結ぶ確実な写像は無い(サーバー採番 id を事前に知り得ない)。
+ *   仮 id に memory を持たせると確定後に迷子の memory エントリが残り、sticky に載せれば削除後に「幽霊住人」
+ *   として復活しうる。よって仮行は transient(末尾ピン)に留め、確定した実行が最新 order で natural
+ *   セクション末尾に採番される(=仮行が居た末尾と同じ場所)ことで「確定後もそこ」を実現する。
+ */
+function sectionizeManual(
+	realLive: TodoItem[],
+	synthDone: TodoItem[],
+	transient: TodoItem[],
+	todayKey: string,
+): Sections {
+	// --- live データの索引化 + sticky 更新 -------------------------------------------------
+	const liveById = new Map<string, TodoItem>();
+	for (const t of realLive) {
+		liveById.set(t.id, t);
+		stickyData.set(t.id, t); // 実在行は full data。done-in-place の完了版はここ(楽観重ね)で入る。
+	}
+	for (const t of synthDone) {
+		// synth は「その id を今フレーム描くための最小行」。memory は既に存在する(初出=未完了時)ので
+		// 位置は memory 由来。liveById には無ければ入れる(このフレームの描画データとして)。
+		if (!liveById.has(t.id)) liveById.set(t.id, t);
+		// sticky は「無ければ」だけ埋める(楽観トグルのフレームで入った full-data を低忠実 synth で潰さない)。
+		if (!stickyData.has(t.id)) stickyData.set(t.id, t);
+	}
+
+	// --- 初出採番 + due 編集セクション跨ぎの再配置 -----------------------------------------
+	interface Pending {
+		task: TodoItem;
+		section: SectionKey;
+	}
+	const toNumber: Pending[] = [];
+	for (const t of liveById.values()) {
+		const mem = positionMemory.get(t.id);
+		if (mem === undefined) {
+			// 初出: naturalSection で配置(completed なら "completed" → 選択肢(b)の details 受け皿)。
+			toNumber.push({ task: t, section: naturalSection(t, todayKey) });
+		} else if (!t.completed && mem.section !== "completed") {
+			// 既出かつ現在未完了かつ memory が due セクション → due 編集でセクションを跨いだかを判定する。
+			// completed 行(done-in-place)と born-completed 行は除外 = done/undo で位置は動かさない(要件3)。
+			const ds = dueSection(t, todayKey);
+			if (ds !== mem.section) {
+				positionMemory.delete(t.id); // 旧エントリを消して新セクション末尾に再採番(要件5)。
+				toNumber.push({ task: t, section: ds });
+			}
+		}
+	}
+	// セクションごとにまとめ、初出時だけクリーン整列(compareTasks / completedDesc)してから採番。
+	// 複数行が同一フレームで初出しても「セクション内は due→sortOrder→title のクリーン順」で番号が付く。
+	const bySection = new Map<SectionKey, Pending[]>();
+	for (const p of toNumber) {
+		const arr = bySection.get(p.section);
+		if (arr === undefined) bySection.set(p.section, [p]);
+		else arr.push(p);
+	}
+	for (const [section, arr] of bySection) {
+		arr.sort((a, b) => (section === "completed" ? completedDesc(a.task, b.task) : compareTasks(a.task, b.task)));
+		for (const p of arr) positionMemory.set(p.task.id, { section, order: positionSeq++ });
+	}
+
+	// --- memory 順(order 昇順)でセクションを組み立てる。データは live 優先・無ければ sticky ---------
+	const withOrder: Record<SectionKey, Array<{ task: TodoItem; order: number }>> = {
+		overdue: [],
+		today: [],
+		upcoming: [],
+		noDue: [],
+		completed: [],
+	};
+	for (const [id, mem] of positionMemory) {
+		// 楽観削除中(optimisticDeletes)の行は「削除ボタンを押した瞬間に消える」= その場から即除去する。
+		// rebuildDisplay は displayTasks から filter 済みだが、positionMemory/stickyData は削除確定
+		// (サーバー removed)まで残る設計なので、ここで明示的にスキップしないと sticky 経由で行が復活して
+		// しまう(楽観削除が効かない実害。失敗時は optimisticDeletes から抜けて sticky/live 経由で復活する)。
+		if (optimisticDeletes.has(id)) continue;
+		const data = liveById.get(id) ?? stickyData.get(id);
+		// データが無い(例: 迷子になった optimistic memory は本来作らないが保険)エントリは描かない。
+		if (data === undefined) continue;
+		withOrder[mem.section].push({ task: data, order: mem.order });
+	}
+	const s: Sections = { overdue: [], today: [], upcoming: [], noDue: [], completed: [] };
+	for (const key of SECTION_ORDER) {
+		withOrder[key].sort((a, b) => a.order - b.order);
+		s[key] = withOrder[key].map((x) => x.task);
+	}
+
+	// --- transient(memory に載せない一過性行)を natural セクション末尾に投入順で付ける --------------
+	for (const t of transient) {
+		const sec = naturalSection(t, todayKey);
+		s[sec].push(t);
+	}
 	return s;
 }
 
@@ -2357,7 +2469,21 @@ function renderAll(): void {
 			affectedItems.push(snapshotToItem(a.task, true));
 		}
 	}
-	const s = sectionize(baseTasks.concat(ghostItems, affectedItems), todayKey);
+	// --- 並べ替え段(sortMode の seam。今回は "manual" 固定 = 位置不変 item 3)------------------------
+	// manual: sectionizeManual が positionMemory / stickyData で「一度現れた行はその場に留める」を担う。
+	//   realLive  = 実在の確定/楽観重ね行(optimistic 仮行は除く。memory + sticky で管理)。
+	//   synthDone = done-in-place の合成行(memory は既存・sticky は無ければ補完)。
+	//   transient = memory に載せない一過性行 = optimistic 追加の仮行 + ghost(末尾ピン・投入順)。
+	// 非 manual(期限順など・今回未実装)は従来の compareTasks 整列(sectionize)へ分岐する seam を残す。
+	let s: Sections;
+	if (sortMode === "manual") {
+		const realLive = baseTasks.filter((t) => !isOptimisticId(t.id));
+		const optimisticLive = baseTasks.filter((t) => isOptimisticId(t.id));
+		s = sectionizeManual(realLive, affectedItems, optimisticLive.concat(ghostItems), todayKey);
+	} else {
+		// 非 manual 経路(温存。今回は到達しない)。従来どおり全行を compareTasks で整列する。
+		s = sectionize(baseTasks.concat(ghostItems, affectedItems), todayKey);
+	}
 
 	const activeCount = s.overdue.length + s.today.length + s.upcoming.length + s.noDue.length;
 	// ドラフト行(FAB で生やした未送信の新規行)があるときは「タスクはありません」を出さない

@@ -169,10 +169,11 @@ export const TODOS_APP_HTML = `<!doctype html>
     /* 320px 幅からの崩れ防止: 固定 px の横幅指定を使わず padding も clamp() で
      * コンテナ幅に自然フィットさせる。 */
     padding: clamp(8px, 3vw, 16px);
-    /* 2026-07-14 UI フィードバック対応: 右下固定 FAB が最終行に被らないよう下余白を確保
-     * (FAB は position:fixed で通常フローに場所を取らないため、body 側で退避スペースを空ける)。
-     * 2026-07-15: FAB を 56px→40px に縮小したのに合わせて退避量も比例して詰める。 */
-    padding-bottom: 64px;
+    /* 【2026-07-16 v2.2 item4: 旧 padding-bottom 退避(64px)を撤回】
+     * 2026-07-14〜15 の値は「FAB が position:fixed で通常フローに場所を取らないため、最終行に
+     * 被らないよう body 側で下余白を確保する」ものだった。FAB をフロー配置(.fab-row)に変えた
+     * ことで FAB 自身が通常フローの一部になり、最終行の下に自然に並ぶ(重ならない)ため、
+     * この専用退避スペースは不要になった。通常の下端余白は上の padding(clamp)で足りる。 */
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     font-size: 14px;
     color: var(--fg);
@@ -460,44 +461,52 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
 
   /* completed: その場に留まり「いま完了した」を凍結表示。
-   * form = 丸の外に静止した同心リング(波紋の1フレーム = box-shadow 1枚)。
    * 取消線・減光は li.done の恒久記号をそのまま使う(becoming 側では足さない)。
    * Why not 行ごと薄緑ハイライト: 面のハイライトは「移動した/選択された」と
-   * 誤読されやすい。変化の主体は丸チェックなので、リングを丸に局在させる。
+   * 誤読されやすい。変化の主体は丸チェックなので、装飾は丸に局在させる。
    * Why not 完了セクションへ即移動: 押した場所から行が消えると操作の因果が切れる。
-   * 行はその場(元のセクション)に留め、次回描画で完了欄へ移る(entry の sectionize)。 */
-  li.becoming-done .circle { box-shadow: 0 0 0 4px var(--accent-soft); }
+   * 行はその場(元のセクション)に留め、次回描画で完了欄へ移る(entry の sectionize)。
+   *
+   * 【2026-07-16 v2.2 item2: 静的な凍結リング(box-shadow 4px)を撤回】
+   * 旧実装は「丸の外に静止した同心リング(波紋の1フレーム)」を becoming-done/undone の
+   * *静的* form として恒久的に乗せていた(committing 満了後もリングは消えない設計)。
+   * これを撤回する — 「確定した状態(li.done の塗り丸/undone の空丸)に進行中を示す記号(リング)
+   * を残すのは不自然」という実機 FB による。committing 原則「0 で始まり 0 で終わる」
+   * (アニメは定常状態に視覚的痕跡を残さない)を静的リングにも徹底し、リングは下の
+   * ring-pulse(committing 中だけの一過性 pulse-out)に完全移管した。満了後の done は
+   * 「塗り円+取消線のみ」、undone は「素の空円のみ」に収束する(becoming の一過性マークは
+   * becoming タグ[.tag]が単独で担う。v2.1 A で pop に主役交代済みなのでリングはもう視認性
+   * 役務を負わない)。 */
   li.becoming-done .tag { color: var(--accent); }
 
-  /* reopened: completed の逆再生の1フレーム。form = 塗りが抜けて破線に戻りかけた丸
-   * (accent 色の破線)+ 同じ凍結リング。取消線は既に無い(li.done が外れる)ので、
-   * 丸の質感だけで「いま未完了に戻った」を語る。completed(実線塗り+リング)と
-   * reopened(破線空+リング)が同じリングを共有することで「同じ操作の往復」だと分かる。 */
+  /* reopened: completed の逆再生の1フレーム。取消線は既に無い(li.done が外れる)ので、
+   * 丸の質感(破線に戻りかけた空丸・accent 色)だけで「いま未完了に戻った」を語る。
+   * 【2026-07-16 v2.2 item2】静的リング撤回は上の becoming-done と同じ理由(box-shadow 行削除)。 */
   li.becoming-undone .circle {
     border-style: dashed;
     border-color: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-soft);
   }
   li.becoming-undone .tag { color: var(--accent); }
 
   /* 【2026-07-16 §7.8 v2】ring-pulse: done/undo の committing 中(タップ直後〜1.2s)だけ、
-   * 上の静的 4px リングに「脈動」を1周だけ足す。tap の瞬間に手応えを返す狙いで、
-   * 静的リング自体(box-shadow 0 0 0 4px)は committing の有無に関わらず既に乗っている
-   * (li.becoming-done/undone .circle のルール)ため、pulse の終端フレーム(4px)がちょうど
-   * 静的形と一致し、アニメが終わっても見た目が「ずれて止まる」ことがない(entry 側の
-   * committing クラスの外し方=満了で再描画・タイマー任せでも視覚的には無音に収束する)。
+   * circle の外側に「脈動」するリングを1周だけ足す。tap の瞬間に手応えを返す狙い。
    * ease-out にする理由: リングは「押した瞬間の力積が外へ広がって収まる」波紋の比喩なので、
    * 減速するイージングの方が物理的に自然(wake-sweep の linear とは動きの語彙が異なる=
    * 「継続中」ではなく「1回の反応」を表すため)。
    * 【2026-07-16 v2.1 修正A-5: リング濃度を上げ + circle 本体のポップを追加】旧実装は
    * accent-soft(14%)のまま 0→4px→0 に脈動させていたが、check 円は完了時に accent で
    * 塗り潰されるため薄いリングがその塗りに埋もれ「完了したのに反応が見えない」実機 FB が
-   * あった。①リングを濃い accent-pulse(35%/dark 40%)に差し替え 0→5px→0 に強め、②circle
-   * 自体にも軽いポップ(scale 1→1.12→1)を同じ 1.2s ease-out 1 で重ねる(手応えの二重化)。
+   * あった。①リングを濃い accent-pulse(35%/dark 40%)に差し替え、②circle 自体にも軽い
+   * ポップ(scale 1→1.12→1)を同じ 1.2s ease-out 1 で重ねる(手応えの二重化)。
    * transform: scale をポップに使うのは box-shadow だけでは平面的な変化に留まり「押した」
    * 触覚的手応えが弱いため — scale はコンポジタスレッドで処理されリフローも起こさない。
-   * 満了後(committing が外れた後)は静的な 14% リング(accent-soft・box-shadow 固定)と
-   * scale:1 に戻る(pop の終端フレームが scale(1) なので「ずれて止まる」ことはない)。 */
+   * 【2026-07-16 v2.2 item2: pulse を "0→5px→0" の pulse-out に変更(旧 "0→5px→4px 静的へ受け渡す"
+   * を撤回)】上のセクションで静的リング(li.becoming-done/undone .circle の box-shadow)自体を
+   * 廃止したため、ring-pulse の終端フレームがもう「静的形へ受け渡す」役目を持たない。committing
+   * アニメ原則「0 で始まり 0 で終わる(定常状態に視覚的痕跡を残さない)」に literal に従い、
+   * 終端を box-shadow 0(リング完全消滅)にする — リングは「押した瞬間だけの一過性の波紋」に徹し、
+   * 満了後は circle-pop の scale(1) と合わせてリング無しの最終形(塗り円のみ/空円のみ)へ純粋に
+   * 収束する。 */
   li.becoming-done.committing .circle,
   li.becoming-undone.committing .circle {
     animation:
@@ -506,18 +515,22 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
   @keyframes ring-pulse {
     0% { box-shadow: 0 0 0 0 var(--accent-pulse); }
-    60% { box-shadow: 0 0 0 5px var(--accent-pulse); }
-    100% { box-shadow: 0 0 0 4px var(--accent-soft); }
+    50% { box-shadow: 0 0 0 5px var(--accent-pulse); }
+    100% { box-shadow: 0 0 0 0 var(--accent-pulse); }
   }
   @keyframes circle-pop {
     0% { transform: scale(1); }
     40% { transform: scale(1.12); }
     100% { transform: scale(1); }
   }
+  /* 【2026-07-16 v2.2 item2】reduced-motion: committing アニメ無し = 最初から最終形。
+   * 静的リング自体を撤回したので animation:none だけで自然に「リング無し(塗り円のみ/
+   * 空円のみ)」になる(旧実装は animation:none にした上で静的 4px リングへフォールバック
+   * させていたが、静的リングが無くなった今それは誤り=削除)。 */
   @media (prefers-reduced-motion: reduce) {
     li.becoming-done.committing .circle,
     li.becoming-undone.committing .circle {
-      animation: none; /* 最初から静的 4px リング(通常の becoming-done/undone と同じ描画）。 */
+      animation: none;
     }
   }
 
@@ -640,7 +653,8 @@ export const TODOS_APP_HTML = `<!doctype html>
     .skel, .skel * { animation: none; }
   }
 
-  /* --- 追加 FAB(+)。カード右下固定の円(2026-07-15 に 56px→40px へ縮小・下記フィードバック参照)---
+  /* --- 追加 FAB(+)。#root の直後・通常フローの右寄せに置く円(2026-07-15 に 56px→40px へ縮小・
+   * 下記フィードバック参照)---
    * タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細/リスト選択ページ
    * 表示中は entry が hidden にして重なりを避ける。
    * 【v2→v3 で覆した点(経緯・財産)】v2 はこの FAB が position:fixed の quick-add ボトムシート
@@ -649,18 +663,35 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 自動リサイズと噛み合わず本文がスクロールできない/下部が見切れる)を quick-add シートも抱えており、
    * かつ「シートを開く」より「行末に空行が生えて即入力」の方が iOS のトーンに合うとのユーザー確定による。
    * 新規行は既存の選択状態 CSS(li.selected / .title-edit / .memo-line / .info)をそのまま流用するので、
-   * 追加専用の入力欄 CSS は不要になった。FAB の色(accent)・右下固定・円形は v2 から不変、サイズのみ
+   * 追加専用の入力欄 CSS は不要になった。FAB の色(accent)・円形は v2 から不変、サイズのみ
    * 2026-07-15 に縮小した。 */
   /* 【2026-07-15 実機フィードバック: FAB が大きすぎる】56px の円は「常時目に入る主張の強すぎる
    * ボタン」に見えるとの評価。新規追加は頻度の低い操作(既存行の操作の方が高頻度)なので、
    * 存在は分かるが控えめな「静かな追加口」へ 40px に縮小する(44px タップ推奨をわずかに割るが、
    * 円形の余白込みで実タップ領域はほぼ変わらず、かつ FAB は唯一の独立操作面で誤タップの実害が
    * 小さいため許容)。アイコンも 30px 相当の主張から 18px へ絞る。 */
+  /* 【2026-07-16 v2.2 item4: position:fixed を撤廃し通常フロー右寄せへ(Fable 設計確定)】
+   * 【原因】MCP Apps の auto-height iframe(ホストがコンテンツ高さに追従リサイズ)では
+   * 「viewport 底辺 = コンテンツ底辺」になる。fixed はそもそも viewport 基準の配置なので、
+   * このケースでは「固定でない固定」— コンテンツ高さが変わる(add 行挿入等)たびに fixed 要素の
+   * 見かけの位置がコンテンツと一緒に動き、行挿入の瞬間「FAB が一瞬下へずれて戻る」という
+   * 意図しないシフトの発生源になっていた。過去に fixed+vh の詳細シート/quick-add シートが
+   * 同根の実機バグ(内部スクロール不能・下部見切れ)を出して全廃した経緯があり(上のコメント
+   * 群・v3 詳細ページのヘッダコメント参照)、「浮遊層ゼロ」は本ファイルの例外なしのドクトリンに
+   * 格上げする。
+   * 【対処】fixed 配置(position/right/bottom/z-index)を削除し、.fab-row(#root 直後、
+   * body 直下の通常フロー要素)の中に flex + justify-content:flex-end で右寄せする。
+   * auto-height iframe は独立スクロールを持たずページ全高が常に見えるため、視覚的な位置は
+   * 現行の右下とほぼ変わらない(要実機確認)。フロー配置だと行挿入で FAB がその場から
+   * 1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。 */
+  .fab-row {
+    display: flex;
+    justify-content: flex-end;
+    /* 旧 fixed FAB のための body padding-bottom 退避を廃止したので(body のコメント参照)、
+     * FAB とその上の #root の間隔をここで確保する。 */
+    margin-top: 8px;
+  }
   .fab {
-    position: fixed;
-    right: 12px;
-    bottom: 12px;
-    z-index: 50;
     width: 40px;
     height: 40px;
     display: flex;
@@ -727,7 +758,19 @@ export const TODOS_APP_HTML = `<!doctype html>
    * (44px タッチターゲット維持の要件)。cursor:pointer で押せることを示す。 */
   /* row-head(タイトル+メタのタップ開閉領域)。2026-07-14 UI フィードバック対応で texts ラッパを
    * 廃し header を row-main 直下に置いたので、旧 .texts が持っていた flex:1 / min-width:0 をここへ移す
-   * (行の余白いっぱいにタイトルを広げ、長文が check/ⓘ を押し出さないよう min-width:0 で縮小を許可)。 */
+   * (行の余白いっぱいにタイトルを広げ、長文が check/ⓘ を押し出さないよう min-width:0 で縮小を許可)。
+   *
+   * 【2026-07-16 v2.2 item4: draft/optimistic 行の高さ予約はこの min-height:44px が兼ねる】
+   * FAB フロー化(上の .fab-row 参照)に伴い「挿入行(draft/becoming-in)にも通常行と同じ
+   * min-height を予約し、フォント/placeholder 差で初回フレームの高さが揺れないようにする」
+   * 要件があったが、row-head(タイトル+メタ領域)はこのファイルの全 li 構造(通常行・
+   * li.selected の draft 行・li.becoming-in の楽観行のいずれも row-main > row-head という
+   * 同一 DOM 骨格を entry.ts 側が共有している)に無条件でこの min-height:44px を適用している
+   * ため、専用の追加ルールを別途足す必要は無い(44px は button.check の高さと揃えた既存の
+   * タッチターゲット規約値でもあり、そのまま「通常行と同じ min-height」の予約値として転用できる)。
+   * これにより draft 行の title-edit(16px input・auto-zoom 回避で通常 .title の 14px と字大が違う)
+   * や becoming-in の placeholder 差があっても、行挿入直後の最初のフレームから最低 44px が
+   * 確保され、フォント確定後に行高が変わって FAB や後続行が二度動く、という事象を防ぐ。 */
   .row-head {
     flex: 1;
     min-width: 0;
@@ -1117,16 +1160,26 @@ export const TODOS_APP_HTML = `<!doctype html>
        MCP Apps の iframe 高さ自動リサイズと vh が噛み合わず実機で内部スクロール不能・下部見切れの
        バグが出たため全廃し、詳細も #root に通常フローで描く(entry の renderAll コメント参照)。 -->
   <div id="root"></div>
-  <!-- 追加 FAB(+)。カード右下固定。タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の
-       startDraft)。詳細/リスト選択ページ表示中は entry が hidden にして重なりを避ける。
+  <!-- 追加 FAB(+)。#root の直後・通常フローの右寄せ(2026-07-16 v2.2 item4: position:fixed 撤廃)。
+       タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細/リスト選択ページ
+       表示中は entry が hidden にして重なりを避ける。
        【v2→v3 で覆した点】v2 は FAB タップで position:fixed の quick-add ボトムシート(#quick-add
        フォーム + 段階的開示パネル)を開いていたが、詳細シートと同じ fixed+vh の実機バグとトーン
        不一致のため全廃し、iOS 準拠の「行末に空行が生えて即入力」へ置換した(entry の draft コメント参照)。
-       type="button" で暗黙 submit を防ぐ(周囲に form は無いが規律として明示)。 -->
+       type="button" で暗黙 submit を防ぐ(周囲に form は無いが規律として明示)。
+       【2026-07-16 v2.2 item4: DOM 位置を #root の中→#root の直後(body 直下)へ移動】
+       fixed のときは DOM 位置が視覚配置と無関係だったが、フロー配置にする以上 #root の後(=
+       コンテンツ末尾)に置く必要がある。renderAll は #root の中身だけを innerHTML で作り直すので、
+       #root の外に置いたこの FAB(と .fab-row)は再描画の影響を受けない(entry.ts 側は id
+       #quick-add-fab を hidden 切替で参照するだけで、DOM 位置の変更に伴う JS 側の改修は不要)。
+       .fab-row(display:flex; justify-content:flex-end)は右寄せのための素の div ラッパで、
+       スタイルの実体は .fab 自身(id=quick-add-fab は entry.ts の参照キーなので温存)。 -->
   <!-- 2026-07-15: 絵文字 "＋" から lucide "plus" のインライン SVG へ置換(ユーザーフィードバック。
        icons.ts と同じ path データを直書き — このファイルはサーバー側の静的文字列で DOM を持たないため
        icons.ts の createIcon(DOM 生成関数)は使えず、生 SVG マークアップを直接埋め込む)。 -->
-  <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+  <div class="fab-row">
+    <button id="quick-add-fab" class="fab" type="button" aria-label="リマインダーを追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+  </div>
   <!-- 操作結果の読み上げ専用(視覚非表示)。becoming の視覚表現と対になる音声版で、
        entry が affected/removed から「〜を完了しました」等を組み立てて書き込む。
        role="status" = aria-live:polite 相当(一覧の再描画を遮らずに読み上げる)。 -->
