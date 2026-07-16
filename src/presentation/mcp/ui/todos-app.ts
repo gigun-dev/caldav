@@ -191,6 +191,19 @@ export const TODOS_APP_HTML = `<!doctype html>
     justify-content: space-between;
     gap: 8px;
     margin-bottom: 4px;
+    /* C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md 決定3-2):
+     * sticky にしてヘッダ(#header-done を含む)を常時可視にする。ただし body 自身に overflow の
+     * スクロールコンテナが無い(冒頭コメント「内部スクロールコンテナを作らない方針」)ため、
+     * inline で maxHeight に収まっている間・スクロール可能な祖先が無い間はこの sticky は完全に
+     * 無効果(見た目は一切変わらない = 退行ゼロ)。効くのは fullscreen 時に root へ
+     * overflow-y:auto を当てたとき(C3 で実装)だけ — sticky は「スクロール文脈が生まれたときに
+     * 初めて仕事をする」宣言であり、いま単独で追加しても不活性なのが確認できる。
+     * z-index は他レイヤ(.banner/.status/セクション本文)より前面に出す必要があるが、このカードに
+     * 明示的な z-index 階層が無いため 1 を割り当てる(将来モーダル的な要素が増えたら見直す)。 */
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
   }
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .app-title { font-size: 16px; font-weight: 700; }
@@ -648,6 +661,11 @@ export const TODOS_APP_HTML = `<!doctype html>
 
   /* --- 空/スケルトン ----------------------------------------------------------- */
   .empty { color: var(--muted); padding: 12px 0; }
+  /* C2(設計04 §5): inline maxHeight を超えたときの「残り n 件」受動表示。ボタンではない
+   * (タップ不可・cursor は既定のまま) — 昇格(すべて表示→requestDisplayMode)は C3 で
+   * このノードをボタンに置換する予定(2026-07-16 更新「C2→C3 へ移動」方針、entry.ts 側コメント参照)。
+   * .empty と同トーン(var(--muted))にして「情報行であって操作行ではない」ことを視覚でも示す。 */
+  .fold-remaining { color: var(--muted); padding: 8px 0 0; font-size: 12px; }
   /* スケルトン: 接続〜初回 tool-result の間に出す「行の影」3本。テキストの点滅より
    * 「リストが来る場所」を予告できるので体感が安定する。shimmer は opacity パルスで
    * 表現(グラデーション移動より実装が軽く、reduced-motion で単純に止めやすい)。 */

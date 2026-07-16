@@ -135,6 +135,10 @@ import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff } from "./f
 // (寿命付きアニメの最中か)の判定式と定数(1周期・寿命周回数・T_hard)を row-key と同じ規律で
 // 純関数だけ共有する(CSS/DOM は §7.7 判断を維持し agenda と共有しない)。
 import { FEEDBACK, isCommitting } from "./feedback";
+// C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
+// displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
+// 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
+import { FOLD_VISIBLE_COUNT, decideFoldedVisibleCount } from "./todos-fold";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -260,6 +264,35 @@ interface AffectedEntry {
 	// ラベルを中立の「同期(...)」に切り替える(出所=iOS 等は断定しない。ユーザーの「追加/完了」
 	// ラベルと区別するため)。クライアント差分(computeSyncDiff)から合成した分だけに立つ。
 	sync?: boolean;
+}
+
+// --- C1: hostContext から読んだ空間制約(設計04 §5 C1) -------------------------------
+// getHostContext().containerDimensions.maxHeight / displayMode を保持する。renderAll 最終段の
+// 畳み判定(decideFoldedVisibleCount)がこの2値を読む。maxHeight 未送信のホスト(現本アプリ)は
+// null のままなので畳みは発火しない(不活性が既定・todos-fold.ts のコメント参照)。
+let hostMaxHeightPx: number | null = null;
+let hostDisplayMode: string | null = null;
+
+/** C1 本体: getHostContext() を読み、hostMaxHeightPx / hostDisplayMode を更新する。
+ *  【出典】apps.mdx:687-711(View は containerDimensions を確認して CSS を当てるべき、という
+ *  公式例。ただし本カードは maxHeight を CSS の直接クリップ(style.maxHeight)には使わず
+ *  --host-max-height という CSS 変数へ落とすだけに留める — overflow:hidden 的な素朴なクリップは
+ *  行の途中で切れる見苦しい打ち切りになるため、実際の畳み(行単位で先頭 N 件に切る)は
+ *  renderAll 側で行う。この関数はあくまで「読んで反映する」入口)。
+ *  spec.types.ts:236,238,243-249(displayMode/availableDisplayModes/containerDimensions の型)。
+ *  containerDimensions は {height} 側(fixed)と {maxHeight} 側(flexible)の union なので、
+ *  "maxHeight" in containerDimensions で判別する(apps.mdx の公式例と同じ判別方法)。 */
+function applyHostContext(): void {
+	const ctx = app.getHostContext();
+	hostDisplayMode = ctx?.displayMode ?? null;
+	const dims = ctx?.containerDimensions;
+	const maxHeight = dims !== undefined && "maxHeight" in dims ? dims.maxHeight : undefined;
+	hostMaxHeightPx = typeof maxHeight === "number" ? maxHeight : null;
+	if (hostMaxHeightPx !== null) {
+		document.documentElement.style.setProperty("--host-max-height", `${hostMaxHeightPx}px`);
+	} else {
+		document.documentElement.style.removeProperty("--host-max-height");
+	}
 }
 
 // --- UI 状態(単一の状態 → renderAll() で全描画、という素朴な一方向データフロー)-------
@@ -2531,6 +2564,12 @@ function renderAll(): void {
 	appendSection(root, "sec-today", "今日", s.today, todayKey);
 	appendSection(root, "sec-upcoming", "今後", s.upcoming, todayKey);
 	appendSection(root, "sec-nodue", "期日なし", s.noDue, todayKey);
+	// C2(設計04 §5): 「残り n 件」表示の挿入位置マーカー。4セクションの直後・ドラフト行/完了済みの
+	// 手前に置く(畳んでも入力中のドラフト行や完了済みの折り畳みは隠さない方針 — todos-fold.ts の
+	// FoldDecisionInput.totalCount コメント参照)。applyInlineFold がこのコメントノードの直後に
+	// 「残り n 件」の div を挿す(畳まないときは何も挿さない=マーカーだけ残って無害)。
+	const foldAnchor = document.createComment("fold-anchor");
+	root.appendChild(foldAnchor);
 
 	// --- ドラフト行(FAB で生やした未送信の新規行)を一覧末尾(期日なしの下)に選択状態で描く ------------
 	// sectionize に混ぜず末尾へ直接置くのは、空タイトルの draft を compareTasks に通すと localeCompare で
@@ -2559,6 +2598,54 @@ function renderAll(): void {
 		details.appendChild(ul);
 		root.appendChild(details);
 	}
+
+	// C2(設計04 §5): renderAll「最終段」の表示切りだけを行う畳み。ここより前の並べ替え/セクショニング/
+	// 楽観適用(sectionizeManual・位置記憶・stickyData)には一切触れない — 畳みは描画済み DOM から
+	// 行を間引くだけの後処理。activeCount は4セクション(期限切れ/今日/今後/期日なし)の合計行数
+	// (完了済み・ドラフトは対象外。上のコメント参照)。
+	applyInlineFold(activeCount, foldAnchor);
+}
+
+/** C2 本体: hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と実描画高さから
+ *  decideFoldedVisibleCount(純関数・todos-fold.ts)で畳むべきか判定し、畳むなら4セクション
+ *  横断で先頭 visibleCount 件だけ残して空になったセクションを畳み、末尾に受動的な
+ *  「残り n 件」を挿す。maxHeight 情報が無いホスト(hostMaxHeightPx===null)は
+ *  decideFoldedVisibleCount が即 null を返すため、この関数は早期 return し
+ *  root.scrollHeight の強制リフロー(reflow)すら発生しない(不活性ホストでの余分なコスト無し)。 */
+function applyInlineFold(activeCount: number, foldAnchor: Comment): void {
+	if (hostMaxHeightPx === null) return;
+	// root.scrollHeight の読み取りは強制同期レイアウト(reflow)を伴うが、hostMaxHeightPx が
+	// 有限のホスト(=このカードの実質的なメイン利用シナリオである claude.ai 等)でのみ発生し、
+	// renderAll 自体が1回の描画で完結する頻度(ユーザー操作/ポーリング単位)なので実害は小さい。
+	const actualHeightPx = root.scrollHeight;
+	const visibleCount = decideFoldedVisibleCount({
+		maxHeightPx: hostMaxHeightPx,
+		displayMode: hostDisplayMode,
+		actualHeightPx,
+		totalCount: activeCount,
+		foldToCount: FOLD_VISIBLE_COUNT,
+	});
+	if (visibleCount === null) return;
+
+	// 4セクション(完了済みを除く)を横断して先頭 visibleCount 件だけ残す。renderRow が
+	// li.dataset.id を付けている(li[data-id])ので、セクション見出し(h2)やゴースト行を含め
+	// 通常行と同じ扱いで数えてよい(ゴーストも「1行」として畳み対象に含む — 削除中断も
+	// 特別扱いしない方が体感として一貫する)。
+	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
+	rows.slice(visibleCount).forEach((li) => li.remove());
+	// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
+	for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
+		const ul = section.querySelector("ul");
+		if (ul !== null && ul.children.length === 0) section.remove();
+	}
+
+	const remaining = activeCount - visibleCount;
+	const notice = document.createElement("div");
+	notice.className = "fold-remaining";
+	// 受動表示(ボタンではない・タップ不可)。「すべて表示」への昇格ボタンは C3 で
+	// このノードを置換する(2026-07-16 更新「C2 は受動的な『残り n 件』表示まで」方針)。
+	notice.textContent = `残り ${remaining} 件`;
+	foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
 }
 
 /** 読込中スケルトン(行の影3本)。「(リマインダーはありません)」等のテキスト点滅より
@@ -2824,6 +2911,20 @@ app.ontoolresult = (r) => {
 	// (toggleTask 等)と同じ扱い)。
 	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
 };
+// C1: host-context-changed の購読(設計04 §5 C1・SDK フック調査結果)。
+// 【SDK フック確認】node_modules/@modelcontextprotocol/ext-apps の app.d.ts に
+// `addEventListener("hostcontextchanged", handler)`(非推奨版 `onhostcontextchanged` も同義)が
+// 公開されている(app.d.ts:178,219,239,567-582,715-745)。よってポーリング等のワークアラウンドは
+// 不要— SDK が host-context-changed 受信のたびに内部 _hostContext へ merge した後にこのハンドラを
+// 呼ぶ(app.d.ts:723-727)ので、applyHostContext() を呼び直すだけで追従できる。ハンドラは
+// connect 前に登録する(ontoolresult と同じ理由・SDK 推奨)。
+app.addEventListener("hostcontextchanged", () => {
+	applyHostContext();
+	// maxHeight/displayMode の変化は畳み判定に直接効くため、値の反映だけでなく再描画まで行う
+	// (sheetState 中の詳細/リスト選択ページはこの再描画では畳み対象外 = renderAll 内の早期
+	// return で自然にスキップされる)。
+	renderAll();
+});
 
 showStatus("接続中…");
 try {
@@ -2836,6 +2937,11 @@ try {
 }
 // connect 成功。以降は callServerTool を叩いてよい(focus 系リスナーの発火条件にする)。
 connected = true;
+// C1: connect 完了後に一度読み、hostMaxHeightPx/hostDisplayMode を初期化する(apps.mdx:687-711 の
+// 「View の初期化時に containerDimensions を確認する」の実装箇所)。以降の変化は上の
+// hostcontextchanged 購読が拾う。renderAll は呼ばない — この直後に ontoolresult 由来の初回描画が
+// 来る(まだ tasks が無いので skeleton のまま畳み判定しても意味が無い)。
+applyHostContext();
 
 // =============================================================================
 // view 上書き防御(2026-07-14・本番検証で実測した契約外挙動への対策)
