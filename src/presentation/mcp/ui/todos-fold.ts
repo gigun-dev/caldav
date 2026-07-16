@@ -68,3 +68,23 @@ export function decideFoldedVisibleCount(input: FoldDecisionInput): number | nul
 	if (input.totalCount <= input.foldToCount) return null;
 	return input.foldToCount;
 }
+
+// --- C3: 「すべて表示」ボタン vs 受動「残り n 件」表示の分岐(設計04 §5 C3) -----------------
+// 【なぜこれだけ切り出すか】この判定自体は DOM/SDK に触れない1行の真偽判定だが、「死にボタンを
+// 出さない」という設計04 の fable 指摘(§5 の 2026-07-16 更新)がこのプロダクトの安全性要件の
+// 中核なので、todos-entry.ts に埋め込まず独立した名前を与えてテストで固定する。
+// apps.mdx:782(View は requestDisplayMode 前に availableDisplayModes を確認する MUST)の
+// 「確認」をこの関数が担う — availableDisplayModes に "fullscreen" が無いホスト(または
+// hostContext 自体が届いていない/配列が空の)場合は false を返し、呼び出し側は受動表示のまま
+// にする(押しても requestDisplayMode が拒否 or 送信自体をしない = 死にボタンを作らない)。
+/**
+ * ホストが fullscreen への昇格を受理しうるか(= 「すべて表示」ボタンをタップ可能にしてよいか)を
+ * 判定する純関数。
+ *
+ * @param availableDisplayModes getHostContext().availableDisplayModes(applyHostContext が
+ *   保持しているホスト広告値)。未受信/未広告のホストは null を渡す。
+ */
+export function canRequestFullscreen(availableDisplayModes: readonly string[] | null): boolean {
+	if (availableDisplayModes === null) return false;
+	return availableDisplayModes.includes("fullscreen");
+}

@@ -7,7 +7,7 @@
 // 実高さが上限を超えたときだけ固定 N 件へ畳むことを、DOM 無しの純関数レベルで固定する。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
-import { FOLD_VISIBLE_COUNT, decideFoldedVisibleCount } from "../../src/presentation/mcp/ui/todos-fold";
+import { FOLD_VISIBLE_COUNT, canRequestFullscreen, decideFoldedVisibleCount } from "../../src/presentation/mcp/ui/todos-fold";
 
 describe("decideFoldedVisibleCount", () => {
 	test("maxHeight 未送信(null)は不活性(本アプリの現状=退行ゼロ)", () => {
@@ -68,5 +68,19 @@ describe("decideFoldedVisibleCount", () => {
 				foldToCount: FOLD_VISIBLE_COUNT,
 			}),
 		).toBeNull();
+	});
+});
+
+describe("canRequestFullscreen", () => {
+	test("availableDisplayModes 未受信(null)は受動表示のまま(死にボタンを出さない)", () => {
+		expect(canRequestFullscreen(null)).toBe(false);
+	});
+
+	test("availableDisplayModes に fullscreen が無いホスト(inline のみ広告)は受動表示のまま", () => {
+		expect(canRequestFullscreen(["inline"])).toBe(false);
+	});
+
+	test("availableDisplayModes に fullscreen があるホストはボタン化してよい", () => {
+		expect(canRequestFullscreen(["inline", "fullscreen"])).toBe(true);
 	});
 });

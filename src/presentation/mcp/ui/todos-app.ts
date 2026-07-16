@@ -666,6 +666,34 @@ export const TODOS_APP_HTML = `<!doctype html>
    * このノードをボタンに置換する予定(2026-07-16 更新「C2→C3 へ移動」方針、entry.ts 側コメント参照)。
    * .empty と同トーン(var(--muted))にして「情報行であって操作行ではない」ことを視覚でも示す。 */
   .fold-remaining { color: var(--muted); padding: 8px 0 0; font-size: 12px; }
+  /* C3(設計04 §5): fullscreen 対応ホストで「残り n 件」の代わりに出す昇格ボタン。押せることが
+   * 分かるよう .fold-remaining の受動 muted トーンとは区別し、.header-done と同じ
+   * 「テキストリンク言語(accent 色・枠無し)」のトーンに合わせる(押せば確定/遷移する操作面、
+   * という語彙をカード内で統一する)。タップ領域は最低 32px 確保(バナーボタンと同基準)。 */
+  .fold-expand {
+    display: block;
+    width: 100%;
+    margin: 8px 0 0;
+    padding: 6px 0;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: none;
+    border: none;
+    text-align: left;
+    min-height: 32px;
+    cursor: pointer;
+  }
+  /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
+   * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1 が
+   * containerDimensions.maxHeight から設定する CSS 変数で、fullscreen 中はホストが sheet 実寸を
+   * 送ってくるのでその高さに収める。inline に戻ったら applyHostContext がこのクラスを外し、
+   * 通常フロー(内部スクロール無し)に復帰する。 */
+  #root.fullscreen-scroll {
+    overflow-y: auto;
+    max-height: var(--host-max-height, 100vh);
+  }
   /* スケルトン: 接続〜初回 tool-result の間に出す「行の影」3本。テキストの点滅より
    * 「リストが来る場所」を予告できるので体感が安定する。shimmer は opacity パルスで
    * 表現(グラデーション移動より実装が軽く、reduced-motion で単純に止めやすい)。 */

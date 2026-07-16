@@ -138,7 +138,7 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
-import { FOLD_VISIBLE_COUNT, decideFoldedVisibleCount } from "./todos-fold";
+import { FOLD_VISIBLE_COUNT, canRequestFullscreen, decideFoldedVisibleCount } from "./todos-fold";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -272,8 +272,12 @@ interface AffectedEntry {
 // null のままなので畳みは発火しない(不活性が既定・todos-fold.ts のコメント参照)。
 let hostMaxHeightPx: number | null = null;
 let hostDisplayMode: string | null = null;
+// C3(設計04 §5): ホストが広告する availableDisplayModes。「すべて表示」ボタンを押せる形で
+// 出してよいか(canRequestFullscreen)の入力になる。未受信は null(=受動表示のまま・不活性が既定)。
+let hostAvailableDisplayModes: readonly string[] | null = null;
 
-/** C1 本体: getHostContext() を読み、hostMaxHeightPx / hostDisplayMode を更新する。
+/** C1 本体: getHostContext() を読み、hostMaxHeightPx / hostDisplayMode / hostAvailableDisplayModes を
+ *  更新する。
  *  【出典】apps.mdx:687-711(View は containerDimensions を確認して CSS を当てるべき、という
  *  公式例。ただし本カードは maxHeight を CSS の直接クリップ(style.maxHeight)には使わず
  *  --host-max-height という CSS 変数へ落とすだけに留める — overflow:hidden 的な素朴なクリップは
@@ -281,10 +285,14 @@ let hostDisplayMode: string | null = null;
  *  renderAll 側で行う。この関数はあくまで「読んで反映する」入口)。
  *  spec.types.ts:236,238,243-249(displayMode/availableDisplayModes/containerDimensions の型)。
  *  containerDimensions は {height} 側(fixed)と {maxHeight} 側(flexible)の union なので、
- *  "maxHeight" in containerDimensions で判別する(apps.mdx の公式例と同じ判別方法)。 */
+ *  "maxHeight" in containerDimensions で判別する(apps.mdx の公式例と同じ判別方法)。
+ *  C3 追加: fullscreen 時は root に overflow-y:auto を当て全件を内部スクロールで見せる
+ *  (畳み自体は decideFoldedVisibleCount が displayMode!=="inline" で null を返すので既に全件表示
+ *  になっている — ここで足すのはスクロール可能にするコンテナ設定だけ)。 */
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
 	hostDisplayMode = ctx?.displayMode ?? null;
+	hostAvailableDisplayModes = ctx?.availableDisplayModes ?? null;
 	const dims = ctx?.containerDimensions;
 	const maxHeight = dims !== undefined && "maxHeight" in dims ? dims.maxHeight : undefined;
 	hostMaxHeightPx = typeof maxHeight === "number" ? maxHeight : null;
@@ -293,6 +301,11 @@ function applyHostContext(): void {
 	} else {
 		document.documentElement.style.removeProperty("--host-max-height");
 	}
+	// C3: fullscreen 中だけ root を内部スクロールコンテナにする。inline に戻ったら外す
+	// (todos-app.ts 冒頭コメントの「内部スクロールコンテナを作らない方針」は inline 限定の方針で、
+	// fullscreen は sheet 1枚だけなので二重スクロール問題が構造的に起きない・設計04 決定2)。
+	// sticky ヘッダ(.bar)はスクロール可能な祖先が生まれて初めて効く(todos-app.ts の .bar コメント参照)。
+	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
 }
 
 // --- UI 状態(単一の状態 → renderAll() で全描画、という素朴な一方向データフロー)-------
@@ -2640,12 +2653,32 @@ function applyInlineFold(activeCount: number, foldAnchor: Comment): void {
 	}
 
 	const remaining = activeCount - visibleCount;
-	const notice = document.createElement("div");
-	notice.className = "fold-remaining";
-	// 受動表示(ボタンではない・タップ不可)。「すべて表示」への昇格ボタンは C3 で
-	// このノードを置換する(2026-07-16 更新「C2 は受動的な『残り n 件』表示まで」方針)。
-	notice.textContent = `残り ${remaining} 件`;
-	foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
+	// C3(設計04 §5): fullscreen が広告されているホストだけボタン化する。canRequestFullscreen が
+	// apps.mdx:782 の「View は requestDisplayMode 前に availableDisplayModes を確認する MUST」を
+	// 担う純関数 — fullscreen 非広告ホスト(claude.ai で inline のみ広告・本アプリの現状=未受信)では
+	// false になり、従来どおりの受動「残り n 件」表示のまま(押しても何も起きない死にボタンを
+	// 作らない・2026-07-16 fable 指摘)。
+	if (canRequestFullscreen(hostAvailableDisplayModes)) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "fold-expand";
+		button.textContent = `すべて表示 (全${activeCount}件)`;
+		button.addEventListener("click", () => {
+			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST・result.mode)。
+			// ホストが昇格を拒否した(sheet を出さなかった等)場合は "inline" が返るだけで、それ自体は
+			// エラーではない — 何もしない(次回描画は host-context-changed 経由の hostDisplayMode 更新に
+			// 委ねる。この then/catch では DOM を直接いじらない)。通信失敗等のエラーはカードを壊さない
+			// よう握りつぶす(設計04 §5 C3 の完了条件)。
+			void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+		});
+		foldAnchor.parentNode?.insertBefore(button, foldAnchor.nextSibling);
+	} else {
+		const notice = document.createElement("div");
+		notice.className = "fold-remaining";
+		// 受動表示(ボタンではない・タップ不可)。fullscreen が広告されていないホストではここに留まる。
+		notice.textContent = `残り ${remaining} 件`;
+		foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
+	}
 }
 
 /** 読込中スケルトン(行の影3本)。「(リマインダーはありません)」等のテキスト点滅より
@@ -2895,7 +2928,13 @@ function announceBecoming(): void {
 renderSkeleton();
 
 let gotResult = false;
-const app = new App({ name: "caldav-todos", version: "0.2.0" });
+// C3(設計04 §5): appCapabilities.availableDisplayModes を宣言する(apps.mdx:781 View は
+// appCapabilities.availableDisplayModes を宣言する MUST。これが無いとホストは:786「View の
+// appCapabilities に無いモードへ MUST NOT switch」により fullscreen へ切り替えられない —
+// この宣言が昇格フロー全体の前提・設計04 §5「順序制約」)。第2引数が capabilities
+// (McpUiAppCapabilities・spec.types.ts:404-412、AppOptions とは別引数。app.d.ts:501
+// `constructor(_appInfo, _capabilities?, options?)`)。
+const app = new App({ name: "caldav-todos", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
 // ハンドラは connect 前に登録する(登録前に来た通知を取りこぼさないため。SDK 推奨。
 // ext-apps は「connect 完了後の登録」を警告する _assertHandlerTiming を持つ)。
 app.ontoolresult = (r) => {
