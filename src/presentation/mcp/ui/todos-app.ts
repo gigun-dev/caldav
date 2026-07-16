@@ -523,11 +523,30 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 終端を box-shadow 0(リング完全消滅)にする — リングは「押した瞬間だけの一過性の波紋」に徹し、
    * 満了後は circle-pop の scale(1) と合わせてリング無しの最終形(塗り円のみ/空円のみ)へ純粋に
    * 収束する。 */
-  li.becoming-done.committing .circle,
-  li.becoming-undone.committing .circle {
+  /* done 側(becoming-done): ring-pulse + circle-pop の2本。塗り円(accent 塗り潰し)へ
+   * 収束するので circle 本体は静的形へ自然に落ち、追加のアニメは不要。 */
+  li.becoming-done.committing .circle {
     animation:
       ring-pulse 1.2s ease-out 1,
       circle-pop 1.2s ease-out 1;
+  }
+  /* 【2026-07-17 undo アニメ強化: circle-drain を第3アニメで追加】undo 側(becoming-undone)は
+   * done 側の逆再生に相当するが、旧実装は done と同一2本(ring-pulse+circle-pop)を共有していて
+   * 「塗り→空へ抜ける」動きが無く、再開(reopen)の手応えが done より弱いという実機 FB があった。
+   * done は最終形が「塗り円」なので円の中身が動かなくても塗りの出現で完了が伝わるが、undo の
+   * 最終形は「素の空円」で、途中に塗りが無いと circle-pop(scale)だけの平面的な反応に留まる。
+   * そこで undo だけ circle-drain を重ね「一瞬 accent で塗られてからスッと空へ抜ける(drain)」
+   * 逆再生の質感を足す。3本を併記(ring-pulse + circle-pop + circle-drain)。
+   * 【§7.8 committing 原則との整合(0 で始まり定常状態に痕跡を残さない)】circle-drain の
+   * 終端フレーム(35%〜100%)は background:transparent / color:transparent / border-style:dashed /
+   * border-color:accent で、これは下の li.becoming-undone .circle の静的形(破線・accent の空丸)と
+   * 厳密一致する。よって committing クラスが外れても円に視覚的な段差(ジャンプ)は生じず、
+   * アニメは「定常状態に痕跡を残さず」空丸へ純粋収束する。 */
+  li.becoming-undone.committing .circle {
+    animation:
+      ring-pulse 1.2s ease-out 1,
+      circle-pop 1.2s ease-out 1,
+      circle-drain 1.2s ease-out 1;
   }
   @keyframes ring-pulse {
     0% { box-shadow: 0 0 0 0 var(--accent-pulse); }
@@ -538,6 +557,19 @@ export const TODOS_APP_HTML = `<!doctype html>
     0% { transform: scale(1); }
     40% { transform: scale(1.12); }
     100% { transform: scale(1); }
+  }
+  /* circle-drain(undo 専用): 完了時の塗り円を「一瞬だけ復元 → スッと空へ抜く」逆再生。
+   * 0% は done の最終形(accent 塗り・実線・白チェック)を再現し、35% で塗り・文字を透明へ
+   * 落としきる(35% を終端値の開始点にする理由: circle-pop の scale ピークが 40% なので、
+   * 塗りが抜けるピークとポップのピークを重ね「抜けながら弾む」1つの動きに束ねる)。
+   * 35%→100% は同値のまま保持し、静的形(破線・accent の空丸)へ受け渡す。
+   * 【border-style を 0% で solid・35% 以降 dashed にする理由】border-style は連続補間できない
+   * (アニメ不能な離散プロパティ)ので、キーフレーム境界で step 的に切り替わる。0% を solid に
+   * して done の実線塗り円を再現し、終端 dashed で becoming-undone .circle の破線静的形に一致させる
+   * (補間されず 35% の瞬間に破線へ切り替わるのは意図どおり — 塗りが抜けるのと同じタイミング)。 */
+  @keyframes circle-drain {
+    0% { background: var(--accent); border-color: var(--accent); border-style: solid; color: #fff; }
+    35%, 100% { background: transparent; color: transparent; }
   }
   /* 【2026-07-16 v2.2 item2】reduced-motion: committing アニメ無し = 最初から最終形。
    * 静的リング自体を撤回したので animation:none だけで自然に「リング無し(塗り円のみ/

@@ -264,6 +264,11 @@ const createCalendarInputShape = {
 				"コレクションの id を指すのが自然な対応関係。",
 		),
 	color: z.string().optional().describe('Apple 拡張のカレンダー色。"#RRGGBB" または "#RRGGBBAA"(8桁)。'),
+	// 2026-07-17 TZ グラウンディング: create-calendar も作成直後に buildTodosViewModel で確定一覧
+	// (実質空)を返すため、応答表示ゾーンに使う timeZone を additive に受ける。既定 UTC 不変。
+	timeZone: z.string().optional().describe(
+		"作成直後に返す一覧の due 表示に使う IANA タイムゾーン。省略時は UTC(新規リストは通常空なので実害は薄いが、UI 経路の一貫性のため受ける)。",
+	),
 };
 
 /**
@@ -572,11 +577,14 @@ const updateTodoInputShape = {
 			"時刻付きに変更すると DTSTART;TZID/DUE;TZID を立て、必要なら VTIMEZONE をサーバーが同梱する。" +
 			"反復 VTODO(RRULE あり)の期日除去は拒否する(DTSTART が反復アンカーのため — 先に繰り返しを解除すること)。",
 	),
+	// 2026-07-17 TZ グラウンディング: この timeZone は「due 解釈用」に加えて「応答一覧の due 表示ゾーン」も
+	// 兼ねる(handler が buildTodosViewModel に流用)。due が時刻付きでない編集/完了/再開でも、UI カードは
+	// 閲覧デバイスのゾーンを載せてくることで確定一覧の時刻付き DUE が UTC 落ちしなくなる。
 	timeZone: z.string().optional().describe(
-		'due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須' +
-			"(省略時はエラー・暗黙 UTC フォールバックはしない)。DST ゾーン(例 America/New_York)は" +
-			"サーバー側 VTIMEZONE 生成が Phase 1 で未対応のためエラーになる — 固定オフセットゾーンのみ対応。" +
-			"due が終日/除去/省略のときは無視する(create-todo の timeZone と同じ制約)。",
+		'IANA タイムゾーン名(例 "Asia/Tokyo")。用途は2つ: (1)due を時刻付き("YYYY-MM-DDTHH:MM:SS")に' +
+			"変更するときの解釈ゾーン(そのときは必須・省略時エラー・暗黙 UTC フォールバックなし)、" +
+			"(2)応答で返す確定一覧の due 表示ゾーン(省略時は UTC)。DST ゾーン(例 America/New_York)は" +
+			"サーバー側 VTIMEZONE 生成が Phase 1 で未対応のため time 付き due 指定時はエラー — 固定オフセットゾーンのみ対応。",
 	),
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
@@ -598,14 +606,25 @@ const updateTodoInputShape = {
 	),
 };
 
+// timeZone を complete/delete/move にも additive に足す(2026-07-17 TZ グラウンディング)。
+// これらの mutate は応答で確定一覧(TodosViewModel)を組み直すため、応答表示ゾーンに使う。
+// optional・既定 UTC(resolveTimeZone)は不変なので LLM 経路の後方互換は保たれる — UI カードが
+// 常に閲覧デバイスの IANA ゾーンを渡すことで、時刻付き DUE の一覧表示が UTC 落ちしなくなる。
+const mutateTimeZoneField = z.string().optional().describe(
+	"応答一覧の due 表示 + floating/DATE 解釈に使う IANA タイムゾーン。省略時は UTC。UI は閲覧デバイスの" +
+		"ゾーンを渡す(このツールで完了/削除/移動しても対象タスクの ICS 自体は変えず、応答表示ゾーンにだけ影響)。",
+);
+
 const completeTodoInputShape = {
 	id: z.string().describe("完了対象の VTODO UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+	timeZone: mutateTimeZoneField,
 };
 
 const deleteTodoInputShape = {
 	id: z.string().describe("削除対象の VTODO UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+	timeZone: mutateTimeZoneField,
 };
 
 // move-todo の入力(UI 詳細シート「リスト ›」からのコレクション間移動)。move-todo.ts 冒頭コメント
@@ -614,6 +633,7 @@ const moveTodoInputShape = {
 	id: z.string().describe("移動対象の VTODO UID。"),
 	calendarId: z.string().optional().describe('移動元コレクション ID。省略時は "tasks"。'),
 	toCalendarId: z.string().describe("移動先コレクション ID(list-calendars/create-calendar が返す id)。"),
+	timeZone: mutateTimeZoneField,
 };
 
 // --- create-event / create-events / update-event / delete-event(E-3 スライス S1)--------------
@@ -742,7 +762,11 @@ const listTodosInputShape = {
 		'対象コレクション ID。省略時は "tasks" のみを対象とする。他の VTODO コレクション' +
 			"(list-calendars で components に VTODO を含むもの)を見るには calendarId を明示すること。",
 	),
-	timeZone: z.string().optional().describe("due の表示 + floating/DATE の解釈に使う IANA タイムゾーン。省略時は UTC。"),
+	timeZone: z.string().optional().describe(
+		"due の表示 + floating/DATE の解釈に使う IANA タイムゾーン(例 \"Asia/Tokyo\")。" +
+			"ユーザーのローカルゾーンを必ず渡すこと(省略時は UTC にフォールバックし、時刻付き DUE が" +
+			"UTC のまま表示されて実際の時刻とズレる)。",
+	),
 };
 
 /**
@@ -1354,7 +1378,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, displayName, components, color }) => {
+		async ({ id, displayName, components, color, timeZone }) => {
 			try {
 				const resolvedId = id ?? slugifyForCollectionId(displayName);
 				const supportedComponents: readonly ComponentKind[] = (components ?? ["VTODO"]) as readonly ComponentKind[];
@@ -1381,7 +1405,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// mutate 系ツール(create-todo 等)と同等(確定一覧の ListTodos 1回)。
 				// カレンダーのメタ情報(displayName/components/color)は UI 契約に不要なので
 				// content(text)側にだけ残し、structuredContent には calendarId のみ載せる。
-				const vm = await buildTodosViewModel({ calendarId: collection.id });
+				const vm = await buildTodosViewModel({ calendarId: collection.id, timeZone });
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(result) }],
 					structuredContent: vm as unknown as { [key: string]: unknown },
@@ -1909,7 +1933,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					affected = [{ id: task.id, kind: "edited", task: snapshotFromTask(task), ...(changes !== undefined ? { changes } : {}) }];
 				}
 
-				const vm = await buildTodosViewModel({ calendarId, affected });
+				// 2026-07-17 TZ グラウンディング: 応答一覧の due 表示ゾーンに入力 timeZone を流用する
+				// (この timeZone は元々 due 解釈用として受けているものを、応答表示ゾーンにも兼用する。
+				// UI カードは完了/再開/編集のいずれでも閲覧デバイスのゾーンを載せてくるので、確定一覧の
+				// 時刻付き DUE が UTC 落ちしなくなる)。既定 UTC(resolveTimeZone)は不変。
+				const vm = await buildTodosViewModel({ calendarId, timeZone, affected });
 				return toTodosToolResponse(vm);
 			} catch (error) {
 				// TodoNotFoundError / InvalidDueError / DueTimeZoneRequiredError / InvalidTimeZoneError /
@@ -1938,7 +1966,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId }) => {
+		async ({ id, calendarId, timeZone }) => {
 			try {
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const completeTodo = new CompleteTodo(putCalendarObject, deps.resourceRepo, deps.iterator);
@@ -1954,8 +1982,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// task: snapshotFromTask で自己完結描画用スナップショットを添える(案X・2026-07-13。
 				// completed は tasks の未完了ビューから抜けるので、UI はこの snapshot が無いと
 				// becoming-done を描く元データを失う — todos-view-model.ts の TaskSnapshot コメント参照)。
+				// 2026-07-17 TZ グラウンディング: 応答一覧の due 表示ゾーンに timeZone を渡す(既定 UTC 不変)。
 				const vm = await buildTodosViewModel({
 					calendarId,
+					timeZone,
 					affected: [{ id: task.id, kind: "completed", task: snapshotFromTask(task) }],
 				});
 				return toTodosToolResponse(vm);
@@ -1979,7 +2009,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId }) => {
+		async ({ id, calendarId, timeZone }) => {
 			try {
 				// removed の title/due は「削除直前」の状態が要る(削除後は当然もう読めない)。
 				// DeleteTodo UC が If-Match 解決のため内部 read する更新前レンズを removed として返す
@@ -1996,7 +2026,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// (対象不在なら execute が TodoNotFoundError を投げる)ので、旧実装の「target 取得失敗時の
 				// {id, title:""} フォールバック」はもう不要になった。
 				const removed: TaskSnapshot[] = [snapshotFromTask(removedTask)];
-				const vm = await buildTodosViewModel({ calendarId, removed });
+				// 2026-07-17 TZ グラウンディング: 残った行の due 表示ゾーンに timeZone を渡す(既定 UTC 不変)。
+				const vm = await buildTodosViewModel({ calendarId, timeZone, removed });
 				return toTodosToolResponse(vm);
 			} catch (error) {
 				if (error instanceof TodoNotFoundError) return toolError(error.message);
@@ -2032,7 +2063,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, toCalendarId }) => {
+		async ({ id, calendarId, toCalendarId, timeZone }) => {
 			try {
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
@@ -2047,7 +2078,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// removed は delete-todo と同じ TaskSnapshot(案X)。movedTo を併せて載せることで
 				// UI は「消えた」ではなく「よそへ移った」ゴーストとして描き分けられる。
 				const removed: TaskSnapshot[] = [snapshotFromTask(removedTask)];
-				const vm = await buildTodosViewModel({ calendarId, removed, movedTo: toCalendarId });
+				// 2026-07-17 TZ グラウンディング: 移動元ビューの due 表示ゾーンに timeZone を渡す(既定 UTC 不変)。
+				const vm = await buildTodosViewModel({ calendarId, timeZone, removed, movedTo: toCalendarId });
 				return toTodosToolResponse(vm);
 			} catch (error) {
 				// MoveTodoSameCollectionError(no-op)/ TodoNotFoundError(移動元に UID 無し)/

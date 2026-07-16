@@ -553,6 +553,13 @@ function viewAsArgs(v: CurrentView): Record<string, unknown> {
 function refreshArgs(): Record<string, unknown> {
 	const args = viewAsArgs(currentView);
 	if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+	// 【2026-07-17 時刻付き todo の TZ グラウンディング(read 側の UTC 落ち修正)】
+	// 再取得(refetch/mutate 後の refresh-todos)には閲覧デバイスの IANA ゾーンを常時載せる。
+	// これが無いと server 側 resolveTimeZone が UTC に落ち、時刻付き DUE が UTC のまま表示されて
+	// 「作成時は正しいのに再取得で時刻がズレる」実機事故になる(真因は read 側で timeZone が
+	// 伝播していなかったこと。create-todo は既に Intl ゾーンを送っていた)。refreshArgs は
+	// 再取得の単一チョークポイントなのでここ1点で全 refresh 経路をグラウンドする。
+	args.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	return args;
 }
 
@@ -1610,6 +1617,11 @@ function openCreateSheet(): void {
 	if (draft === null) return;
 	sheetDraft = makeSheetDraft(draftToItem(draft));
 	sheetState = { id: draft.id, page: "detail", create: true };
+	// 【2026-07-17 selectedId 未クリアバグ根治】詳細ページ(create/detail)へ入るときは一覧の行選択を
+	// 必ず解除する。これを怠ると、sticky ヘッダの「完了」(行選択中に出る)と page-head の「保存」が
+	// 同時表示される二重表示バグになる(renderAll の「sheet 表示中は selectedId を見ない」前提の
+	// コメントが事実になっていなかった。openDetailSheet 相当の入口が selectedId を残していたのが原因)。
+	selectedId = null;
 	closeSwipe();
 	quickAddFab.hidden = true;
 	renderAll();
@@ -1780,8 +1792,16 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	// 2026-07-15: 絵文字 "‹" から lucide "chevron-left" のインライン SVG へ置換。ボタン自体に
 	// aria-label があるためアイコンは装飾(aria-hidden)のまま、視覚テキストだけ残す。
 	back.appendChild(createIcon("chevron-left"));
-	back.appendChild(document.createTextNode("戻る")); // 間隔は .link の gap で作る(CSS 側参照)
-	back.setAttribute("aria-label", isCreate ? "一覧のドラフト行へ戻る" : "破棄して一覧へ戻る");
+	// 【2026-07-17 iOS 準拠へ統一: 編集モードの「戻る」を非破棄(保存して戻る)にする】
+	// 旧実装は編集モードの「‹ 戻る」= 破棄(closeSheet のみ)だったが、一覧のインライン編集は
+	// 「行外タップ=自動確定(auto-save)」であり(グローバルクリックの commitSelection 参照)、
+	// カード内で「戻ると保存が別モデル」なのは操作モデルの二重化で iOS の直感にも反する。
+	// そこで編集モードの戻るも collectSheetChanges + saveEdit を通してから閉じる形に揃え、
+	// 「カード内どこから抜けても保存される」一枚岩の保存モデルにする(失敗時は saveEdit 内の
+	// 既存ロールバック + バナーが安全網)。ラベルも「保存して戻る」へ更新して非破棄を明示する。
+	// 作成モードの「戻る」は現行維持(元々非破壊 = ドラフト行へ title/notes を持ち帰るだけ)。
+	back.appendChild(document.createTextNode(isCreate ? "戻る" : "保存して戻る")); // 間隔は .link の gap で作る(CSS 側参照)
+	back.setAttribute("aria-label", isCreate ? "一覧のドラフト行へ戻る" : "保存して一覧へ戻る");
 	back.addEventListener("click", () => {
 		if (isCreate) {
 			// 作成モードの「戻る」= ドラフトごと破棄ではなく、一覧のドラフト行選択状態へ戻る(spec)。
@@ -1797,12 +1817,23 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 			renderAll();
 			return;
 		}
+		// 編集モード: 保存経路(下の「完了」ボタンと同一の collectSheetChanges + saveEdit)を通してから閉じる。
+		const changes = collectSheetChanges(task, d);
 		closeSheet();
+		if (Object.keys(changes).length > 0) void saveEdit(task, changes);
 	});
 	const save = document.createElement("button");
 	save.type = "button";
 	save.className = "link link-save";
-	save.textContent = "保存";
+	// 【2026-07-17 「保存」/「完了」二重意味の解消】編集モードのこのボタンは iOS の詳細シート
+	// (右上「完了」)に合わせて「完了」にリネームする。ハンドラは現行の保存経路のまま
+	// (collectSheetChanges + saveEdit)。狙いは、行選択中に出る sticky ヘッダの「完了」と
+	// page-head の「保存」が別語彙で並ぶ紛らわしさを断ち、「完了 = このカードでの編集を確定」に
+	// 語彙を一本化すること(selectedId 未クリアバグ根治と併せて二重表示自体も消える)。
+	// 作成モードは「完了」だと "タスク完了" と紛れるため「保存」を維持する(create の確定は
+	// タスクの新規作成であって完了操作ではない — 語の衝突を避ける判断。親レビューの論点)。
+	save.textContent = isCreate ? "保存" : "完了";
+	save.setAttribute("aria-label", isCreate ? "この内容で作成" : "編集を保存して一覧へ戻る");
 	save.addEventListener("click", () => {
 		if (isCreate) {
 			// 作成モードの「保存」= create-todo に全フィールドを渡す(既存 optimisticRows 経路 + 詳細フィールド)。
@@ -1916,7 +1947,13 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		body.appendChild(row);
 	}
 
-	// --- 時間帯行(読み取り専用)。task 自身のゾーンが閲覧者ゾーンと異なるときだけ出す(v2 から継承)-----
+	// --- 時間帯行(読み取り専用)。一覧の解釈ゾーン(currentTimeZone = 応答 vm.timeZone)が閲覧者ゾーンと
+	// 異なるときだけ出す(v2 から継承)。
+	// 【2026-07-17 コメント訂正】旧コメントは「task 自身のゾーン」と書いていたが誤り。currentTimeZone は
+	// 個々の task 固有のゾーンではなく「この一覧を解釈・表示しているゾーン」(list/refresh に渡した timeZone を
+	// server が vm.timeZone に echo したもの)。TZ グラウンディング修正で refresh/mutate に常時閲覧者ゾーンを
+	// 送るようになったため、通常 currentTimeZone==viewerZone となりこの行は自然に消える(出し分けロジックは
+	// 現状維持 — 何らかの理由で解釈ゾーンが閲覧者と食い違ったときだけ注意喚起として残す)。-----
 	if (d.hasDate && currentTimeZone !== null) {
 		const viewerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		if (currentTimeZone !== viewerZone) {
@@ -2196,6 +2233,9 @@ async function moveTodo(task: TodoItem, toCalendarId: string): Promise<void> {
 	try {
 		const args: Record<string, unknown> = { id: task.id, toCalendarId };
 		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		// 【2026-07-17 TZ グラウンディング】move 応答は移動元ビューの確定一覧を組み直すので、
+		// 時刻付き DUE が UTC 落ちしないよう閲覧デバイスのゾーンを常時送る(refreshArgs と対称)。
+		args.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const result = await app.callServerTool({ name: "move-todo", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -3206,6 +3246,10 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		// null(初回応答前)のときだけ省略して server 既定に委ねる(その状態では実質 tasks を見ている)。
 		const updateArgs: Record<string, unknown> = { id: task.id, status: nextStatus };
 		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+		// 【2026-07-17 TZ グラウンディング】完了/再開の応答は buildTodosViewModel で確定一覧を
+		// 組み直す。timeZone を載せないと応答表示ゾーンが UTC に落ち、一覧の時刻付き DUE がズレる
+		// (mutate 応答をそのまま確定描画するため refreshArgs と同様に閲覧デバイスのゾーンを常時送る)。
+		updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const result = await app.callServerTool({
 			name: "update-todo",
 			arguments: updateArgs,
@@ -3327,6 +3371,9 @@ async function deleteTask(task: TodoItem): Promise<void> {
 		// calendarId は必ず渡す(2026-07-14 実機バグ修正の監査対象。null のときだけ省略)。
 		const deleteArgs: Record<string, unknown> = { id: task.id };
 		if (currentCalendarId !== null) deleteArgs.calendarId = currentCalendarId;
+		// 【2026-07-17 TZ グラウンディング】delete 応答も確定一覧(残った行)を組み直すので、
+		// 一覧の時刻付き DUE が UTC 落ちしないよう閲覧デバイスのゾーンを常時送る(refreshArgs と対称)。
+		deleteArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const result = await app.callServerTool({ name: "delete-todo", arguments: deleteArgs });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -3477,15 +3524,18 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 		// ときだけ省略して server 既定に委ねる。変更フィールドだけを載せる(undefined は送らない=部分更新)。
 		const updateArgs: Record<string, unknown> = { id: task.id };
 		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+		// timeZone は常時送る(件3 TZ グラウンディング 2026-07-17): 2つの役割を兼ねる —
+		//  ① 時刻付き due を送るとき DTSTART;TZID/DUE;TZID + VTIMEZONE の解釈ゾーン(下の due 分岐で必須)、
+		//  ② update-todo 応答 vm.timeZone の表示ゾーン(「時間帯」行が UTC に落ちないための grounding)。
+		// due を変えない編集(タイトルだけ等)でも ② のために送る。update-todo UC は due が渡された
+		// ときだけ DUE を patch するので、timeZone 単独送信で DUE を意図せず書き換えることはない
+		// (=due 無しでも安全)。refreshArgs / toggle / delete / move と同じく Intl が唯一の真実。
+		updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		if (changes.title !== undefined) updateArgs.title = changes.title;
 		if (changes.due !== undefined) {
 			// null(除去)/ 終日 / 時刻付き をそのまま送る(update-todo の due は三値。V6 フォローアップ)。
-			// 時刻付き("...T...")のときは create-todo と同じく timeZone(閲覧デバイスの IANA ゾーン)が
-			// 必須なので併せて送る(update-todo が DTSTART;TZID/DUE;TZID + VTIMEZONE を組む)。
+			// 時刻付きの TZID 解釈は上で常時送っている updateArgs.timeZone が担う。
 			updateArgs.due = changes.due;
-			if (changes.due !== null && changes.due.includes("T")) {
-				updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-			}
 		}
 		if (changes.priority !== undefined) updateArgs.priority = changes.priority;
 		if (changes.notes !== undefined) updateArgs.notes = changes.notes;
