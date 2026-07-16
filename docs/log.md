@@ -793,3 +793,22 @@
   architect にアイデンティティ戦略を調査依頼(自前 better-auth vs 外部 IdP・SIWA・分析要件[Firebase の
   バンドル価値は AnalyticsPort 分離で代替できるかの検証含む]・MCP OAuth 統合・IdentityPort seam)。
   **結論が出てから A-1 スキーマのアイデンティティ列を確定**する(調査→設計の順序を守る)。
+
+## 2026-07-16(続き)操作フィードバック統一ドクトリン v2 + レイテンシ再計測
+
+- **実機FBの続き(done/undo/add のフィードバック統一)**: ユーザー方針「done/undo/add のシマーを
+  統一・パフォーマンスで楽観/悲観を決める・指定秒アニメで手応え+超過で警告。楽観でもステートレス
+  でも指定秒アニメはアリ」。→ 7/13 の no-animation ドクトリンを**部分改訂(v2)**。「操作起点・
+  一過性(1周で静的収束)・情報を運ぶ」の3条件を満たすアニメだけ解禁、持続/自発/成功トーストは
+  禁止のまま。Fable architect が統一状態機械を設計 → docs/modeling/12 §7.8 に確定。
+- **ユーザー裁可の調整**: アニメは1周(2周案を取り下げ・cycleMs=1200/animCycles=1)。楽観パスは
+  overtime なし(1周→即静的収束、失敗時のみロールバック+バナー)。「保存中…」は悲観パス(反復の
+  start/end/recurrence= 予測不可)専用。add の無限シマーも `infinite→1` に是正(#3 解消)。
+- **レイテンシ再計測(Cloudflare observability・Smart Placement 後・POST /mcp・622件・7/15〜16)**:
+  p50=287ms / p90=1233ms / p95=1958ms / p99=2985ms。中央値は速いが裾が重い。旧 p95≈1.16s(7/14)
+  より高いが E-3 の event mutation(VTIMEZONE 生成)混在で同条件比較でなく、Smart Placement 単体の
+  改善は断定不可。→ 楽観デフォルトを強く正当化(0.1s バーは楽観のみ)。
+- **計器 follow-up 起票**: `{mcpTool,ms,colo}` console.log は observability で field クエリできない
+  (未インデックス)ことが判明。ツール別・colo 別レイテンシの計器として機能していない →
+  Analytics Engine writeDataPoint 化を別スライスで(next-directions カタログへ)。
+- §7.7 の「保存完了バナー」案は §7.8 が上書き(成功バナーは Why not に降格・失敗/例外専用)。

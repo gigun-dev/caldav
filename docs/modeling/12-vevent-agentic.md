@@ -226,6 +226,143 @@ added/removed がノイズの洪水になる。系列単位の方がシグナル
   title の1行目位置固定)。許容基準 =「メモ無し行の選択で『メモを追加』行が下に増える以外、
   title の上下移動ゼロ」。
 - Done 位置: 行内 confirm を撤去しカード右上の単一 Done に(選択は常に高々1行)。
-- シマー完了合図: no-animation ドクトリンを緩めず、保存完了時にバナーで「保存しました」。
+- ~~シマー完了合図: no-animation ドクトリンを緩めず、保存完了時にバナーで「保存しました」。~~
+  > **2026-07-16 上書き(§7.8 ドクトリン v2):** 本項は撤回。ユーザー FB(done/undo/add の
+  > フィードバックを統一・楽観/悲観をレイテンシで決める・指定秒アニメで手応え)を受け、
+  > no-animation ドクトリンを「一過性・寿命付き・操作起点」に限り部分解禁する **§7.8** に置換。
+  > **成功バナーは出さない**(成功は行の収束が既に語る = 二重通知)方針に変更。無限シマーも是正。
 - **CSS/DOM 共有化は今回見送り**(S-A〜S-E で両ファイルが揺れる最中の共有化はレビュー不能な
   巨大差分になる)。今回**新規に書く純関数**(rowKey・系列グルーピング diff)のみ ui/ 共有配置。
+
+## §7.8 操作フィードバック統一ドクトリン v2(2026-07-16・Fable 設計)
+
+> todos v3 / agenda カードの全 mutate 操作フィードバックの設計の正。§7.7「シマー完了合図 =
+> 保存完了バナー」項を上書きする。ユーザー FB(done/undo/add の統一・パフォーマンスで楽観/
+> 悲観を決める・指定秒アニメで手応え+超過で警告)から生まれ、Fable architect が設計・
+> ユーザー裁可済み。実測レイテンシは同日 observability 集計に基づく。
+
+### 結論
+
+全 mutate 操作(done/undo/add/edit/delete、event CRUD)を単一ライフサイクルに載せる:
+- **楽観パス(既定)**: タップ即、楽観適用 + **寿命1周(1.2s)の有限アニメーション** → 周期満了で
+  **即座に静的 becoming へ収束**(overtime なし)。以降はバックグラウンドで確定を待ち、
+  **実失敗のときだけ**ロールバック+エラーバナー。楽観は「もう確定した体で見せる」表現なので、
+  途中に「保存中…」を挟むのは自己矛盾 — 待ち表示を持たない。
+- **悲観パス(結果を予測できない操作のみ)**: 見た目は現状維持 + 1周アニメ → 確定まで静的な
+  「保存中…」タグ(= overtime 表現はこちら専用)→ 確定描画。
+- **共通**: T_hard = 10s 超過で警告バナー「保存に時間がかかっています」+「再読み込み」導線。
+  **fetch の中断もロールバックもしない**(真実は次の refresh に委ねる)。成功トースト/バナーは
+  出さない(バナーは失敗・例外専用)。
+
+### 根拠
+
+**一次資料(NN/g・原文確認済み)**:
+- *Response Times: The 3 Important Limits*: 0.1s =「即時」限界 / 1.0s = 思考の流れが途切れない
+  限界 / 10s = 注意持続の限界。実測分布では悲観 UI は 0.1s を構造的に満たせず p90 で 1.0s も
+  超える → **既定は楽観**。10s が T_hard の根拠。
+- *Progress Indicators*: 「待ち時間はアクションの瞬間に始まる」「1s 未満はインジケータ不要」
+  「ループアニメは 2–10s 向け・終わりの見えない表示は不信を生む」→ **無限シマーは 1s 級操作に
+  10s 超級の言語を使う誤り**(実機 FB #3「本当に通信できてる?」はこの違反の直接の帰結)。
+
+**実測レイテンシ(Cloudflare observability・Smart Placement 後・POST /mcp・622件・7/15〜16)**:
+p50=287ms / p90=1233ms / p95=1958ms / p99=2985ms。中央値は速いが裾が重い。
+(注: 旧 p95≈1.16s(7/14)より高いが E-3 の event mutation(VTIMEZONE 生成)混在で同条件比較で
+ない。Smart Placement 単体の改善は断定不可。)
+→ 含意: ①0.1s バーを満たすのは楽観のみ = 楽観既定を強く正当化。②楽観は1周(1.2s)後に静的
+収束し裾(p95≈2s)の確定は無表示で待てる。③失敗/T_hard 警告は分布の遥か外側でのみ発火。
+④悲観パスの「保存中…」は p95 で1周後 約0.8s の表示で済む(許容)。
+
+### 統一状態機械
+
+```
+idle
+ └ tap ─► committing(0〜1200ms・寿命付きアニメ1周)
+     ├ 楽観適用可 → 楽観レイヤ(optimisticToggle/Rows/Edits/Deletes)に積み即時再描画
+     └ 楽観適用不可(悲観)→ 見た目現状維持 + in-flight 手掛かりのみ
+     pendingIds は Set → Map<id, startedAt> に変更(唯一の構造変更)
+
+── 楽観パス ──
+committing 満了(1200ms)─► settled 表現(静的 becoming)に収束。以降は無表示で確定待ち
+ ・fetch 成功 → 楽観レイヤ解除・confirmedTasks 再構築(表示は既に一致・becoming 寿命は §7.2)
+ ・fetch 失敗 → ロールバック + エラーバナー(再試行付き・既存経路)
+
+── 悲観パス ──
+committing 満了 ─► waiting(静的「保存中…」タグ・amber/--muted・アニメなし)
+ ・fetch 成功 → 確定描画 + 静的 becoming / 失敗 → エラーバナー(楽観適用なしなのでロールバック不要)
+
+── 共通 ──
+T_hard(10s)超過 ─► 警告バナー + 「再読み込み」(fetchLatest)。中断・ロールバックなし
+ (中断後にサーバー側で成立していると UI が嘘になる。遅着した成功は既存の確定描画経路が整合)。
+ 「再試行」(mutate 再送)は二重書き込みリスクのため出さない。
+```
+
+**楽観/悲観の判定則(レイテンシ非依存)**:
+1. クライアントが確定後の表示を正確に予測できる → 楽観(toggle・add・delete・title/notes/
+   location/url 等の系列共通フィールド編集)。
+2. 予測できない → 悲観(**反復イベントの start/end/recurrence 変更** = §7.1 の楽観スキップ対象は
+   この悲観パスとしてそのまま位置づく)。
+3. LLM 起点の mutate(カード外)→ 対象外(ontoolresult の becoming 表示のみ・現行どおり)。
+
+**視覚表現の対応表**:
+
+| 操作 | committing(1.2s × 1) | 満了後 | 失敗 |
+|---|---|---|---|
+| add | `wake-sweep 1.2s linear 1`(現行 `infinite` を `1` に) | becoming-in 静的 wake | 仮行除去+バナー |
+| done/undo | circle リング `ring-pulse 1.2s ease-out 1`(0→4px→0 の脈動) | 静的 4px / 破線リング(既存) | ロールバック+バナー |
+| edit(楽観フィールド) | becoming タグ opacity pulse × 1 | becoming-edit 凍結表示(既存) | 同上 |
+| delete | ゴースト行 opacity pulse × 1 | ゴースト静的(既存) | 行復活+バナー |
+| 悲観(反復の日時/recurrence) | タグ opacity pulse × 1 | 静的「保存中…」タグ(確定まで) | バナーのみ |
+
+- `prefers-reduced-motion`: committing のアニメを省き、楽観 = 最初から静的 becoming / 悲観 =
+  最初から静的「保存中…」。
+- aria-live(#live): 楽観 = settled 文言を即時 / 悲観 =「保存中」→確定文 / 失敗 = エラー文(既存)。
+- **浮遊層ゼロ維持**: 全表現が行内 CSS(box-shadow / background-position / opacity)。
+  fresh-instance で再インスタンス化されれば pending 状態ごと消えて確定描画に戻る = 安全側。
+
+### 定数(確定)
+
+```ts
+// src/presentation/mcp/ui/feedback.ts(共有・純関数 + 定数)
+export const FEEDBACK = {
+  cycleMs: 1200,        // アニメ1周期。skel pulse / wake-sweep と同一(視覚語彙なので固定)
+  animCycles: 1,        // 寿命 = 1200ms(2026-07-16 ユーザー裁可: 2周案を取り下げ)
+  hardTimeoutMs: 10_000 // Nielsen「注意持続」限界
+} as const;
+export const isCommitting = (now: number, startedAt: number): boolean =>
+  now - startedAt < FEEDBACK.cycleMs * FEEDBACK.animCycles;
+```
+将来レイテンシが変わったら `animCycles`(整数)だけ動かす。全定数は可逆。
+
+### ドクトリン v2 の線引き(todos-app.ts:374 付近へ追記)
+
+- **解禁**: ①操作起点(このカード上でユーザーがいま起こした mutate に限る)②一過性
+  (iteration-count 有限 = 1周・寿命満了で必ず静的形に収束)③情報を運ぶ(手応え/in-flight 告知)
+  — の3条件を全て満たすアニメーション。
+- **禁止のまま**: 持続アニメ(infinite)/ 自発アニメ(描画されただけで動く)/ "もう起きたこと"
+  (静的 becoming)のアニメ化 / 成功トースト・成功バナー / 浮遊オーバーレイ。
+- **楽観と悲観で待ち表現を分ける**: 楽観は待ち表示を持たない(1周→静的収束、失敗時のみバナー)。
+  「保存中…」は結果を予測できない悲観操作専用。
+- **Why not**: 無限シマー = 10s 超級の言語を 1s 操作に付け不信を生む(#3 実証)/ 成功トースト =
+  行の収束が既に語る二重通知(§7.7 案の棄却)/ 楽観パスの「保存中…」= 確定/待機のメッセージ
+  矛盾 / 持続アニメ = v1 の理由(ログノイズ + fresh-instance 再生誤読)がそのまま生きる。
+- v1 コメント + 2026-07-14 shimmer 例外は**削除せず**「v2 で一般化されるまでの中間形」として残す。
+
+### 実装スライス
+
+- **F-1(共有カーネル)**: `ui/feedback.ts` 新設(FEEDBACK 定数 + isCommitting 純関数 + テスト)。
+  CSS/DOM 共有は §7.7 判断を維持し今回もやらない(新規純関数・定数のみ共有 = rowKey と同じ規律)。
+- **F-2(todos)**: pendingIds を `Map<string,number>` 化 / wake-sweep `infinite`→`1` / ring-pulse・
+  opacity-pulse keyframes 追加 / committing 満了境界の再描画タイマー / T_hard バナー /
+  reduced-motion 分岐 / todos-app.ts:374 に v2 コメント追記。**S-E(Done右上/title垂直)と統合**。
+- **F-3(agenda)**: 同型移植。悲観パス(反復の日時/recurrence)が「保存中…」で待つこと、系列共通
+  フィールドが楽観で1周収束することを確認。
+- **F-4(docs)**: 本節配置(済)+ docs/log.md 経緯 + next-directions 更新。
+
+順序 F-1 → F-2 → F-3 → F-4。F-2/F-3 は implementer 分離可。
+
+### 計器 follow-up(本スコープ外・別スライス起票)
+
+`{mcpTool, ms, colo}` console.log は Workers observability で **field クエリできない(未インデックス)**
+ことが判明 — ツール別・colo 別レイテンシの計器として機能していない。**Analytics Engine
+`writeDataPoint`(mcpTool/colo を blob・ms を double)への載せ替え**を別スライスとして起票。
+本ドクトリンの `animCycles` 調整判断(ツール種別ごとの p95 追跡)はこの計器が前提。
