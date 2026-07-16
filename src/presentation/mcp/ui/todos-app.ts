@@ -373,7 +373,14 @@ export const TODOS_APP_HTML = `<!doctype html>
    * タイトルの折り返し余地が消えて窮屈になるため(スパイク実装からの変更点)。 */
   /* 旧 .texts(check の隣の縦積みラッパ)は 2026-07-14 UI フィードバック対応で廃止し、header を
    * row-main 直下に置いた(flex:1/min-width:0/padding は .row-head へ移設)。 */
-  .title { overflow-wrap: break-word; line-height: 1.35; }
+  /* 【2026-07-16 実機FB: 編集モードで文字サイズが変わるのをやめる】表示 .title は行密度優先で
+   * 14px(body 継承)に据え置いていた(下の .title-edit コメントの旧判断)が、行タップで .title-edit
+   * (iOS auto-zoom 回避で 16px 必須)に切り替わると 14→16px に跳ねる。編集側を下げると iOS の
+   * focus zoom が再発する(feedback.md #1)ので、**表示側を 16px に上げて揃える**のが唯一の解。
+   * iOS リマインダーも表示/編集でタイトル字大は同一。行密度はわずかに下がるが、選択で字大が変わる
+   * 違和感の解消を優先する(S-D §7.7 の「選択行だけ字がわずかに大きくなるのは許容」をタイトルに
+   * 関しては撤回)。 */
+  .title { overflow-wrap: break-word; line-height: 1.35; font-size: 16px; }
   li.done .title {
     text-decoration: line-through;
     color: var(--muted);

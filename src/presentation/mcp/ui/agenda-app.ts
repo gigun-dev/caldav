@@ -129,7 +129,10 @@ export const AGENDA_APP_HTML = `<!doctype html>
   /* now バー: 進行中の1本だけ accent の左バー(色は増やさない)。 */
   li.now .row-main { box-shadow: inset 2px 0 0 var(--accent); }
   .head { flex: 1; min-width: 0; }
-  .title { font-weight: 480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 【2026-07-16 実機FB(todos と同修正): 編集で字大が変わるのをやめる】表示 .title を編集 .title-edit
+   * (iOS auto-zoom 回避で 16px)に合わせて 16px 化。行タップで 14→16px に跳ねる違和感を消す
+   * (todos-app.ts の .title コメント参照。両カードで挙動を揃える)。 */
+  .title { font-weight: 480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
   .meta {
     display: flex; align-items: baseline; gap: 0 8px; min-width: 0; flex-wrap: nowrap;
     font-size: 12px; color: var(--muted); margin-top: 1px;
