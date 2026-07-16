@@ -244,6 +244,42 @@ export const AGENDA_APP_HTML = `<!doctype html>
   li.swiping .row-main { transform: translateX(-76px); position: relative; z-index: 1; background: var(--bg); }
   .swipe-del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: none; background: var(--danger); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 
+  /* --- inline 畳み(P4-DM C2/C3。todos-app.ts の同名クラスを移植・語彙も同一)---
+   * 【なぜ agenda にも要るか】agenda は occurrence 行が日付をまたいで増えるため、inline maxHeight
+   * を宣言するホスト(claude.ai 等)では todos と同じく「畳んで下端の FAB がクリップされない」保証が
+   * 要る。fold.ts(共有カーネル)の computeInlineFit + agenda-entry.ts の applyInlineFold が担い、
+   * ここは受動表示(.fold-remaining)/昇格ボタン(.fold-expand)の見た目だけを定義する。 */
+  /* C2: inline maxHeight 超過時の「残り n 件」受動表示(タップ不可・情報行)。.empty と同トーンで
+   * 「操作行ではない」ことを視覚でも示す。margin-bottom は下 padding 確保 + measureButtonBlockPx が
+   * .fold-expand を測って budget に反映する(CSS 定数の二重管理を避ける・todos-app.ts と同方針)。 */
+  .fold-remaining { color: var(--muted); padding: 8px 0 0; font-size: 12px; margin-bottom: 12px; }
+  /* C3: fullscreen 広告ホストで「残り n 件」の代わりに出す昇格ボタン。押せると分かるよう
+   * .fold-remaining の受動 muted とは区別し accent 色のテキストリンク言語に合わせる。タップ領域
+   * 最低 32px。margin-bottom:12px は measureButtonBlockPx が実測して budget 先引きに使う。 */
+  .fold-expand {
+    display: block;
+    width: 100%;
+    margin: 8px 0 12px;
+    padding: 6px 0;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: none;
+    border: none;
+    text-align: left;
+    min-height: 32px;
+    cursor: pointer;
+  }
+  /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
+   * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1(applyHostContext)が
+   * containerDimensions.maxHeight から設定する CSS 変数。inline に戻ると applyHostContext がこの
+   * クラスを外し通常フロー(内部スクロール無し)へ復帰する。todos-app.ts の同定義と同値。 */
+  #root.fullscreen-scroll {
+    overflow-y: auto;
+    max-height: var(--host-max-height, 100vh);
+  }
+
   /* --- 空/スケルトン --- */
   .empty { color: var(--muted); padding: 12px 0; }
   .skel { display: flex; align-items: center; gap: 8px; padding: 12px 0; }

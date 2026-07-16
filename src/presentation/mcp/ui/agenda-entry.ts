@@ -49,6 +49,9 @@ import { rowKey, idOfRowKey } from "./row-key";
 // (寿命付きアニメの最中か)の判定式と定数(1周期・寿命周回数・T_hard)を todos-entry.ts と
 // 同じ規律で純関数だけ共有する(CSS/DOM は §7.7 判断を維持し todos と共有しない)。
 import { FEEDBACK, isCommitting } from "./feedback";
+// inline 畳み(P4-DM C1+C2/C3)の畳み共有カーネル(fold.ts)。todos-entry.ts と同じ純関数を使う
+// (occurrence 行単位の畳み。見出し高は rowBottoms の累積 offset に織り込まれるので無改造で流用)。
+import { canRequestFullscreen, computeInlineFit } from "./fold";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
@@ -76,6 +79,40 @@ const liveEl = document.getElementById("live") as HTMLElement;
 const appTitleEl = document.getElementById("app-title") as HTMLElement;
 const rangeEl = document.getElementById("range") as HTMLElement;
 const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElement;
+
+// --- C1: hostContext から読んだ空間制約(P4-DM・設計04 §5 C1。todos-entry.ts の同名ブロックを移植)---
+// getHostContext().containerDimensions.maxHeight / displayMode / availableDisplayModes を保持する。
+// renderAll 最終段の畳み判定(applyInlineFold → computeInlineFit)がこれらを読む。maxHeight 未送信の
+// ホスト(現本アプリ)は null のままなので畳みは発火しない(不活性が既定・退行ゼロ・fold.ts コメント参照)。
+let hostMaxHeightPx: number | null = null;
+let hostDisplayMode: string | null = null;
+// ホストが広告する availableDisplayModes。「すべて表示」ボタンを押せる形で出してよいか
+// (canRequestFullscreen)の入力になる。未受信は null(=受動表示のまま・不活性が既定)。
+let hostAvailableDisplayModes: readonly string[] | null = null;
+
+/** C1 本体: getHostContext() を読み hostMaxHeightPx / hostDisplayMode / hostAvailableDisplayModes を
+ *  更新する。todos-entry.ts:265 の applyHostContext を agenda へそのまま移植(挙動を揃える)。
+ *  【出典/方針】apps.mdx:687-711(View 初期化時に containerDimensions を確認)。maxHeight は CSS の
+ *  直接クリップには使わず --host-max-height 変数へ落とすだけ(素朴な overflow:hidden は行の途中で
+ *  切れて見苦しい・実際の畳みは行単位で applyInlineFold が行う)。containerDimensions は {height}
+ *  (fixed)と {maxHeight}(flexible)の union なので "maxHeight" in dims で判別する(apps.mdx 公式例)。
+ *  fullscreen 時は #root に fullscreen-scroll を当て全件を内部スクロールで見せる(畳みは applyInlineFold が
+ *  hostDisplayMode!=="inline" で早期 return するので既に全件表示・ここで足すのはスクロール設定だけ)。 */
+function applyHostContext(): void {
+	const ctx = app.getHostContext();
+	hostDisplayMode = ctx?.displayMode ?? null;
+	hostAvailableDisplayModes = ctx?.availableDisplayModes ?? null;
+	const dims = ctx?.containerDimensions;
+	const maxHeight = dims !== undefined && "maxHeight" in dims ? dims.maxHeight : undefined;
+	hostMaxHeightPx = typeof maxHeight === "number" ? maxHeight : null;
+	if (hostMaxHeightPx !== null) {
+		document.documentElement.style.setProperty("--host-max-height", `${hostMaxHeightPx}px`);
+	} else {
+		document.documentElement.style.removeProperty("--host-max-height");
+	}
+	// fullscreen 中だけ #root を内部スクロールコンテナにする。inline に戻ったら外す(設計04 決定2)。
+	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
+}
 
 // =============================================================================
 // 契約の写経(ローカル interface。application 層は import しない)
@@ -959,14 +996,142 @@ function renderAll(): void {
 		root.appendChild(ul);
 	}
 
+	// C2(P4-DM・設計04 §5): 「すべて表示」/「残り n 件」の挿入位置マーカー。日セクション群の直後・
+	// ドラフト行「新規」セクションの手前に置く(畳んでも入力中のドラフト行は隠さない方針 —
+	// applyInlineFold が畳み対象を「root > ul:not(.draft-list) > li」に絞っているのと同じ理由。
+	// todos-entry.ts:2555 の foldAnchor と同じ役割)。畳まないときは何も挿さない=マーカーだけ残って無害。
+	const foldAnchor = document.createComment("fold-anchor");
+	root.appendChild(foldAnchor);
+
 	// ドラフト行(FAB で生やした未送信の新規行)を末尾に選択状態で描く(sectionize に混ぜない)。
 	if (draft !== null) {
 		const section = el("div", "section");
 		section.textContent = "新規";
 		root.appendChild(section);
 		const ul = document.createElement("ul");
+		// draft-list: 畳み対象から除外するための目印(applyInlineFold の :not(.draft-list) が拾う)。
+		// ドラフトは「いま入力中の新規行」なので畳んで隠すと編集が消えたように見える(必ず残す)。
+		ul.className = "draft-list";
 		ul.appendChild(renderRow(draftToItem(draft), todayKey));
 		root.appendChild(ul);
+	}
+
+	// C2(P4-DM・2026-07-17): renderAll「最終段」の表示切りだけを行う畳み。ここより前の
+	// セクショニング/楽観適用/becoming 装飾には一切触れない(畳みはフル描画済み DOM を実測して
+	// 行を間引くだけの後処理。todos-entry.ts:2589 の applyInlineFold(foldAnchor) と同じ位置づけ)。
+	applyInlineFold(foldAnchor);
+}
+
+// 「すべて表示」ボタン(.fold-expand)の実高さ(margin-bottom 込み)のキャッシュ。CSS 定数
+// (agenda-app.ts の .fold-expand)の二重管理を避けるため実測値をそのまま budget の先引きに使う。
+// ページ内で一度測れば以降は不変(フォント/CSS 変数が実行中に変わらない)なので毎 renderAll では
+// 測り直さない。todos-entry.ts:2596 と同じ設計。
+let cachedButtonBlockPx: number | null = null;
+
+/** 「すべて表示」ボタン(.fold-expand)の高さ(下 margin 込み・px)を実測する(todos-entry.ts:2607 移植)。
+ *  【なぜ .fold-expand を測るか】畳み判定の時点では canRequestFullscreen の結果(どちらのノードを
+ *  append するか)が未確定で、かつ .fold-expand は min-height:32px を持ち .fold-remaining(padding のみ)
+ *  より常に大きい — .fold-expand を budget 先引きに使えばどちらが append されても収まりを保証できる
+ *  (安全側)。【なぜ visibility:hidden か】display:none は offsetHeight が 0 で測れない。visibility:hidden は
+ *  レイアウトに参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
+function measureButtonBlockPx(): number {
+	if (cachedButtonBlockPx !== null) return cachedButtonBlockPx;
+	const probe = document.createElement("button");
+	probe.type = "button";
+	probe.className = "fold-expand";
+	probe.textContent = "すべて表示 (全00件)"; // 幅は width:100% 固定なのでテキスト長は高さに無関係
+	probe.style.visibility = "hidden";
+	root.appendChild(probe);
+	const marginBottomPx = Number.parseFloat(getComputedStyle(probe).marginBottom) || 0;
+	cachedButtonBlockPx = probe.offsetHeight + marginBottomPx;
+	probe.remove();
+	return cachedButtonBlockPx;
+}
+
+/** + FAB(.fab-row。#quick-add-fab の親)の実高さ(margin-top 込み・px)を実測する(todos-entry.ts:2639 移植)。
+ *  【FAB は #root の外(兄弟要素)】agenda-app.ts の HTML 骨格は `<div id="root">...</div>` の直後に
+ *  `<div class="fab-row"><button id="quick-add-fab">...` を置く(再描画の影響を受けないよう #root の外)。
+ *  したがって **`root.scrollHeight` は FAB の高さを含まない** — fold 判定の fullHeight/budget は
+ *  どちらも「rows + FAB」を土台にするので、FAB(.fab-row)の高さは別途実測して足し合わせる。
+ *  【なぜ実要素を直接測るか】FAB は畳んでも常時表示(ユーザー FB による todos の判断に揃える —
+ *  + 追加は主要アクションなので inline カードでも常に見えているべき)なので probe を作らず実在の
+ *  .fab-row を直接読む。キャッシュしない(offsetHeight 読み取り1回のみで軽微)。 */
+function measureFabBlockPx(): number {
+	const fabRow = quickAddFab.closest(".fab-row") as HTMLElement | null;
+	if (fabRow === null) return quickAddFab.offsetHeight; // 防御的フォールバック(通常到達しない)
+	const marginTopPx = Number.parseFloat(getComputedStyle(fabRow).marginTop) || 0;
+	return fabRow.offsetHeight + marginTopPx;
+}
+
+/**
+ * C2 本体(P4-DM・2026-07-17): hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と「フル描画済み
+ * (畳みなし)」の実測値から computeInlineFit(共有カーネル fold.ts)で収まり(full)か畳み(folded)かを
+ * 判定し、畳むなら occurrence 行を横断で先頭 visibleCount 件だけ残して空になった日セクションを除去し、
+ * 末尾に「すべて表示」(ボタン or 受動「残り n 件」)を挿す。**+ FAB は folded でも常に表示したまま**。
+ * todos-entry.ts:2670 applyInlineFold を agenda 構造(flat な div.section + ul)へ移植したもの。
+ *
+ * 【bottomChrome = 「すべて表示」ボタン + FAB】budget の先引きに FAB 分も合算する(FAB を隠さない
+ * 以上、畳んだ行 + すべて表示 + FAB の3つ全部が maxHeight に収まらなければ FAB がクリップされる)。
+ * full 判定の fullHeight 側にも FAB を加算する(ボタンは full のとき出ないので fullHeight には含めない)。
+ */
+function applyInlineFold(foldAnchor: Comment): void {
+	// fullscreen 中は畳まない(全件 + 内部スクロールは applyHostContext の fullscreen-scroll が担う)。
+	// maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。FAB は常時表示
+	// なので hidden 管理は不要(quickAddFab.hidden の書き手は詳細ページ表示中の一時退避のみ)。
+	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) return;
+
+	// 畳み対象の occurrence 行。agenda は日セクション(div.section)と ul が root 直下のフラットな兄弟で
+	// 並ぶので、通常行の ul(=draft-list 以外)配下の li を文書順に集める。ドラフト行(draft-list)は除外。
+	// ゴースト行(削除中断)も通常の li として1行に数える(todos と同じく特別扱いしない方が体感が一貫)。
+	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("ul:not(.draft-list) > li"));
+	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
+	const fabBlock = measureFabBlockPx();
+	// FAB は #root の外(兄弟)なので root.scrollHeight に含まれない — 明示的に加算する。
+	const fullHeight = root.scrollHeight + fabBlock;
+	const buttonBlock = measureButtonBlockPx();
+	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(「すべて表示」+ FAB)の合計高さ。
+	const bottomChrome = buttonBlock + fabBlock;
+
+	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, bottomChrome);
+	if (fit.mode === "full") return; // 収まっているので何もしない(FAB は元々表示されたまま)。
+
+	const { visibleCount } = fit;
+	rows.slice(visibleCount).forEach((li) => li.remove());
+	// 空になった(=全行畳まれた)日セクションは見出しだけ宙ぶらりんにならないよう、ul と直前の
+	// .section 見出しをペアで除去する(agenda は section と ul がネストせず兄弟に並ぶため、
+	// ul の直前の要素兄弟がその日の見出しになる。todos は section が ul を内包するので section 単位で
+	// 消していたが、agenda はフラット構造なのでペアで消す — 構造差に由来する唯一の非対称)。
+	for (const ul of Array.from(root.querySelectorAll<HTMLElement>("ul:not(.draft-list)"))) {
+		if (ul.children.length > 0) continue;
+		const prev = ul.previousElementSibling;
+		if (prev !== null && prev.classList.contains("section")) prev.remove();
+		ul.remove();
+	}
+
+	const totalCount = rows.length; // 畳み対象の合計 occurrence 行数(ドラフトは対象外)
+	const remaining = totalCount - visibleCount;
+	// C3(設計04 §5): fullscreen 広告ホストだけボタン化する。canRequestFullscreen が apps.mdx:782 の
+	// 「View は requestDisplayMode 前に availableDisplayModes を確認する MUST」を担う純関数 —
+	// fullscreen 非広告ホスト(本アプリの現状=未受信)では false になり従来どおり受動「残り n 件」表示のまま
+	// (押しても何も起きない死にボタンを作らない・2026-07-16 fable 指摘)。
+	if (canRequestFullscreen(hostAvailableDisplayModes)) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "fold-expand";
+		button.textContent = `すべて表示 (全${totalCount}件)`;
+		button.addEventListener("click", () => {
+			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を
+			// 拒否したら "inline" が返るだけでエラーではない — 何もしない(次回描画は hostcontextchanged 経由の
+			// hostDisplayMode 更新に委ねる)。通信失敗等はカードを壊さないよう握りつぶす(設計04 §5 C3)。
+			void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+		});
+		foldAnchor.parentNode?.insertBefore(button, foldAnchor.nextSibling);
+	} else {
+		const notice = document.createElement("div");
+		notice.className = "fold-remaining";
+		// 受動表示(ボタンではない・タップ不可)。fullscreen 非広告ホストではここに留まる。
+		notice.textContent = `残り ${remaining} 件`;
+		foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
 	}
 }
 
@@ -2060,7 +2225,12 @@ function announceBecoming(): void {
 renderSkeleton();
 
 let gotResult = false;
-const app = new App({ name: "caldav-agenda", version: "0.1.0" });
+// C3(設計04 §5・P4-DM): appCapabilities.availableDisplayModes を宣言する(apps.mdx:781 View は
+// appCapabilities.availableDisplayModes を宣言する MUST。無いとホストは apps.mdx:786「View の
+// appCapabilities に無いモードへ MUST NOT switch」で fullscreen へ切り替えられない — この宣言が
+// 昇格フロー全体の前提)。第2引数が capabilities(spec.types.ts:404-412・AppOptions とは別引数。
+// app.d.ts:501 `constructor(_appInfo, _capabilities?, options?)`)。todos-entry.ts:2989 と同じ。
+const app = new App({ name: "caldav-agenda", version: "0.1.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
 app.ontoolresult = (r) => {
 	gotResult = true;
 	clearStatus();
@@ -2068,6 +2238,15 @@ app.ontoolresult = (r) => {
 	// 開いた場合もここに届く(mutation 応答には affected/removed が乗る)。共通経路 applyStructuredContent。
 	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
 };
+// C1: host-context-changed の購読(設計04 §5 C1)。SDK が host-context-changed 受信のたびに内部
+// _hostContext へ merge した後にこのハンドラを呼ぶ(app.d.ts:723-727)ので、applyHostContext() を
+// 呼び直すだけで追従できる。maxHeight/displayMode の変化は畳み判定に直接効くため再描画まで行う
+// (詳細ページ表示中は renderAll 内の早期 return で畳み対象外になる)。connect 前に登録する
+// (ontoolresult と同じ理由・登録前に来た通知を取りこぼさない・SDK 推奨。todos-entry.ts:3012 と同じ)。
+app.addEventListener("hostcontextchanged", () => {
+	applyHostContext();
+	renderAll();
+});
 
 showStatus("接続中…");
 try {
@@ -2077,6 +2256,11 @@ try {
 	throw e;
 }
 connected = true;
+// C1: connect 完了後に一度読み hostMaxHeightPx/hostDisplayMode を初期化する(apps.mdx:687-711 の
+// 「View 初期化時に containerDimensions を確認する」の実装箇所)。以降の変化は上の hostcontextchanged
+// 購読が拾う。renderAll はここでは呼ばない — この直後に ontoolresult 由来の初回描画が来る
+// (まだ events が無いので skeleton のまま畳み判定しても意味が無い。todos-entry.ts:3035 と同じ)。
+applyHostContext();
 
 /** refresh-events / list-events-expanded を呼ぶときの arguments。currentRange(期間)+ calendarId を載せる。
  *  currentRange 未受領(初回応答前)のときは range を省いて server 既定に委ねる。 */

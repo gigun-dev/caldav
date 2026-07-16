@@ -1,7 +1,23 @@
 // =============================================================================
-// presentation/mcp/ui/todos-fold.ts — inline displayMode の「畳み」判定(純関数)
-//                                       (P4-DM C1+C2・swift-mcp-app 側設計 04 §5)
+// presentation/mcp/ui/fold.ts — inline displayMode の「畳み」判定(純関数・畳み共有カーネル)
+//                                 (P4-DM C1+C2・swift-mcp-app 側設計 04 §5)
 // =============================================================================
+// 【共有カーネル化(2026-07-17・todos-fold.ts → fold.ts へリネーム)】当初は todos カード専用
+// だったが、agenda カード(予定一覧)の fullscreen 対応(P4-DM 移植)でも同じ判定ロジックを使う
+// ため、カード非依存の「畳み共有カーネル」として切り出した。純関数は DOM に触れず「行の累積下端の
+// 配列」しか受け取らないので、そもそもカードの内部構造に依存しておらず、リネームは名前の是正
+// (todos 専用に見える名前をやめる)だけで中身は無改造。
+//
+// 【computeInlineFit の rowBottoms が指す「行」はカードごとに異なる(呼び出し側の責務)】
+// この関数にとって rowBottoms は「畳み対象として先頭から間引ける単位の累積下端」でしかなく、
+// その単位が何かは呼び出し側が決める:
+//   - todos カード: タスク行(section > ul > li)。セクション見出し(h2)は各行の offsetTop に
+//     押し下げとして織り込まれる。
+//   - agenda カード: occurrence 行(.section の日見出し + 直後 ul > li)。**日見出しの高さは
+//     各 occurrence 行の offsetTop に自然に加算されて入ってくる**ため、見出しを別枠で数える必要は
+//     無く、todos と同型で流用できる(設計04 の「見出し高は rowBottoms の累積 offset に織り込まれる」)。
+// どちらの場合も「空になったセクション見出しの除去」は畳み適用後に呼び出し側(*-entry.ts)が行う。
+//
 // 【このモジュールの位置づけ】ホストが宣言する containerDimensions.maxHeight(spec:
 // apps.mdx:671-733 / spec.types.ts:243-249 の McpUiHostContext.containerDimensions)を
 // 使って「行リストをどこまで見せれば maxHeight に収まるか」を DOM に一切触れず判定する

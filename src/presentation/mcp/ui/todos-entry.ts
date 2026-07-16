@@ -138,7 +138,7 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
-import { canRequestFullscreen, computeInlineFit } from "./todos-fold";
+import { canRequestFullscreen, computeInlineFit } from "./fold";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -242,7 +242,7 @@ interface AffectedEntry {
 // --- C1: hostContext から読んだ空間制約(設計04 §5 C1) -------------------------------
 // getHostContext().containerDimensions.maxHeight / displayMode を保持する。renderAll 最終段の
 // 畳み判定(applyInlineFold → computeInlineFit)がこの2値を読む。maxHeight 未送信のホスト
-// (現本アプリ)は null のままなので畳みは発火しない(不活性が既定・todos-fold.ts のコメント参照)。
+// (現本アプリ)は null のままなので畳みは発火しない(不活性が既定・fold.ts のコメント参照)。
 let hostMaxHeightPx: number | null = null;
 let hostDisplayMode: string | null = null;
 // C3(設計04 §5): ホストが広告する availableDisplayModes。「すべて表示」ボタンを押せる形で
@@ -2646,14 +2646,14 @@ function measureFabBlockPx(): number {
 /**
  * C2 本体(2026-07-17 動的フィット改訂 / 同日追更新で FAB 常時表示に変更): hostMaxHeightPx/
  * hostDisplayMode(C1 が読んだ値)と「フル描画済み(畳みなし)」の実測値から computeInlineFit
- * (純関数・todos-fold.ts)で収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら
+ * (純関数・fold.ts)で収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら
  * 4セクション横断で先頭 visibleCount 件だけ残して空になったセクションを畳み、末尾に
  * 「すべて表示」(ボタン or 受動「残り n 件」)を挿す。**+ FAB は folded でも常に表示したまま**
  * (上の measureFabBlockPx コメント参照 — ユーザー FB による fable 上書き)。
  *
  * 【旧・固定 N=6 の破綻からの根治(2026-07-17)】旧実装は「畳む件数を決めてからボタンを append
  * する」順序だったため、ボタン自身の高さが収まり計算の外にあり、かつ「件数が6件以下なら畳まない」
- * 閾値だったため6件ちょうど等で FAB がクリップされて隠れる再発バグを踏んだ(todos-fold.ts 冒頭
+ * 閾値だったため6件ちょうど等で FAB がクリップされて隠れる再発バグを踏んだ(fold.ts 冒頭
  * コメント参照)。本実装は「まずフル描画して実測 → 1パスで判定・適用」に改める。
  *
  * 【bottomChrome = 「すべて表示」ボタン + FAB(同日追更新)】computeInlineFit のシグネチャは

@@ -662,7 +662,7 @@ export const TODOS_APP_HTML = `<!doctype html>
    * このノードをボタンに置換する予定(2026-07-16 更新「C2→C3 へ移動」方針、entry.ts 側コメント参照)。
    * .empty と同トーン(var(--muted))にして「情報行であって操作行ではない」ことを視覚でも示す。 */
   /* margin-bottom(2026-07-17 動的フィット改訂): ユーザー FB「下 padding なさすぎ」への対処を兼ねる。
-   * この値は todos-fold.ts の computeInlineFit へ渡す buttonBlock(todos-entry.ts の
+   * この値は fold.ts の computeInlineFit へ渡す buttonBlock(todos-entry.ts の
    * measureButtonBlockPx が .fold-expand を実測して求める。.fold-remaining はそれより小さいので
    * 安全側)に実測で反映されるため、CSS 側の値を変えても収まり計算と常にズレない(定数の二重管理
    * にならない)。 */
