@@ -694,24 +694,55 @@ interface Sections {
  *  時刻付きで「今日だがもう過ぎた」は期限切れではなく今日に置く(formatDue コメント参照)。 */
 function sectionize(items: TodoItem[], todayKey: string): Sections {
 	const s: Sections = { overdue: [], today: [], upcoming: [], noDue: [], completed: [] };
+	// 【2026-07-16 §7.8 add の inPlace】becoming-in(いま追加された optimistic 行)を、
+	// inPlaceDone と同型の理由で通常ソートから除外して別バケットに集め、後で各セクションの
+	// 末尾へ「投入順のまま」ピンする(下の pinnedAdded* / sort 直後の push を参照)。
+	// Why: compareTasks は空 due 行を title.localeCompare で並べる → 新規行が既存の no-due
+	// 群の中のアルファベット位置に挿さり、入力していた draft から離れた場所へ「飛ぶ」(FB の症状)。
+	// iOS リマインダーは「typed した行がそのまま item・新しい空行がその直下」なので、末尾ピンで
+	// 一致させる。サーバー確定後の次の全再描画(optimisticRows から抜けて confirmedTasks 経由になる)
+	// で通常の compareTasks 整列に自然収束させてよい(inPlaceDone が「次回描画で完了欄へ移る」のと
+	// 同じ「確定後の整列は次描画に委ねる」原則。becoming-in のアニメがジャンプを覆う想定)。
+	const pinnedAddedOverdue: TodoItem[] = [];
+	const pinnedAddedToday: TodoItem[] = [];
+	const pinnedAddedUpcoming: TodoItem[] = [];
+	const pinnedAddedNoDue: TodoItem[] = [];
 	for (const t of items) {
 		// becoming-done(いま完了した行)は完了折り畳みへ飛ばさず「その場」= due ベースの
 		// 元のセクションに留める(モックの設計: 押した場所から行が消えると操作の因果が
 		// 切れる)。次の応答(affected 無し)で通常どおり完了欄へ移る。
 		const inPlaceDone = t.completed && affectedById.get(t.id)?.kind === "completed";
-		if (t.completed && !inPlaceDone) s.completed.push(t);
-		else if (t.due === null) s.noDue.push(t);
-		else {
+		const isAdded = isOptimisticId(t.id) && affectedById.get(t.id)?.kind === "added";
+		if (t.completed && !inPlaceDone) {
+			s.completed.push(t);
+		} else if (t.due === null) {
+			if (isAdded) pinnedAddedNoDue.push(t);
+			else s.noDue.push(t);
+		} else {
 			const diff = dayDiff(wallDatePart(t.due), todayKey);
-			if (diff < 0) s.overdue.push(t);
-			else if (diff === 0) s.today.push(t);
-			else s.upcoming.push(t);
+			if (diff < 0) {
+				if (isAdded) pinnedAddedOverdue.push(t);
+				else s.overdue.push(t);
+			} else if (diff === 0) {
+				if (isAdded) pinnedAddedToday.push(t);
+				else s.today.push(t);
+			} else {
+				if (isAdded) pinnedAddedUpcoming.push(t);
+				else s.upcoming.push(t);
+			}
 		}
 	}
 	s.overdue.sort(compareTasks);
 	s.today.sort(compareTasks);
 	s.upcoming.sort(compareTasks);
 	s.noDue.sort(compareTasks);
+	// pinnedAdded* は items の走査順 = displayTasks の並び順 = optimisticRows の投入順
+	// (rebuildDisplay が optimisticRows を末尾 push するため)。よって単純末尾 concat で
+	// 「複数連続追加(zzz→aaa)が投入順で積み上がる」が成立する(並べ替えは一切しない)。
+	s.overdue.push(...pinnedAddedOverdue);
+	s.today.push(...pinnedAddedToday);
+	s.upcoming.push(...pinnedAddedUpcoming);
+	s.noDue.push(...pinnedAddedNoDue);
 	// 完了済みだけは「新しく完了したものが上」(completedAt 降順)。完了直後に自分の操作の
 	// 結果が折り畳みを開いた先頭に見える方が、操作→確認の導線として自然。
 	s.completed.sort((a, b) => {
