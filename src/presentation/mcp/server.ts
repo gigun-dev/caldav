@@ -106,6 +106,10 @@ import { CollectionAlreadyExistsError, CreateCollection, ListCollections } from 
 // delete-calendar(検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機。
 // DAV DELETE 経路とは別の薄い専用 UC — delete-collection.ts 冒頭コメント参照)。
 import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } from "../../application/usecases";
+// 時刻グラウンディング(2026-07-16): 相対レンジ enum → 絶対 epoch 範囲の純関数解決。
+// list-events-expanded / get-freebusy が range 指定時にサーバー権威 now で境界を計算するのに使う
+// (application/time/relative-range.ts。DAV 非依存の純関数なので複数入口ビジョンに沿う)。
+import { resolveRelativeRange, type RelativeRangeKeyword } from "../../application/time/relative-range";
 // formatDateOnly は list-events-expanded の応答整形を event-dto.eventFromOccurrence(application 層)へ
 // 移したため presentation では不要になった(2026-07-15 E-3 S1)。epochToIso は get-freebusy 等で継続使用。
 import { epochToIso, isValidIanaZone, parseIsoToEpoch } from "./format";
@@ -130,12 +134,27 @@ const getCurrentTimeInputShape = {
 	timeZone: z.string().optional().describe('IANA タイムゾーン名(例 "Asia/Tokyo")。省略時は UTC。'),
 };
 
+// --- 相対レンジ enum(時刻グラウンディングの往復削減。list-events-expanded / get-freebusy 共通)---
+// 【なぜ相対レンジ enum を足すか】絶対 ISO 範囲だけだと「今日の予定」を引くのに get-current-time で
+// now を得てから境界を自前計算する 2 往復が要る。サーバー権威の now で境界を計算して返せば1発で済む
+// (詳細は application/time/relative-range.ts 冒頭コメント。this-week は WKST 問題で除外)。
+// 【range description に「事前 get-current-time 不要」を明記する理由】get-current-time は存置するが、
+// モデルが相対レンジで足りる場面でも従来どおり2往復してしまわないよう、1発で済むことを語彙で伝える。
+const RANGE_DESCRIPTION =
+	'相対レンジ。"today"/"tomorrow"/"next-7-days"/"next-30-days" のいずれか。指定時は timeMin/timeMax 不要・' +
+	"timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する)。get-current-time の事前呼び出しは不要。";
+const rangeEnumField = z.enum(["today", "tomorrow", "next-7-days", "next-30-days"]).optional().describe(RANGE_DESCRIPTION);
+
 // --- list-events-expanded ----------------------------------------------------
 
 const listEventsExpandedInputShape = {
-	timeMin: z.string().describe("展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。"),
-	timeMax: z.string().describe("展開範囲の終了(offset 付き ISO8601。必須)。"),
-	timeZone: z.string().optional().describe("応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC。"),
+	// timeMin/timeMax を optional 化した(range 指定時は不要)。range との XOR は runListEvents で実行時検証する
+	// (zod の superRefine ではなくハンドラ側で検証するのは、range 解決に必要な now/timeZone がハンドラ文脈に
+	// あるため。エラーは toolError で明示メッセージを返す)。
+	timeMin: z.string().optional().describe("展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時は不要。"),
+	timeMax: z.string().optional().describe("展開範囲の終了(offset 付き ISO8601)。range 指定時は不要。"),
+	range: rangeEnumField,
+	timeZone: z.string().optional().describe("応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して列挙する。"),
 	maxEvents: z.number().int().positive().optional().describe("返す occurrence の上限。既定 250。"),
 };
@@ -145,11 +164,69 @@ const DEFAULT_MAX_EVENTS = 250;
 // --- get-freebusy -------------------------------------------------------------
 
 const getFreeBusyInputShape = {
-	timeMin: z.string().describe("free/busy 集計範囲の開始(offset 付き ISO8601)。"),
-	timeMax: z.string().describe("free/busy 集計範囲の終了(offset 付き ISO8601。必須)。"),
-	timeZone: z.string().optional().describe("応答時刻の表示に使う IANA タイムゾーン。省略時は UTC。"),
+	timeMin: z.string().optional().describe("free/busy 集計範囲の開始(offset 付き ISO8601)。range 指定時は不要。"),
+	timeMax: z.string().optional().describe("free/busy 集計範囲の終了(offset 付き ISO8601)。range 指定時は不要。"),
+	range: rangeEnumField,
+	timeZone: z.string().optional().describe("応答時刻の表示に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して集計する。"),
 };
+
+/**
+ * range(相対レンジ)と timeMin/timeMax(絶対範囲)の XOR 検証 + 範囲解決の共通ヘルパー
+ * (list-events-expanded / get-freebusy で同一ロジックを共有する)。
+ *
+ * 【検証ルール(XOR)】
+ *   - range も timeMin/timeMax も無い → エラー(どちらか一方は必須)
+ *   - range と timeMin/timeMax の併記 → エラー(排他)
+ *   - range 指定で timeZone 欠落 → エラー(下記「range 時 TZ 必須」参照)
+ *   - 絶対指定は従来どおり timeMin/timeMax の両方が必須(片方だけはエラー)
+ *
+ * 【なぜ range 指定時に timeZone を必須にするか】相対レンジの境界は「当該 TZ のローカル午前0時」で
+ * 決まる。timeZone を省いて UTC 既定に倒すと「今日」が UTC 解釈になり、Asia/Tokyo なら最大9時間、
+ * America/Los_Angeles なら最大8時間ズレて「今日の予定」が半日ぶんズレる事故になる。create-event の
+ * 「時刻付きは timeZone 必須・暗黙 UTC 禁止」規律と同じ理由で、range 指定時は timeZone を必須にする。
+ *
+ * 返り値は解決済みの epoch 範囲 + 応答エコー用の zone/nowMillis。エラー時は例外を投げ、
+ * 呼び出し側(runListEvents / get-freebusy handler)の catch が toolError に変換する。
+ */
+function resolveRequestRange(input: {
+	timeMin?: string;
+	timeMax?: string;
+	range?: RelativeRangeKeyword;
+	timeZone?: string;
+	nowMillis: number;
+}): { rangeStartMillis: number; rangeEndMillis: number; zone: string; nowMillis: number } {
+	const { timeMin, timeMax, range, timeZone, nowMillis } = input;
+	const hasAbsolute = timeMin !== undefined || timeMax !== undefined;
+
+	if (range !== undefined) {
+		// range 指定: 絶対範囲との併記は排他違反(黙って一方を無視せずエラーで気づかせる)。
+		if (hasAbsolute) {
+			throw new RangeError(
+				"range(相対レンジ)と timeMin/timeMax(絶対範囲)は同時に指定できません。どちらか一方だけを指定してください。",
+			);
+		}
+		// range 指定時は timeZone 必須(上記「range 時 TZ 必須」コメント参照。暗黙 UTC 禁止)。
+		if (timeZone === undefined) {
+			throw new RangeError(
+				"range(相対レンジ)を指定する場合は timeZone(IANA タイムゾーン)が必須です。" +
+					'"今日" が UTC 解釈になり最大数時間ズレるのを防ぐため、明示してください(例 "Asia/Tokyo")。',
+			);
+		}
+		const zone = resolveTimeZone(timeZone); // 不正 IANA 名はここで RangeError。
+		const resolved = resolveRelativeRange(range, zone, nowMillis);
+		return { rangeStartMillis: resolved.timeMinMillis, rangeEndMillis: resolved.timeMaxMillis, zone, nowMillis };
+	}
+
+	// 絶対指定: timeMin/timeMax は両方必須(従来契約。片方欠落はエラー)。
+	if (timeMin === undefined || timeMax === undefined) {
+		throw new RangeError(
+			"timeMin と timeMax(絶対範囲)の両方が必要です。または range(相対レンジ: today/tomorrow/next-7-days/next-30-days)を指定してください。",
+		);
+	}
+	const zone = resolveTimeZone(timeZone);
+	return { rangeStartMillis: parseIsoToEpoch(timeMin), rangeEndMillis: parseIsoToEpoch(timeMax), zone, nowMillis };
+}
 
 // --- list-calendars / create-calendar(直近タスク: DAV MKCALENDAR と同じ UC を MCP から露出)--
 // 【なぜ registerTool(registerAppTool ではない)か】このタスクの要件どおり、todos UI とは
@@ -921,17 +998,20 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 	// (refresh-events)は同一の展開ロジックを共有する。todos の runListTodos と同じく、handler 本体を
 	// runListEvents クロージャに切り出し、両ツールから呼ぶ(コピペで契約がズレる事故を防ぐ)。
 	const runListEvents = async (input: {
-		timeMin: string;
-		timeMax: string;
+		// timeMin/timeMax は optional 化(range 指定時は不要)。range との XOR は resolveRequestRange で検証する。
+		timeMin?: string;
+		timeMax?: string;
+		range?: RelativeRangeKeyword;
 		timeZone?: string;
 		calendarId?: string;
 		maxEvents?: number;
 	}) => {
-		const { timeMin, timeMax, timeZone, calendarId, maxEvents } = input;
+		const { timeMin, timeMax, range, timeZone, calendarId, maxEvents } = input;
 		try {
-			const zone = resolveTimeZone(timeZone);
-				const rangeStartMillis = parseIsoToEpoch(timeMin);
-				const rangeEndMillis = parseIsoToEpoch(timeMax);
+			// サーバー権威の now を1点で確定し(range 解決 + resolvedRange エコーで同じ now を使う)、
+			// range/絶対の XOR 検証と範囲解決を共通ヘルパーに委ねる(get-freebusy と同一ロジックを共有)。
+			const nowMillis = Date.now();
+			const { rangeStartMillis, rangeEndMillis, zone } = resolveRequestRange({ timeMin, timeMax, range, timeZone, nowMillis });
 				const limit = maxEvents ?? DEFAULT_MAX_EVENTS;
 
 				const collectionIds = await resolveCollectionIds(deps, principal, calendarId);
@@ -983,11 +1063,25 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 
 				// range echo(EventsViewModel.range)。mutate 応答は range を名乗らない(判別シグナル)ので
 				// range を載せるのは照会系のここだけ。calendarId は作成先の既定(全コレクション横断は "calendar")。
+				// 【from/to を実際に使った範囲(解決後)にする】従来は入力の timeMin/timeMax をそのまま
+				// エコーしていたが、range 指定時は入力に timeMin/timeMax が無い。常に「実際に展開した範囲」を
+				// offset ISO で返すよう解決後の epoch から作る(絶対指定でも同じ値になり一貫する)。
+				const resolvedMinIso = epochToIso(rangeStartMillis, zone);
+				const resolvedMaxIso = epochToIso(rangeEndMillis, zone);
 				const result = {
 					events,
 					calendarId: calendarId ?? "calendar",
 					timeZone: zone,
-					range: { from: timeMin, to: timeMax },
+					range: { from: resolvedMinIso, to: resolvedMaxIso },
+					// resolvedRange(2026-07-16 時刻グラウンディング): モデル/ユーザーが「サーバーが今を何時と
+					// 解釈し、どの範囲を実際に使ったか」を検証できるよう additive に載せる。range 指定・絶対指定の
+					// どちらでも常に「実際に使った範囲」を返すので一貫する(additive なので既存消費者は壊さない)。
+					resolvedRange: {
+						timeMin: resolvedMinIso,
+						timeMax: resolvedMaxIso,
+						serverNow: epochToIso(nowMillis, zone),
+						timeZone: zone,
+					},
 					truncated,
 				};
 			return {
@@ -1006,15 +1100,18 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		"list-events-expanded",
 		{
 			title: "List expanded events",
-			description: "指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。calendarId 省略時は全カレンダーを横断する。",
+			description:
+				"指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。" +
+				"calendarId 省略時は全カレンダーを横断する。範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: " +
+				'today/tomorrow/next-7-days/next-30-days)で指定する。range を使えば「今日の予定」を事前 get-current-time なしで1発で引ける。',
 			inputSchema: listEventsExpandedInputShape,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
 				"openai/outputTemplate": AGENDA_UI_URI,
 			},
 		},
-		async ({ timeMin, timeMax, timeZone, calendarId, maxEvents }) =>
-			runListEvents({ timeMin, timeMax, timeZone, calendarId, maxEvents }),
+		async ({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }),
 	);
 
 	// refresh-events(E-3 S2: UI 専用の再読み込みツール)。visibility:["app"] でモデルには見せず、
@@ -1035,8 +1132,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": AGENDA_UI_URI,
 			},
 		},
-		async ({ timeMin, timeMax, timeZone, calendarId, maxEvents }) =>
-			runListEvents({ timeMin, timeMax, timeZone, calendarId, maxEvents }),
+		async ({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }),
 	);
 
 	// --- get-freebusy -----------------------------------------------------------
@@ -1044,14 +1141,17 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		"get-freebusy",
 		{
 			title: "Get free/busy",
-			description: "指定期間の busy 区間(RFC 4791 §7.10 の FBTYPE 導出済み)を返す。calendarId 省略時は全カレンダーを横断して再 coalesce する。",
+			description:
+				"指定期間の busy 区間(RFC 4791 §7.10 の FBTYPE 導出済み)を返す。calendarId 省略時は全カレンダーを横断して再 coalesce する。" +
+				"範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: today/tomorrow/next-7-days/next-30-days)で指定する。" +
+				"range を使えば事前 get-current-time なしで「今日の空き時間」を1発で引ける。",
 			inputSchema: getFreeBusyInputShape,
 		},
-		async ({ timeMin, timeMax, timeZone, calendarId }) => {
+		async ({ timeMin, timeMax, range, timeZone, calendarId }) => {
 			try {
-				const zone = resolveTimeZone(timeZone);
-				const rangeStartMillis = parseIsoToEpoch(timeMin);
-				const rangeEndMillis = parseIsoToEpoch(timeMax);
+				// list-events-expanded と同一の XOR 検証 + 範囲解決を共有する(resolveRequestRange)。
+				const nowMillis = Date.now();
+				const { rangeStartMillis, rangeEndMillis, zone } = resolveRequestRange({ timeMin, timeMax, range, timeZone, nowMillis });
 
 				const collectionIds = await resolveCollectionIds(deps, principal, calendarId);
 				const computeFreeBusy = new ComputeFreeBusy(deps.resourceRepo, deps.iterator);
@@ -1078,7 +1178,18 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					type: iv.type,
 				}));
 
-				const result = { timeZone: zone, busy };
+				// resolvedRange(2026-07-16 時刻グラウンディング): list-events-expanded と対称に
+				// 「実際に使った範囲 + サーバー now」を additive に載せる(range/絶対どちらでも常に載せて一貫)。
+				const result = {
+					timeZone: zone,
+					busy,
+					resolvedRange: {
+						timeMin: epochToIso(rangeStartMillis, zone),
+						timeMax: epochToIso(rangeEndMillis, zone),
+						serverNow: epochToIso(nowMillis, zone),
+						timeZone: zone,
+					},
+				};
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(result) }],
 					structuredContent: result,

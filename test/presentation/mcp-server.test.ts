@@ -327,6 +327,116 @@ describe("/mcp", () => {
 		expect(rpc.result.structuredContent.busy).toHaveLength(1);
 	});
 
+	// 2026-07-16: 時刻グラウンディングの相対レンジ enum(range)+ resolvedRange エコー。
+	// 【now を固定注入できない制約】ハンドラは Date.now() を直読みするため統合テストでは now を固定できない。
+	// そこで「now 依存の絶対値」は検証せず、(a) 境界が現地0時になる形(resolvedRange.timeMin/timeMax の
+	// 壁時計パターン)(b) serverNow が範囲内にあること (c) XOR/TZ 必須の検証エラー を確認する。
+	// now を固定した境界の厳密検証は test/application/relative-range.test.ts(純関数側)が担う。
+	describe("相対レンジ(range)+ resolvedRange エコー", () => {
+		it("range:today(timeZone 指定)で範囲を導出し resolvedRange を返す(境界は現地0時・serverNow は範囲内)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "list-events-expanded", arguments: { range: "today", timeZone: "UTC" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const rr = rpc.result.structuredContent.resolvedRange;
+			// today の両端は UTC の現地0時(終端排他)。now 依存だが「現地0時」の形は固定。
+			expect(rr.timeMin).toMatch(/T00:00:00Z$/);
+			expect(rr.timeMax).toMatch(/T00:00:00Z$/);
+			expect(rr.timeZone).toBe("UTC");
+			// serverNow は [timeMin, timeMax) の中にある(サーバー権威の now で境界を計算した証拠)。
+			expect(Date.parse(rr.timeMin)).toBeLessThanOrEqual(Date.parse(rr.serverNow));
+			expect(Date.parse(rr.serverNow)).toBeLessThan(Date.parse(rr.timeMax));
+			// range echo(range.from/to)は resolvedRange と一致する(実際に使った範囲)。
+			expect(rpc.result.structuredContent.range.from).toBe(rr.timeMin);
+			expect(rpc.result.structuredContent.range.to).toBe(rr.timeMax);
+		});
+
+		it("range と timeMin/timeMax の併記は isError(排他違反)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "list-events-expanded",
+					arguments: { range: "today", timeMin: "2026-07-01T00:00:00Z", timeZone: "UTC" },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("range 指定で timeZone 欠落は isError(暗黙 UTC 禁止)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "list-events-expanded", arguments: { range: "today" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("range も timeMin/timeMax も無いと isError(どちらか一方は必須)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "list-events-expanded", arguments: { timeZone: "UTC" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("絶対指定(timeMin/timeMax)は従来どおり動き resolvedRange も載る", async () => {
+			await seedEvent("uid-mcp-rr-1", "Absolute Range Event");
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "list-events-expanded",
+					arguments: { timeMin: "2026-07-01T00:00:00Z", timeMax: "2026-08-01T00:00:00Z", calendarId: "calendar" },
+				},
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent.events).toHaveLength(1);
+			const rr = rpc.result.structuredContent.resolvedRange;
+			expect(rr.timeMin).toBe("2026-07-01T00:00:00Z");
+			expect(rr.timeMax).toBe("2026-08-01T00:00:00Z");
+		});
+
+		it("get-freebusy でも range:today が効き resolvedRange を返す", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "get-freebusy", arguments: { range: "today", timeZone: "Asia/Tokyo" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			const rr = rpc.result.structuredContent.resolvedRange;
+			expect(rr.timeMin).toMatch(/T00:00:00\+09:00$/);
+			expect(rr.timeMax).toMatch(/T00:00:00\+09:00$/);
+			expect(rr.timeZone).toBe("Asia/Tokyo");
+		});
+
+		it("get-freebusy で range 指定 timeZone 欠落は isError", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "get-freebusy", arguments: { range: "today" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+	});
+
 	// 2026-07-14: list-calendars/create-calendar(ListCollections/CreateCollection UC を MCP から
 	// 露出。DAV MKCALENDAR と同じ UC を別入口から呼ぶ)の e2e。
 	describe("list-calendars / create-calendar", () => {
