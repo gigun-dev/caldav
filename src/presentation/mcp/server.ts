@@ -653,7 +653,17 @@ const listTodosInputShape = {
 	includeCompleted: z.boolean().optional().describe("完了済み(STATUS:COMPLETED)を含めるか。既定は未完了のみ(false)。"),
 	dueBefore: z.string().optional().describe("DUE がこの offset 付き ISO8601 より前の TODO だけに絞る(due 無しは除外)。"),
 	dueAfter: z.string().optional().describe("DUE がこの offset 付き ISO8601 より後の TODO だけに絞る(due 無しは除外)。"),
-	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+	// 【2026-07-16 追記(D 案・silent drop 対策)】旧文言は「省略時は "tasks"」とだけ書いており、
+	// 「他にも VTODO コレクションがあるかもしれない」ことを示唆していなかった。実アカウントで
+	// tasks/reading-list のように VTODO コレクションが複数あるとき、モデルが calendarId 省略で
+	// 「全体を見た」つもりになり reading-list を静かに取りこぼす事故があった(親レビューで確認)。
+	// 完全解決(横断既定化。events 系 resolveCollectionIds と同じ挙動)は「カードは単一コレクション
+	// 前提」という既存 UI 契約(todos-view-model.ts の calendarId: string 必須)を壊すため見送り、
+	// 今回は「他にもある」ことを otherTodoCollections で応答側から伝える最小変更(D 案)に留める。
+	calendarId: z.string().optional().describe(
+		'対象コレクション ID。省略時は "tasks" のみを対象とする。他の VTODO コレクション' +
+			"(list-calendars で components に VTODO を含むもの)を見るには calendarId を明示すること。",
+	),
 	timeZone: z.string().optional().describe("due の表示 + floating/DATE の解釈に使う IANA タイムゾーン。省略時は UTC。"),
 };
 
@@ -682,6 +692,35 @@ async function resolveCollectionIds(
 	if (calendarId !== undefined) return [mkCollectionId(calendarId)];
 	const collections = await deps.collectionRepo.findAllByOwner(owner);
 	return collections.map((c) => c.id);
+}
+
+/**
+ * list-todos の silent drop 対策(D 案)用: calendarId 省略呼び出しで「実際に見せたコレクション以外に
+ * VTODO コレクションがまだ存在するか」を解決する。
+ *
+ * 【なぜ events 系の resolveCollectionIds のように横断既定化しないか(Why not)】
+ * events 側(list-events-expanded/get-freebusy)は元から「省略=横断」で、応答も item ごとに
+ * calendarId を併記する wire 形(toWireEvent)なので複数コレクション混在を表現できる。
+ * todos 側は TodosViewModel.calendarId が単一 string 必須(todos-view-model.ts)で、UI
+ * (todos-entry.ts)も「1カード=1コレクション」前提で作られている。ListTodos の実行を横断化すると
+ * この単一コレクション契約を壊し、カード描画・quick-add の作成先(currentCalendarId)まで
+ * 波及するため、今回のスライスでは見送る(親仕様の指示どおり)。代わりに「tasks は見せたが
+ * 他にもある」ことだけを構造化フィールドで伝え、モデルに calendarId 明示の追加呼び出しを促す
+ * (Anthropic「Writing tools for agents」の部分結果ステアリングと同じ発想)。
+ *
+ * 【VTODO 判定基準】list-calendars と同じ「components に VTODO を含む」基準を使う。
+ * CalendarCollection.accepts("VTODO")(supportedComponents undefined=全受理 MUST を織り込み済み
+ * の既存ドメインヘルパー)をそのまま再利用し、判定ロジックの重複実装を避ける。
+ */
+async function resolveOtherTodoCollections(
+	deps: McpAppDeps,
+	owner: PrincipalRef,
+	shownCollectionId: string,
+): Promise<{ id: string; displayName: string }[]> {
+	const collections = await deps.collectionRepo.findAllByOwner(owner);
+	return collections
+		.filter((c) => c.accepts("VTODO") && c.id !== shownCollectionId)
+		.map((c) => ({ id: c.id, displayName: c.displayName }));
 }
 
 /**
@@ -1448,6 +1487,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		removed?: TaskSnapshot[];
 		/** move-todo のみ。TodosViewModel.movedTo の JSDoc 参照。 */
 		movedTo?: string;
+		/** list-todos/refresh-todos の calendarId 省略時のみ呼び出し側が解決して渡す。
+		 *  TodosViewModel.otherTodoCollections の JSDoc 参照。 */
+		otherTodoCollections?: { id: string; displayName: string }[];
 	}): Promise<TodosViewModel> => {
 		const zone = resolveTimeZone(opts.timeZone);
 		// 【次の伸びしろ(今回スコープ外)】この確定一覧は応答契約(TodosViewModel.tasks)上必要なので
@@ -1470,6 +1512,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;
 		if (opts.movedTo !== undefined) vm.movedTo = opts.movedTo;
+		// otherTodoCollections: 存在しなければフィールド自体を省略(affected/removed と同じ規律)。
+		if (opts.otherTodoCollections !== undefined && opts.otherTodoCollections.length > 0) {
+			vm.otherTodoCollections = opts.otherTodoCollections;
+		}
 		// view echo(E-2 view 状態非保持バグ修正): 非 undefined の引数だけを載せる。全部 undefined
 		// (既定ビュー)なら view キー自体を省いて後方互換を保つ(旧 UI/旧テストは view 不在前提)。
 		// UI はこの view を currentView として保持し、focus refetch / mutation 後の再取得へ引き継ぐ。
@@ -1499,7 +1545,15 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		timeZone?: string;
 	}) => {
 		try {
-			return toTodosToolResponse(await buildTodosViewModel(args));
+			// 【省略判定は生 input で行う】args.calendarId が undefined かどうかがそのまま
+			// 「モデルが対象を絞らずに呼んだか」の判定材料。buildTodosViewModel/ListTodos 内部では
+			// `?? "tasks"` に潰ってしまい判定材料が失われるため、潰す前のこの地点で判定する
+			// (仕様の指示どおり)。明示指定時は「スコープ明示済み」とみなし解決自体を省く
+			// (無駄な findAllByOwner を避ける最適化も兼ねる)。
+			const otherTodoCollections = args.calendarId === undefined
+				? await resolveOtherTodoCollections(deps, principal, "tasks")
+				: undefined;
+			return toTodosToolResponse(await buildTodosViewModel({ ...args, otherTodoCollections }));
 		} catch (error) {
 			return toolError(error instanceof Error ? error.message : String(error));
 		}
@@ -1510,7 +1564,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		"list-todos",
 		{
 			title: "List todos",
-			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。",
+			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。" +
+				'calendarId 省略時は "tasks" のみ。応答の otherTodoCollections に他のリマインダーリストが載る場合、全体を見るにはそれらも列挙すること。',
 			inputSchema: listTodosInputShape,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },

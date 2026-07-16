@@ -115,4 +115,29 @@ export interface TodosViewModel {
 		dueBefore?: string;
 		dueAfter?: string;
 	};
+	/**
+	 * 【E-1/E-2 拡張・2026-07-16: list-todos calendarId 省略時の silent drop 対策(D 案)】
+	 * calendarId を省略した list-todos/refresh-todos 呼び出しでだけ、実際に返した tasks の
+	 * コレクション以外にまだ VTODO コレクションが存在する場合に載る。「全部見た」という
+	 * モデルの誤認(実アカウントの tasks/reading-list のように VTODO コレクションが複数ある
+	 * ケースで reading-list を静かに取りこぼす)を、応答側の構造化フィールドで防ぐ
+	 * (Anthropic「Writing tools for agents」の部分結果ステアリングに倣う)。
+	 *
+	 * 【additive・calendarId 明示指定時は付けない】affected/removed/view と同じ「値があるときだけ
+	 * 載せる」規律。calendarId を明示指定した呼び出しは「対象を絞る意図が明確」なので、他の
+	 * コレクションが存在してもこのフィールドは付けない(スコープ明示済みとみなす)。
+	 *
+	 * 【mutate 系にも波及する非対称(Why not: mutate 系だけ抑制しない)】mutate 系
+	 * (create/complete/update/delete-todo)は buildTodosViewModel を calendarId 明示で呼ぶため
+	 * このフィールドは自然に付かない。唯一の例外は refresh-todos で、list-todos と同じ共通クロージャ
+	 * (runListTodos)を通るため calendarId 省略時は同様に otherTodoCollections が付きうる —
+	 * これは意図どおり(UI の再読み込みでも同じ「取りこぼし」注意が有効なため実害は無い、が
+	 * カード自体は otherTodoCollections を描画しない=UI 側は無視するだけなので実質無害。
+	 * 親レビューの論点として残す)。
+	 *
+	 * 【スライス2(カード描画)への布石】このフィールドは今回 structuredContent/content(テキスト)
+	 * にだけ載せ、UI(todos-entry.ts)側の描画は変えない(仕様のスライス分割どおり)。将来カードに
+	 * 「他にも○件あります」バナーを出す拡張の土台として additive に確保しておく。
+	 */
+	otherTodoCollections?: { id: string; displayName: string }[];
 }

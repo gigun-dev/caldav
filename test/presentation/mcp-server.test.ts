@@ -984,6 +984,48 @@ describe("/mcp", () => {
 		});
 	});
 
+	// 2026-07-16 silent drop 対策(D 案): calendarId 省略の list-todos が「tasks 以外にも VTODO
+	// コレクションがある」ことを otherTodoCollections で構造化的に伝えるかのサーバー契約テスト。
+	// 【背景】実アカウントに tasks/reading-list のように VTODO コレクションが複数あるとき、
+	// モデルが calendarId 省略で「これで全部」と誤認して reading-list を静かに取りこぼす事故が
+	// あった。VTODO 判定は list-calendars と同じ accepts("VTODO") 基準(CalendarCollection の
+	// 既存ドメインヘルパー)を使う。
+	describe("list-todos: otherTodoCollections(calendarId 省略時の silent drop 対策)", () => {
+		const TASKS = collectionId("tasks");
+		const READING_LIST = collectionId("reading-list");
+		async function call(name: string, args: Record<string, unknown>): Promise<any> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent;
+		}
+
+		it("calendarId 省略 + 複数 VTODO コレクションがあるとき otherTodoCollections が載る", async () => {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+			repos.collections.seed(
+				new CalendarCollection({ id: READING_LIST, owner: OWNER, displayName: "Reading List", supportedComponents: ["VTODO"] }),
+			);
+			const sc = await call("list-todos", {});
+			expect(sc.otherTodoCollections).toEqual([{ id: "reading-list", displayName: "Reading List" }]);
+		});
+
+		it("calendarId を明示指定すると otherTodoCollections は載らない(スコープ明示済み)", async () => {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+			repos.collections.seed(
+				new CalendarCollection({ id: READING_LIST, owner: OWNER, displayName: "Reading List", supportedComponents: ["VTODO"] }),
+			);
+			const sc = await call("list-todos", { calendarId: "tasks" });
+			expect("otherTodoCollections" in sc).toBe(false);
+		});
+
+		it("VTODO コレクションが tasks 1件だけなら otherTodoCollections は載らない", async () => {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+			repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar", supportedComponents: ["VEVENT"] }));
+			const sc = await call("list-todos", {});
+			expect("otherTodoCollections" in sc).toBe(false);
+		});
+	});
+
 	// =============================================================================
 	// E-3 スライス S1: event 系ツール(create/create-events/update/delete-event)の presentation テスト。
 	// application UC の挙動は event-usecases.test.ts が担保済みなので、ここでは structuredContent が
