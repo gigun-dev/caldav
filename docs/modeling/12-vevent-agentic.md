@@ -240,6 +240,28 @@ added/removed がノイズの洪水になる。系列単位の方がシグナル
 > 保存完了バナー」項を上書きする。ユーザー FB(done/undo/add の統一・パフォーマンスで楽観/
 > 悲観を決める・指定秒アニメで手応え+超過で警告)から生まれ、Fable architect が設計・
 > ユーザー裁可済み。実測レイテンシは同日 observability 集計に基づく。
+>
+> **2026-07-16 v2.1 上書き(本番実機 FB → Fable 再設計)**: v2 実装が実機で landing せず、
+> 以下5点を上書きする(v2 本文は該当箇所に撤回注記を残す=ボツ案は財産)。核心の誤りは
+> **「アニメの寿命」と「in-flight の真実」を同じ pendingIds に同居させたこと**。v2.1 は両者を分離:
+> - **A(寿命分離+done 視認性)**: アニメ寿命を `animUntil: Map<id, startedAt+cycleMs>` に分離し、
+>   tap から固定 1.2s を**必ず完走**(成功/失敗は pendingIds だけ delete・animUntil は満了タイマー
+>   のみ消す)。サーバー確定はアニメを縮めも延ばしもしない(receipt であってインジケータでない —
+>   NN/g「1s 未満はインジケータ不要」)。再描画耐性は inline `animation-delay: -経過ms` で途中再開。
+>   done/undo の主役を 14% リング(check 円の青塗りに埋もれた)から **circle ポップ(scale 1→1.12→1)
+>   + リング accent 約35%不透明 0→5px→0** に移す。
+> - **B(add の位置)**: 連続追加は draft 行を**その位置のまま** optimistic 行に変え新 draft を直下に
+>   出す(`anchorAfterId` でアンカー挿入・整列は確定後の再描画に委譲)。becoming-done の「押した
+>   場所から行が消えると因果が切れる」原則の add への適用。
+> - **C(タグ縦位置)**: becoming タグは常に rowMain 直下・**タイトル1行目基準**(check 円と同アンカー)。
+>   metaHasContent 二枝(2026-07-15 応急処置)を撤回。
+> - **D(優先度色バグ)**: `.title .pri-inline` の色指定を編集時の `.title-edit-row .pri-inline` にも
+>   効かせる(編集で ! が orange→黒に落ちる純 CSS バグ)。
+> - **E(悲観「保存中…」撤去)**: 判定則②は「**どのフィールドをローカルで書き換えないか**」の内部
+>   規律としてのみ残し、**待ち表現(pending-edit「保存中…」)は廃止**。反復の日時/recurrence 変更も
+>   表示は楽観と同一語彙(1.2s パルス→静的 becoming-edit タグ→確定描画で差し替え)。ユーザーが
+>   要求しておらず(実機 FB)、静的タグが既に操作をマークしているため進行語は情報を足さない。
+>   T_hard 10s バナーが唯一の安全網として残る。
 
 ### 結論
 
@@ -286,9 +308,11 @@ committing 満了(1200ms)─► settled 表現(静的 becoming)に収束。以�
  ・fetch 成功 → 楽観レイヤ解除・confirmedTasks 再構築(表示は既に一致・becoming 寿命は §7.2)
  ・fetch 失敗 → ロールバック + エラーバナー(再試行付き・既存経路)
 
-── 悲観パス ──
-committing 満了 ─► waiting(静的「保存中…」タグ・amber/--muted・アニメなし)
- ・fetch 成功 → 確定描画 + 静的 becoming / 失敗 → エラーバナー(楽観適用なしなのでロールバック不要)
+── 悲観パス【v2.1 で撤回】──
+~~committing 満了 ─► waiting(静的「保存中…」タグ・amber/--muted・アニメなし)~~
+（v2.1: 反復の日時/recurrence 変更も committing 満了 → 静的 becoming-edit タグに収束・確定描画で
+ 差し替え。楽観パスとの差は「optimisticEdits に日時/recurrence を積まない」内部規律だけで、
+ 表示語彙・待ち表現の分岐は持たない。失敗はバナーのみ・T_hard は共通経路。）
 
 ── 共通 ──
 T_hard(10s)超過 ─► 警告バナー + 「再読み込み」(fetchLatest)。中断・ロールバックなし
@@ -299,8 +323,11 @@ T_hard(10s)超過 ─► 警告バナー + 「再読み込み」(fetchLatest)。
 **楽観/悲観の判定則(レイテンシ非依存)**:
 1. クライアントが確定後の表示を正確に予測できる → 楽観(toggle・add・delete・title/notes/
    location/url 等の系列共通フィールド編集)。
-2. 予測できない → 悲観(**反復イベントの start/end/recurrence 変更** = §7.1 の楽観スキップ対象は
-   この悲観パスとしてそのまま位置づく)。
+2. 予測できない → ~~悲観(**反復イベントの start/end/recurrence 変更**)~~
+   **【v2.1 上書き】** 反復の start/end/recurrence 変更は「ローカルに値を書き換えない」内部規律
+   としてのみ残す(§7.1 の楽観スキップ = occurrence 展開はサーバーでしか成立しない技術事実は不変)。
+   **表示は楽観と同一語彙**(1.2s パルス→静的 becoming-edit タグ→確定描画で差し替え)。「保存中…」
+   等の待ち文言・pending-edit クラスは廃止(下記「悲観パス」ブロック・視覚表現表の最終行も撤回)。
 3. LLM 起点の mutate(カード外)→ 対象外(ontoolresult の becoming 表示のみ・現行どおり)。
 
 **視覚表現の対応表**:
@@ -308,14 +335,22 @@ T_hard(10s)超過 ─► 警告バナー + 「再読み込み」(fetchLatest)。
 | 操作 | committing(1.2s × 1) | 満了後 | 失敗 |
 |---|---|---|---|
 | add | `wake-sweep 1.2s linear 1`(現行 `infinite` を `1` に) | becoming-in 静的 wake | 仮行除去+バナー |
-| done/undo | circle リング `ring-pulse 1.2s ease-out 1`(0→4px→0 の脈動) | 静的 4px / 破線リング(既存) | ロールバック+バナー |
+| done/undo **【v2.1】** | circle ポップ `scale 1→1.12→1` + リング `0→5px→0`(accent 約35%不透明)1.2s ease-out 1 | 静的 4px 凍結リング(既存 14%) | ロールバック+バナー |
 | edit(楽観フィールド) | becoming タグ opacity pulse × 1 | becoming-edit 凍結表示(既存) | 同上 |
 | delete | ゴースト行 opacity pulse × 1 | ゴースト静的(既存) | 行復活+バナー |
-| 悲観(反復の日時/recurrence) | タグ opacity pulse × 1 | 静的「保存中…」タグ(確定まで) | バナーのみ |
+| ~~悲観(反復の日時/recurrence)~~ **【v2.1 撤回】** | (edit と同じ)タグ opacity pulse × 1 | **静的 becoming-edit タグ**(確定まで・「保存中…」は廃止) | バナーのみ |
 
-- `prefers-reduced-motion`: committing のアニメを省き、楽観 = 最初から静的 becoming / 悲観 =
-  最初から静的「保存中…」。
-- aria-live(#live): 楽観 = settled 文言を即時 / 悲観 =「保存中」→確定文 / 失敗 = エラー文(既存)。
+- `prefers-reduced-motion`: committing のアニメを省き、~~楽観 = 最初から静的 becoming / 悲観 =
+  最初から静的「保存中…」~~ **【v2.1】** 全操作で最初から静的 becoming(悲観も becoming-edit 静的)。
+- aria-live(#live): 楽観 = settled 文言を即時 / ~~悲観 =「保存中」→確定文~~ **【v2.1】** 反復日時変更も
+  becoming-edit 文言 / 失敗 = エラー文(既存)。
+- **【v2.1】タグの縦位置**: becoming タグは常に rowMain 直下・タイトル1行目基準(check 円と同アンカー・
+  `align-self:flex-start`)。meta の有無で配置を変える 2026-07-15 の二枝は撤回。
+- **【v2.1】アニメ寿命 ≠ in-flight**: committing は `animUntil: Map<id, startedAt+cycleMs>` が管理し
+  tap から固定 1.2s 完走(満了タイマーのみが消す)。pendingIds は in-flight ガード専用で成功/失敗に
+  即 delete(アニメを縮めない)。再描画耐性は inline `animation-delay: -経過ms`。
+- **【v2.1】add の位置**: draft 行を in-place で optimistic 行へ変換(`anchorAfterId` でアンカー挿入)・
+  新 draft を直下に。整列は確定後の再描画に委譲(becoming-done の「その場に留め次回描画で移す」原則)。
 - **浮遊層ゼロ維持**: 全表現が行内 CSS(box-shadow / background-position / opacity)。
   fresh-instance で再インスタンス化されれば pending 状態ごと消えて確定描画に戻る = 安全側。
 
