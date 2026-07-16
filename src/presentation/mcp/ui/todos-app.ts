@@ -58,11 +58,7 @@
 // =============================================================================
 
 import { TODOS_BUNDLE_JS } from "./todos-bundle";
-
-/** list-todos ツールが描画する MCP Apps リソースの URI。
- *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を
- *  使う必要があるため、定数として一箇所にまとめている(タイポ事故防止)。 */
-export const TODOS_UI_URI = "ui://caldav/todos.html";
+import { fnv1aHex } from "./content-hash";
 
 /**
  * list-todos の structuredContent(`{ tasks: Task[], calendarId, timeZone }`)を受け取り、
@@ -1267,3 +1263,19 @@ ${TODOS_BUNDLE_JS}
 </body>
 </html>
 `;
+
+/** list-todos ツールが描画する MCP Apps リソースの URI。
+ *  【2026-07-17 キャッシュバスティング S1】旧来は静的文字列(`ui://caldav/todos.html`)だったが、
+ *  claude.ai が ui:// リソースを URI 単位でキャッシュしうる(SEP-1865 が MAY で許可)ため、
+ *  配信される最終 HTML(TODOS_APP_HTML = CSS + 骨格 + inline バンドル全体)から算出した hash を
+ *  URI に埋め込み、content-address 化する。これにより CSS/骨格/バンドルのどれが変わっても
+ *  URI が変わり、ホストのキャッシュを迂回して新 HTML が即座に伝播する。
+ *  【定義順が TODOS_APP_HTML の後である理由】hash の入力は TODOS_APP_HTML そのもの(この定数を
+ *  参照して初めて計算できる)なので、循環を避けるため必ず HTML 定義 → hash 算出 → URI 定義の順にする
+ *  (ビルド時のバンドル hash だけを使わないのも同じ理由: 骨格/CSS の変更を取りこぼすため)。
+ *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を
+ *  使う必要があるため、定数として一箇所にまとめている(タイポ事故防止)。
+ *  旧・静的 URI(`ui://caldav/todos.html`)は server.ts 側で後方互換のエイリアス登録をする
+ *  (このファイルからは触れない。ローカル定数として server.ts に専用で持つ設計 — 詳細は
+ *  server.ts の resource 登録コメント参照)。 */
+export const TODOS_UI_URI = `ui://caldav/todos.${fnv1aHex(TODOS_APP_HTML)}.html`;

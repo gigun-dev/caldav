@@ -17,10 +17,7 @@
 // =============================================================================
 
 import { AGENDA_BUNDLE_JS } from "./agenda-bundle";
-
-/** list-events-expanded ツールが描画する MCP Apps リソースの URI。
- *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を使う。 */
-export const AGENDA_UI_URI = "ui://caldav/agenda.html";
+import { fnv1aHex } from "./content-hash";
 
 /**
  * list-events-expanded の structuredContent(EventsViewModel)を受け取り、アジェンダとして描画する HTML。
@@ -330,3 +327,11 @@ ${AGENDA_BUNDLE_JS}
 </body>
 </html>
 `;
+
+/** list-events-expanded ツールが描画する MCP Apps リソースの URI。
+ *  【2026-07-17 キャッシュバスティング S1】todos-app.ts の TODOS_UI_URI と同じ理由・同じ方式で、
+ *  AGENDA_APP_HTML(配信される最終 HTML 全体)から算出した hash を URI に埋め込む
+ *  content-address 化。定義順(HTML → hash → URI)・旧静的 URI のエイリアス方針も同一なので
+ *  詳細は todos-app.ts の TODOS_UI_URI コメントを参照(重複させない)。
+ *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を使う。 */
+export const AGENDA_UI_URI = `ui://caldav/agenda.${fnv1aHex(AGENDA_APP_HTML)}.html`;

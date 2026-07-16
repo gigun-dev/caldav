@@ -215,7 +215,15 @@ added/removed がノイズの洪水になる。系列単位の方がシグナル
   不正データとして残す(lossless 保持・修正は手動)。
 - **update-event description** に「通知・繰り返し・URL・移動時間も変更できる」を追記。
 - **notifications/tools/list_changed は見送り**(stateless HTTP でデプロイ時に届ける生きた
-  セッションが無い)。運用手順として「デプロイでツール追加したら claude.ai 側で再接続」を残す。
+  セッションが無い)。
+  ~~運用手順として「デプロイでツール追加したら claude.ai 側で再接続」を残す。~~
+  > 2026-07-17 更新: キャッシュバスティング機構(S1: ui:// の content-address 化 / S2: `/mcp/vN`
+  > 版管理エンドポイント)を実装したことで運用フローを確定。通常のデプロイ(ツール追加含む)は
+  > 何もしなくてよい(claude.ai のツール定義キャッシュは TTL 約1時間で自動反映され、カード UI
+  > は hash 化 URI で自動伝播する)。即時反映が要る/破壊的変更/TTL バグで1時間超 stale が
+  > 続く場合のみ、コネクタの接続 URL を `/mcp/vN` → `/mcp/v<N+1>` に差し替えて OAuth 再同意する
+  > (「再接続」だけでは直らない報告が claude-ai-mcp#137 にあるため、URL 変更を確実な脱出口とする)。
+  > 詳細運用は docs/next-directions.md 参照。
 
 ### §7.7 UI/UX 修正(todos/agenda に CSS/DOM 完全重複・共有化は今回見送り)
 

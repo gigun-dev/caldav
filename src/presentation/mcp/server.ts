@@ -21,6 +21,7 @@
 // =============================================================================
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 // Hono 独自の ExecutionContext 型(hono/types)を明示 import する。global ambient な
 // ExecutionContext(@cloudflare/workers-types。OAuthProvider の.d.ts が使う方)は `tracing`
 // フィールドを要求するなど形が異なり、c.executionCtx(Hono 側の型)をそのまま代入すると
@@ -927,6 +928,45 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		}),
 	);
 
+	// --- todos ui:// 旧・静的 URI のエイリアス登録(2026-07-17 キャッシュバスティング S1)-----
+	// TODOS_UI_URI は HTML から算出した hash 付き URI に切り替わった(todos-app.ts 参照)ので、
+	// 新しく接続したホストは新 URI を掴む。しかし claude.ai は tools/list 自体も約1時間 TTL で
+	// キャッシュする(層A)ため、切り替え直後は「旧 tools/list(旧 resourceUri 入り)を握ったまま」の
+	// ホストが一定時間存在しうる。その間もカードが欠落しないよう、旧・静的 URI でも同じ最新
+	// HTML を読めるようにここでエイリアス登録する(層Bの後方互換)。旧 URI 文字列はこの登録
+	// 専用のローカル定数として持ち、todos-app.ts 側に「静的 URI」を export し直すことはしない
+	// (todos-app.ts の輸出面を増やさず、後方互換の都合はこの登録箇所に閉じ込める)。
+	const TODOS_UI_URI_LEGACY = "ui://caldav/todos.html";
+	registerAppResource(
+		server,
+		"Todos View (legacy URI)",
+		TODOS_UI_URI_LEGACY,
+		{
+			title: "リマインダー一覧 UI",
+			description: "list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI(旧 URI・後方互換)",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async () => ({
+			contents: [
+				{
+					uri: TODOS_UI_URI_LEGACY,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: TODOS_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
 	// --- agenda ui:// リソース(E-3 スライス S2)------------------------------------
 	// list-events-expanded / refresh-events が _meta.ui.resourceUri で参照するアジェンダカードの
 	// HTML 本体を登録する(todos の "Todos View" と対称)。自己完結バンドルなので CSP 許可は不要。
@@ -948,6 +988,40 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			contents: [
 				{
 					uri: AGENDA_UI_URI,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: AGENDA_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
+	// --- agenda ui:// 旧・静的 URI のエイリアス登録(2026-07-17 キャッシュバスティング S1)-----
+	// 理由・方針は上の TODOS_UI_URI_LEGACY と対称(todos と同じ TTL ウィンドウで旧 URI を
+	// 掴んだままのホストが出うるため)。詳細コメントは重複させず TODOS_UI_URI_LEGACY 側を参照。
+	const AGENDA_UI_URI_LEGACY = "ui://caldav/agenda.html";
+	registerAppResource(
+		server,
+		"Agenda View (legacy URI)",
+		AGENDA_UI_URI_LEGACY,
+		{
+			title: "アジェンダ(予定一覧)UI",
+			description: "list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI(旧 URI・後方互換)",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async () => ({
+			contents: [
+				{
+					uri: AGENDA_UI_URI_LEGACY,
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
 					_meta: {
@@ -2241,7 +2315,23 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: ExecutionContext) => McpAppDeps) {
 	const app = new Hono<{ Bindings: CloudflareBindings }>();
 
-	app.all("/", async (c) => {
+	// 【2026-07-17 キャッシュバスティング S2: エンドポイント URL の版管理】
+	// claude.ai は MCP のツール定義(tools/list の結果)を TTL 約1時間でサーバー側キャッシュする
+	// (層A)。S1(ui:// の content-address 化)は層B(カード HTML)の自動伝播を解決するが、層A
+	// (ツール定義そのもの・入出力スキーマの変更等)は URI を変えても TTL の間は古いまま
+	// キャッシュされうる。claude-ai-mcp#137 では「再接続」だけでは直らない報告もあり、
+	// 確実な脱出口として「接続先 URL 自体を変える」= コネクタの URL を書き換えて OAuth 再同意
+	// させる、という運用ハンドルを用意しておく(docs/next-directions.md 運用フロー参照)。
+	// 【なぜ版セグメントに意味を持たせない(allowlist しない)か】
+	// `/mcp/v2` を特別扱いして分岐する設計にすると、「新しい版番号を使う」ためにサーバー側の
+	// allowlist 更新 → デプロイが先に必要になり、「デプロイを確実に伝播させる」という本来の
+	// 目的と本末転倒になる(バージョンを増やすたびにコード変更が要る)。そこでこの :version は
+	// パスパラメータとして受け取るだけで中身を一切読まない・分岐しない「純粋なキャッシュバスト
+	// ハンドル」にする。`/mcp/v2` も `/mcp/20260714` も同じ最新サーバーを返す。実運用では
+	// コネクタ設定の URL を単純にインクリメントするだけで新しい版として扱われる。
+	// 【同一ハンドラを2ルートに登録する理由】旧 URL(`/mcp`)は既存接続の後方互換として維持し続け、
+	// 版管理は「加算的な脱出口」として追加する(設計方針: 両方とも加算的・可逆・後方互換)。
+	const handleMcpRequest = async (c: Context<{ Bindings: CloudflareBindings }>) => {
 		// c.executionCtx は「呼び出し元が Request と一緒に ExecutionContext も渡したか」で
 		// 中身が決まる getter で、渡されていないと例外を投げる実装(hono/dist/context.js
 		// executionCtx()。bun test の `.fetch(request, env)`(第3引数省略)がまさにこのケース。
@@ -2258,7 +2348,14 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 
 		// --- 認証: Authorization ヘッダ + resourceUri を AuthContext に詰めて解決する ---
 		const url = new URL(c.req.url);
-		const resourceUri = `${url.origin}/mcp`;
+		// 【2026-07-17 S2】以前は `${url.origin}/mcp` にハードコードしていたが、`/mcp/:version`
+		// (版管理エンドポイント)を追加したことで実際の接続 URL と食い違う経路が生まれた。
+		// 実パス追従(`url.pathname`)にすることで、`/mcp/v2` で接続したクライアントの
+		// resourceUri(audience)が実際の接続 URL と一致するようになる。現状の認証アダプタ
+		// (static-bearer-auth.ts / oauth-props-auth.ts)は resourceUri を実質使っていない
+		// (no-op)ので今回のリクエストで挙動は変わらないが、将来 audience 検証を実装する際に
+		// 正しい値になっているようにしておく。
+		const resourceUri = `${url.origin}${url.pathname}`;
 		const authResult = await deps.auth.authenticate({
 			authorization: c.req.header("authorization") ?? null,
 			resourceUri,
@@ -2284,7 +2381,12 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 		// undefined は型上の保険であり実運用では起きない想定だが、Hono のハンドラ契約を守るため
 		// 保険で 500 に倒す。
 		return response ?? new Response("MCP transport returned no response", { status: 500 });
-	});
+	};
+
+	// 旧 URL(ルート直下)は既存接続の後方互換として維持しつつ、`/:version` セグメント付きの
+	// URL でも同一ハンドラが応答するようにする(S2 の脱出口)。
+	app.all("/", handleMcpRequest);
+	app.all("/:version", handleMcpRequest);
 
 	return app;
 }

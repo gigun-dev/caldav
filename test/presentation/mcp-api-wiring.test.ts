@@ -272,4 +272,42 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			expect(rpc.result?.isError).toBeFalsy();
 		});
 	});
+
+	// --- S2: エンドポイント URL の版管理(2026-07-17 キャッシュバスティング)-----------------
+	// `/mcp/:version` は「意味を持たない純粋なキャッシュバスト用パスセグメント」(server.ts の
+	// createMcpApp コメント参照)。ここでは実際に `/mcp/v2` 経由でも `/mcp` と同じ最新サーバーの
+	// 応答が返ることだけを検証する(バージョン文字列そのものへの分岐が無いことの間接的な保証)。
+	describe("/mcp/:version(S2 版管理エンドポイント)", () => {
+		it("/mcp/v2 でも initialize が通る", async () => {
+			const req = new Request("https://example.com/mcp/v2", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } },
+				}),
+			});
+			const res = await mcpApiApp.fetch(req, ENV, fakeExecutionContextWithProps({ username: USERNAME }));
+			expect(res.status).toBe(200);
+		});
+
+		it("/mcp/v2 の tools/list は /mcp(旧 URL)と同じツール一覧を返す", async () => {
+			async function toolNames(path: string) {
+				const req = new Request(`https://example.com${path}`, {
+					method: "POST",
+					headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+					body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+				});
+				const res = await mcpApiApp.fetch(req, ENV, fakeExecutionContextWithProps({ username: USERNAME }));
+				expect(res.status).toBe(200);
+				const text = await res.text();
+				const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
+				const rpc = JSON.parse(dataLine !== undefined ? dataLine.slice("data: ".length) : text);
+				return (rpc.result.tools as Array<{ name: string }>).map((t) => t.name).sort();
+			}
+			expect(await toolNames("/mcp/v2")).toEqual(await toolNames("/mcp"));
+		});
+	});
 });
