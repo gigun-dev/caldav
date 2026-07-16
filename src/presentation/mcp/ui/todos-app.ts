@@ -849,7 +849,13 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 実機 FB(「完了が下に寄る」)が残っていた。entry 側でタグを常に rowMain 直下へ置くよう変えたので、
    * ここは分岐なしの単一ルールになる。align-self:flex-start + .head と同じ margin-top:12px で
    * タイトル1行目の視覚中心にタグのベースラインを合わせる(check 円・head の縦補正と同じ理屈)。 */
-  .row-main > .tag { align-self: flex-start; margin-top: 12px; margin-left: auto; padding-left: 8px; flex: none; }
+  /* 【2026-07-16 実機FB: 選択行の trailing(完了タグ・ⓘ)が上寄りに見える → 光学中心を統一】
+   * タグは font-size が小さい(タイトル 16px に対し ~10.5px)ため、head と同じ margin-top:12px だと
+   * 中心が ~18px でタイトル1行目の中心(~22px)・check 円/ⓘ(44px ボックス中央 ~22px)より高く見えた。
+   * タグ margin-top を 16px に上げて中心をタイトル1行目に合わせる(check・ⓘ・タイトルと同一の光学中心=
+   * 「1行目のツールバー」として意図的に読める。行が伸びても1行目固定=入力中に操作対象が動かない・
+   * iOS リマインダーの ⓘ 挙動と同じ)。**要実機検証**(±数 px は実機で微調整)。 */
+  .row-main > .tag { align-self: flex-start; margin-top: 16px; margin-left: auto; padding-left: 8px; flex: none; }
 
   /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)------------------------
    * 下線は出さない(ユーザー判断 2026-07-15。選択は bg-subtle 背景とメモ行・ⓘ の出現で十分伝わり、
@@ -880,21 +886,30 @@ export const TODOS_APP_HTML = `<!doctype html>
     outline: none;
     padding: 0 0 1px;
   }
-  /* .memo-line も同じ理由(iOS auto-zoom 回避)で 16px 化。元は 12px で .meta 相当の小さめ表示に
-   * 揃えていたが、フォーカス時ズームの実害の方が「メモ行がやや大きく見える」より優先度が高い
-   * (親裁定 §7.7: 選択行だけ文字がわずかに大きくなるのは許容)。行高が広がらないよう
-   * line-height を詰めて padding は変えない。 */
+  /* 【2026-07-16 実機FB: 編集でメモが拡大する(12→16px)のをやめる — scale 手法】
+   * iOS auto-zoom はフォーカス要素の **computed font-size** で発火するので、font-size は 16px の
+   * まま(zoom 回避)にし、transform:scale(.75) で**見た目だけ 12px** にする。これで一覧プレビュー
+   * .notes(12px)と編集入力の字大が完全一致し、選択で拡大する跳ねがゼロになる(iOS リマインダーも
+   * 編集中メモは小さいまま = ネイティブは 16px 制約が無いだけ。web ではこの scale が唯一の等価解)。
+   * §7.7 の「選択行だけメモがやや大きくなるのは許容」は撤回。
+   *   - width:133.34% + transform-origin:top left で scale(.75) の横縮みを補正し行幅を保つ。
+   *   - タップ実効高さは WCAG 2.5.8(最小 24px)以上を pre-scale の line-height+padding で確保する:
+   *     (16×1.5 + 6×2)=36px、×0.75 = 27px ≥ 24px。scale は padding/line-height も 0.75 倍する点に注意。
+   *   - 【要実機検証】focus zoom 非発火・キャレット/選択ハンドルの見た目(scale 済み input の既知の
+   *     弱点)。壊れたら font-size:12px 素+auto-zoom 許容 or 16px 素へ即戻せる(CSS 数行・完全可逆)。 */
   .memo-line {
     display: block;
-    width: 100%;
+    width: 133.34%;
     font: inherit;
     font-size: 16px;
-    line-height: 1.2;
+    line-height: 1.5;
+    transform: scale(0.75);
+    transform-origin: top left;
+    padding: 6px 0;
     color: var(--muted);
     border: none;
     background: none;
     outline: none;
-    padding: 2px 0;
   }
   .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
   /* 選択行の ⓘ は accent 色で出す(存在自体が「詳細へ」の主導線)。 */
