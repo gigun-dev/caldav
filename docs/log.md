@@ -891,3 +891,26 @@
   モード=コレクション独自 dead property(iOS 26.5 の 38 プロパティ実測にソートモード非包含=iOS ローカル保持
   なので独自で損失ゼロ)+ D1 カラム。サーバーは常に手動順・モード別ソートは表示側。G-1(実機観測)→G-5(ドラッグ)。
 - **要実機検証**: 位置不変の体感・done sticky が次 refresh で消えないか・FAB フロー位置・§7.9 の iOS CalDAV 挙動。
+
+## 2026-07-17 「シマー中だけ FAB 下に余白」= host bridge の HOLB と確定・修正
+
+- **症状**: todos カードで FAB 追加 → シマー ~1.2s の間だけ FAB 下に ~30px の余白が出て、シマー終了で縮む。
+- **切り分け**: caldav カードに一時高さトレーサ(ResizeObserver + 100ms tick で scroll/body/inner 記録・
+  commit 955097a、撤去 e4c8ff5)を入れ、iOS Simulator の WKWebView に Safari Web Inspector を接続して計測
+  (要 isInspectable=true・swift-mcp-app 側 AppCardView に DEBUG 限定で追加)。
+- **確定した機序**: カードは commit の 16ms 後に真のコンテンツ高へ収束・44ms 後に size-changed 送信済み(無罪)。
+  一方 host の iframe frame(inner)は create-todo の result 到着まで ~730ms 動かず、その後 easeOut(0.3s)で追従。
+  真因は swift-mcp-app `AppsBridgeSession` の受信ループが in-flight tools/call の実サーバー往復を await し切る
+  まで、直後の size-changed 通知を処理できない head-of-line blocking(size-changed 限定でなく in-flight tool
+  call の裏の全通知/request が詰まる構造問題=「操作中は重い」体感全般に効く)。
+- **対処(Fable 設計 → artisan 実装 → 私レビュー)**: swift-mcp-app 側で `.passthrough`(tools/call・
+  resources/read)を追跡付き非構造化 Task に切り出して非直列化。typed/response レーンは直列維持(initialize
+  ゲート/teardown 相関を守る)、passthrough 応答は JSON-RPC id 相関で順不同 OK。inflightPassthrough dict で
+  寿命管理・close() で全 cancel・proxyRequest 復帰時 closed ガード。テスト用に AppsServerProxying protocol 抽出、
+  ゲート式モックで HOLB①〜③を決定的に検証。swift-mcp-app コミット 91f801b(未 push)。
+- **実機再計測で確定**: size-changed 受信→inner 追従開始 ~100ms・tool 応答より 300ms 早く収束(余白の総時間
+  730ms+300ms → easeOut 0.3s のみ)。残: 縮小アニメ 0.3s の意匠見直しは任意(S4・InlineCardView.swift:123)。
+- **事故と教訓**: artisan の HOLB 変更(未コミット)が、並行セッションのコミット cd8be4b で同一ファイルごと上書き
+  消失した(stash/reflog にも残らない)。設計確定+レビュー記録があったので cd8be4b の上へ再適用して復旧。
+  → 別リポで並行作業があるときは subagent の成果を早めにコミット/stash で保全する。
+- caldav 側はトレーサ撤去済みで恒久変更ゼロ。前セッションの S-A〜S-E タスクは実態照合して全完了確認。

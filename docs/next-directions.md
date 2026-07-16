@@ -54,6 +54,19 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > 折り畳みは誕生時完了のみ)/ item4 FAB フロー化**(6d713a6・要実機検証)。**表示順序設定(§7.9・G-1〜G-5)**:
 > 手動順=X-APPLE-SORT-ORDER・モード=独自 dead property + D1 カラム(iOS はソートモードをローカル保持=独自で
 > 相互運用損失ゼロ)。G-1=iOS の手動並べ替え/モード変更の CalDAV 挙動を Proxyman 観測 → G-4 カード設定 UI → G-5 ドラッグ。
+>
+> **2026-07-17: 「FAB 追加のシマー中だけ FAB 下に余白が出る」件 → caldav 無罪・真因は host bridge の
+> head-of-line blocking(swift-mcp-app)。** caldav 側に一時高さトレーサを入れ実機 Safari Web Inspector で
+> 計測(Simulator の WKWebView に接続・要 isInspectable=true・DEBUG 限定)。カードは commit の 16ms 後に
+> 真のコンテンツ高へ収束・44ms 後に size-changed 送信済みで無罪。真因は `AppsBridgeSession` の受信ループが
+> in-flight の tools/call の実サーバー往復(~730ms)を await し切るまで直後の size-changed 通知を処理できず
+> 詰まること(size-changed 限定でなく in-flight tool call の裏の全通知/request が詰まる構造問題)。**対処
+> (Fable 設計 → artisan 実装 → 実機再計測で ~730ms→~100ms 確認)= swift-mcp-app 側で `.passthrough` を追跡付き
+> Task に非直列化**(typed/response レーンは直列維持=initialize ゲート/teardown 相関を守る・passthrough 応答は
+> id 相関で順不同 OK)。swift-mcp-app コミット 91f801b(未 push)。caldav 側はトレーサ撤去済み(e4c8ff5)で
+> 恒久変更ゼロ=この件でカード側の作業は無し。残: 余白の残り時間は host の easeOut(0.3s)縮小アニメのみ
+> (`InlineCardView.swift:123`・任意の意匠見直し S4)。教訓: 別リポで並行作業がある場合、subagent の未コミット
+> 成果は並行セッションのコミットで上書き消失しうる(今回一度 clobber された)→ 早めにコミット/stash で保全。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
