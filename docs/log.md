@@ -850,3 +850,25 @@
   修正(集約しないと表示中の全 occurrence 行へ重複表示され「別イベントが N 件 pending」の誤読)。
 - F-1〜F-3 完了で操作フィードバック統一ドクトリン v2 の UI 実装は一巡。残 = delete の committing
   演出(rebuildDisplay 削除経路の作り直しが要る中規模・申し送り)+ 計器の Analytics Engine 化。
+
+## 2026-07-16(続き4)v2.1 実装 + 単発追加修正 + #3(list-todos)+ 時刻グラウンディング
+
+- **操作フィードバック v2.1 実装・デプロイ**(809236c 設計 / 9d05a2e A/C/D/E / d360b82 B)。実機 FB 5点:
+  A=done アニメが見えない(animUntil で寿命分離し tap から固定1.2s 完走・circle ポップ+リング濃度強化)/
+  C=タグ下寄り(常に rowMain 直下・タイトル1行目基準)/ D=編集で優先度が黒(pri-inline を編集セレクタにも)/
+  E=「保存中…」撤去(反復編集も becoming-edit「変更」に統一)/ B=追加の飛び(sectionize 末尾ピン)。
+- **B の解釈修正(0a29d0e)**: B を「Enter 連続追加」と誤解していた。ユーザーの実体は**単発追加**
+  (FAB→1件編集→完了でその場にシマー・空ドラフトを残さない)。連続追加(commitDraftEnter の
+  startDraft 継続)を撤回。これが元の「追加したのに空行が下に残る」違和感の本丸だった。末尾ピンは単発でも有効。
+- **#3(list-todos calendarId 省略時の silent drop・15f214b)**: 複数 VTODO(tasks/reading-list)で
+  reading-list を静かに取りこぼす問題。Fable 調査で D 案採用(応答側の構造化 coverage フィールド)。
+  省略時のみ otherTodoCollections を additive 付与 + description 明示。events 側は元から横断既定
+  (todos だけが例外)だが、todos はカード/mutate が単一コレクション前提なので B(横断集約)は見送り。
+  完全可逆(将来 B は Task per-item calendarId 布石が要る)。
+- **時刻グラウンディング(bb1277c)**: get-current-time→list-events-expanded の2往復問題を Fable 推奨の
+  ハイブリッドで解消。list-events-expanded/get-freebusy に range enum(today/tomorrow/next-7-days/
+  next-30-days)+ range 時 timeZone 必須 + resolvedRange エコー。resolveRelativeRange は
+  application/time の純関数で壁時計日加算(DST 安全・localFieldsToEpochMillis 再利用)。get-current-time
+  存置。this-week は WKST 問題で除外。now はサーバー権威・TZ は明示必須で分離。
+- **残**: delete の committing 演出 / 計器の Analytics Engine 化 / list-todos due 相対レンジ /
+  #3 スライス2(カード描画)・3(横断集約=B)/ #11 iOS URL・CONFERENCE 表示 / 実機で v2.1 の体感確認。

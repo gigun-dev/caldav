@@ -35,6 +35,18 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > **F-1〜F-3 で UI 実装は一巡**。設計の正は docs/modeling/12 §7.8。
 > **計器 follow-up 未着手**: {mcpTool,ms,colo} console.log は observability で field 未インデックス
 > → Analytics Engine writeDataPoint 化を別スライス起票(下記カタログ候補)。
+>
+> **2026-07-16 追加更新(実機 FB 第2波 → v2.1 + ツール設計2件)**:
+> - **v2.1 デプロイ済み**(809236c/9d05a2e/d360b82): done アニメ寿命分離(animUntil)+視認性強化・
+>   タグ縦位置・優先度色・「保存中…」撤去・追加ピン。**単発追加へ修正(0a29d0e)**: 連続追加は誤解で、
+>   FAB→1件→完了でその場シマー・空ドラフト残さないのが正(元の違和感の本丸)。
+> - **#3 list-todos silent drop(15f214b)**: calendarId 省略時に otherTodoCollections で「他にもある」を
+>   応答側から伝える(D 案・Fable 調査)。events は元から横断既定・todos は単一前提なので B は見送り(可逆)。
+> - **時刻グラウンディング(bb1277c)**: list-events-expanded/get-freebusy に相対レンジ enum
+>   (today/tomorrow/next-7-days/next-30-days)+ range 時 TZ 必須 + resolvedRange エコー。get-current-time の
+>   2往復を解消。resolveRelativeRange は application/time の DST 安全純関数。get-current-time 存置。
+> - **follow-up**: delete committing 演出 / 計器 AE 化 / **list-todos due 相対レンジ**(語彙統一)/
+>   **#3 スライス2(カード「他に○件」描画)・3(Task per-item calendarId → 横断集約 B)** / #11 iOS URL・CONFERENCE。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
