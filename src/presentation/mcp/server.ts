@@ -1096,14 +1096,27 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// コメントのとおり、複数コレクション横断はこの呼び出し側=MCP アダプタの責務)。
 				const entries: { uid: string; calendarId: CollectionId; occurrence: Occurrence }[] = [];
 				let truncated = false;
-				for (const cid of collectionIds) {
-					const out = await listOccurrences.execute({
-						owner: principal,
-						collectionId: cid,
-						rangeStartMillis,
-						rangeEndMillis,
-						floatingTimeZone: zone,
-					});
+				// 【2026-07-17 レイテンシ改善: コレクション横断を直列 → 並列(Promise.all)化】
+				// calendarId 省略時の既定呼び出しは findAllByOwner の全コレクション(実測 ~7 件)を横断する。
+				// 旧実装はこれを for-await で直列に叩いていたため、D1 プライマリ(APAC/HKG)から遠い colo
+				// (IAD 等)で実行されると「1 コレクション = 1 D1 往復(~150-200ms)」がそのまま N 回加算され、
+				// list-events-expanded が 1.2〜2.3s に達していた(observability 実測。SQL 自体は 0.46ms・
+				// データ 9 件でパース/展開は無罪=支配項は往復回数 × colo-D1 距離)。ListOccurrences は
+				// 単一コレクション専用で互いに独立(共有可変状態なし)なので Promise.all で一斉発行し、
+				// 直列往復 N を並列 1 段に畳む。結果順序は下の entries.sort で始点昇順に正規化するので、
+				// 並列で解決順が入れ替わっても最終出力は不変。truncated は OR で畳む。
+				const outs = await Promise.all(
+					collectionIds.map((cid) =>
+						listOccurrences.execute({
+							owner: principal,
+							collectionId: cid,
+							rangeStartMillis,
+							rangeEndMillis,
+							floatingTimeZone: zone,
+						}),
+					),
+				);
+				for (const out of outs) {
 					if (out.truncated) truncated = true;
 					entries.push(...out.occurrences);
 				}
@@ -1230,15 +1243,23 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				const collectionIds = await resolveCollectionIds(deps, principal, calendarId);
 				const computeFreeBusy = new ComputeFreeBusy(deps.resourceRepo, deps.iterator);
 
+				// 【2026-07-17 レイテンシ改善: コレクション横断を直列 → 並列(Promise.all)化】
+				// list-events-expanded と同型の問題(D1 プライマリ遠方 colo での直列往復 ×N)。
+				// ComputeFreeBusy も単一コレクション専用で互いに独立なので一斉発行する。マージは下の
+				// coalesceBusyIntervals が全区間を集約するので解決順に依存しない(順序不変)。
 				const allIntervals: BusyInterval[] = [];
-				for (const cid of collectionIds) {
-					const out = await computeFreeBusy.execute({
-						owner: principal,
-						collectionId: cid,
-						rangeStartMillis,
-						rangeEndMillis,
-						floatingTimeZone: zone,
-					});
+				const fbOuts = await Promise.all(
+					collectionIds.map((cid) =>
+						computeFreeBusy.execute({
+							owner: principal,
+							collectionId: cid,
+							rangeStartMillis,
+							rangeEndMillis,
+							floatingTimeZone: zone,
+						}),
+					),
+				);
+				for (const out of fbOuts) {
 					allIntervals.push(...out.intervals);
 				}
 				// 複数コレクション分をマージしたら再度 coalesce する(単一コレクションの
