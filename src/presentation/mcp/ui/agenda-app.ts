@@ -75,7 +75,11 @@ export const AGENDA_APP_HTML = `<!doctype html>
   [hidden] { display: none !important; }
   body {
     padding: clamp(8px, 3vw, 16px);
-    padding-bottom: 64px;
+    /* 【2026-07-17 P4-DM S0: 旧 padding-bottom:64px 退避を撤回(todos-app.ts:168 と同判断)】
+     * この 64px は FAB が position:fixed で通常フローに場所を取らないため、最終行に被らないよう
+     * body 側で下余白を確保するものだった。FAB をフロー配置(.fab-row)に変えたことで FAB 自身が
+     * 通常フローの一部になり最終行の下に自然に並ぶ(重ならない)ため、専用退避は不要になった。
+     * 通常の下端余白は上の padding(clamp)で足りる。 */
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Hiragino Sans", sans-serif;
     font-size: 14px;
     line-height: 1.4;
@@ -249,11 +253,30 @@ export const AGENDA_APP_HTML = `<!doctype html>
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   @media (prefers-reduced-motion: reduce) { .skel, .skel * { animation: none; } }
 
-  /* --- 追加 FAB(+)--- */
+  /* --- 追加 FAB(+)。#root の直後・通常フローの右寄せに置く円 ---
+   * タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細ページ表示中は
+   * entry が hidden にして重なりを避ける。
+   * 【2026-07-17 P4-DM S0: position:fixed を撤廃し通常フロー右寄せへ(todos-app.ts の同修正を移植)】
+   * 旧実装は todos が fixed→フロー化する前の姿をそのまま引き写したもので、position:fixed だった。
+   * しかし todos-app.ts:730 が記録するとおり、MCP Apps の auto-height iframe(ホストがコンテンツ
+   * 高さに追従リサイズ)では「viewport 底辺 = コンテンツ底辺」になるため fixed は「固定でない固定」
+   * になり、行挿入のたびに FAB が一瞬下へずれて戻るシフト源になる。加えて P4-DM の畳み(inline
+   * fold)を移植すると、fixed FAB は #root の畳みで生じる高さ変化と無関係に画面下へ張り付くため、
+   * measureFabBlockPx が測る「行の下に必ず並ぶ FAB の高さ」という前提(fold の budget 先引き)が
+   * 崩れる。todos が同じ理由でフロー化した経緯に倣い、agenda も .fab-row(#root 直後・body 直下の
+   * 通常フロー要素)の中に flex + justify-content:flex-end で右寄せする。フロー配置だと行挿入で
+   * FAB がその場から1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。 */
+  .fab-row {
+    display: flex;
+    justify-content: flex-end;
+    /* 旧 fixed FAB のための body padding-bottom 退避を廃止した(body のコメント参照)ので、
+     * FAB とその上の #root の間隔をここで確保する(todos-app.ts の .fab-row と同値)。 */
+    margin-top: 8px;
+  }
   .fab {
-    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 40px; height: 40px;
+    width: 40px; height: 40px;
     display: flex; align-items: center; justify-content: center; padding: 0;
-    font-family: inherit; font-size: 18px; color: #fff; background: var(--accent);
+    font-family: inherit; font-size: 18px; line-height: 1; color: #fff; background: var(--accent);
     border: none; border-radius: 50%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28); cursor: pointer;
   }
 
@@ -316,8 +339,16 @@ export const AGENDA_APP_HTML = `<!doctype html>
   <div id="status" class="status" hidden></div>
   <!-- 一覧 / 詳細ページ本体(カード内ページ遷移)。entry が sheetState に応じて書き換える。 -->
   <div id="root"></div>
-  <!-- 追加 FAB(+)。タップで末尾に空のドラフト行を生やす。lucide plus の生 SVG(サーバー側静的文字列なので createIcon は使えない)。 -->
-  <button id="quick-add-fab" class="fab" type="button" aria-label="予定を追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+  <!-- 追加 FAB(+)。#root の直後・通常フローの右寄せ(2026-07-17 P4-DM S0: position:fixed 撤廃)。
+       タップで一覧末尾に空のドラフト行を選択状態で生やす(entry の startDraft)。詳細ページ表示中は
+       entry が hidden にして重なりを避ける。lucide plus の生 SVG(サーバー側静的文字列なので createIcon は使えない)。
+       【2026-07-17 P4-DM S0: DOM 位置は #root の外(body 直下)のまま・.fab-row でラップ】
+       renderAll は #root の中身だけを innerHTML で作り直すので、#root の外に置いたこの FAB(と .fab-row)は
+       再描画の影響を受けない(entry.ts 側は id #quick-add-fab を hidden 切替 + closest(".fab-row") で
+       参照するだけで、DOM 位置の変更に伴う JS 側の改修は不要 — todos-app.ts:1245 と同じ)。 -->
+  <div class="fab-row">
+    <button id="quick-add-fab" class="fab" type="button" aria-label="予定を追加"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+  </div>
   <!-- 操作結果の読み上げ専用(視覚非表示)。 -->
   <div id="live" class="sr-only" role="status"></div>
 
