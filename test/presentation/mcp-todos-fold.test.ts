@@ -4,10 +4,11 @@
 //                                              2026-07-17 動的フィット改訂で computeInlineFit に移行)
 // =============================================================================
 // 【何を保証するか(What)】本アプリ(swift-mcp-app)相当(maxHeight 未送信=Infinity)で畳みが
-// 一切発火しない(不活性が既定)ことと、有限 maxHeight を送るホストでは「すべて表示」ボタンの
-// 高さを先引きした budget から、行の累積下端(実測)を直接使って収まる行数を求めること
-// (旧・固定 N=6 の件数閾値では 6件ちょうど+FAB のクリップ再発バグを防げなかった)を、
-// DOM 無しの純関数レベルで固定する。
+// 一切発火しない(不活性が既定)ことと、有限 maxHeight を送るホストでは「すべて表示」ボタン
+// +FAB(bottomChrome・2026-07-17 追更新で FAB を budget 先引きに合算)の高さを先引きした
+// budget から、行の累積下端(実測)を直接使って収まる行数を求めること(旧・固定 N=6 の
+// 件数閾値では 6件ちょうど+FAB のクリップ再発バグを防げなかった)を、DOM 無しの純関数
+// レベルで固定する。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
 import { canRequestFullscreen, computeInlineFit } from "../../src/presentation/mcp/ui/todos-fold";
@@ -26,7 +27,7 @@ describe("computeInlineFit", () => {
 	});
 
 	test("溢れる場合、ボタン高を先引きした budget に収まる最大行数へ畳む", () => {
-		// rowBottoms=[100,200,300,400], maxHeight=350, buttonBlock=60 → budget=290 → 100,200 が収まり visibleCount=2
+		// rowBottoms=[100,200,300,400], maxHeight=350, bottomChrome=60 → budget=290 → 100,200 が収まり visibleCount=2
 		expect(computeInlineFit([100, 200, 300, 400], 500, 350, 60)).toEqual({
 			mode: "folded",
 			visibleCount: 2,
@@ -34,8 +35,8 @@ describe("computeInlineFit", () => {
 	});
 
 	test("ボタン高の先引きが境界の行数を1減らす(旧実装の欠陥だったケース)", () => {
-		// budget=maxHeight-buttonBlock を引かなければ 300 も収まってしまうが、
-		// buttonBlock 分を先に引くことで境界の1行(300)が収まらなくなる。
+		// budget=maxHeight-bottomChrome を引かなければ 300 も収まってしまうが、
+		// bottomChrome 分を先に引くことで境界の1行(300)が収まらなくなる。
 		expect(computeInlineFit([100, 200, 300, 400], 500, 320, 60)).toEqual({
 			mode: "folded",
 			visibleCount: 2,

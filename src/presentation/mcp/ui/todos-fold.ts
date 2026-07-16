@@ -6,8 +6,10 @@
 // apps.mdx:671-733 / spec.types.ts:243-249 の McpUiHostContext.containerDimensions)を
 // 使って「行リストをどこまで見せれば maxHeight に収まるか」を DOM に一切触れず判定する
 // 純関数だけを切り出す。feedback.ts / row-key.ts と同じ規律(「新規に書く純関数・定数だけ
-// 共有する」)。DOM 操作(li の間引き・「すべて表示」ノード挿入・FAB の hide)は
-// todos-entry.ts 側(renderAll 最終段の applyInlineFold)が担う。
+// 共有する」)。DOM 操作(li の間引き・「すべて表示」ノード挿入)は todos-entry.ts 側
+// (renderAll 最終段の applyInlineFold)が担う。**+ FAB は folded でも隠さない**(下記
+// 2026-07-17 追更新)ため、本モジュールが担うのは「行 + すべて表示 + FAB の3者が maxHeight に
+// 収まるように、行の表示件数を逆算する」ことだけになる。
 //
 // 【不活性が既定であることの核心(退行ゼロの保証点)】本アプリ(swift-mcp-app)は現状
 // containerDimensions.maxHeight を「安全網 4000」または未送信で送る(設計04 §1 現状の表)。
@@ -33,6 +35,16 @@
 // budget から**先引き**するのが要点 — 旧実装は「畳む件数を決めてからボタンを append する」
 // 順序だったため、ボタン自身の高さが収まり計算の外にあり(=それも隠れバグの一因)、今回の
 // 改訂で構造的に解消する(todos-entry.ts の applyInlineFold 側コメント参照)。
+//
+// 【2026-07-17 追更新: 「folded では FAB を隠す」判断をユーザー実機 FB で撤回】
+// 当初案は畳んだとき + FAB を hidden にし、追加操作を fullscreen 側の FAB に集約していた
+// (「FAB はクリップ源だから隠す」という fable の設計判断)。しかしユーザーから
+// 「+ 追加ボタンは主要アクションなので、畳んだ inline カードでも常に見えているべき」との
+// 実機フィードバックがあり撤回した。撤回に伴い、budget の先引き量(bottomChrome)は
+// 「すべて表示ボタン単体」から「すべて表示ボタン + FAB の合計」へ拡張する — FAB を隠さない
+// 以上、畳んだ行・ボタン・FAB の3つ全部が maxHeight に収まっていなければ、根治したはずの
+// 「FAB がクリップされて隠れる」再発バグが今度は folded 側で再発してしまうため
+// (computeInlineFit の bottomChrome 引数コメント・todos-entry.ts の measureFabBlockPx 参照)。
 // =============================================================================
 
 /** computeInlineFit の戻り値。件数を決め打ちで返すのではなく、「畳まず全部見せてよいか
@@ -54,31 +66,38 @@ export type InlineFit = { mode: "full" } | { mode: "folded"; visibleCount: numbe
  * @param maxHeight ホストが宣言した inline の空間上限(px)。containerDimensions.maxHeight が
  *   無い/未送信のホストは呼び出し側が `Infinity` を渡す(旧 API の `null` 分岐は呼び出し側で
  *   Infinity に正規化する形に統一 — 純関数側は「有限か否か」の1判定に絞る)。
- * @param buttonBlock 「すべて表示」ボタン(下余白込み)の高さ(px)。**budget から先引きする
- *   のが本関数の核心** — 畳み決定より後にボタンを append すると、ボタン自身の高さぶん
- *   maxHeight を超過してしまう(旧実装の欠陥。todos-entry.ts 側で hidden 実測して渡す)。
+ * @param bottomChrome 畳んだ行より**下に必ず並ぶ要素群**の合計高さ(px)。**budget から
+ *   先引きするのが本関数の核心** — 畳み決定より後にこれらを append すると、その高さぶん
+ *   maxHeight を超過してしまう(旧実装の欠陥)。
+ *   【2026-07-17 追更新: 「すべて表示」ボタン単体 → ボタン+FAB の合計へ改名・意味変更】
+ *   当初は「すべて表示」ボタンの高さだけを指す `buttonBlock` という名前だったが、ユーザー実機
+ *   FB「+ 追加ボタンは主要アクションなので畳んだ inline でも常に見えているべき」を受けて
+ *   folded でも + FAB を隠さない設計に変えたため、budget の先引きにも FAB の高さを含める
+ *   必要が生じた。呼び出し側(todos-entry.ts)が「『すべて表示』ボタン高 + FAB(.fab-row)高」の
+ *   合計をここに渡す — 関数のシグネチャ・判定ロジック自体は無変更(引数の“中身”が1要素分から
+ *   2要素の合計に変わっただけ)。
  * @returns 収まる(fullHeight <= maxHeight)なら `{mode:"full"}`。溢れるなら
- *   `{mode:"folded", visibleCount}`(budget=maxHeight-buttonBlock に収まる最大行数。
+ *   `{mode:"folded", visibleCount}`(budget=maxHeight-bottomChrome に収まる最大行数。
  *   1行も収まらない極端なケースでも最低1行は見せる)。
  */
 export function computeInlineFit(
 	rowBottoms: readonly number[],
 	fullHeight: number,
 	maxHeight: number,
-	buttonBlock: number,
+	bottomChrome: number,
 ): InlineFit {
 	// maxHeight 情報が無い(Infinity)ホストは常に不活性(旧・不活性ホスト分岐を維持)。
 	if (!(maxHeight < Infinity)) return { mode: "full" };
 	// FAB 込みの全高が既に maxHeight に収まっているなら畳む理由が無い(旧実装と同じ判定基準だが、
-	// 今回は「行の合計」ではなく root.scrollHeight = FAB・余白込みの実測値で判定するので
-	// 「行だけなら収まるが FAB で溢れる」再発バグのケースを正しく folded 側に倒せる)。
+	// 今回は「行の合計」ではなく root.scrollHeight+FAB = 実際にレンダリングされる全高の実測値で
+	// 判定するので「行だけなら収まるが FAB で溢れる」再発バグのケースを正しく folded 側に倒せる)。
 	if (fullHeight <= maxHeight) return { mode: "full" };
-	// ボタン(+ 下余白)ぶんを先に引いた予算の中に収まる最大行数を、累積下端から直接求める。
-	// これにより「畳み決定 → 後からボタンを足す」だった旧実装の順序逆転バグ(ボタン高が
-	// 収まり計算の外にあった)が構造的に発生しなくなる。
-	const budget = maxHeight - buttonBlock;
+	// bottomChrome(「すべて表示」ボタン + FAB の合計)ぶんを先に引いた予算の中に収まる最大行数を、
+	// 累積下端から直接求める。これにより「畳み決定 → 後からボタン/FAB を足す」順序逆転バグ
+	// (それらの高さが収まり計算の外にあった)が構造的に発生しなくなる。
+	const budget = maxHeight - bottomChrome;
 	const visibleCount = rowBottoms.filter((bottom) => bottom <= budget).length;
-	// budget がどれだけ小さくても(極端な maxHeight・大きい buttonBlock)最低1行は見せる —
+	// budget がどれだけ小さくても(極端な maxHeight・大きい bottomChrome)最低1行は見せる —
 	// 0件表示は「一覧が消えた」ように見えてしまい、ユーザーが状況を把握できなくなるため。
 	return { mode: "folded", visibleCount: Math.max(1, visibleCount) };
 }

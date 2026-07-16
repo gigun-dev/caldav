@@ -2618,18 +2618,50 @@ function measureButtonBlockPx(): number {
 	return cachedButtonBlockPx;
 }
 
+/** + FAB(.fab-row。#quick-add-fab の親)の実高さ(margin-top 込み・px)を実測する。
+ *  【2026-07-17 追更新: ユーザー実機 FB により「folded でも FAB を隠す」判断を撤回】
+ *  当初は畳んだとき FAB をクリップ源とみなして hidden にし、追加操作を fullscreen 側の FAB へ
+ *  集約する設計だった(fable 案)。しかしユーザーから「+ 追加は主要アクションなので、畳んだ
+ *  inline カードでも常に見えているべき」との実機フィードバックがあり撤回した — inline から
+ *  主要な作成導線を消すのはプロダクト判断として不可(fullscreen へ切替を要求してから追加、
+ *  という余分な1ステップをユーザーの主要動線に強制することになる)。
+ *  【FAB は #root の**外**(兄弟要素)】todos-app.ts の HTML 骨格は `<div id="root">...</div>`
+ *  の直後に `<div class="fab-row"><button id="quick-add-fab">...` を置く(#root の外に置いた
+ *  理由は todos-app.ts :1245 コメント — 再描画の影響を受けないようにするため)。したがって
+ *  **`root.scrollHeight` は FAB の高さを含まない**(旧コメントの「root.scrollHeight が FAB を
+ *  含む」という前提は実際の DOM 構造と食い違っていた誤り — 本更新で訂正する)。fold 判定の
+ *  fullHeight/budget はどちらも「rows + FAB」を土台にする必要があるため、FAB(.fab-row)の
+ *  高さは別途実測してから足し合わせる。
+ *  【なぜ probe を使わず実要素を直接測るか】FAB は常時 DOM に存在し隠されない(上記撤回の帰結)
+ *  ので、ボタンのように仮ノードを作らず、実在の .fab-row を直接 getBoundingClientRect 相当で
+ *  読めばよい(余分な DOM 生成が不要)。キャッシュもしない — .fab-row は再描画の影響を受けず
+ *  常に同じノードだが、測定コスト自体が offsetHeight の読み取り1回のみで軽微なため。 */
+function measureFabBlockPx(): number {
+	const fabRow = quickAddFab.closest(".fab-row") as HTMLElement | null;
+	if (fabRow === null) return quickAddFab.offsetHeight; // 防御的フォールバック(通常到達しない)
+	const marginTopPx = Number.parseFloat(getComputedStyle(fabRow).marginTop) || 0;
+	return fabRow.offsetHeight + marginTopPx;
+}
+
 /**
- * C2 本体(2026-07-17 動的フィット改訂): hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と
- * 「フル描画済み(畳みなし・FAB あり)」の実測値から computeInlineFit(純関数・todos-fold.ts)で
- * 収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら4セクション横断で先頭
- * visibleCount 件だけ残して空になったセクションを畳み、**FAB を隠し**(クリップ源 — 追加操作は
- * fullscreen 側の FAB に集約する)、末尾に「すべて表示」(ボタン or 受動「残り n 件」)を挿す。
+ * C2 本体(2026-07-17 動的フィット改訂 / 同日追更新で FAB 常時表示に変更): hostMaxHeightPx/
+ * hostDisplayMode(C1 が読んだ値)と「フル描画済み(畳みなし)」の実測値から computeInlineFit
+ * (純関数・todos-fold.ts)で収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら
+ * 4セクション横断で先頭 visibleCount 件だけ残して空になったセクションを畳み、末尾に
+ * 「すべて表示」(ボタン or 受動「残り n 件」)を挿す。**+ FAB は folded でも常に表示したまま**
+ * (上の measureFabBlockPx コメント参照 — ユーザー FB による fable 上書き)。
  *
  * 【旧・固定 N=6 の破綻からの根治(2026-07-17)】旧実装は「畳む件数を決めてからボタンを append
  * する」順序だったため、ボタン自身の高さが収まり計算の外にあり、かつ「件数が6件以下なら畳まない」
  * 閾値だったため6件ちょうど等で FAB がクリップされて隠れる再発バグを踏んだ(todos-fold.ts 冒頭
- * コメント参照)。本実装は「まずフル描画(FAB込み)して実測 → 1パスで判定・適用」に改め、
- * 測定対象に必ず FAB を含める(root.scrollHeight が FAB を含む)ことでこの2点を構造的に解消する。
+ * コメント参照)。本実装は「まずフル描画して実測 → 1パスで判定・適用」に改める。
+ *
+ * 【bottomChrome = 「すべて表示」ボタン + FAB(同日追更新)】computeInlineFit のシグネチャは
+ * そのまま(第4引数名は buttonBlock のままだが、実質「行より下に必ず置かれる要素群の合計高さ
+ * (bottomChrome)」を渡す — FAB を隠さなくなった以上、畳んだ行 + すべて表示 + FAB の3つ全部が
+ * maxHeight に収まらなければならないため、budget の先引きに FAB 分も合算する。full 判定の
+ * fullHeight 側にも同じ理由で FAB を加算する(全行 + FAB が収まるかどうかで full/folded を
+ * 決める — ボタンは full のときは出ないので fullHeight には含めない)。
  *
  * 【1パスで完結・再測定ループ無し】測る→判定する→適用する、を1回の renderAll 内で完結させる。
  * 適用後に size-changed が飛ぶことはあっても、それが maxHeight を変えるわけではないので
@@ -2637,15 +2669,10 @@ function measureButtonBlockPx(): number {
  */
 function applyInlineFold(foldAnchor: Comment): void {
 	// fullscreen 中は畳まない(全件 + 内部スクロールは C3/applyHostContext の fullscreen-scroll が
-	// 担う)。FAB も隠さない — フル一覧の末尾に通常どおり出る(design 04 §5 C3 の想定どおり)。
-	// maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。
-	// どちらの早期 return でも FAB の hidden は明示的に false へ戻す — 直前の描画が folded で
-	// FAB を隠していた場合(例: fullscreen 昇格でホストの displayMode が変わった直後の再描画)に
-	// hidden=true が残留しないようにするため。
-	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) {
-		quickAddFab.hidden = false;
-		return;
-	}
+	// 担う)。maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。
+	// FAB は常時表示なので(2026-07-17 追更新)、ここでの hidden 管理は不要 — quickAddFab.hidden の
+	// 書き手は openSheet/closeSheet 等(詳細ページ表示中の一時退避)のみに一本化されている。
+	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) return;
 
 	// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、hostMaxHeightPx が
 	// 有限のホスト(=このカードの実質的なメイン利用シナリオである claude.ai 等)でのみ発生し、
@@ -2655,14 +2682,18 @@ function applyInlineFold(foldAnchor: Comment): void {
 	// 削除中断も特別扱いしない方が体感として一貫する)。
 	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
 	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
-	const fullHeight = root.scrollHeight; // FAB(.fab-row)・余白込みの全高
+	const fabBlock = measureFabBlockPx();
+	// FAB は #root の外(兄弟要素)なので root.scrollHeight に含まれない — 明示的に加算する
+	// (measureFabBlockPx コメント参照。旧コメントの「root.scrollHeight が FAB を含む」は誤りだった)。
+	const fullHeight = root.scrollHeight + fabBlock;
 	const buttonBlock = measureButtonBlockPx();
+	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(「すべて表示」+ FAB)の合計高さ。budget の
+	// 先引きにこの合計を使うことで、畳んだ行・ボタン・FAB の3つ全部が maxHeight に収まる
+	// (FAB を budget から除外していた場合、畳んでもなお FAB がクリップされる余地が残ってしまう)。
+	const bottomChrome = buttonBlock + fabBlock;
 
-	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, buttonBlock);
-	if (fit.mode === "full") {
-		quickAddFab.hidden = false; // 収まっているので FAB は通常どおり表示。
-		return;
-	}
+	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, bottomChrome);
+	if (fit.mode === "full") return; // 収まっているので何もしない(FAB は元々表示されたまま)。
 
 	const { visibleCount } = fit;
 	rows.slice(visibleCount).forEach((li) => li.remove());
@@ -2671,10 +2702,6 @@ function applyInlineFold(foldAnchor: Comment): void {
 		const ul = section.querySelector("ul");
 		if (ul !== null && ul.children.length === 0) section.remove();
 	}
-
-	// FAB を隠す(クリップ源の根治)。畳んだ状態では maxHeight 内に FAB の置き場が無い —
-	// 追加操作は「すべて表示」→ fullscreen 側の FAB(隠されない・通常フロー)に集約する。
-	quickAddFab.hidden = true;
 
 	const totalCount = rows.length; // 畳み対象4セクション横断の合計行数(完了済み・ドラフトは対象外)
 	const remaining = totalCount - visibleCount;
