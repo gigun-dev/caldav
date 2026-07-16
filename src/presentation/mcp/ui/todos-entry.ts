@@ -176,6 +176,33 @@ const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElemen
 // ヘッダに1個だけなので renderAll では hidden の付け外しだけ行う)。
 const headerDoneEl = document.getElementById("header-done") as HTMLButtonElement;
 
+// =============================================================================
+// 【TEMP 計測: シマー中だけ card 高さが大きい件の機序切り分け(2026-07-16)】
+// 症状: FAB 追加のシマー(~1.2s)中は plus 下の余白が大きく、シマー終了で縮む。静的読解では
+//   Enter 時 renderAll で楽観行(44px)へ即縮小しているはず(draft 選択行 ~70px との −26px)。
+//   なのにホストの iframe 高さが satiety renderAll(1.2s)まで縮まない=Enter 時の size-changed が
+//   ホストへ届いていない(α: SDK の ResizeObserver→rAF→再送抑制 or create-todo postMessage 輻輳)、
+//   という仮説を実データで確定する。判定: body.height が Enter 直後に −26px 済み かつ innerHeight が
+//   1.2s 付近まで高いまま → α 確定。body.height 自体がシマー中も高い → β(iframe 内に未特定の高さ寄与)。
+// 取得: MEMORY の chrome-devtools + Inspector 手順で claude.ai 実カードを駆動し console を採取。
+//   実機は Safari Web Inspector を Swift ホストの WKWebView に接続(画面内表示は高さを汚すので不可)。
+// 撤去: 切り分け後この節と trace() 呼び出し(TEMP-trace で grep)を丸ごと消す(完全可逆)。
+const trace = (tag: string): void => {
+	// window.innerHeight = ホストが実際に与えている iframe 高さ / body の rect = iframe 内の真のコンテンツ高。
+	console.log(
+		`[h] ${performance.now().toFixed(0)} ${tag}`,
+		"scroll=",
+		document.documentElement.scrollHeight,
+		"body=",
+		Math.round(document.body.getBoundingClientRect().height),
+		"inner=",
+		window.innerHeight,
+	);
+};
+new ResizeObserver(() => trace("RO")).observe(document.body); // TEMP-trace
+setInterval(() => trace("tick"), 100); // TEMP-trace
+// =============================================================================
+
 /** RRULE 要約(task-dto.ts の Task.recurrence と同型)。共有カーネル ui/recurrence.ts の
  *  RecurrenceSummary と同一。既存の多数の参照名(TodoRecurrence)を保つためのローカル別名。 */
 type TodoRecurrence = RecurrenceSummary;
@@ -295,6 +322,7 @@ function startCommitting(id: string): void {
 	// committing 満了(寿命1周)→ animUntil を消して再描画(committing クラスが外れ静的 becoming へ
 	// 収束する)。pendingIds はここでは触らない(サーバー確定と無関係な寿命なので)。
 	setTimeout(() => {
+		trace("satiety"); // TEMP-trace
 		animUntil.delete(id);
 		renderAll();
 	}, lifespan);
@@ -1404,6 +1432,7 @@ function startDraft(): void {
  *  確定した仮行は enqueueQuickAdd 経由で becoming-in(その場でシマー)し、sectionize の末尾ピン
  *  (§7.8 add の inPlace)でドラフトが在った位置=一覧末尾にそのまま出る。 */
 function commitDraftEnter(): void {
+	trace("Enter-before"); // TEMP-trace: commit 前(draft 選択行 ~70px がまだ居る高さ)
 	commitSelection(); // タイトル非空なら enqueueQuickAdd を発火(空なら何も作らず静かに終える)
 	draft = null;
 	selectedId = null;
@@ -2395,6 +2424,7 @@ function appendSection(
 /** 全体描画。#root を作り直す唯一の関数(一方向データフロー)。sheetState に応じて
  *  一覧ページ / 詳細ページ / リスト選択ページのどれかを描く(v3 カード内ページ遷移)。 */
 function renderAll(): void {
+	trace("renderAll"); // TEMP-trace
 	// 【S-E: ヘッダ Done の表示/非表示】旧 button.confirm の `if (sel)` 条件と同じ「selectedId が
 	// 何かの行を指しているか」だけで決める(ドラフト行の選択中も表示 = 旧仕様どおり作成中も確定できる)。
 	// sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null(openSheet/openCreateSheet の
