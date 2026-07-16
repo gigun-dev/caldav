@@ -186,6 +186,21 @@ export const TODOS_APP_HTML = `<!doctype html>
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .app-title { font-size: 16px; font-weight: 700; }
   .updated { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  /* 【S-E: カード右上の単一 Done】button.confirm(旧・行内)と同じ「押せば確定する」トーンを
+   * 引き継ぎつつ、ヘッダはテキストリンク言語(page-head の .link と同系)の方が「常設の操作面」
+   * らしいので、accent 塗りの円ではなくテキストボタンにする(行内の accent 円は「その行に対する
+   * 一過性の操作」の語彙だったが、ヘッダは行に紐付かない場所なので円は不自然)。 */
+  .header-done {
+    flex-shrink: 0;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    background: none;
+    border: none;
+    padding: 4px 0 4px 8px;
+    cursor: pointer;
+  }
 
   /* --- 診断/エラーバナー -------------------------------------------------------
    * iOS WebView にはコンソールが無く「画面表示でしか」切り分けられない(スパイク時代の
@@ -259,12 +274,20 @@ export const TODOS_APP_HTML = `<!doctype html>
     border-bottom: 1px solid var(--border);
   }
   li:last-child { border-bottom: none; }
-  /* 行の主部(チェック円・タイトル/メタ・ⓘ・becoming タグ)。align-items:center でチェック円が
-   * タイトル行に対して垂直センタリングされる(フィードバック①の修正。detail は li 直下の別の子なので
-   * この centering には巻き込まれない)。 */
+  /* 行の主部(チェック円・タイトル/メタ・ⓘ・becoming タグ)。
+   * 【2026-07-16 S-E: align-items を center → flex-start に変更(title 垂直ズレ固定)】
+   * 旧 center は「head(タイトル+meta)が1行のときだけ」チェック円と揃って見えた。選択行は
+   * head が伸びる(タイトル input + メモ行 + becoming の meta 等が増える)ため、center だと
+   * head の高さが変わるたびにチェック円 **と1行目タイトルの絶対位置** の両方が上下に動いていた
+   * (選択するたびにタイトルの行がわずかに沈んで見える=実機 FB の指摘)。flex-start にして
+   * チェック円を head の先頭(1行目=タイトル)に固定し、head がどれだけ縦に伸びても
+   * タイトルの1行目位置自体は動かないようにする。許容基準は「メモ無し行の選択で
+   * 『メモを追加』行が下に増える以外、title の上下移動ゼロ」(§7.7)。
+   * 円は 44px ボタン内で上寄せになるとタイトル文字の中心から浮くため、下の button.check に
+   * margin-top を足してタイトル1行目の視覚中心に円を合わせ直す(下記コメント参照)。 */
   .row-main {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px;
   }
   /* ⓘ(info)アイコン: 詳細展開の主 affordance(フィードバック②)。44px 平方でタップ領域を確保
@@ -382,7 +405,38 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 「動きが情報を運ぶか(進行中の告知)/ノイズか(ただの演出)」で線を引く。適用は
    * 仮行(.inflight、優待生成される optimistic: 行)限定・CSS アニメーションのみ
    * (linear・約1.2s ループ・background-position だけを動かし layout は起こさない。
-   * 詳細根拠は li.becoming-in.inflight のコメント参照)。 */
+   * 詳細根拠は li.becoming-in.inflight のコメント参照)。この段落は v2 に一般化される前の
+   * 「まだ穴だけ塞いだ中間形」として財産のため削除せず残す(下記 v2 段落が正式な線引き)。
+   *
+   * 【2026-07-16 v2(docs/modeling/12 §7.8): 一過性アニメーションの一般解禁】
+   * 上の 2026-07-14 例外は「in-flight の状態通信」という一点突破の穴埋めだったが、ユーザー FB
+   * (done/undo/add のフィードバックを統一・楽観/悲観をレイテンシで決める・指定秒アニメで
+   * 手応え)を受け、この考え方を全 mutate 操作(done/undo/add/edit/delete)に一般化した。
+   * 【解禁の3条件(すべて満たすときだけ)】
+   *   ①操作起点 — このカード上でユーザーがいま起こした mutate に限る(LLM 起点・外部同期由来の
+   *     becoming は対象外。ontoolresult の静的表示のまま)。
+   *   ②一過性 — iteration-count は必ず有限(= 1周)。寿命(cycleMs×animCycles=1.2s)が満了したら
+   *     JS 側(entry の startCommitting タイマー)が再描画して committing クラスを外し、
+   *     必ず静的な becoming 形へ収束する(overtime なし)。
+   *   ③情報を運ぶ — 手応え(押した意図が反映された)/ in-flight 告知のどちらかを伝える動きに限る。
+   * 【禁止のまま(3条件を満たさない限り一切足さない)】
+   *   持続アニメ(infinite)/ 自発アニメ(描画されただけで動く)/ "もう起きたこと"(静的 becoming)
+   *   のアニメ化 / 成功トースト・成功バナー / 浮遊オーバーレイ。
+   * 【Why not(§7.8 の根拠節から)】無限シマー = 10s 超級の言語を 1s 操作に使う誤り(実機 FB
+   * 「本当に通信できてる?」の直接の原因。だから旧 wake-sweep の infinite も 1 に是正した) /
+   * 成功トースト = 行の収束が既に語る二重通知(§7.7 で棄却済み) / 楽観パスの「保存中…」=
+   * 確定/待機のメッセージ矛盾(楽観は「もう確定した体」の表現なので待ち表示を挟むと自己矛盾) /
+   * 持続アニメ = 2026-07-14 例外の理由(ログノイズ・fresh-instance 再生誤読)がそのまま生きる。
+   * 【楽観 vs 悲観の待ち表現(todos は全操作が楽観)】楽観(todos の全操作 = toggle/add/edit/delete、
+   * 結果が予測可能)は committing 満了後、待ち表示を一切挟まず即座に静的 becoming へ収束する
+   * (「保存中…」タグは出さない)。悲観(結果が予測できない操作。todos には存在しない —
+   * §7.8「楽観/悲観の判定則」の②は反復イベントの start/end/recurrence 変更で、これは agenda
+   * カード側の対象)は committing 満了後に静的「保存中…」タグを挟む。todos は #2 が無いので、
+   * 本ファイルは楽観パス(即収束)しか実装しない。
+   * 【committing の判定はどこでするか】entry.ts の renderRow が pendingIds(id→startedAt の Map)
+   * と ui/feedback.ts の isCommitting(now, startedAt) で毎描画判定し、"committing" クラスを
+   * 付け外しする(このファイルは付いている間だけ動く CSS を書くだけで、寿命管理はしない =
+   * CSS はステートレスな見た目だけの責務、という既存の分業をそのまま踏襲)。 */
 
   /* becoming マイクロラベル(行右端。「完了/追加/期日変更/削除」等の短い日本語)。
    * 語彙をアイコンでなく文字にするのは、変化の種別が4つ以上あり記号の学習コストが
@@ -418,6 +472,31 @@ export const TODOS_APP_HTML = `<!doctype html>
   }
   li.becoming-undone .tag { color: var(--accent); }
 
+  /* 【2026-07-16 §7.8 v2】ring-pulse: done/undo の committing 中(タップ直後〜1.2s)だけ、
+   * 上の静的 4px リングに「脈動」を1周だけ足す(0→4px→0)。tap の瞬間に手応えを返す狙いで、
+   * 静的リング自体(box-shadow 0 0 0 4px)は committing の有無に関わらず既に乗っている
+   * (li.becoming-done/undone .circle のルール)ため、pulse の終端フレーム(4px)がちょうど
+   * 静的形と一致し、アニメが終わっても見た目が「ずれて止まる」ことがない(entry 側の
+   * committing クラスの外し方=満了で再描画・タイマー任せでも視覚的には無音に収束する)。
+   * ease-out にする理由: リングは「押した瞬間の力積が外へ広がって収まる」波紋の比喩なので、
+   * 減速するイージングの方が物理的に自然(wake-sweep の linear とは動きの語彙が異なる=
+   * 「継続中」ではなく「1回の反応」を表すため)。 */
+  li.becoming-done.committing .circle,
+  li.becoming-undone.committing .circle {
+    animation: ring-pulse 1.2s ease-out 1;
+  }
+  @keyframes ring-pulse {
+    0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+    60% { box-shadow: 0 0 0 4px var(--accent-soft); }
+    100% { box-shadow: 0 0 0 4px var(--accent-soft); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li.becoming-done.committing .circle,
+    li.becoming-undone.committing .circle {
+      animation: none; /* 最初から静的 4px リング(通常の becoming-done/undone と同じ描画）。 */
+    }
+  }
+
   /* added: becoming-in。form = 左端 2px バー + 右へ減衰する淡い wake(入射の残像)。
    * バーは inset box-shadow で角丸内側に収め、行構造は通常行と同一のまま
    * (次の描画で装飾だけ消え、すぐ日常に溶ける)。位置は本来のソート位置。 */
@@ -443,9 +522,15 @@ export const TODOS_APP_HTML = `<!doctype html>
    *   - 動かすプロパティは background-position のみ(transform 系ではなく background なのは、
    *     このグラデ自体が background-image なため。position の変更はレイアウトにもペイントの
    *     再計算対象領域拡大にも影響しない = リフローを起こさない)。 */
+  /* 【2026-07-16 §7.8 v2: infinite → 1 に是正】旧実装は create-todo の確定/失敗までずっと
+   * ループし続けていた(10s 超級の「まだまだ続く」言語)。実測レイテンシ(p90=1233ms)は
+   * ほぼ1周(1.2s)で収まる規模なので、寿命1周に絞る(entry 側 committing 判定と対で機能する
+   * — .inflight クラス自体が isCommitting=false になった時点で renderRow から外れるため、
+   * animation-iteration-count を 1 にしても infinite のままでも実害は理屈上同じだが、
+   * 「無限ループさせない」を CSS の値自体でも明示するのが 2026-07-16 実機 FB #3 への直接対応)。 */
   li.becoming-in.inflight {
     background-size: 200% 100%;
-    animation: wake-sweep 1.2s linear infinite;
+    animation: wake-sweep 1.2s linear 1;
   }
   @keyframes wake-sweep {
     from { background-position: -100% 0; }
@@ -464,6 +549,22 @@ export const TODOS_APP_HTML = `<!doctype html>
   .meta .arrow { color: var(--muted); opacity: 0.6; padding: 0 2px; }
   .meta .new { color: var(--edit); font-weight: 600; }
   .meta .more { color: var(--muted); }
+
+  /* 【2026-07-16 §7.8 v2】opacity-pulse: edit の committing 中だけ becoming タグ自体を1回だけ
+   * 明滅させる(手応え)。旧→新のインライン差分(.old/.arrow/.new)はサーバー確定 vm の changes
+   * から来る=楽観段階ではまだ確定した差分文字列が無いことが多いため(saveEdit の楽観適用は
+   * 「値だけ差し替え。装飾は付けない」— optimisticEdits 節のコメント参照)、パルスは tag 単体に
+   * 掛ける。40%→100%→40%(0 に落とし切らないのはタグの文字が一瞬完全に消えると「エラーで
+   * 消えた」と誤読されうるため — skeleton の pulse が 1→0.45 で下限を残すのと同じ配慮)。 */
+  li.becoming-edit.committing .tag { animation: opacity-pulse 1.2s ease-out 1; }
+  @keyframes opacity-pulse {
+    0% { opacity: 0.4; }
+    50% { opacity: 1; }
+    100% { opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li.becoming-edit.committing .tag { animation: none; }
+  }
 
   /* removed: becoming-gone(削除ゴースト)。contract の removed:[{id,title,due?}] から
    * その場描画する「もう存在しない行」。form = 中身が抜け輪郭だけが残る:
@@ -646,8 +747,16 @@ export const TODOS_APP_HTML = `<!doctype html>
     }
   }
 
-  /* --- 行 head(タイトル2行の縦積み領域)。row-head は ghost 行が使うので温存し、新設 .head を足す。 */
-  .head { flex: 1; min-width: 0; }
+  /* --- 行 head(タイトル2行の縦積み領域)。row-head は ghost 行が使うので温存し、新設 .head を足す。
+   * 【2026-07-16 S-E: margin-top で「1行目の視覚位置」を固定】row-main が align-items:flex-start に
+   * なったため(button.check のコメント参照)、head はもう 44px の check ボタンに対して自動で
+   * 垂直センタリングされない。旧 align-items:center 時代、非選択・単一行タイトル(head の高さ ≈
+   * 1行の line-height)は「(44px − 1行の高さ)/ 2 ≈ 12.5px」だけ自動的に下へセンタリングされて
+   * check の丸(44px 内で中央=22px)と揃って見えていた。これを margin-top として明示的に固定する
+   * ことで、head がその後どれだけ縦に伸びても(選択で input+メモ行+becoming meta が増えても)、
+   * head の「先頭(=タイトル1行目)」の絶対位置は row-main 開始位置 + この固定値のまま動かない
+   * (先頭を動かす唯一の原因を「head の中身の量」から切り離した、が本質)。 */
+  .head { flex: 1; min-width: 0; margin-top: 12px; }
   /* meta を1行に保ち(nowrap)、becoming ラベルを右端へ押し出す(margin-left:auto。モック要件1・④修正)。 */
   .meta { align-items: baseline; flex-wrap: nowrap; min-width: 0; }
   .meta .loc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -952,6 +1061,16 @@ export const TODOS_APP_HTML = `<!doctype html>
       <span id="updated" class="updated"></span>
     </div>
     <!-- 手動「再読込」ボタンは廃止(refetchOnWindowFocus 化。todos-entry.ts 参照)。 -->
+    <!-- 【S-E: 行内 confirm → カード右上の単一 Done へ(docs/modeling/12 §7.7)】
+         選択(編集)行は常に高々1行(selectedId は単一値)なので、確定ボタンは行ごとに複数
+         存在しうる前提を持たない — カード全体で1個の Done で成立する。旧実装は選択行の
+         trailing(info の隣、button.confirm)に確定ボタンを出していたが、行内に積むほど
+         info アイコンと隣接し押し間違いを誘発しやすく、また title の垂直位置が「info+confirm の
+         2ボタン分」で揺れる一因にもなっていた(S-E のもう1論点 title 垂直ズレと表裏)。
+         ヘッダは #root の外(常時ある操作面)なので、選択行がどのセクションにあっても
+         位置が動かない固定 affordance になる利点もある。既定 hidden、entry が selectedId の
+         有無で表示/非表示を切り替える(renderAll 内)。 -->
+    <button id="header-done" class="header-done" type="button" hidden>完了</button>
   </header>
   <!-- 操作失敗・接続失敗を「リストを壊さずに」重ねるバナー(既定 hidden)。 -->
   <div id="banner" class="banner" hidden></div>

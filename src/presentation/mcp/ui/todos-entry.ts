@@ -131,6 +131,10 @@ import { createIcon } from "./icons";
 // import する(二重管理で片方だけ直す事故を防ぐ)。bun build がバンドル時に inline するので
 // 生成物 todos-bundle.ts は1ファイルのまま。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff } from "./format";
+// 操作フィードバック統一ドクトリン v2(docs/modeling/12 §7.8)の共有カーネル。committing
+// (寿命付きアニメの最中か)の判定式と定数(1周期・寿命周回数・T_hard)を row-key と同じ規律で
+// 純関数だけ共有する(CSS/DOM は §7.7 判断を維持し agenda と共有しない)。
+import { FEEDBACK, isCommitting } from "./feedback";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -166,6 +170,11 @@ const appTitleEl = document.getElementById("app-title") as HTMLElement;
 // (#quick-add フォーム + 段階的開示パネル)を開いていた。fixed+vh の実機バグとトーン不一致のため
 // シート方式は全廃し、FAB は「新規ドラフト行を生やす」トリガーに変えた(draft 宣言のコメント参照)。
 const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElement;
+// 【S-E: カード右上の単一 Done(§7.7)】旧・行内 confirm(button.confirm・renderRow 参照)の撤去先。
+// ヘッダは #root の外(常時ある操作面)にあるので、静的 DOM 参照 + 1回だけの addEventListener で足りる
+// (quickAddFab と同じ配線パターン。行内に置いていた時代は renderRow のたびに作り直していたが、
+// ヘッダに1個だけなので renderAll では hidden の付け外しだけ行う)。
+const headerDoneEl = document.getElementById("header-done") as HTMLButtonElement;
 
 /** RRULE 要約(task-dto.ts の Task.recurrence と同型)。共有カーネル ui/recurrence.ts の
  *  RecurrenceSummary と同一。既存の多数の参照名(TodoRecurrence)を保つためのローカル別名。 */
@@ -239,10 +248,43 @@ let tasks: TodoItem[] | null = null; // null = まだ一度もデータを受け
 // クリーンな確定値でなければならない。表示用 tasks(重ね物込み)を prev に使うと、仮行が
 // システム起因の removed に化けたり楽観トグルが edited に誤検出される。
 let confirmedTasks: TodoItem[] | null = null;
-// pendingIds = update-todo 送信中の行 id(in-flight の二重送信ガード)。2026-07-14 ドクトリン
-// 改訂で「見た目のブロック(disabled/スピナー)」の用途は廃止 — 純粋に「同じ行の連打を弾く」
-// ガード + 差分レンズの degrade(pending 行はシステム差分マークの対象外)にだけ使う。
-const pendingIds = new Set<string>();
+// pendingIds = mutate 送信中の行 id → 開始時刻(ms epoch)。2026-07-16 ドクトリン v2(§7.8)で
+// Set → Map<id, startedAt> に変更(統一状態機械が唯一必要とする構造変更)。用途は3つ:
+//   ①同じ行の連打を弾く二重送信ガード(旧 Set と同じ) ②差分レンズの degrade(pending 行は
+//   システム差分マークの対象外) ③startedAt を isCommitting(now, startedAt) に渡し、
+//   「いまこの行の committing アニメ(寿命1周)が有効か」を renderRow が毎描画判定する。
+// 【見た目のブロック(disabled/スピナー)は 2026-07-14 ドクトリンのまま出さない】v2 が変えたのは
+// 「アニメの寿命管理」だけで、「操作を待たずに連打できる」設計自体は不変。
+const pendingIds = new Map<string, number>();
+
+/**
+ * mutate 開始時に pendingIds へ startedAt を積み、寿命(FEEDBACK.cycleMs×animCycles)満了時の
+ * 再描画と、T_hard(10s)超過時の警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
+ *
+ * 【なぜタイマーの解除(clearTimeout)をしないか(Why not)】
+ * どちらのタイマーも発火時に `pendingIds.has(id)` を再確認してから作用する。mutate が
+ * タイマーより先に成功/失敗すれば pendingIds.delete(id) 済みなので発火時は no-op になる
+ * (committing 満了の再描画は「まだ pending なら」だけ renderAll する = 確定済みなら不要な
+ * 再描画をしない。T_hard 警告も同様「まだ pending なら」だけバナーを出す)。id ベースの
+ * 冪等ガードで足りるため、setTimeout の参照を保持して明示的に clear する複雑さを持ち込まない
+ * (行の使い回しは無い — id は mutate 対象の実 todo id か quick-add の仮 optimistic:id で、
+ * 同一 id が並行して2回 committing に入ることは二重送信ガード(pendingIds.has チェック)が防ぐ)。
+ */
+function startCommitting(id: string): void {
+	const startedAt = Date.now();
+	pendingIds.set(id, startedAt);
+	// committing 満了(寿命1周)→ pending が残っていれば再描画して committing クラスを外す
+	// (楽観パスはここで静的 becoming に収束、悲観パスはここで静的「保存中…」タグに切り替わる)。
+	setTimeout(() => {
+		if (pendingIds.has(id)) renderAll();
+	}, FEEDBACK.cycleMs * FEEDBACK.animCycles);
+	// T_hard(10s)超過 → まだ確定していなければ警告バナー(§7.8「共通」節)。
+	setTimeout(() => {
+		if (pendingIds.has(id)) {
+			showBanner("保存に時間がかかっています", () => void retryFetch(), "再読み込み");
+		}
+	}, FEEDBACK.hardTimeoutMs);
+}
 let completedOpen = false; // 完了済み <details> の開閉。再描画で閉じ戻らないよう保持する
 // --- 楽観更新の in-flight state(2026-07-14 ドクトリン改訂)---------------------------
 // optimisticToggle: update-todo 送信中のトグルの「楽観的な完了状態」。id → {completed,status}。
@@ -466,7 +508,12 @@ function clearStatus(): void {
 	statusEl.textContent = "";
 }
 /** エラーバナーを出す。retry を渡すと「再試行」ボタン付きになる。 */
-function showBanner(msg: string, retry?: () => void): void {
+/**
+ * @param label ボタン文言。既定は失敗バナーの「再試行」(= mutate 再送)。§7.8 の T_hard
+ *   警告バナーだけは「再読み込み」(= fetchLatest 相当。mutate は再送しない — 中断もロール
+ *   バックもしない設計なので「再試行」を出すと二重書き込みリスクを生む。startCommitting 参照)。
+ */
+function showBanner(msg: string, retry?: () => void, label = "再試行"): void {
 	bannerEl.hidden = false;
 	bannerEl.textContent = "";
 	const span = document.createElement("span");
@@ -475,7 +522,7 @@ function showBanner(msg: string, retry?: () => void): void {
 	if (retry) {
 		const btn = document.createElement("button");
 		btn.type = "button";
-		btn.textContent = "再試行";
+		btn.textContent = label;
 		btn.addEventListener("click", () => {
 			clearBanner();
 			retry();
@@ -736,6 +783,11 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 2026-07-14 楽観更新: in-flight のトグルは optimisticToggle 由来の becoming(completed/reopened)を
 	// この affectedById 経由で受け取り、その場で塗り丸/破線に変わる(スピナーは無い)。
 	const aff = affectedById.get(task.id);
+	// 【2026-07-16 §7.8】この行がいま committing(寿命1周のアニメ最中)かを pendingIds の
+	// startedAt から判定する。「新しく描画された瞬間から」ではなく「実際にタップしてから」
+	// 1200ms で寿命が切れるよう、時刻はここで都度 Date.now() を取る(render のたびに再評価)。
+	const startedAt = pendingIds.get(task.id);
+	const committing = startedAt !== undefined && isCommitting(Date.now(), startedAt);
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
 	if (aff !== undefined) {
@@ -744,19 +796,29 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		const isSync = aff.sync === true;
 		if (aff.kind === "completed") {
 			li.classList.add("becoming-done");
+			// ring-pulse(0→4px→0 の脈動): committing 中だけ乗せる。満了後は li.becoming-done .circle の
+			// 静的 4px リングにそのまま収束する(committing クラスが外れるだけで box-shadow の値自体は
+			// 変わらない = アニメの終端フレームと静的形が一致するよう CSS 側で揃えてある)。
+			if (committing) li.classList.add("committing");
 			tagText = isSync ? "同期(完了)" : "完了";
 		} else if (aff.kind === "reopened") {
 			li.classList.add("becoming-undone");
+			if (committing) li.classList.add("committing");
 			tagText = isSync ? "同期(再開)" : "再開";
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
 			tagText = isSync ? "同期(追加)" : "追加";
-			// in-flight シマー: 仮行(quick-add optimistic row)だけ .inflight を足す(色は増やさず動きだけ)。
-			if (isOptimisticId(task.id)) li.classList.add("inflight");
+			// in-flight シマー: 仮行(quick-add optimistic row)かつ committing 中だけ .inflight を足す
+			// (色は増やさず動きだけ)。2026-07-16 ドクトリン v2 で「無限ループ」を「寿命1周」に是正
+			// (todos-app.ts の @keyframes wake-sweep コメント参照)。committing が寿命切れになったら
+			// このクラスが外れ、静的な becoming-in の wake(帯の先頭が見える位置)に収束する。
+			if (isOptimisticId(task.id) && committing) li.classList.add("inflight");
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
 			tagText = isSync ? "同期(編集)" : editPlan.tag;
+			// opacity pulse ×1: becoming タグ自体を committing 中だけ脈動させる(手応え)。
+			if (committing) li.classList.add("committing");
 		}
 	}
 
@@ -1037,21 +1099,13 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 		// 【2026-07-15 実機フィードバック: 選択の確定操作が可視でない】以前は選択解除=確定が
 		// 「行外タップ / Enter」という不可視のジェスチャーしかなく、確定手段が画面上に無かった。
-		// info と並ぶ小さな accent 円ボタンを追加し、押下で「行外タップと同じ確定経路」
-		// (commitSelection → draft/selectedId クリア → renderAll)を明示的に踏めるようにする。
-		const confirm = document.createElement("button");
-		confirm.type = "button";
-		confirm.className = "confirm";
-		confirm.setAttribute("aria-label", "編集を確定");
-		confirm.appendChild(createIcon("check"));
-		confirm.addEventListener("click", (e) => {
-			e.stopPropagation();
-			commitSelection();
-			draft = null;
-			selectedId = null;
-			renderAll();
-		});
-		rowMain.appendChild(confirm);
+		// info と並ぶ小さな accent 円ボタン button.confirm を追加していた。
+		// 【2026-07-16 S-E: カード右上の単一 Done へ撤去(docs/modeling/12 §7.7)】選択は常に高々1行
+		// (selectedId は単一値)なので、行ごとに確定ボタンを持つ必要が元々無かった — カード全体で
+		// 1個の Done(#header-done。todos-app.ts の HTML/CSS + 本ファイル末尾の click ハンドラ参照)
+		// で成立する。行内に置くと info との隣接で押し間違いを誘発しやすく、また rowMain の子要素数が
+		// 選択で+2(info・confirm)になることが title 垂直ズレのもう一因でもあった(row-main align-items
+		// flex-start 化のコメントも参照)。ここでは button.confirm の生成を削り、trailing は info だけにする。
 	}
 
 	li.appendChild(rowMain);
@@ -1933,6 +1987,13 @@ function el(tag: string, className: string): HTMLElement {
 function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	const li = document.createElement("li");
 	li.className = "becoming-gone";
+	// 【2026-07-16 §7.8: delete の committing(opacity pulse)は本スライスでは付かない】
+	// ドクトリン表は「delete = ゴースト行 opacity pulse ×1」だが、ゴースト行はサーバー確定
+	// (removed 契約)後にしか描かれない — deleteTask は楽観削除で行を即座に一覧から除去する
+	// 既存設計(rebuildFromConfirmed が optimisticDeletes で filter)なので、committing の
+	// 1.2s ウィンドウの間はそもそも「行」自体が画面に存在しない(deleteTask のコメント参照)。
+	// この行に到達する時点で pendingIds はもう delete 済み(成功/失敗いずれの確定描画も
+	// pendingIds.delete 後)なので、committing クラスを付ける対象が無い。
 
 	// li が縦積み(2026-07-14 フィードバック対応)になったので、ghost 行も row-main で横並びに包む
 	// (通常行と同じ構造 = 破線丸・タイトル・タグが横一列に並ぶ)。detail は持たない。
@@ -2134,6 +2195,11 @@ function appendSection(
 /** 全体描画。#root を作り直す唯一の関数(一方向データフロー)。sheetState に応じて
  *  一覧ページ / 詳細ページ / リスト選択ページのどれかを描く(v3 カード内ページ遷移)。 */
 function renderAll(): void {
+	// 【S-E: ヘッダ Done の表示/非表示】旧 button.confirm の `if (sel)` 条件と同じ「selectedId が
+	// 何かの行を指しているか」だけで決める(ドラフト行の選択中も表示 = 旧仕様どおり作成中も確定できる)。
+	// sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null(openSheet/openCreateSheet の
+	// 呼び出し前に commitSelection→selectedId=null を通る)なので、この1行だけで両状態を正しく畳める。
+	headerDoneEl.hidden = selectedId === null;
 	// --- カード内ページ遷移(v3): sheetState が立っていれば詳細/リスト選択ページを #root に描く --------
 	// 通常フローに描くので高さ=コンテンツ(iframe 自動リサイズと整合)。作業コピー(sheetDraft)は input
 	// イベントで同期済みなので、構造変化での再描画でもテキスト値は失われない(#sheet-root 廃止の代替)。
@@ -2391,7 +2457,8 @@ function applyStructuredContent(sc: unknown): void {
 		const explained = new Set<string>();
 		for (const a of serverAffected) explained.add(a.id);
 		for (const r of serverRemoved) explained.add(r.id);
-		for (const id of pendingIds) explained.add(id); // in-flight トグル行は触らない(degrade ガード)
+		// in-flight トグル行は触らない(degrade ガード)。Set→Map 化(§7.8)に伴い .keys() で id だけ回す。
+		for (const id of pendingIds.keys()) explained.add(id);
 		// 仮行(optimistic:)は confirmedTasks に元々入らないので prev/next のどちらにも現れず、
 		// 差分計算に混ざらない(仕様3「仮行は差分計算から除外」を state 分離で構造的に満たす)。
 		syncDiff = computeSyncDiff(confirmedTasks, nextTasks, explained);
@@ -2686,7 +2753,7 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	const nextStatus = nextCompleted ? "COMPLETED" : "NEEDS-ACTION";
 	// 楽観適用: 表示を即トグルし becoming を即時に乗せる(塗り丸+凍結リング / 破線に戻る)。
 	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
-	pendingIds.add(task.id);
+	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了/T_hard タイマーを仕込む
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -2798,7 +2865,14 @@ async function deleteTask(task: TodoItem): Promise<void> {
 	if (optimisticDeletes.has(task.id)) return;
 
 	optimisticDeletes.add(task.id);
-	pendingIds.add(task.id); // maybeRefetch の抑止 + 差分レンズの degrade ガードに乗せる
+	// 【2026-07-16 §7.8 実装スコープ注記】startCommitting は T_hard(10s)警告 + degrade ガードの
+	// ためだけに呼ぶ。delete は行を即座に一覧から除去する既存設計(このコメントの直後 rebuildFromConfirmed
+	// が optimisticDeletes で filter)のため、削除には「committing 中のゴースト行」自体が存在しない —
+	// ドクトリン表の「delete = ゴースト行 opacity pulse」は、この既存の「楽観削除は即消去(中間演出省略)」
+	// 設計と両立しない(ゴーストを最初から出すには rebuildDisplay の削除経路の作り直しが要る)。
+	// 本スライスは既存の楽観機構(optimisticDeletes 含む)を活かしたまま時間相を乗せる範囲に留める
+	// 判断をしたため、delete の committing アニメは実装していない(親レビューへの申し送り事項)。
+	startCommitting(task.id); // maybeRefetch の抑止 + 差分レンズの degrade ガードに乗せる
 	// 消す行が選択中/シート表示中/スワイプ露出中なら、その状態も畳む(消えた行の UI が宙に浮かないように)。
 	if (selectedId === task.id) selectedId = null;
 	if (swipeId === task.id) swipeId = null;
@@ -2952,7 +3026,7 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 	}
 
 	optimisticEdits.set(task.id, overrides);
-	pendingIds.add(task.id);
+	startCommitting(task.id);
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -3110,6 +3184,11 @@ function enqueueQuickAdd(title: string, details: QuickAddDetails): void {
 		priority: details.priority,
 		notes: details.notes === "" ? null : details.notes,
 	});
+	// 【2026-07-16 §7.8】add は元々 pendingIds を使っていなかった(仮行の存在=optimisticRows 自体が
+	// in-flight の目印だったため)。committing の寿命判定(wake-sweep を 1.2s で止める)には startedAt
+	// が要るので、ここで初めて optimisticId を pendingIds にも積む(二重送信ガードとしては使わない —
+	// 仮行は quick-add ごとに新しい乱数 id なので連打ガードの対象外。用途は committing 寿命だけ)。
+	startCommitting(optimisticId);
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
@@ -3146,6 +3225,7 @@ async function createTodoFor(optimisticId: string, title: string, details: Quick
 		}
 		// 成功: まず仮行を除去(除去前に applyStructuredContent すると仮行+実行の二重表示になる)。
 		removeOptimisticRow(optimisticId);
+		pendingIds.delete(optimisticId);
 		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
 		if (structuredContent?.tasks !== undefined && !isDefaultView(currentView)) {
 			// 非既定ビュー: mutate 応答 tasks は未完了ビュー固定で currentView と矛盾しうるので、
@@ -3196,6 +3276,7 @@ async function createTodoFor(optimisticId: string, title: string, details: Quick
 	} catch (e) {
 		// create-todo 自体の失敗(transport / isError)→ 仮行を除去してロールバックする。
 		removeOptimisticRow(optimisticId);
+		pendingIds.delete(optimisticId);
 		rebuildFromConfirmed();
 		renderAll();
 		// 【v3】旧・quick-add 入力欄へのタイトル復元は廃止(入力欄自体が無くなった)。追加失敗は稀で、
@@ -3226,6 +3307,18 @@ quickAddFab.addEventListener("click", (e) => {
 	draft = null;
 	selectedId = null;
 	startDraft();
+});
+
+// --- ヘッダ Done(S-E: 旧・行内 confirm の撤去先)---------------------------------------------
+// 旧 button.confirm(renderRow)の click ハンドラをそのまま移設: commitSelection → draft/selectedId
+// クリア → renderAll(選択行外タップと同じ確定経路)。stopPropagation は不要(document click の
+// deselect ロジックは「selectedId !== null && rowId !== selectedId」のときだけ動くが、ここで既に
+// selectedId=null にするので二重 commit にはならない — quickAddFab と同様に安全)。
+headerDoneEl.addEventListener("click", () => {
+	commitSelection();
+	draft = null;
+	selectedId = null;
+	renderAll();
 });
 
 // --- グローバルクリック: 選択解除(確定)/ スワイプ露出畳み --------------------------------------
