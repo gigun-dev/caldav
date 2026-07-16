@@ -665,7 +665,12 @@ export const TODOS_APP_HTML = `<!doctype html>
    * (タップ不可・cursor は既定のまま) — 昇格(すべて表示→requestDisplayMode)は C3 で
    * このノードをボタンに置換する予定(2026-07-16 更新「C2→C3 へ移動」方針、entry.ts 側コメント参照)。
    * .empty と同トーン(var(--muted))にして「情報行であって操作行ではない」ことを視覚でも示す。 */
-  .fold-remaining { color: var(--muted); padding: 8px 0 0; font-size: 12px; }
+  /* margin-bottom(2026-07-17 動的フィット改訂): ユーザー FB「下 padding なさすぎ」への対処を兼ねる。
+   * この値は todos-fold.ts の computeInlineFit へ渡す buttonBlock(todos-entry.ts の
+   * measureButtonBlockPx が .fold-expand を実測して求める。.fold-remaining はそれより小さいので
+   * 安全側)に実測で反映されるため、CSS 側の値を変えても収まり計算と常にズレない(定数の二重管理
+   * にならない)。 */
+  .fold-remaining { color: var(--muted); padding: 8px 0 0; font-size: 12px; margin-bottom: 12px; }
   /* C3(設計04 §5): fullscreen 対応ホストで「残り n 件」の代わりに出す昇格ボタン。押せることが
    * 分かるよう .fold-remaining の受動 muted トーンとは区別し、.header-done と同じ
    * 「テキストリンク言語(accent 色・枠無し)」のトーンに合わせる(押せば確定/遷移する操作面、
@@ -673,7 +678,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   .fold-expand {
     display: block;
     width: 100%;
-    margin: 8px 0 0;
+    /* margin-bottom:12px(2026-07-17 動的フィット改訂・上の .fold-remaining コメント参照):
+     * measureButtonBlockPx が getComputedStyle().marginBottom を実測して budget の先引きに使うので、
+     * この値を変えれば収まり計算も自動で追従する(CSS 定数の二重管理を避ける設計)。 */
+    margin: 8px 0 12px;
     padding: 6px 0;
     font: inherit;
     font-size: 12px;

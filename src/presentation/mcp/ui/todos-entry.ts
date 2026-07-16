@@ -138,7 +138,7 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
-import { FOLD_VISIBLE_COUNT, canRequestFullscreen, decideFoldedVisibleCount } from "./todos-fold";
+import { canRequestFullscreen, computeInlineFit } from "./todos-fold";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -241,8 +241,8 @@ interface AffectedEntry {
 
 // --- C1: hostContext から読んだ空間制約(設計04 §5 C1) -------------------------------
 // getHostContext().containerDimensions.maxHeight / displayMode を保持する。renderAll 最終段の
-// 畳み判定(decideFoldedVisibleCount)がこの2値を読む。maxHeight 未送信のホスト(現本アプリ)は
-// null のままなので畳みは発火しない(不活性が既定・todos-fold.ts のコメント参照)。
+// 畳み判定(applyInlineFold → computeInlineFit)がこの2値を読む。maxHeight 未送信のホスト
+// (現本アプリ)は null のままなので畳みは発火しない(不活性が既定・todos-fold.ts のコメント参照)。
 let hostMaxHeightPx: number | null = null;
 let hostDisplayMode: string | null = null;
 // C3(設計04 §5): ホストが広告する availableDisplayModes。「すべて表示」ボタンを押せる形で
@@ -260,7 +260,7 @@ let hostAvailableDisplayModes: readonly string[] | null = null;
  *  containerDimensions は {height} 側(fixed)と {maxHeight} 側(flexible)の union なので、
  *  "maxHeight" in containerDimensions で判別する(apps.mdx の公式例と同じ判別方法)。
  *  C3 追加: fullscreen 時は root に overflow-y:auto を当て全件を内部スクロールで見せる
- *  (畳み自体は decideFoldedVisibleCount が displayMode!=="inline" で null を返すので既に全件表示
+ *  (畳み自体は applyInlineFold が hostDisplayMode!=="inline" で早期 return するので既に全件表示
  *  になっている — ここで足すのはスクロール可能にするコンテナ設定だけ)。 */
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
@@ -2548,9 +2548,10 @@ function renderAll(): void {
 	appendSection(root, "sec-upcoming", "今後", s.upcoming, todayKey);
 	appendSection(root, "sec-nodue", "期日なし", s.noDue, todayKey);
 	// C2(設計04 §5): 「残り n 件」表示の挿入位置マーカー。4セクションの直後・ドラフト行/完了済みの
-	// 手前に置く(畳んでも入力中のドラフト行や完了済みの折り畳みは隠さない方針 — todos-fold.ts の
-	// FoldDecisionInput.totalCount コメント参照)。applyInlineFold がこのコメントノードの直後に
-	// 「残り n 件」の div を挿す(畳まないときは何も挿さない=マーカーだけ残って無害)。
+	// 手前に置く(畳んでも入力中のドラフト行や完了済みの折り畳みは隠さない方針 —
+	// applyInlineFold が畳み対象を「section:not(.sec-completed) > ul > li」に絞っているのと同じ理由)。
+	// applyInlineFold がこのコメントノードの直後に「すべて表示」ボタン/「残り n 件」の div を
+	// 挿す(畳まないときは何も挿さない=マーカーだけ残って無害)。
 	const foldAnchor = document.createComment("fold-anchor");
 	root.appendChild(foldAnchor);
 
@@ -2582,39 +2583,88 @@ function renderAll(): void {
 		root.appendChild(details);
 	}
 
-	// C2(設計04 §5): renderAll「最終段」の表示切りだけを行う畳み。ここより前の並べ替え/セクショニング/
-	// 楽観適用(sectionizeManual・位置記憶・stickyData)には一切触れない — 畳みは描画済み DOM から
-	// 行を間引くだけの後処理。activeCount は4セクション(期限切れ/今日/今後/期日なし)の合計行数
-	// (完了済み・ドラフトは対象外。上のコメント参照)。
-	applyInlineFold(activeCount, foldAnchor);
+	// C2(設計04 §5・2026-07-17 動的フィット改訂): renderAll「最終段」の表示切りだけを行う畳み。
+	// ここより前の並べ替え/セクショニング/楽観適用(sectionizeManual・位置記憶・stickyData)には
+	// 一切触れない — 畳みは「フル描画済みの DOM」を実測して行を間引くだけの後処理。
+	applyInlineFold(foldAnchor);
 }
 
-/** C2 本体: hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と実描画高さから
- *  decideFoldedVisibleCount(純関数・todos-fold.ts)で畳むべきか判定し、畳むなら4セクション
- *  横断で先頭 visibleCount 件だけ残して空になったセクションを畳み、末尾に受動的な
- *  「残り n 件」を挿す。maxHeight 情報が無いホスト(hostMaxHeightPx===null)は
- *  decideFoldedVisibleCount が即 null を返すため、この関数は早期 return し
- *  root.scrollHeight の強制リフロー(reflow)すら発生しない(不活性ホストでの余分なコスト無し)。 */
-function applyInlineFold(activeCount: number, foldAnchor: Comment): void {
-	if (hostMaxHeightPx === null) return;
-	// root.scrollHeight の読み取りは強制同期レイアウト(reflow)を伴うが、hostMaxHeightPx が
+// 「すべて表示」ボタン(.fold-expand)の実高さ(margin-bottom 込み)のキャッシュ。CSS 定数
+// (todos-app.ts の .fold-expand)の二重管理を避けるため、実測した値をそのまま budget の
+// 先引きに使う(measureButtonBlockPx 参照)。ページ内で一度測れば以降は不変(フォント/CSS
+// 変数が実行中に変わることは無い)なので、renderAll のたびに measure し直すコストを避ける。
+let cachedButtonBlockPx: number | null = null;
+
+/** 「すべて表示」ボタン(.fold-expand)の高さ(下 margin 込み・px)を実測する。
+ *  【なぜ受動表示(.fold-remaining)ではなく .fold-expand を測るか】畳み判定の時点では
+ *  canRequestFullscreen の結果(=どちらのノードを実際に append するか)がまだ確定していない
+ *  ことに加え、.fold-expand は min-height:32px を持ち .fold-remaining(パディングのみ)より
+ *  常に大きい — .fold-expand の高さを budget の先引きに使えば、どちらが実際に append されても
+ *  収まりを保証できる(安全側に倒す・過小の budget にはならない)。
+ *  【なぜ hidden ではなく visibility:hidden か】display:none は offsetHeight が 0 になり
+ *  測れない。visibility:hidden はレイアウトに参加する(一瞬 layout に載るが即 remove するので
+ *  視覚的なちらつきは無い)。 */
+function measureButtonBlockPx(): number {
+	if (cachedButtonBlockPx !== null) return cachedButtonBlockPx;
+	const probe = document.createElement("button");
+	probe.type = "button";
+	probe.className = "fold-expand";
+	probe.textContent = "すべて表示 (全00件)"; // 幅は width:100% で固定なのでテキスト長は高さに無関係
+	probe.style.visibility = "hidden";
+	root.appendChild(probe);
+	const marginBottomPx = Number.parseFloat(getComputedStyle(probe).marginBottom) || 0;
+	cachedButtonBlockPx = probe.offsetHeight + marginBottomPx;
+	probe.remove();
+	return cachedButtonBlockPx;
+}
+
+/**
+ * C2 本体(2026-07-17 動的フィット改訂): hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と
+ * 「フル描画済み(畳みなし・FAB あり)」の実測値から computeInlineFit(純関数・todos-fold.ts)で
+ * 収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら4セクション横断で先頭
+ * visibleCount 件だけ残して空になったセクションを畳み、**FAB を隠し**(クリップ源 — 追加操作は
+ * fullscreen 側の FAB に集約する)、末尾に「すべて表示」(ボタン or 受動「残り n 件」)を挿す。
+ *
+ * 【旧・固定 N=6 の破綻からの根治(2026-07-17)】旧実装は「畳む件数を決めてからボタンを append
+ * する」順序だったため、ボタン自身の高さが収まり計算の外にあり、かつ「件数が6件以下なら畳まない」
+ * 閾値だったため6件ちょうど等で FAB がクリップされて隠れる再発バグを踏んだ(todos-fold.ts 冒頭
+ * コメント参照)。本実装は「まずフル描画(FAB込み)して実測 → 1パスで判定・適用」に改め、
+ * 測定対象に必ず FAB を含める(root.scrollHeight が FAB を含む)ことでこの2点を構造的に解消する。
+ *
+ * 【1パスで完結・再測定ループ無し】測る→判定する→適用する、を1回の renderAll 内で完結させる。
+ * 適用後に size-changed が飛ぶことはあっても、それが maxHeight を変えるわけではないので
+ * この関数が再度呼ばれて振動する(畳む→戻す→畳む…)ことは無い。
+ */
+function applyInlineFold(foldAnchor: Comment): void {
+	// fullscreen 中は畳まない(全件 + 内部スクロールは C3/applyHostContext の fullscreen-scroll が
+	// 担う)。FAB も隠さない — フル一覧の末尾に通常どおり出る(design 04 §5 C3 の想定どおり)。
+	// maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。
+	// どちらの早期 return でも FAB の hidden は明示的に false へ戻す — 直前の描画が folded で
+	// FAB を隠していた場合(例: fullscreen 昇格でホストの displayMode が変わった直後の再描画)に
+	// hidden=true が残留しないようにするため。
+	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) {
+		quickAddFab.hidden = false;
+		return;
+	}
+
+	// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、hostMaxHeightPx が
 	// 有限のホスト(=このカードの実質的なメイン利用シナリオである claude.ai 等)でのみ発生し、
 	// renderAll 自体が1回の描画で完結する頻度(ユーザー操作/ポーリング単位)なので実害は小さい。
-	const actualHeightPx = root.scrollHeight;
-	const visibleCount = decideFoldedVisibleCount({
-		maxHeightPx: hostMaxHeightPx,
-		displayMode: hostDisplayMode,
-		actualHeightPx,
-		totalCount: activeCount,
-		foldToCount: FOLD_VISIBLE_COUNT,
-	});
-	if (visibleCount === null) return;
-
-	// 4セクション(完了済みを除く)を横断して先頭 visibleCount 件だけ残す。renderRow が
-	// li.dataset.id を付けている(li[data-id])ので、セクション見出し(h2)やゴースト行を含め
-	// 通常行と同じ扱いで数えてよい(ゴーストも「1行」として畳み対象に含む — 削除中断も
-	// 特別扱いしない方が体感として一貫する)。
+	// renderRow が li.dataset.id を付けている(li[data-id])ので、セクション見出し(h2)や
+	// ゴースト行を含め通常行と同じ扱いで数えてよい(ゴーストも「1行」として畳み対象に含む —
+	// 削除中断も特別扱いしない方が体感として一貫する)。
 	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
+	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
+	const fullHeight = root.scrollHeight; // FAB(.fab-row)・余白込みの全高
+	const buttonBlock = measureButtonBlockPx();
+
+	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, buttonBlock);
+	if (fit.mode === "full") {
+		quickAddFab.hidden = false; // 収まっているので FAB は通常どおり表示。
+		return;
+	}
+
+	const { visibleCount } = fit;
 	rows.slice(visibleCount).forEach((li) => li.remove());
 	// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
 	for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
@@ -2622,7 +2672,12 @@ function applyInlineFold(activeCount: number, foldAnchor: Comment): void {
 		if (ul !== null && ul.children.length === 0) section.remove();
 	}
 
-	const remaining = activeCount - visibleCount;
+	// FAB を隠す(クリップ源の根治)。畳んだ状態では maxHeight 内に FAB の置き場が無い —
+	// 追加操作は「すべて表示」→ fullscreen 側の FAB(隠されない・通常フロー)に集約する。
+	quickAddFab.hidden = true;
+
+	const totalCount = rows.length; // 畳み対象4セクション横断の合計行数(完了済み・ドラフトは対象外)
+	const remaining = totalCount - visibleCount;
 	// C3(設計04 §5): fullscreen が広告されているホストだけボタン化する。canRequestFullscreen が
 	// apps.mdx:782 の「View は requestDisplayMode 前に availableDisplayModes を確認する MUST」を
 	// 担う純関数 — fullscreen 非広告ホスト(claude.ai で inline のみ広告・本アプリの現状=未受信)では
@@ -2632,7 +2687,7 @@ function applyInlineFold(activeCount: number, foldAnchor: Comment): void {
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "fold-expand";
-		button.textContent = `すべて表示 (全${activeCount}件)`;
+		button.textContent = `すべて表示 (全${totalCount}件)`;
 		button.addEventListener("click", () => {
 			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST・result.mode)。
 			// ホストが昇格を拒否した(sheet を出さなかった等)場合は "inline" が返るだけで、それ自体は

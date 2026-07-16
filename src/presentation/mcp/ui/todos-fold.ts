@@ -4,69 +4,83 @@
 // =============================================================================
 // 【このモジュールの位置づけ】ホストが宣言する containerDimensions.maxHeight(spec:
 // apps.mdx:671-733 / spec.types.ts:243-249 の McpUiHostContext.containerDimensions)を
-// 使って「行リストを先頭 N 件に畳むべきか」を DOM に一切触れず判定する純関数だけを切り出す。
-// feedback.ts / row-key.ts と同じ規律(「新規に書く純関数・定数だけ共有」)。DOM 操作
-// (li の間引き・「残り n 件」ノード挿入)は todos-entry.ts 側(renderAll 最終段)が担う。
+// 使って「行リストをどこまで見せれば maxHeight に収まるか」を DOM に一切触れず判定する
+// 純関数だけを切り出す。feedback.ts / row-key.ts と同じ規律(「新規に書く純関数・定数だけ
+// 共有する」)。DOM 操作(li の間引き・「すべて表示」ノード挿入・FAB の hide)は
+// todos-entry.ts 側(renderAll 最終段の applyInlineFold)が担う。
 //
 // 【不活性が既定であることの核心(退行ゼロの保証点)】本アプリ(swift-mcp-app)は現状
 // containerDimensions.maxHeight を「安全網 4000」または未送信で送る(設計04 §1 現状の表)。
-// decideFoldedVisibleCount は maxHeightPx が null のときは即 null(畳まない)を返し、
-// 有限値でも「実際の描画高さがそれを超えているとき」だけ畳む。4000 という値そのものは
-// 通常のカード内容(todos 数十件でも 4000px は超えにくい)では超過しないため、本アプリでは
-// 事実上常に不活性 = 現状の見た目と完全に一致する。この不活性性はコードのロジックのみで
-// 保証されており、ホスト側の協力(小さい maxHeight を送る)がない限り作動しない。
+// computeInlineFit は maxHeightPx が有限でない(null/undefined→呼び出し側で Infinity 化)
+// ときは即 { mode: "full" } を返し、有限値でも「フル描画時の全高(FAB込み)がそれ以下」
+// なら畳まない。4000 という値そのものは通常のカード内容(todos 数十件でも 4000px は超え
+// にくい)では超過しないため、本アプリでは事実上常に不活性 = 現状の見た目と完全に一致する。
+// この不活性性はコードのロジックのみで保証されており、ホスト側の協力(小さい maxHeight を
+// 送る)がない限り作動しない。
 //
-// 【なぜ「N 件固定」であって「行高から件数を逆算」ではないか】
-// 設計04 §5 C2 は「先頭 N 件(定数・初期 6)に畳む」と明記している。行の実高さは due の有無・
-// 優先度バッジ・スワイプ状態等で行ごとに変動し、行高から動的に件数を逆算する版は複雑さの
-// 割に精度が低い(結局 maxHeight 内に収まる保証にはならない)。固定 N はどのカードでも
-// 「まず何件か見えて、残りは要求すれば見える(C3)」という体感を単純に作れる — 可逆な1定数。
+// 【2026-07-17 更新: 固定 N=6 の畳み(旧 decideFoldedVisibleCount)を廃止し動的フィットへ改訂】
+// 旧実装は「行数が FOLD_VISIBLE_COUNT(6)を超えていたら先頭6件に畳む」という**件数閾値**
+// だった。これは実機で破綻した: todos がちょうど6件(または6件強)のとき「6件以下だから
+// 畳まない」と判定されるが、行高(due バッジ・優先度・繰り返しアイコンの有無で可変)次第では
+// 6件の実高さがそのまま maxHeight を超え、host 側は scrollEnabled=false で maxHeight
+// クランプするため **カード下端の FAB(+)が maxHeight の外にクリップされ、隠れて操作不能に
+// なる**。件数閾値は「行高が可変・maxHeight が端末依存」という前提の下では原理的に高さを
+// 保証できない(ボツ・経緯は財産として残す — 「N を1ずつ減らしながら再測定するループ」も
+// 検討したが、DOM の累積オフセットを1回読めば同じ答えが閉じた形で求まるので不要な複雑さ)。
+//
+// 改訂後は「maxHeight に収まる**行数**を、行ごとの累積下端(offsetTop+offsetHeight)から
+// 直接逆算する」動的フィットに切り替える。「すべて表示」ボタンの高さ(下余白込み)を
+// budget から**先引き**するのが要点 — 旧実装は「畳む件数を決めてからボタンを append する」
+// 順序だったため、ボタン自身の高さが収まり計算の外にあり(=それも隠れバグの一因)、今回の
+// 改訂で構造的に解消する(todos-entry.ts の applyInlineFold 側コメント参照)。
 // =============================================================================
 
-/** 畳み後に見せる先頭行数(固定)。設計04 §5 C2 の初期値どおり 6。値の変更だけで挙動を
- *  調整できる(可逆)。 */
-export const FOLD_VISIBLE_COUNT = 6;
-
-/** decideFoldedVisibleCount の入力。DOM から読める値だけを渡す形にし、この関数自体は
- *  document / window に一切触れない(テスト容易性のため — feedback.ts の isCommitting と
- *  同じ「呼び出し側が値を渡す」設計)。 */
-export interface FoldDecisionInput {
-	/** ホストが宣言した inline の空間上限(px)。containerDimensions.maxHeight が無い
-	 *  ホスト(現本アプリ含む)・fixed height 契約({height} 側)のホストでは null を渡す。 */
-	maxHeightPx: number | null;
-	/** getHostContext().displayMode。undefined/未受信は「inline とみなす」側にせず null を渡し
-	 *  呼び出し側の判断に委ねる(下記 displayMode !== "inline" の分岐で不活性になる)。 */
-	displayMode: string | null;
-	/** renderAll がフル描画した直後に測った実高さ(root.scrollHeight 等・px)。 */
-	actualHeightPx: number;
-	/** 畳み対象セクション(期限切れ/今日/今後/期日なし)の合計行数。完了済み(<details> 既定閉)・
-	 *  ドラフト行は対象外(常時表示のまま — 完了済みは元々閉じているので高さに寄与せず、
-	 *  ドラフト行は入力中の行を隠すと編集不能になり体験を損なう)。 */
-	totalCount: number;
-	/** 畳んだときに見せる件数(固定・FOLD_VISIBLE_COUNT を渡すのが既定)。 */
-	foldToCount: number;
-}
+/** computeInlineFit の戻り値。件数を決め打ちで返すのではなく、「畳まず全部見せてよいか
+ *  (full)」「先頭何件までなら maxHeight に収まるか(folded)」の二択にする — 呼び出し側
+ *  (applyInlineFold)はこの結果をそのまま DOM の間引きに使えばよく、追加の場合分けを
+ *  持たない。 */
+export type InlineFit = { mode: "full" } | { mode: "folded"; visibleCount: number };
 
 /**
- * 「行リストを先頭 foldToCount 件に畳むべきか」を判定する純関数。
+ * inline displayMode で「行リストをどこまで見せれば maxHeight に収まるか」を判定する
+ * 純関数(DOM に一切触れない — 呼び出し側が実測値を渡す)。
  *
- * @returns 畳むべきときは表示件数(= min(foldToCount, totalCount) 未満にはならない)、
- *          畳まないときは null(呼び出し側は全件表示のまま = 不活性)。
- *
- * 判定条件(すべて真のときだけ畳む。設計04 §5 C2):
- *   1. maxHeightPx が有限(null でない) — maxHeight 情報が無いホストは不活性が既定。
- *   2. displayMode === "inline" — fullscreen 中は畳まない(C3 で全件+内部スクロールに切替。
- *      その段は fullscreen 側の別経路が担うのでここでは判定しない)。
- *   3. actualHeightPx > maxHeightPx — 実際に収まりきらないときだけ畳む(収まっているカードを
- *      理由なく畳むと「行数が少ないのに勝手に省略される」誤動作になる)。
+ * @param rowBottoms 畳み対象の各行の、root 基準の累積下端(`li.offsetTop + li.offsetHeight`)を
+ *   文書順に並べた配列。行高は due/優先度バッジ等で行ごとに可変なので、件数ではなく
+ *   この実測配列から「maxHeight に収まる行数」を直接求める(旧・固定 N=6 の破綻を根治)。
+ * @param fullHeight FAB・余白込みのフル描画時の全高(`root.scrollHeight`)。旧実装は
+ *   「行の合計」だけを見ていたため FAB 分の高さが計算に入らず、6件ちょうど等で
+ *   「行だけなら収まるが FAB を足すと溢れる」ケースを見逃していた(再発バグの核心)。
+ * @param maxHeight ホストが宣言した inline の空間上限(px)。containerDimensions.maxHeight が
+ *   無い/未送信のホストは呼び出し側が `Infinity` を渡す(旧 API の `null` 分岐は呼び出し側で
+ *   Infinity に正規化する形に統一 — 純関数側は「有限か否か」の1判定に絞る)。
+ * @param buttonBlock 「すべて表示」ボタン(下余白込み)の高さ(px)。**budget から先引きする
+ *   のが本関数の核心** — 畳み決定より後にボタンを append すると、ボタン自身の高さぶん
+ *   maxHeight を超過してしまう(旧実装の欠陥。todos-entry.ts 側で hidden 実測して渡す)。
+ * @returns 収まる(fullHeight <= maxHeight)なら `{mode:"full"}`。溢れるなら
+ *   `{mode:"folded", visibleCount}`(budget=maxHeight-buttonBlock に収まる最大行数。
+ *   1行も収まらない極端なケースでも最低1行は見せる)。
  */
-export function decideFoldedVisibleCount(input: FoldDecisionInput): number | null {
-	if (input.maxHeightPx === null) return null;
-	if (input.displayMode !== "inline") return null;
-	if (input.actualHeightPx <= input.maxHeightPx) return null;
-	// 既に foldToCount 件以下しかない(=畳んでも件数が変わらない)なら畳む意味が無い。
-	if (input.totalCount <= input.foldToCount) return null;
-	return input.foldToCount;
+export function computeInlineFit(
+	rowBottoms: readonly number[],
+	fullHeight: number,
+	maxHeight: number,
+	buttonBlock: number,
+): InlineFit {
+	// maxHeight 情報が無い(Infinity)ホストは常に不活性(旧・不活性ホスト分岐を維持)。
+	if (!(maxHeight < Infinity)) return { mode: "full" };
+	// FAB 込みの全高が既に maxHeight に収まっているなら畳む理由が無い(旧実装と同じ判定基準だが、
+	// 今回は「行の合計」ではなく root.scrollHeight = FAB・余白込みの実測値で判定するので
+	// 「行だけなら収まるが FAB で溢れる」再発バグのケースを正しく folded 側に倒せる)。
+	if (fullHeight <= maxHeight) return { mode: "full" };
+	// ボタン(+ 下余白)ぶんを先に引いた予算の中に収まる最大行数を、累積下端から直接求める。
+	// これにより「畳み決定 → 後からボタンを足す」だった旧実装の順序逆転バグ(ボタン高が
+	// 収まり計算の外にあった)が構造的に発生しなくなる。
+	const budget = maxHeight - buttonBlock;
+	const visibleCount = rowBottoms.filter((bottom) => bottom <= budget).length;
+	// budget がどれだけ小さくても(極端な maxHeight・大きい buttonBlock)最低1行は見せる —
+	// 0件表示は「一覧が消えた」ように見えてしまい、ユーザーが状況を把握できなくなるため。
+	return { mode: "folded", visibleCount: Math.max(1, visibleCount) };
 }
 
 // --- C3: 「すべて表示」ボタン vs 受動「残り n 件」表示の分岐(設計04 §5 C3) -----------------
