@@ -812,3 +812,41 @@
   (未インデックス)ことが判明。ツール別・colo 別レイテンシの計器として機能していない →
   Analytics Engine writeDataPoint 化を別スライスで(next-directions カタログへ)。
 - §7.7 の「保存完了バナー」案は §7.8 が上書き(成功バナーは Why not に降格・失敗/例外専用)。
+
+## 2026-07-16(続き2)F-1+F-2 実装完了(todos フィードバック統一 v2)
+
+- **F-1(共有カーネル)+ F-2(todos)を実装・コミット(b8013de)**。`make check` green・feedback
+  境界値テスト 5 pass。
+- F-1: `src/presentation/mcp/ui/feedback.ts` 新設。`FEEDBACK`(cycleMs=1200/animCycles=1/
+  hardTimeoutMs=10000)+ `isCommitting(now, startedAt)` 純関数(半開区間 [startedAt, +1200))。
+  CSS/DOM は §7.7 判断どおり共有せず、rowKey と同じ「新規純関数・定数だけ共有」規律を踏襲。
+- F-2: `pendingIds` を `Set` → `Map<id, startedAt>` 化。`startCommitting(id)` が寿命満了の再描画
+  タイマー(満了で committing クラスを外し静的 becoming へ収束)+ T_hard(10s)警告バナー
+  (=再読み込み・中断/ロールバックなし)を setTimeout で仕込む(clearTimeout せず `pendingIds.has`
+  再確認で冪等)。done/undo=ring-pulse×1・add の wake-sweep を `infinite→1`・edit=opacity-pulse×1・
+  reduced-motion 分岐。
+- **delete の committing 演出は見送り**(申し送り): 既存の楽観削除は「タップ即・行を一覧から完全
+  除去」でゴースト行はサーバー確定後にしか描かれないため、§7.8 表の「delete=ゴースト opacity pulse」
+  はこの即時削除設計と両立しない(rebuildDisplay の削除経路の作り直しが要る中規模変更)。今回は
+  degrade/T_hard のためだけ startCommitting を呼ぶ範囲に留めた。
+- **S-E をこのスライスに統合**: 行内 confirm を撤去しカード右上の単一 Done(#header-done)へ。
+  row-main を `align-items:flex-start` + head `margin-top:12px` で title 垂直ズレ(選択で1行目が
+  沈む症状)を固定。TaskList #10(S-E)を completed に。
+- 次: **F-3(agenda 移植)**を implementer に委譲(悲観パス=反復イベントの日時/recurrence 変更が
+  agenda 固有の新規要素。満了後に静的「保存中…」タグ)。
+
+## 2026-07-16(続き3)F-3 実装完了(agenda フィードバック統一 v2 + 悲観パス)
+
+- **F-3(agenda 移植)を実装・コミット(0043ba5)**。`make check` green。
+- 楽観パスは F-2(todos)と完全同型(feedback.ts 流用・pendingIds Map 化・startCommitting・
+  wake-sweep infinite→1・opacity-pulse×1・reduced-motion・delete 見送り)。
+- **悲観パス(agenda 固有・todos に無い)を新規実装**: 反復イベントの start/end/recurrence 変更
+  (§7.8 判定則②)は結果を予測できず optimisticEdits に日時を積まない構造 → `pessimisticIds`
+  ローカル Set で追跡。committing 中はタグ opacity-pulse、満了後は静的「保存中…」タグ
+  (`pending-edit` クラス・確定まで)。affectedById と独立の経路で合成し、pending 中は aff 分岐を
+  排他化して becoming-edit との二重表示を防ぐ。
+- **レビューで1点修正**: 悲観 pending はマスター id キーなので反復の全展開 occurrence にヒットする。
+  aff タグと同じ `seenAffectedIds` 集約に乗せ、「保存中…」を先頭 occurrence のみに表示するよう
+  修正(集約しないと表示中の全 occurrence 行へ重複表示され「別イベントが N 件 pending」の誤読)。
+- F-1〜F-3 完了で操作フィードバック統一ドクトリン v2 の UI 実装は一巡。残 = delete の committing
+  演出(rebuildDisplay 削除経路の作り直しが要る中規模・申し送り)+ 計器の Analytics Engine 化。

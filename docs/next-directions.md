@@ -24,6 +24,17 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > chips・ドラフト行 — iframe は automation 不可)と iOS の移動時間/通知表示。
 > カレンダーに検証由来の可能性があるイベント(「移動時間(30分)」「ミーティング」重複)が
 > 残っており、ユーザーの意図物か確認して掃除する。
+> **2026-07-16 更新: 操作フィードバック統一ドクトリン v2(§7.8)実装進行中。**
+> F-1(共有カーネル ui/feedback.ts)+ F-2(todos: pendingIds を Map<id,startedAt> 化・
+> committing 状態機械・wake-sweep infinite→1・ring/opacity-pulse×1・T_hard バナー・
+> reduced-motion)+ S-E 統合(Done 右上・title 垂直ズレ固定)を完了・コミット(b8013de)。
+> delete の committing 演出のみ既存の即時削除設計と両立せず見送り(申し送り済み)。
+> **F-3(agenda 移植)完了(0043ba5)**: 楽観は F-2 と同型。悲観パス(反復イベントの日時/
+> recurrence 変更 → 満了後に静的「保存中…」タグ)を新規実装。悲観 pending はマスター id キーで
+> 反復の全 occurrence にヒットするため seenAffectedIds 集約で先頭行のみ表示(レビュー修正)。
+> **F-1〜F-3 で UI 実装は一巡**。設計の正は docs/modeling/12 §7.8。
+> **計器 follow-up 未着手**: {mcpTool,ms,colo} console.log は observability で field 未インデックス
+> → Analytics Engine writeDataPoint 化を別スライス起票(下記カタログ候補)。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
