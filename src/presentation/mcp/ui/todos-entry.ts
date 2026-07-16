@@ -256,28 +256,44 @@ let confirmedTasks: TodoItem[] | null = null;
 // 【見た目のブロック(disabled/スピナー)は 2026-07-14 ドクトリンのまま出さない】v2 が変えたのは
 // 「アニメの寿命管理」だけで、「操作を待たずに連打できる」設計自体は不変。
 const pendingIds = new Map<string, number>();
+// animUntil = committing アニメの「寿命の満了時刻」(ms epoch)。id → startedAt + cycleMs*animCycles。
+// 【2026-07-16 v2.1(docs/modeling/12 §7.8 更新)で pendingIds から分離した理由(バグ修正)】
+// 旧実装は各 mutate の成功/失敗分岐で pendingIds.delete(id) した瞬間に isCommitting 判定(旧: startedAt
+// を pendingIds から読む)も終了していた。しかしサーバー確定は実測 p50=287ms と 1.2s(cycleMs×animCycles)
+// より速いことが普通で、確定が先に届くと committing アニメが1周し切る前に打ち切られ「見えない/一瞬で
+// 終わる」不具合になっていた(ユーザー FB 由来)。animUntil は pendingIds のライフサイクル(二重送信
+// ガード・差分レンズ degrade・T_hard 判定 = 「まだサーバー確定していないか」)とは独立に、「tap した
+// 瞬間から必ず cycleMs*animCycles だけ持続する」という別の寿命を持つ。各 mutate 成功/失敗分岐は
+// pendingIds だけ delete し、animUntil には一切触れない(=animUntil の唯一の書き手は startCommitting
+// と下の満了タイマー)。renderRow の committing 判定はこの Map の値と Date.now() の比較だけで行う。
+const animUntil = new Map<string, number>();
 
 /**
- * mutate 開始時に pendingIds へ startedAt を積み、寿命(FEEDBACK.cycleMs×animCycles)満了時の
- * 再描画と、T_hard(10s)超過時の警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
+ * mutate 開始時に pendingIds へ startedAt を積み、animUntil へ寿命の満了時刻(=startedAt+cycleMs×
+ * animCycles)を積む。寿命満了時の再描画(committing クラスを外す)と、T_hard(10s)超過時の
+ * 警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
  *
  * 【なぜタイマーの解除(clearTimeout)をしないか(Why not)】
- * どちらのタイマーも発火時に `pendingIds.has(id)` を再確認してから作用する。mutate が
- * タイマーより先に成功/失敗すれば pendingIds.delete(id) 済みなので発火時は no-op になる
- * (committing 満了の再描画は「まだ pending なら」だけ renderAll する = 確定済みなら不要な
- * 再描画をしない。T_hard 警告も同様「まだ pending なら」だけバナーを出す)。id ベースの
- * 冪等ガードで足りるため、setTimeout の参照を保持して明示的に clear する複雑さを持ち込まない
- * (行の使い回しは無い — id は mutate 対象の実 todo id か quick-add の仮 optimistic:id で、
- * 同一 id が並行して2回 committing に入ることは二重送信ガード(pendingIds.has チェック)が防ぐ)。
+ * T_hard タイマーは発火時に `pendingIds.has(id)` を再確認してから作用する。mutate がタイマーより
+ * 先に成功/失敗すれば pendingIds.delete(id) 済みなので発火時は no-op になる(「まだ pending なら」
+ * だけバナーを出す)。id ベースの冪等ガードで足りるため、setTimeout の参照を保持して明示的に clear
+ * する複雑さを持ち込まない(行の使い回しは無い — id は mutate 対象の実 todo id か quick-add の仮
+ * optimistic:id で、同一 id が並行して2回 committing に入ることは二重送信ガード(pendingIds.has
+ * チェック)が防ぐ)。満了タイマーは pendingIds を見ない(animUntil 自身の寿命だけで無条件に発火・
+ * renderAll する — pendingIds が既に delete 済み=サーバー確定済みでも、アニメの残り時間分は
+ * committing 表現を続ける必要があるため、pendingIds の有無で分岐すると旧バグに逆戻りする)。
  */
 function startCommitting(id: string): void {
 	const startedAt = Date.now();
 	pendingIds.set(id, startedAt);
-	// committing 満了(寿命1周)→ pending が残っていれば再描画して committing クラスを外す
-	// (楽観パスはここで静的 becoming に収束、悲観パスはここで静的「保存中…」タグに切り替わる)。
+	const lifespan = FEEDBACK.cycleMs * FEEDBACK.animCycles;
+	animUntil.set(id, startedAt + lifespan);
+	// committing 満了(寿命1周)→ animUntil を消して再描画(committing クラスが外れ静的 becoming/
+	// 「保存中…」タグへ収束する)。pendingIds はここでは触らない(サーバー確定と無関係な寿命なので)。
 	setTimeout(() => {
-		if (pendingIds.has(id)) renderAll();
-	}, FEEDBACK.cycleMs * FEEDBACK.animCycles);
+		animUntil.delete(id);
+		renderAll();
+	}, lifespan);
 	// T_hard(10s)超過 → まだ確定していなければ警告バナー(§7.8「共通」節)。
 	setTimeout(() => {
 		if (pendingIds.has(id)) {
@@ -783,27 +799,56 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 2026-07-14 楽観更新: in-flight のトグルは optimisticToggle 由来の becoming(completed/reopened)を
 	// この affectedById 経由で受け取り、その場で塗り丸/破線に変わる(スピナーは無い)。
 	const aff = affectedById.get(task.id);
-	// 【2026-07-16 §7.8】この行がいま committing(寿命1周のアニメ最中)かを pendingIds の
-	// startedAt から判定する。「新しく描画された瞬間から」ではなく「実際にタップしてから」
-	// 1200ms で寿命が切れるよう、時刻はここで都度 Date.now() を取る(render のたびに再評価)。
-	const startedAt = pendingIds.get(task.id);
-	const committing = startedAt !== undefined && isCommitting(Date.now(), startedAt);
+	// 【2026-07-16 v2.1 §7.8】この行がいま committing(寿命1周のアニメ最中)かを animUntil(サーバー
+	// 確定=pendingIds とは独立した「tap からの固定寿命」)から判定する。pendingIds はもう見ない
+	// (見ると旧バグ = サーバー確定が速いとアニメが途中で切れる、に戻る。animUntil 宣言のコメント参照)。
+	// startedAt は animUntil(満了時刻)から cycleMs×animCycles を引いて逆算する(pendingIds の
+	// startedAt は成功分岐で先に delete されうるため、寿命そのものを唯一の情報源にする)。isCommitting
+	// (feedback.ts の共有純関数)へこの逆算した startedAt を渡し、判定式そのものは単一情報源のまま保つ。
+	const animExpiresAt = animUntil.get(task.id);
+	const committingStartedAt =
+		animExpiresAt !== undefined ? animExpiresAt - FEEDBACK.cycleMs * FEEDBACK.animCycles : null;
+	const committing = committingStartedAt !== null && isCommitting(Date.now(), committingStartedAt);
+	// アニメ要素の再描画耐性(v2.1 修正A-4): 成功時 renderAll で li が作り直されるとアニメが頭から
+	// 再生され「跳ねる」。committing 中の各アニメ要素へ inline animation-delay を負値で与え、経過位置
+	// から再開させる(CSS アニメの標準テクニック — 負の delay は「もう delay 分だけ再生し終えた状態」
+	// から始まる)。
+	/** committing 中の要素へ経過位置からの animation-delay を付ける小ヘルパー。 */
+	const applyAnimResume = (elm: HTMLElement): void => {
+		if (committingStartedAt === null) return;
+		elm.style.animationDelay = `-${Date.now() - committingStartedAt}ms`;
+	};
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
+	// v2.1 A-4: どの要素へ animation-delay resume を適用するか(circle=done/undo の ring-pulse+pop、
+	// row=add の inflight シマー、tag=edit の opacity pulse)。renderRow 内で対象要素を作る箇所が
+	// それぞれ離れているため、ここではフラグだけ立てて後段(check/circle 生成部・末尾の tagEl 生成部)で
+	// applyAnimResume を呼ぶ。
+	let resumeCircle = false;
+	let resumeRow = false;
+	let resumeTag = false;
 	if (aff !== undefined) {
 		// sync(E-2 スライス④): システム起因の変化はラベルを中立の「同期(...)」にする。
 		// form(左バー/リング/破線)は user 起因と同一語彙を使い、区別はラベルだけに集約する。
 		const isSync = aff.sync === true;
 		if (aff.kind === "completed") {
 			li.classList.add("becoming-done");
-			// ring-pulse(0→4px→0 の脈動): committing 中だけ乗せる。満了後は li.becoming-done .circle の
-			// 静的 4px リングにそのまま収束する(committing クラスが外れるだけで box-shadow の値自体は
-			// 変わらない = アニメの終端フレームと静的形が一致するよう CSS 側で揃えてある)。
-			if (committing) li.classList.add("committing");
+			// ring-pulse(0→35%→0 の脈動 + circle の軽いポップ): committing 中だけ乗せる。満了後は
+			// li.becoming-done .circle の静的 14% リングにそのまま収束する(committing クラスが外れる
+			// だけで box-shadow の値自体は変わらない = アニメの終端フレームと静的形が一致するよう CSS
+			// 側で揃えてある。v2.1 修正A-5: 旧 14% 一定リングは check 円の青塗り潰しに埋もれ視認性が
+			// 低いとの実機 FB を受け、todos-app.ts 側でリング濃度とポップを強化した)。
+			if (committing) {
+				li.classList.add("committing");
+				resumeCircle = true;
+			}
 			tagText = isSync ? "同期(完了)" : "完了";
 		} else if (aff.kind === "reopened") {
 			li.classList.add("becoming-undone");
-			if (committing) li.classList.add("committing");
+			if (committing) {
+				li.classList.add("committing");
+				resumeCircle = true;
+			}
 			tagText = isSync ? "同期(再開)" : "再開";
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
@@ -812,15 +857,22 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			// (色は増やさず動きだけ)。2026-07-16 ドクトリン v2 で「無限ループ」を「寿命1周」に是正
 			// (todos-app.ts の @keyframes wake-sweep コメント参照)。committing が寿命切れになったら
 			// このクラスが外れ、静的な becoming-in の wake(帯の先頭が見える位置)に収束する。
-			if (isOptimisticId(task.id) && committing) li.classList.add("inflight");
+			if (isOptimisticId(task.id) && committing) {
+				li.classList.add("inflight");
+				resumeRow = true; // シマーが動く要素は li 自身(row)なので resume も li に適用する。
+			}
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
 			tagText = isSync ? "同期(編集)" : editPlan.tag;
 			// opacity pulse ×1: becoming タグ自体を committing 中だけ脈動させる(手応え)。
-			if (committing) li.classList.add("committing");
+			if (committing) {
+				li.classList.add("committing");
+				resumeTag = true;
+			}
 		}
 	}
+	if (resumeRow) applyAnimResume(li);
 
 	const check = document.createElement("button");
 	check.type = "button";
@@ -836,6 +888,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 未完時は CSS が color:transparent で隠す(SVG は stroke=currentColor なので同じ手法が効く。
 	// 2026-07-15: 絵文字 "✓" から lucide "check" のインライン SVG へ置換)。
 	circle.appendChild(createIcon("check"));
+	if (resumeCircle) applyAnimResume(circle);
 	check.appendChild(circle);
 	// ドラフト行はまだサーバー上に存在しないので完了トグルできない(丸チェックは無効=disabled で描く)。
 	if (isDraft) {
@@ -1052,22 +1105,25 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// テキスト(装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
 	// 【2026-07-15 実機フィードバック: due 無しタスクの完了/再開でラベルが2段目に落ち上下がずれる】
 	// meta に他の中身(due/⟳/📍/差分)が無い行では、ラベルのためだけに空の meta 行が生まれ、
-	// タイトル(1行目)とラベル(2行目)が段違いになり円のセンタリングも狂って見えた。
-	// → meta が実質空なら、ラベルは meta ではなく rowMain 直下(head の後ろ)に置き、
-	//   タイトル行と同じ高さで右端に出す(CSS .row-main > .tag が margin-left:auto を担う)。
-	const metaHasContent = meta.childElementCount > 0;
+	// タイトル(1行目)とラベル(2行目)が段違いになり円のセンタリングも狂って見えた。そこで当時は
+	// 「meta が実質空ならラベルを rowMain 直下、そうでなければ meta 内」の二枝で応急対処していた。
+	// 【2026-07-16 v2.1 修正C で撤回: 常に rowMain 直下】meta に中身がある行(due 有り等)では
+	// 上の応急対処でもタグが meta(最終行)に乗ったままで、S-E の .row-main{align-items:flex-start}
+	// により行の下端に落ちる実機 FB(「完了が下に寄る」)が残っていた。二枝を廃し、タグは常に
+	// rowMain 直下(タイトル1行目と同じ高さ)に置く。meta には一切入れない — todos-app.ts の
+	// `.row-main > .tag` に align-self:flex-start + 縦補正を足して1行目に揃える(該当 CSS 参照)。
 	let tagEl: HTMLElement | null = null;
 	if (tagText !== null) {
 		tagEl = document.createElement("span");
 		tagEl.className = "tag";
 		tagEl.textContent = tagText;
-		if (metaHasContent) meta.appendChild(tagEl);
+		if (resumeTag) applyAnimResume(tagEl);
 	}
 	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	if (tagEl !== null && !metaHasContent) rowMain.appendChild(tagEl);
+	if (tagEl !== null) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ info ボタン(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {

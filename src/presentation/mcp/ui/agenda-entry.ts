@@ -150,21 +150,35 @@ let confirmedEvents: EventItem[] | null = null;
 //   システム差分マークの対象外) ③startedAt を isCommitting(now, startedAt) に渡し、
 //   「いまこの行の committing アニメ(寿命1周)が有効か」を renderRow が毎描画判定する。
 const pendingIds = new Map<string, number>();
+// animUntil = 「committing アニメ(寿命1周)が満了する時刻」の id → epoch ms。2026-07-16 v2.1
+// (Fable 裁可・親フィードバック): pendingIds は成功/失敗が確定した瞬間に delete されるため、
+// tap から確定までが速い操作(実測 p50=287ms)だと committing アニメが 1.2s を完走せず
+// 「点滅して終わる」チラつきになっていた。pendingIds(=二重送信ガード/差分レンズ degrade の
+// 判定材料)と animUntil(=見た目アニメの寿命)を分離し、後者は startCommitting で一度セットしたら
+// 満了 setTimeout でしか消さない(成功/失敗分岐は触らない)。これにより tap から常に固定 1.2s の
+// アニメが完走する(「もう確定したのに演出が続く」体感は許容 — §7.8 の「1.2s は待たせすぎない
+// 上限」という設計意図とは別軸で、こちらは「最低でも手応えを見せ切る」下限の保証)。
+const animUntil = new Map<string, number>();
 
 /**
  * mutate 開始時に pendingIds へ startedAt を積み、寿命(FEEDBACK.cycleMs×animCycles)満了時の
  * 再描画と、T_hard(10s)超過時の警告バナーをそれぞれ1本ずつ setTimeout で仕込む。
  * todos-entry.ts の同名関数と設計は完全同型(clearTimeout をしない Why not も同一 —
  * 発火時に `pendingIds.has(id)` を再確認する冪等ガードで足りる。詳細は todos-entry.ts 参照)。
+ * 【2026-07-16 v2.1】animUntil も同時にセットする(寿命分離。上のコメント参照)。
  */
 function startCommitting(id: string): void {
 	const startedAt = Date.now();
 	pendingIds.set(id, startedAt);
-	// committing 満了(寿命1周)→ pending が残っていれば再描画して committing クラスを外す
-	// (楽観パスはここで静的 becoming に収束、悲観パス=反復の日時/recurrence 変更はここで
-	// 静的「保存中…」タグに切り替わる。§7.8 視覚表現対応表)。
+	animUntil.set(id, startedAt + FEEDBACK.cycleMs * FEEDBACK.animCycles);
+	// committing 満了(寿命1周)→ animUntil を消して再描画(pendingIds には触れない。成功/失敗の
+	// 確定描画が別途 pendingIds を delete する)。renderRow の committing 判定は animUntil 基準
+	// (下の isCommitting 呼び出しコメント参照)なので、ここで animUntil を消せば静的表現へ収束する。
 	setTimeout(() => {
-		if (pendingIds.has(id)) renderAll();
+		if (animUntil.has(id)) {
+			animUntil.delete(id);
+			renderAll();
+		}
 	}, FEEDBACK.cycleMs * FEEDBACK.animCycles);
 	// T_hard(10s)超過 → まだ確定していなければ警告バナー(§7.8「共通」節)。「再読み込み」は
 	// fetchLatest 相当(mutate は再送しない = 二重書き込みリスク回避。showBanner の label 引数参照)。
@@ -175,12 +189,18 @@ function startCommitting(id: string): void {
 	}, FEEDBACK.hardTimeoutMs);
 }
 
-// pessimisticIds = 悲観パス(§7.8 判定則②: 反復イベントの start/end/recurrence 変更)の in-flight
-// 行 id。agenda 固有(todos には悲観パスが無い)なので feedback.ts の共有カーネルには置かず
-// ローカル state で持つ。saveEdit が積み、成功/失敗の両分岐で必ず対で delete する
-// (renderRow の「静的『保存中…』タグ」表示条件がこの Set の有無そのものなので、消し忘れると
-// 確定後もタグが残り続ける = pendingIds の対称性と同じ不変条件)。
-const pessimisticIds = new Set<string>();
+// editingIds = 悲観パス(§7.8 判定則②: 反復イベントの start/end/recurrence 変更)の in-flight 行 id。
+// agenda 固有(todos には悲観パスが無い)なので feedback.ts の共有カーネルには置かずローカル state
+// で持つ。saveEdit が積み、成功/失敗の両分岐で必ず対で delete する。
+// 【v2.1 でユーザー FB により撤回(旧名 pessimisticIds・旧用途は「保存中…」静的タグの表示条件)】
+// 旧設計(F-3)は満了後に li.pending-edit へ切り替え「保存中…」という待ち表示を静的に見せ続けて
+// いたが、「要求されておらず楽観語彙に統合してほしい」というユーザー FB を受け、Fable 裁可で
+// 待ち表示そのものを撤去した(docs/modeling/12 §7.8 v2.1)。この Set は用途を変えて存続する:
+// 「反復の日時/recurrence 変更で optimisticEdits に日時を積めない(=affectedById 由来の
+// becoming-edit タグが出ない)ケースでも、確定描画が来るまで becoming-edit タグ自体は出し続ける」
+// ための id 追跡に転用した(renderRow の isEditingRecurring 分岐参照)。表示語彙は既存の楽観 edit
+// と完全に同じ(「変更」等)にすることで、悲観/楽観の区別をユーザーに見せない設計へ変わった。
+const editingIds = new Set<string>();
 
 // --- 楽観更新の in-flight state(todos の機構を流用。完了系 kind は無い)-------------------
 // optimisticRows: create-event 送信中の仮イベント(id は "optimistic:<乱数>")。
@@ -521,57 +541,81 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	// 2行目以降の同 id occurrence は完全無装飾にする(親裁定: 薄い残響も付けない・最小)。
 	// added も同じ機構に乗せる — 反復イベントの新規作成でも occurrence が複数行展開されるため。
 	const affRaw = affectedById.get(ev.id);
-	// 【系列集約は aff と悲観 pending で共通(§7.1)】seenAffectedIds は「この描画パスで当該
-	// マスター id をもう装飾したか」を表す。aff も pessimisticIds も **マスター id キー** なので、
-	// どちらも展開 occurrence 全行にヒットする。集約せず悲観タグを出すと、反復の日時/recurrence
-	// 変更中に「保存中…」が表示中の全 occurrence 行へ重複表示され、aff タグと同じ誤読(別イベントが
-	// N 件 pending に見える)を招く。→ aff と同じ「最初の可視行にだけ」の集約に悲観 pending も乗せる。
+	// 【系列集約は aff と悲観 in-flight で共通(§7.1)】seenAffectedIds は「この描画パスで当該
+	// マスター id をもう装飾したか」を表す。aff も editingIds も **マスター id キー** なので、
+	// どちらも展開 occurrence 全行にヒットする。集約しないと、反復の日時/recurrence 変更中に
+	// becoming-edit タグが表示中の全 occurrence 行へ重複表示され、aff タグと同じ誤読(別イベントが
+	// N 件変更中に見える)を招く。→ aff と同じ「最初の可視行にだけ」の集約に悲観 in-flight も乗せる。
 	const alreadySeen = seenAffectedIds.has(ev.id);
-	// 【2026-07-16 §7.8】この行がいま committing(寿命1周のアニメ最中)かを pendingIds の
-	// startedAt から判定する。「新しく描画された瞬間から」ではなく「実際に操作してから」
-	// 1200ms で寿命が切れるよう、時刻はここで都度 Date.now() を取る(todos-entry.ts と同型)。
-	const startedAt = pendingIds.get(ev.id);
-	const committing = startedAt !== undefined && isCommitting(Date.now(), startedAt);
-	// 【悲観パス(§7.8 判定則②: 反復イベントの start/end/recurrence 変更)】saveEdit はこの場合
-	// optimisticEdits に積まない(=affectedById 由来の becoming-edit タグが出ない)構造なので、
-	// pessimisticIds の有無だけが「保存中か」の判定材料になる。aff 由来の表示と衝突しないよう、
-	// pending 中は下の aff 展開自体を止める(同一行に becoming-edit と pending-edit が二重に
-	// 乗って色/タグ文言が競合するのを防ぐ)。集約(先頭 occurrence のみ)は aff と共有。
-	const isPendingSave = pessimisticIds.has(ev.id) && !alreadySeen;
-	// aff は「未集約 かつ 悲観 pending でない」ときだけ採る(悲観のときは下の isPendingSave 分岐が
-	// 装飾を担う)。悲観 pending か aff のどちらかで装飾したら seenAffectedIds に積み、2行目以降の
-	// 同 id occurrence を無装飾にする。
-	const aff = affRaw !== undefined && !alreadySeen && !isPendingSave ? affRaw : undefined;
-	if (aff !== undefined || isPendingSave) seenAffectedIds.add(ev.id);
+	// 【2026-07-16 v2.1】この行がいま committing(寿命1周のアニメ最中)かを animUntil から判定する
+	// (寿命分離。tap から常に固定 1.2s 完走させる理由は animUntil 宣言コメント参照)。
+	const committing = (animUntil.get(ev.id) ?? 0) > Date.now();
+	// 【2026-07-16 v2.1 再描画耐性】animUntil を寿命分離した副作用で、committing 中に他の理由で
+	// renderAll が再実行される(例: sync ポーリング・別行の操作)と、CSS の `animation: ... 1` は
+	// 要素が作り直されるたびに「アニメ0%から再スタート」してしまい、経過時間を無視して見た目が
+	// 巻き戻る(=チカチカする)。負の animation-delay で「もうこれだけ経過している」ことを CSS に
+	// 伝え、要素が作り直されても寿命内の正しい進捗位置から再生されるようにする(todos-entry.ts
+	// と同型の対処)。
+	const animElapsedMs = ((): number => {
+		const endAt = animUntil.get(ev.id);
+		if (endAt === undefined) return 0;
+		const life = FEEDBACK.cycleMs * FEEDBACK.animCycles;
+		const startedAt = endAt - life; // startCommitting が積んだ元の startedAt を逆算
+		return Math.max(0, Date.now() - startedAt);
+	})();
+	// 【悲観パス(§7.8 判定則②: 反復イベントの start/end/recurrence 変更)。v2.1 でユーザー FB により
+	// 「保存中…」の待ち表示を撤去(editingIds 宣言コメント参照)】saveEdit はこの場合 optimisticEdits
+	// に積まない(=affectedById 由来の becoming-edit タグが出ない)構造なので、editingIds の有無を
+	// 「becoming-edit タグを強制するか」の判定材料に転用する。aff 由来の表示と衝突しないよう、
+	// in-flight 中は下の aff 展開自体を止める(確定描画が来て aff が実データを持つようになったら
+	// そちらへ自然に収束する)。集約(先頭 occurrence のみ)は aff と共有。
+	const isEditingRecurring = editingIds.has(ev.id) && !alreadySeen;
+	// aff は「未集約 かつ 悲観 in-flight でない」ときだけ採る(悲観のときは下の isEditingRecurring
+	// 分岐が装飾を担う)。悲観 in-flight か aff のどちらかで装飾したら seenAffectedIds に積み、
+	// 2行目以降の同 id occurrence を無装飾にする。
+	const aff = affRaw !== undefined && !alreadySeen && !isEditingRecurring ? affRaw : undefined;
+	if (aff !== undefined || isEditingRecurring) seenAffectedIds.add(ev.id);
 	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
+	// needsRowMainDelay/needsTagDelay: 上の animElapsedMs による animation-delay 補正を、実際に
+	// アニメ対象になる DOM(rowMain=add の wake-sweep / tagEl=edit の opacity-pulse)へ後で当てる
+	// ためのフラグ(rowMain/tagEl はこの時点でまだ生成されていない)。
+	let needsRowMainDelay = false;
+	let needsTagDelay = false;
 	if (aff !== undefined) {
 		const isSync = aff.sync === true;
 		if (aff.kind === "added") {
 			li.classList.add("becoming-in");
 			tagText = isSync ? "同期(追加)" : "追加";
-			if (isOptimisticId(ev.id) && committing) li.classList.add("inflight");
+			if (isOptimisticId(ev.id) && committing) {
+				li.classList.add("inflight");
+				needsRowMainDelay = true;
+			}
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
 			tagText = isSync ? "同期(変更)" : editPlan.tag;
 			// opacity pulse ×1: becoming タグ自体を committing 中だけ脈動させる(手応え)。
-			if (committing) li.classList.add("committing");
+			if (committing) {
+				li.classList.add("committing");
+				needsTagDelay = true;
+			}
 		}
-	}
-	if (isPendingSave) {
-		// 【悲観パスの視覚表現(§7.8 視覚表現対応表)】committing 中はタグ opacity-pulse×1
-		// (楽観 edit と同じ手応え。pending-edit.committing の CSS を becoming-edit.committing と
-		// 同じ opacity-pulse に載せる)、満了後は静的「保存中…」タグ(amber/--muted・アニメなし)
-		// へ切り替わる。これは affectedById(サーバー確定 vm の changes)とは独立の経路 — 悲観は
-		// optimisticEdits に日時を積まないため、確定するまでサーバーから「見せられる差分」が
-		// 無いことがそもそもの理由(saveEdit の isRecurring 分岐コメント参照)。
-		li.classList.add("pending-edit");
-		if (committing) li.classList.add("committing");
-		tagText = "保存中…";
+	} else if (isEditingRecurring) {
+		// 【v2.1 悲観パスの視覚表現】値をローカルに書けない(occurrence 展開はサーバーでしか
+		// 成立しない技術事実は不変)ため実 diff は出せないが、「編集した」ことは見せる — 楽観 edit
+		// と同じ語彙(becoming-edit・タグ「変更」)を強制表示し、confirm 描画で実 diff の aff に
+		// 自然収束させる(待ち表示を挟まない = §7.8 v2.1 のドクトリンそのもの)。
+		li.classList.add("becoming-edit");
+		tagText = "変更";
+		if (committing) {
+			li.classList.add("committing");
+			needsTagDelay = true;
+		}
 	}
 
 	const rowMain = el("div", "row-main");
+	if (needsRowMainDelay) rowMain.style.animationDelay = `-${animElapsedMs}ms`;
 	rowMain.appendChild(renderTimeColumn(ev));
 
 	// --- head(タイトル / meta)---------------------------------------------------------
@@ -703,18 +747,22 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		loc.setAttribute("aria-label", `場所 ${ev.location}`);
 		meta.appendChild(loc);
 	}
-	// becoming マイクロラベル(meta 右端。margin-left:auto で押し出す)。meta が空なら rowMain 直下に置く。
-	const metaHasContent = meta.childElementCount > 0;
+	// becoming マイクロラベル。
+	// 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は「meta に何かあれば meta 右端・meta が空なら
+	// rowMain 直下」と配置が行の中身次第で揺れていた(meta が空/非空で縦位置が変わって見えた)。
+	// todos 側の S-E と同型に「常に rowMain 直下」へ統一し、CSS 側(agenda-app.ts の
+	// `.row-main > .tag`)で align-self:flex-start + margin-top の縦補正 + margin-left:auto を持たせる
+	// (タイトル1行目の高さに揃えつつ右端へ押し出す。meta の有無に見た目が左右されない)。
 	let tagEl: HTMLElement | null = null;
 	if (tagText !== null) {
 		tagEl = el("span", "tag");
 		tagEl.textContent = tagText;
-		if (metaHasContent) meta.appendChild(tagEl);
+		if (needsTagDelay) tagEl.style.animationDelay = `-${animElapsedMs}ms`;
 	}
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	if (tagEl !== null && !metaHasContent) rowMain.appendChild(tagEl);
+	if (tagEl !== null) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ ⓘ(詳細)+ 確定ボタン(todos v3 と同一)---------------------------
 	if (sel) {
@@ -2241,12 +2289,12 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 
 	// 【2026-07-16 §7.8 悲観パス判定】判定則②(反復イベントの start/end/recurrence 変更)そのもの
 	// = isRecurring かつ、この変更が実際に start/end/recurrence のどれかを含む。title/notes だけの
-	// 編集は反復でも楽観(overrides に積まれる)なので、pessimisticIds には積まない — 悲観と
+	// 編集は反復でも楽観(overrides に積まれる)なので、editingIds には積まない — 悲観と
 	// 楽観フィールドが同一 changes に混在する場合(例: title と start を同時保存)は、start が
 	// 悲観化する以上この呼び出し全体を悲観として扱う(overrides.title は楽観適用済みで見た目に
 	// 反映されるが、行全体としては「保存中…」の空気を優先する判断)。
 	const isPessimistic = isRecurring && (changes.start !== undefined || changes.end !== undefined || changes.recurrence !== undefined);
-	if (isPessimistic) pessimisticIds.add(ev.id);
+	if (isPessimistic) editingIds.add(ev.id);
 	optimisticEdits.set(ev.id, overrides);
 	startCommitting(ev.id);
 	clearBanner();
@@ -2276,7 +2324,7 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 		}
 		optimisticEdits.delete(ev.id);
 		pendingIds.delete(ev.id);
-		pessimisticIds.delete(ev.id);
+		editingIds.delete(ev.id);
 		// update 応答は events:[影響したマスター1件] なので、一覧全体は refresh で取り直し、becoming(affected)を合成する。
 		try {
 			const refreshed = await app.callServerTool({ name: "refresh-events", arguments: refreshArgs() });
@@ -2306,7 +2354,7 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 	} catch (e) {
 		optimisticEdits.delete(ev.id);
 		pendingIds.delete(ev.id);
-		pessimisticIds.delete(ev.id);
+		editingIds.delete(ev.id);
 		rebuildFromConfirmed();
 		renderAll();
 		showBanner(`「${ev.title}」の変更を保存できませんでした`, () => void saveEdit(ev, changes));

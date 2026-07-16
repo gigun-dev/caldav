@@ -138,8 +138,13 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .meta .recur { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
   .meta .vid { display: inline-flex; align-items: center; color: var(--muted); }
   .meta .span { white-space: nowrap; }
-  .meta .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; }
-  .row-main > .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; color: var(--muted); align-self: center; }
+  /* 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は tag を「meta に何かあれば meta 右端(.meta .tag)・
+   * meta が空なら rowMain 直下(.row-main > .tag)」で出し分けていたが、meta の有無で縦位置が
+   * 揺れて見える(agenda-entry.ts の tagEl 組み立てコメント参照)。tag は常に rowMain 直下に統一し、
+   * align-self:flex-start + margin-top の縦補正でタイトル1行目の高さに揃える(row-main は
+   * align-items:center なので、素の flex-start だとタイトルの上端よりわずかに高い位置に来る —
+   * その差分を打ち消す経験的な補正値が margin-top: 2px)。 */
+  .row-main > .tag { margin-left: auto; flex: none; font-size: 10.5px; letter-spacing: 0.03em; padding-left: 8px; white-space: nowrap; color: var(--muted); align-self: flex-start; margin-top: 2px; }
   .note-mark { display: inline-flex; align-items: center; margin-left: 6px; color: var(--muted); font-size: 12px; }
   /* 【S-D スライス①: 一覧でもメモを見たい(todos-app.ts と対称・todos 側は元々 .notes 定義済みだが
    * デッドコードだった。agenda 側は定義自体が無かったので新設)】非選択行の head 直下に本文冒頭を
@@ -156,14 +161,23 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * なし)③情報を運ぶ(手応え/in-flight 告知のどちらかを伝える動きに限る)。
    * 【禁止のまま】持続アニメ(infinite)/自発アニメ/"もう起きたこと"のアニメ化/成功トースト・
    * バナー/浮遊オーバーレイ。
-   * 【agenda 固有: 悲観パスあり(todos には無い)】§7.8 判定則②「反復イベントの start/end/
-   * recurrence 変更」は結果を予測できないため悲観パス — committing 満了後も確定まで待ち表示
-   * (静的「保存中…」タグ = li.pending-edit)を挟む。todos は全操作が楽観なので待ち表示を
-   * 一切持たない(即座に静的 becoming へ収束)。この非対称が todos-app.ts との唯一の構造差。
+   * 【agenda 固有: v2.1 で悲観パスの「待ち表示」を撤去(旧 v2 は保有・todos には元々無い)】
+   * 旧実装(F-3)は §7.8 判定則②「反復イベントの start/end/recurrence 変更」を悲観パスとして
+   * committing 満了後も確定まで静的「保存中…」タグ(li.pending-edit)を挟んでいたが、「要求
+   * されておらず楽観語彙に統合してほしい」というユーザー FB を受け Fable 裁可で撤去した
+   * (docs/modeling/12 §7.8 v2.1)。今は反復の日時/recurrence 変更中も becoming-edit と同じ見た目
+   * (タグ「変更」)を出す — 待ち表示の語彙を持たないという意味で todos と揃った。値をローカルに
+   * 書けない技術事実(occurrence 展開はサーバーでしか成立しない)は不変だが、それはユーザーに
+   * 見せる情報ではなく実装内部の都合として editingIds(agenda-entry.ts)に閉じ込める。
    * 【delete は本スライスでも committing アニメ未実装】todos と同じ理由(楽観削除が行を即座に
-   * 一覧から除去する既存設計とゴースト演出が両立しない)。agenda-entry.ts renderGhostRow 参照。 */
+   * 一覧から除去する既存設計とゴースト演出が両立しない)。agenda-entry.ts renderGhostRow 参照。
+   * 【2026-07-16 v2.1: animation-delay 補正】li.becoming-in.inflight の rowMain と
+   * li.becoming-edit.committing のタグには、agenda-entry.ts が startedAt から逆算した負の
+   * animation-delay を inline style で当てる(再描画のたびにアニメが 0% から巻き戻らないための
+   * 補正。animUntil 宣言コメント参照)。CSS 側はアニメの形だけを定義し、進捗位置の管理は
+   * entry 側の責務(分業は不変)。 */
   li.becoming-in .row-main { box-shadow: inset 2px 0 0 var(--add); background: linear-gradient(to right, var(--add-wake), transparent 55%); }
-  li.becoming-in .meta .tag, li.becoming-in .row-main > .tag { color: var(--add); }
+  li.becoming-in .row-main > .tag { color: var(--add); }
   /* 【2026-07-16 §7.8 v2: infinite → 1 に是正(todos-app.ts F-2 と同判断)】旧実装は create-event の
    * 確定/失敗までずっとループし続けていた(10s 超級の「まだまだ続く」言語)。寿命1周に絞り、
    * agenda-entry.ts の committing 判定(isOptimisticId && committing)が寿命切れで .inflight を
@@ -175,11 +189,12 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .meta .arrow { color: var(--text-3); padding: 0 2px; }
   .meta .new { color: var(--edit); font-weight: 560; }
   .meta .diff { display: inline-flex; align-items: baseline; }
-  li.becoming-edit .meta .tag, li.becoming-edit .row-main > .tag { color: var(--edit); }
+  li.becoming-edit .row-main > .tag { color: var(--edit); }
   /* 【2026-07-16 §7.8 v2】opacity-pulse: edit の committing 中だけ becoming タグ自体を1回だけ
    * 明滅させる(手応え)。todos-app.ts の同名 keyframes と完全同一(視覚語彙の統一)。40%→100%→100%
-   * (0 に落とし切らないのはタグの文字が一瞬完全に消えると「エラーで消えた」と誤読されうるため)。 */
-  li.becoming-edit.committing .meta .tag,
+   * (0 に落とし切らないのはタグの文字が一瞬完全に消えると「エラーで消えた」と誤読されうるため)。
+   * 【v2.1】反復の日時/recurrence 変更中(editingIds 由来)の強制タグもこのクラスに乗るため、
+   * 悲観/楽観の両方でこの1つの opacity-pulse だけを使う(旧 pending-edit の重複定義は不要になった)。 */
   li.becoming-edit.committing .row-main > .tag {
     animation: opacity-pulse 1.2s ease-out 1;
   }
@@ -189,25 +204,7 @@ export const AGENDA_APP_HTML = `<!doctype html>
     100% { opacity: 1; }
   }
   @media (prefers-reduced-motion: reduce) {
-    li.becoming-edit.committing .meta .tag,
     li.becoming-edit.committing .row-main > .tag {
-      animation: none;
-    }
-  }
-  /* 【2026-07-16 §7.8 悲観パス(agenda 固有・todos には無い)】反復イベントの start/end/recurrence
-   * 変更は結果を予測できない(展開 occurrence の増減・日時の再計算はサーバー側でしか成立しない)
-   * ため、見た目を現状維持したまま committing 中はタグだけ opacity-pulse×1、満了後は静的
-   * 「保存中…」タグ(amber 系トーン・アニメなし)に切り替えて確定描画を待つ(§7.8 視覚表現対応表)。
-   * becoming-edit とは独立のクラス(pending-edit)にした理由は agenda-entry.ts の isPendingSave
-   * 分岐コメント参照(affectedById 由来の becoming-edit と二重に乗って色/文言が競合するのを防ぐ)。 */
-  li.pending-edit .meta .tag, li.pending-edit .row-main > .tag { color: var(--edit); }
-  li.pending-edit.committing .meta .tag,
-  li.pending-edit.committing .row-main > .tag {
-    animation: opacity-pulse 1.2s ease-out 1;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    li.pending-edit.committing .meta .tag,
-    li.pending-edit.committing .row-main > .tag {
       animation: none;
     }
   }

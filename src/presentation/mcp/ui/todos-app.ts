@@ -108,10 +108,17 @@ export const TODOS_APP_HTML = `<!doctype html>
      * scratchpad/todos-refined.html の設計)。Why not 色ハイライト主体: 色だけの差分は
      * 「何が起きたか」を語らず、ダーク/ライト双方でのコントラスト管理も脆い。
      *   accent-soft : completed の「凍結した波紋リング」(box-shadow 1枚)
+     *   accent-pulse: committing 中だけの ring-pulse(v2.1 修正A-5・下記コメント参照)
      *   add/add-wake: added の左端バーと右へ減衰する wake
      *   edit        : edited の新値強調(琥珀。accent/danger/pri と衝突しない第4色)
      *   del-border  : removed ゴーストの破線(彩度ゼロ = もう意味を持たない行) */
     --accent-soft: rgba(0, 122, 255, 0.14);
+    /* 【2026-07-16 v2.1 修正A-5】旧 ring-pulse は accent-soft(14%)をそのまま使っていたが、
+     * done/undo の check 円は塗り潰し済み(完了=accent の塗りボタン)で、14% の淡いリングは
+     * その塗りに埋もれてほぼ見えない実機 FB があった。committing 中の「反応した」を示す
+     * pulse だけ濃い値(35%)を別変数で持ち、満了後に収束する静的リング(accent-soft)は
+     * 従来の 14% のまま変えない(=「凍結後は控えめ」という元の意図はそのまま残す)。 */
+    --accent-pulse: rgba(0, 122, 255, 0.35);
     --add: #2f9e63;
     --add-wake: rgba(47, 158, 99, 0.07);
     --edit: #b07300;
@@ -130,6 +137,7 @@ export const TODOS_APP_HTML = `<!doctype html>
       /* becoming 補助トーンのダーク版。リング/wake は暗地で沈むため不透明度を上げ、
        * edit の琥珀は明度を上げる(モックの theme-dark 実測値)。 */
       --accent-soft: rgba(10, 132, 255, 0.2);
+      --accent-pulse: rgba(10, 132, 255, 0.4);
       --add: #55b884;
       --add-wake: rgba(85, 184, 132, 0.1);
       --edit: #d9a441;
@@ -473,22 +481,38 @@ export const TODOS_APP_HTML = `<!doctype html>
   li.becoming-undone .tag { color: var(--accent); }
 
   /* 【2026-07-16 §7.8 v2】ring-pulse: done/undo の committing 中(タップ直後〜1.2s)だけ、
-   * 上の静的 4px リングに「脈動」を1周だけ足す(0→4px→0)。tap の瞬間に手応えを返す狙いで、
+   * 上の静的 4px リングに「脈動」を1周だけ足す。tap の瞬間に手応えを返す狙いで、
    * 静的リング自体(box-shadow 0 0 0 4px)は committing の有無に関わらず既に乗っている
    * (li.becoming-done/undone .circle のルール)ため、pulse の終端フレーム(4px)がちょうど
    * 静的形と一致し、アニメが終わっても見た目が「ずれて止まる」ことがない(entry 側の
    * committing クラスの外し方=満了で再描画・タイマー任せでも視覚的には無音に収束する)。
    * ease-out にする理由: リングは「押した瞬間の力積が外へ広がって収まる」波紋の比喩なので、
    * 減速するイージングの方が物理的に自然(wake-sweep の linear とは動きの語彙が異なる=
-   * 「継続中」ではなく「1回の反応」を表すため)。 */
+   * 「継続中」ではなく「1回の反応」を表すため)。
+   * 【2026-07-16 v2.1 修正A-5: リング濃度を上げ + circle 本体のポップを追加】旧実装は
+   * accent-soft(14%)のまま 0→4px→0 に脈動させていたが、check 円は完了時に accent で
+   * 塗り潰されるため薄いリングがその塗りに埋もれ「完了したのに反応が見えない」実機 FB が
+   * あった。①リングを濃い accent-pulse(35%/dark 40%)に差し替え 0→5px→0 に強め、②circle
+   * 自体にも軽いポップ(scale 1→1.12→1)を同じ 1.2s ease-out 1 で重ねる(手応えの二重化)。
+   * transform: scale をポップに使うのは box-shadow だけでは平面的な変化に留まり「押した」
+   * 触覚的手応えが弱いため — scale はコンポジタスレッドで処理されリフローも起こさない。
+   * 満了後(committing が外れた後)は静的な 14% リング(accent-soft・box-shadow 固定)と
+   * scale:1 に戻る(pop の終端フレームが scale(1) なので「ずれて止まる」ことはない)。 */
   li.becoming-done.committing .circle,
   li.becoming-undone.committing .circle {
-    animation: ring-pulse 1.2s ease-out 1;
+    animation:
+      ring-pulse 1.2s ease-out 1,
+      circle-pop 1.2s ease-out 1;
   }
   @keyframes ring-pulse {
-    0% { box-shadow: 0 0 0 0 var(--accent-soft); }
-    60% { box-shadow: 0 0 0 4px var(--accent-soft); }
+    0% { box-shadow: 0 0 0 0 var(--accent-pulse); }
+    60% { box-shadow: 0 0 0 5px var(--accent-pulse); }
     100% { box-shadow: 0 0 0 4px var(--accent-soft); }
+  }
+  @keyframes circle-pop {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.12); }
+    100% { transform: scale(1); }
   }
   @media (prefers-reduced-motion: reduce) {
     li.becoming-done.committing .circle,
@@ -659,7 +683,13 @@ export const TODOS_APP_HTML = `<!doctype html>
    * (2行目)に出していたが、iOS の語彙(タイトル前・オレンジ)に合わせて title 先頭へ移した。
    * becoming の優先度差分(旧→新の語表示)は引き続き meta 行に出す(一過性の差分は差分の言語で
    * 語る、という既存方針。todos-entry.ts の planEdit / priChange コメント参照)。 */
-  .title .pri-inline {
+  /* 【2026-07-16 v2.1 修正D】以前は ".title .pri-inline" だけで、選択(編集)中は pri-inline が
+   * ".title-edit-row" 配下(renderRow の sel 分岐)へ移るためこのセレクタに当たらず、優先度「!」が
+   * 既定の黒(継承色)に落ちるバグがあった(実機 FB「編集で優先度マークが Orange→黒に変わる」)。
+   * ".title-edit-row .pri-inline" も同じ宣言を受けるようセレクタを併記する(非選択/選択どちらでも
+   * 同じ orange を保つ)。 */
+  .title .pri-inline,
+  .title-edit-row .pri-inline {
     color: var(--pri);
     font-weight: 700;
     letter-spacing: 1px;
@@ -669,7 +699,8 @@ export const TODOS_APP_HTML = `<!doctype html>
      * text-decoration が継承され(text-decoration は継承プロパティ)、完了タスクの優先度記号に
      * 打ち消し線が乗って読みづらくなっていた。取り消し線は「タイトル本文が完了した」ことを示す
      * 記号であって優先度の意味を消したいわけではないため、pri-inline だけ明示的に none で
-     * 継承を打ち切る(agenda には優先度が無いので agenda-app.ts には対応箇所なし)。 */
+     * 継承を打ち切る(agenda には優先度が無いので agenda-app.ts には対応箇所なし)。この打ち消し
+     * 線の非継承は選択中(title-edit-row)にも同じく効かせておいて安全側にする。 */
     text-decoration: none;
   }
 
@@ -761,10 +792,14 @@ export const TODOS_APP_HTML = `<!doctype html>
   .meta { align-items: baseline; flex-wrap: nowrap; min-width: 0; }
   .meta .loc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .meta .tag { margin-left: auto; padding-left: 8px; flex: none; }
-  /* meta が実質空(due/⟳/📍 無し)の行では、becoming ラベルを rowMain 直下に置いて
-   * タイトル行と同じ高さで右端に出す(2026-07-15: due 無しタスクの完了/再開でラベルが
-   * 2段目に落ちて上下がずれる実機フィードバックの修正。entry の tagEl 配置分岐と対)。 */
-  .row-main > .tag { margin-left: auto; padding-left: 8px; flex: none; }
+  /* 【2026-07-15 応急】meta が実質空(due/⟳/📍 無し)の行だけ becoming ラベルを rowMain 直下に
+   * 置いていた(due 無しタスクの完了/再開でラベルが2段目に落ちて上下がずれる実機 FB の修正)。
+   * 【2026-07-16 v2.1 修正C で撤回】meta に中身がある行では上の応急対処でもタグが meta(最終行)に
+   * 乗ったままで、.row-main{align-items:flex-start}(すぐ上のコメント参照)により行の下端に落ちる
+   * 実機 FB(「完了が下に寄る」)が残っていた。entry 側でタグを常に rowMain 直下へ置くよう変えたので、
+   * ここは分岐なしの単一ルールになる。align-self:flex-start + .head と同じ margin-top:12px で
+   * タイトル1行目の視覚中心にタグのベースラインを合わせる(check 円・head の縦補正と同じ理屈)。 */
+  .row-main > .tag { align-self: flex-start; margin-top: 12px; margin-left: auto; padding-left: 8px; flex: none; }
 
   /* --- 選択状態(iOS: 行タップでタイトルが input 化・メモ行と ⓘ 出現)------------------------
    * 下線は出さない(ユーザー判断 2026-07-15。選択は bg-subtle 背景とメモ行・ⓘ の出現で十分伝わり、
