@@ -872,3 +872,22 @@
   存置。this-week は WKST 問題で除外。now はサーバー権威・TZ は明示必須で分離。
 - **残**: delete の committing 演出 / 計器の Analytics Engine 化 / list-todos due 相対レンジ /
   #3 スライス2(カード描画)・3(横断集約=B)/ #11 iOS URL・CONFERENCE 表示 / 実機で v2.1 の体感確認。
+
+## 2026-07-16(続き5)v2.2 = 位置不変 + T_hard廃止 + done/FAB(実機FB第3波)+ 表示順序設定の設計
+
+- **実機FB第3波(claude.ai コネクタ)**: done アニメの終了リング/done で並び替わる・一覧から消える/
+  「保存に時間がかかっています」が出る/FAB のレイアウトシフト。Fable が **v2.2** として再コヒーレンス。
+  統括原理「振り付けはクライアント固定タイマー、サーバー/transport は関与しない」を型の全域へ。
+- **計器の決定的事実**: POST /mcp 1874件 p50=254/p95=2069/**max=4036ms**。Worker は最大4秒で 10s を超えない
+  → T_hard の 10s 超過は claude.ai の MCP プロキシ transport 起因(Swift host では速い=「割と普通」の裏付け)。
+- **v2.2 実装・コミット(6d713a6)**: item1 T_hard 廃止 / item2 done リング pulse-out(定常に痕跡を残さない)/
+  item3 位置不変=iOS「手動」モード(死にコード positionMemory[2026-07-14 確定仕様]を sectionizeManual として
+  完成・done/add で不動・完了はその場取消線・完了済み折り畳みは誕生時完了のみ=選択肢b・sortMode seam)/
+  item4 FAB を position:fixed 撤廃しフロー化(浮遊層ゼロが例外なしに)。make check green。
+- **ユーザーの核心指摘**: 「add/done の前後で並び順が変わるのは絶対なし」。iOS の表示順序メニュー
+  (手動/期限/作成日/優先順位/タイトル)を示し「設定を設けるべき・手動である限り動くのはおかしい」。
+  = 位置不変は「手動モード」の挙動。既定 手動。
+- **表示順序設定の設計(§7.9・Fable・フォローアップ G)**: 手動順=X-APPLE-SORT-ORDER(Apple 同一・相互運用)、
+  モード=コレクション独自 dead property(iOS 26.5 の 38 プロパティ実測にソートモード非包含=iOS ローカル保持
+  なので独自で損失ゼロ)+ D1 カラム。サーバーは常に手動順・モード別ソートは表示側。G-1(実機観測)→G-5(ドラッグ)。
+- **要実機検証**: 位置不変の体感・done sticky が次 refresh で消えないか・FAB フロー位置・§7.9 の iOS CalDAV 挙動。

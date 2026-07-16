@@ -47,6 +47,13 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 >   2往復を解消。resolveRelativeRange は application/time の DST 安全純関数。get-current-time 存置。
 > - **follow-up**: delete committing 演出 / 計器 AE 化 / **list-todos due 相対レンジ**(語彙統一)/
 >   **#3 スライス2(カード「他に○件」描画)・3(Task per-item calendarId → 横断集約 B)** / #11 iOS URL・CONFERENCE。
+>
+> **2026-07-16 v2.2(実機FB第3波)**: 統括原理「振り付けはクライアント固定タイマー・サーバー/transport は関与
+> しない」。計器で Worker max 4s・10s 超過は claude.ai transport と確定。**item1 T_hard 廃止 / item2 done リング
+> pulse-out / item3 位置不変=iOS「手動」モード(positionMemory 完成・add/done で不動・完了はその場・完了済み
+> 折り畳みは誕生時完了のみ)/ item4 FAB フロー化**(6d713a6・要実機検証)。**表示順序設定(§7.9・G-1〜G-5)**:
+> 手動順=X-APPLE-SORT-ORDER・モード=独自 dead property + D1 カラム(iOS はソートモードをローカル保持=独自で
+> 相互運用損失ゼロ)。G-1=iOS の手動並べ替え/モード変更の CalDAV 挙動を Proxyman 観測 → G-4 カード設定 UI → G-5 ドラッグ。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:

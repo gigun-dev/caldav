@@ -401,3 +401,61 @@ export const isCommitting = (now: number, startedAt: number): boolean =>
 ことが判明 — ツール別・colo 別レイテンシの計器として機能していない。**Analytics Engine
 `writeDataPoint`(mcpTool/colo を blob・ms を double)への載せ替え**を別スライスとして起票。
 本ドクトリンの `animCycles` 調整判断(ツール種別ごとの p95 追跡)はこの計器が前提。
+
+## §7.8 v2.2 上書き(2026-07-16 実機FB第3波・Fable 再設計)
+
+> §7.8 v2/v2.1 を上書きする第3波。**統括原理**: フィードバックの振り付け(いつ・何が・どう動くか)は
+> すべてクライアントの固定タイマー/固定規則で決め、**サーバー確定・transport は振り付けに一切関与しない**
+> (データの真実だけを運ぶ)。計器実測(POST /mcp 1874件: p50=254ms / p95=2069ms / **max=4036ms**)で
+> Worker は最大4秒・10s 超過は claude.ai の MCP プロキシ transport 起因と判明。host ごとに transport の
+> 桁が違う前提で、時間駆動の視覚イベント(T_hard・確定駆動の移動)を型から排する。
+
+- **item 1 T_hard 廃止**: 「保存に時間がかかっています」(10s)を撤去。10s 超過の実体は transport で、
+  楽観で done 済み表示の行に待ち表示を重ねても情報を運ばない(NN/g の 10s は「結果を待つ」文脈の限界で、
+  楽観 UI に待ちは無い)。時間で発火する警告は host 非対称の下で原理的に成立しない(どの閾値も特定 host の
+  配管を異常と誤報)。安全網=「fetch reject → ロールバック+エラーバナー」+「refresh/fresh-instance の
+  確定描画」に一本化。FEEDBACK.hardTimeoutMs 削除・pendingIds は二重送信ガード/差分 degrade 専用に純化。
+- **item 2 done リング pulse-out**: 一般則「**committing アニメは 0 で始まり 0 で終わる(定常状態に痕跡を
+  残さない)**」。満了後の静的 14% リングを廃止し塗り円+取消線のみへ。ring-pulse は 0→5px(35%)→0。
+  リングは進行の言語・塗り円は確定の言語で、確定形に進行記号を残さない。becoming の一過性マークはタグが単独で担う。
+- **item 3 位置不変(=iOS「手動」表示順序モード・既定)**: add/done/undo/編集で位置を一切変えない。
+  2026-07-14 確定仕様(positionMemory・当時未配線)を表示層の第一原理として完成(sectionizeManual)。
+  ①初出時のみ naturalSection+単調採番(初回だけ compareTasks/completedDesc でクリーン整列)②以後は memory
+  順のみ・サーバー応答/refresh は位置に作用しない ③done はその場で取消線(未完了ビューから抜けても stickyData
+  で描き続ける)④唯一の例外=due 編集のセクション跨ぎ(dueSection で判定・done は completed 無視で不動)
+  ⑤delete は消滅 ⑥完了済み <details> は「インスタンス誕生時に既に完了だった項目」専用(選択肢b)⑦クリーン
+  再セクショニングはインスタンス境界(fresh render / view・calendar 切替)のみ。**v2.2 初案の linger→fade+
+  collapse→完了欄合流は全面撤回**(サーバー確定駆動の移動を温存し本制約に反する。退場が無いので退場アニメ不要)。
+  クロスインスタンスの並び安定は X-APPLE-SORT-ORDER(作成時刻・書込済)が担い新規永続化は不要。
+  **sortMode="manual" の seam** を設置(将来の表示順序設定=§7.9)。inPlaceDone/pinnedAdded 特例は撤回。
+- **item 4 FAB フロー化**: auto-height iframe では viewport 底辺=コンテンツ底辺で `position:fixed;bottom` は
+  「固定でない固定」= add 時の一瞬のシフト源。リスト末尾(#root 直後)の通常フロー右寄せ(.fab-row)へ移し
+  座標系の位相差を消す。**浮遊層ゼロが例外なしのドクトリンに**。draft/optimistic 行は通常行と同じ高さ骨格で予約。
+
+**要実機検証(item 3)**: 位置不変の体感(done/add で不動)・done sticky が次 refresh で消えないか・FAB のフロー
+位置が claude.ai/Swift で「右下」に読めるか・due 編集セクション跨ぎの受容・(b) の summary 件数。
+
+## §7.9 表示順序設定(2026-07-16・Fable 設計・フォローアップ G)
+
+> iOS リマインダーの表示順序(手動/期限/作成日/優先順位/タイトル・既定 手動)の対応物。§7.8 v2.2 の位置不変は
+> 「手動モードの挙動」であり、他モードではソートキー変更で行が動くのは正常。**位置不変実装(sortMode seam)とは
+> 独立の後続スライス**。
+
+**採用(ハイブリッド)**:
+- **手動順のデータ = 各 VTODO の `X-APPLE-SORT-ORDER`**(Apple と同一表現・create 時に作成時刻採番済み
+  vtodo-stamp.ts・list-todos が第1キーで返済み)。iOS の手動並べ替えと双方向に相互運用。将来のドラッグ並べ替えは
+  この値を PUT で書換(iOS 同経路)。
+- **表示順序モード = コレクションの独自 dead property** `{https://gigun.dev/ns/caldav}todo-sort-order`
+  (値 manual|due|created|priority|title・既定 manual)+ D1 カラム(NULL=manual)。RFC 4918 §4/§9.2 の
+  PROPPATCH に乗る。**Apple の CalDAV 語彙にソートモードは無い**(modeling/06 B2 の 38 プロパティ実測に非包含=
+  iOS はローカル保持)ため独自で正しく相互運用の損失ゼロ。サーバー(list-todos)は常に手動順で返し、モード別
+  ソートは表示側(presentation)の関心。structuredContent に sortMode を additive 露出。
+- **設定 UI**: ヘッダの in-flow 開閉パネル(浮遊層ゼロ準拠)で5択。**ドラッグ並べ替えは iOS の再採番挙動の
+  実機観測後に別スライス**。
+- **却下**: モードも手動順もコレクションプロパティ(iOS と二重管理分岐)/ クライアントローカル(fresh-instance で
+  消える・host 間不共有)/ サーバーが mode で並べ替えて返す(位置不変・差分レンズの前提が揺れる)。
+
+**実装スライス**: G-1(実機検証: iOS の手動並べ替え/モード変更が CalDAV にどう出るか・Proxyman)→ G-2(migration:
+sort_mode カラム + CalendarCollection 属性 + PROPFIND/PROPPATCH)→ G-3(MCP 露出 + DTO の created 追加)→
+G-4(カード設定パネル + モード別クライアントソート)→ G-5(ドラッグ並べ替え・G-1 観測待ち)。
+namespace `{https://gigun.dev/ns/caldav}` はキット公開 API になるので切り出し時に再確認。
