@@ -67,6 +67,31 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > 恒久変更ゼロ=この件でカード側の作業は無し。残: 余白の残り時間は host の easeOut(0.3s)縮小アニメのみ
 > (`InlineCardView.swift:123`・任意の意匠見直し S4)。教訓: 別リポで並行作業がある場合、subagent の未コミット
 > 成果は並行セッションのコミットで上書き消失しうる(今回一度 clobber された)→ 早めにコミット/stash で保全。
+>
+> **2026-07-17 実装ラウンド(Fable 設計 → subagent 実装 → main レビュー・全て可逆/後方互換)**:
+> - **キャッシュバスト(cc0525f)**: 「claude.ai コネクタだけカード/ツールが古い」問題。claude.ai は tools/list を
+>   TTL~1h でサーバー側キャッシュ(TTL 超過で無限 stale のバグも公式認知 #137/#45)、ui:// も URI 単位で
+>   キャッシュしうる(SEP-1865 MAY)。対策2部: ①カード ui:// URI を最終 HTML の FNV-1a hash で content-address 化
+>   (`content-hash.ts`・旧 URI エイリアス併設=自動伝播)②`/mcp` に加え `/mcp/:version` を同一ハンドラで受け
+>   resourceUri を実パス追従(即時反映の脱出口・URL 変更でどのキー仮説でも fresh)。curl 検証: `/mcp/v2` 401 疎通・
+>   `/.well-known/oauth-protected-resource/mcp/v2` 200(RFC 9728 パス metadata OK)。運用: 通常は待つだけ・即時は
+>   コネクタ URL を `/mcp/vN` インクリメント。**「再接続」単独は不確実**(#137)。
+> - **レイテンシ改善(e569c96)**: observability 実測で list-events-expanded が p50 1.2s・max 2.3s。主因=calendarId
+>   省略時に全コレクション(~7)を for-await で直列 D1 クエリ(D1 プライマリ HKG・実行 IAD で ×8)。SQL 0.46ms・
+>   9件でパース無罪。横断ループを `Promise.all` 並列化(list-events/get-freebusy)= 直列 8→2 段。要 observability
+>   再計測(デプロイ後トラフィック待ち・期待 IAD ~400-500ms)。list-todos は Worker 側既に速い(残りは transport)。
+> - **agenda カード fullscreen 対応(f56e6d7 + 6757a07)**: P4-DM を todos から移植(ホスト中立・カードが宣言)。
+>   S0=FAB フロー化(.fab-row)/ S1=todos-fold.ts→**fold.ts** 共有カーネル化 / S2=host-context 配線+
+>   availableDisplayModes 広告 / S3=行単位畳み(空日見出しペア除去)+「すべて表示」→request-display-mode。
+>   畳み単位=行(案A・日グループ案B は budget 浪費でボツ)。computeInlineFit 無改造流用。既定不活性で退行ゼロ。
+>   残: S4「・あと M 日」付記(任意)・実機目視。
+> - **todos UX 3件(e90bc49)**: ①undo アニメ強化=undo 側だけ circle-drain(塗り→空 drain)追加(done と対称
+>   だが空丸で知覚弱かった)②保存/完了二重意味=openCreateSheet の selectedId バグ根治+詳細「保存」→「完了」
+>   (作成モードは維持)+「戻る」を保存化(iOS 準拠・破棄廃止)③TZ グラウンディング=症状の真因は read 側 UTC 落ち
+>   (create は既に Intl TZ 送信済み)。refreshArgs/全 mutate に viewer Intl TZ 常時付与・サーバー mutate5系の
+>   buildTodosViewModel へ timeZone スレッド。**楽観/悲観の現状ネットサマリは modeling/12 §7.8 冒頭に記録済み(9008b9f)**。
+> - **[別リポ] swift-mcp-app HOLB 修正 91f801b**: 本セッションで再適用・単一コミット化(clobber からの復旧)。push は
+>   ユーザー判断(remote 未設定)。残: S4=host の easeOut(0.3s)縮小アニメ意匠(任意)。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:

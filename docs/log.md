@@ -914,3 +914,24 @@
   消失した(stash/reflog にも残らない)。設計確定+レビュー記録があったので cd8be4b の上へ再適用して復旧。
   → 別リポで並行作業があるときは subagent の成果を早めにコミット/stash で保全する。
 - caldav 側はトレーサ撤去済みで恒久変更ゼロ。前セッションの S-A〜S-E タスクは実態照合して全完了確認。
+
+## 2026-07-17(続き) 実装ラウンド: キャッシュバスト / レイテンシ / agenda fullscreen / UX 3件
+
+Fable 設計 → subagent 実装 → main レビュー→ make check → コミット→デプロイ の流れで4本。全て可逆・後方互換。
+
+- **キャッシュバスト(cc0525f)**: claude.ai の tools/list キャッシュ(TTL~1h・#137 バグで無限 stale)+ ui:// URI
+  キャッシュ対策。① content-hash.ts(FNV-1a)でカード URI を最終 HTML から content-address 化・旧 URI エイリアス
+  併設 ② /mcp/:version を同一ハンドラで受け resourceUri 実パス追従。curl 検証 OK(/mcp/v2 401・9728 metadata 200)。
+  ユーザーが /mcp/v2 で接続 → UTC/コレクション移動が直り目的達成を確認。運用フローを docs 反映。
+- **レイテンシ(e569c96)**: list-events-expanded の横断コレクション直列 D1(×8)を Promise.all 並列化(get-freebusy 同型)。
+  observability 実測ベースライン IAD 1246ms/KIX 2303ms。デプロイ後トラフィック待ちで再計測予定。
+- **agenda fullscreen(f56e6d7 S0 + 6757a07 S1-S3)**: P4-DM 移植。todos-fold.ts→fold.ts 共有カーネル化。行単位畳み
+  (案A)+ 空日見出しペア除去(agenda フラット構造の唯一の非対称)。既定不活性で退行ゼロ。
+- **UX 3件(e90bc49)**: undo circle-drain / 保存・完了統一(selectedId バグ根治・戻る保存化・iOS 準拠)/ TZ
+  グラウンディング(read 側 UTC 落ちを refreshArgs+全 mutate の Intl TZ 常時送信 + サーバー buildTodosViewModel
+  スレッドで修正)。saveEdit も due 無し編集で timeZone 常時送信に対称化(main レビューで追加)。
+
+- **事故**: 途中 subagent 2本がセッション上限(4:40 リセット)、1本が 529 で失敗。#16 は agenda-app.ts に S0 途中編集を
+  残して落ちたが完結・整合していたため S0 として単独コミット、S1-S3 は再起動して完遂。UX 設計も 529 後に再起動で完遂。
+- **[別リポ] swift-mcp-app**: 前セッションの HOLB 修正が並行コミット cd8be4b で clobber されていたのを、設計+レビュー
+  記録から cd8be4b の上へ再適用し単一コミット 91f801b 化(build/test green・未 push)。
