@@ -147,10 +147,28 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * (アイコン=走査時に速く気づく合図、本文プレビュー=内容を読む手掛かり)。 */
   .notes { margin-top: 1px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* --- becoming --- */
+  /* --- becoming ---
+   * 【2026-07-16 v2(docs/modeling/12 §7.8): 一過性アニメーションの一般解禁。todos-app.ts:374 付近と
+   * 同趣旨(重複を避け要旨だけ再掲。全文の Why/根拠は todos-app.ts 側 or §7.8 原文を参照)】
+   * 【解禁の3条件(すべて満たすときだけ)】①操作起点(このカード上でユーザーがいま起こした
+   * mutate に限る。LLM 起点・外部同期由来の becoming は対象外)②一過性(iteration-count は必ず
+   * 有限=1周。寿命満了で JS 側 startCommitting のタイマーが再描画し必ず静的形へ収束・overtime
+   * なし)③情報を運ぶ(手応え/in-flight 告知のどちらかを伝える動きに限る)。
+   * 【禁止のまま】持続アニメ(infinite)/自発アニメ/"もう起きたこと"のアニメ化/成功トースト・
+   * バナー/浮遊オーバーレイ。
+   * 【agenda 固有: 悲観パスあり(todos には無い)】§7.8 判定則②「反復イベントの start/end/
+   * recurrence 変更」は結果を予測できないため悲観パス — committing 満了後も確定まで待ち表示
+   * (静的「保存中…」タグ = li.pending-edit)を挟む。todos は全操作が楽観なので待ち表示を
+   * 一切持たない(即座に静的 becoming へ収束)。この非対称が todos-app.ts との唯一の構造差。
+   * 【delete は本スライスでも committing アニメ未実装】todos と同じ理由(楽観削除が行を即座に
+   * 一覧から除去する既存設計とゴースト演出が両立しない)。agenda-entry.ts renderGhostRow 参照。 */
   li.becoming-in .row-main { box-shadow: inset 2px 0 0 var(--add); background: linear-gradient(to right, var(--add-wake), transparent 55%); }
   li.becoming-in .meta .tag, li.becoming-in .row-main > .tag { color: var(--add); }
-  li.becoming-in.inflight .row-main { background-size: 200% 100%; animation: wake-sweep 1.2s linear infinite; }
+  /* 【2026-07-16 §7.8 v2: infinite → 1 に是正(todos-app.ts F-2 と同判断)】旧実装は create-event の
+   * 確定/失敗までずっとループし続けていた(10s 超級の「まだまだ続く」言語)。寿命1周に絞り、
+   * agenda-entry.ts の committing 判定(isOptimisticId && committing)が寿命切れで .inflight を
+   * 自然に外す(このファイル側は付いている間だけ動く CSS を書くだけ、という分業は不変)。 */
+  li.becoming-in.inflight .row-main { background-size: 200% 100%; animation: wake-sweep 1.2s linear 1; }
   @keyframes wake-sweep { from { background-position: -100% 0; } to { background-position: 100% 0; } }
   @media (prefers-reduced-motion: reduce) { li.becoming-in.inflight .row-main { animation: none; background-position: 0 0; } }
   .meta .old { color: var(--text-3); }
@@ -158,6 +176,41 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .meta .new { color: var(--edit); font-weight: 560; }
   .meta .diff { display: inline-flex; align-items: baseline; }
   li.becoming-edit .meta .tag, li.becoming-edit .row-main > .tag { color: var(--edit); }
+  /* 【2026-07-16 §7.8 v2】opacity-pulse: edit の committing 中だけ becoming タグ自体を1回だけ
+   * 明滅させる(手応え)。todos-app.ts の同名 keyframes と完全同一(視覚語彙の統一)。40%→100%→100%
+   * (0 に落とし切らないのはタグの文字が一瞬完全に消えると「エラーで消えた」と誤読されうるため)。 */
+  li.becoming-edit.committing .meta .tag,
+  li.becoming-edit.committing .row-main > .tag {
+    animation: opacity-pulse 1.2s ease-out 1;
+  }
+  @keyframes opacity-pulse {
+    0% { opacity: 0.4; }
+    50% { opacity: 1; }
+    100% { opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li.becoming-edit.committing .meta .tag,
+    li.becoming-edit.committing .row-main > .tag {
+      animation: none;
+    }
+  }
+  /* 【2026-07-16 §7.8 悲観パス(agenda 固有・todos には無い)】反復イベントの start/end/recurrence
+   * 変更は結果を予測できない(展開 occurrence の増減・日時の再計算はサーバー側でしか成立しない)
+   * ため、見た目を現状維持したまま committing 中はタグだけ opacity-pulse×1、満了後は静的
+   * 「保存中…」タグ(amber 系トーン・アニメなし)に切り替えて確定描画を待つ(§7.8 視覚表現対応表)。
+   * becoming-edit とは独立のクラス(pending-edit)にした理由は agenda-entry.ts の isPendingSave
+   * 分岐コメント参照(affectedById 由来の becoming-edit と二重に乗って色/文言が競合するのを防ぐ)。 */
+  li.pending-edit .meta .tag, li.pending-edit .row-main > .tag { color: var(--edit); }
+  li.pending-edit.committing .meta .tag,
+  li.pending-edit.committing .row-main > .tag {
+    animation: opacity-pulse 1.2s ease-out 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li.pending-edit.committing .meta .tag,
+    li.pending-edit.committing .row-main > .tag {
+      animation: none;
+    }
+  }
   /* removed: becoming-gone(削除ゴースト)。 */
   li.becoming-gone { margin: 4px 0; }
   li.becoming-gone .row-main {
