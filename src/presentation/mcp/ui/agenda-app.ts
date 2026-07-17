@@ -271,6 +271,25 @@ export const AGENDA_APP_HTML = `<!doctype html>
     min-height: 32px;
     cursor: pointer;
   }
+  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の予定 — 全画面で表示」。
+   * 旧「すべて表示」ボタン(.fold-expand)+ 受動「残り n 件」(.fold-remaining)を置換(右上 ⤢ と
+   * 役割重複のため廃止・上の2クラスは退行時再利用に残置=死んでも害は無い経緯記録)。モック
+   * inline-preview.html の .more 相当(控えめ muted・件数だけ accent)。todos-app.ts と同定義。 */
+  .fold-more {
+    display: block;
+    width: 100%;
+    margin: 8px 0 12px;
+    padding: 6px 2px 2px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: default;
+  }
+  button.fold-more { cursor: pointer; min-height: 32px; }
+  .fold-more-count { color: var(--accent); }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1(applyHostContext)が
    * containerDimensions.maxHeight から設定する CSS 変数。inline に戻ると applyHostContext がこの

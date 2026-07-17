@@ -14,9 +14,17 @@
 // agenda カード(occurrence 行単位の畳み・日見出しを rowBottoms の累積 offset に織り込む)からも
 // 使う純関数になった。テスト末尾に agenda 特有の系列(見出し高が rowBottoms のオフセットに
 // 混ざるケース・日境界ちょうどで切れるケース)を追加し、両カードの前提を1ファイルで固定する。
+//
+// 【2026-07-17 追更新②(C0-b・意味の書き換え): computeInlineFit の役割が「畳み」から
+// 「inline プレビューの安全クランプ」に変わった(fold.ts 冒頭コメント参照)】computeInlineFit の
+// 純関数ロジック自体は無改造なので、下の物理フィットの境界値テスト(maxHeight にどこまで収まるか)は
+// そのまま有効=削らない。新モデルの「inline は高々 INLINE_PREVIEW_MAX 件」というプロダクト方針は
+// 呼び出し側(*-entry.ts の applyInlineFold)が `min(INLINE_PREVIEW_MAX, フィット件数)` で合成する
+// ため、ここでは定数 INLINE_PREVIEW_MAX の値と「min 合成」の意味を固定するテストを足す(DOM を伴う
+// applyInlineFold 側の実挙動は純関数レベルでは検証できないので、合成規則を式として明示するに留める)。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
-import { canRequestFullscreen, computeInlineFit } from "../../src/presentation/mcp/ui/fold";
+import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "../../src/presentation/mcp/ui/fold";
 
 describe("computeInlineFit", () => {
 	test("maxHeight 未送信(Infinity)は不活性(本アプリの現状=退行ゼロ)", () => {
@@ -79,6 +87,27 @@ describe("computeInlineFit", () => {
 			mode: "folded",
 			visibleCount: 4,
 		});
+	});
+});
+
+describe("INLINE_PREVIEW_MAX(C0-b・inline プレビュー上限)", () => {
+	test("設計05 §4・モック inline-preview.html に合わせて N=5", () => {
+		expect(INLINE_PREVIEW_MAX).toBe(5);
+	});
+
+	// applyInlineFold は `min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)` で表示件数を
+	// クランプする。ここではその合成規則を式として固定する(DOM は伴わない純粋な算術)。
+	// フィット件数 = computeInlineFit が full なら全行数・folded なら visibleCount、と呼び出し側で読む。
+	const clampPreview = (fitCount: number): number => Math.min(INLINE_PREVIEW_MAX, fitCount);
+
+	test("maxHeight 無制限(full=全行フィット)でもプレビューは高々 N 件に束ねる", () => {
+		// 例: 全12行フィットでも inline は 5 件だけ見せ、残り 7 件はフッタ「他 7 件 — 全画面で表示」へ。
+		expect(clampPreview(12)).toBe(INLINE_PREVIEW_MAX);
+	});
+
+	test("端末の maxHeight が小さく N 件未満しか収まらない場合は computeInlineFit のフィット件数が勝つ", () => {
+		// 安全クランプ: N=5 でも小さい maxHeight で 3 件しか収まらないなら 3 件(min が拾う)。
+		expect(clampPreview(3)).toBe(3);
 	});
 });
 

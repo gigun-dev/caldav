@@ -52,6 +52,21 @@
 // 順序だったため、ボタン自身の高さが収まり計算の外にあり(=それも隠れバグの一因)、今回の
 // 改訂で構造的に解消する(todos-entry.ts の applyInlineFold 側コメント参照)。
 //
+// 【2026-07-17 追更新②(C0-b・役割変更): 「畳み」から「inline プレビューの安全クランプ」へ】
+// 設計05 §4「inline = 境界の効いたプレビュー / fullscreen = 全件」への裁定に伴い、このモジュールの
+// 位置づけが変わった(computeInlineFit 本体のコードは無改造・意味だけ変わる)。旧モデルでは inline は
+// 「maxHeight に収まる限り全件出し、溢れたら畳む(動的畳み)」だったが、新モデルでは inline は常に
+// 「上位 N_MAX 件(INLINE_PREVIEW_MAX)のプレビュー」に束ね、全件閲覧は右上 ⤢(requestDisplayMode
+// fullscreen)へ一本化する(「すべて表示」ボタンと動的畳みは廃止=モック docs/design/mocks/
+// inline-preview.html・設計05 §4)。
+//   → 呼び出し側(*-entry.ts の applyInlineFold)は visibleCount = min(INLINE_PREVIEW_MAX,
+//     computeInlineFit のフィット件数) にクランプする。computeInlineFit は「捨てる」のではなく、
+//     「N_MAX 件でも端末次第(小さい maxHeight)で溢れるケースの安全クランプ」として再利用する
+//     (端末依存の破綻を防ぐ最後の砦。純関数のロジックはそのまま活きる)。
+// この追更新は下記の旧経緯(動的畳み・FAB 撤回)を「消さずに積む」— 動的畳みの発見と根治の履歴は
+// 財産として残し、新モデルはその上に乗る(旧「畳み」も maxHeight が極端に小さいホストでは依然として
+// visibleCount を N_MAX より小さく削るクランプとして機能するため、両者は排他ではなく min で合成される)。
+//
 // 【2026-07-17 追更新: 「folded では FAB を隠す」判断をユーザー実機 FB で撤回】
 // 当初案は畳んだとき + FAB を hidden にし、追加操作を fullscreen 側の FAB に集約していた
 // (「FAB はクリップ源だから隠す」という fable の設計判断)。しかしユーザーから
@@ -68,6 +83,15 @@
  *  (applyInlineFold)はこの結果をそのまま DOM の間引きに使えばよく、追加の場合分けを
  *  持たない。 */
 export type InlineFit = { mode: "full" } | { mode: "folded"; visibleCount: number };
+
+/** inline プレビューで見せる未完了/直近 occurrence の上限件数(C0-b・設計05 §4「上位 N 件プレビュー」・
+ *  モック docs/design/mocks/inline-preview.html は N=5)。呼び出し側は
+ *  `visibleCount = min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)` でクランプする。
+ *  【なぜ純関数 computeInlineFit の中ではなく定数として外に置くか】computeInlineFit は「端末の
+ *  maxHeight にどこまで収まるか」という物理制約だけを扱う純関数のまま保ち(テストで固定した境界値の
+ *  意味を変えない)、「プレビューは高々 N 件」というプロダクト方針(端末非依存)は呼び出し側で min を
+ *  取る形に分離する。両者の関心を混ぜないことで、N を変えても物理フィットのテストが壊れない。 */
+export const INLINE_PREVIEW_MAX = 5;
 
 /**
  * inline displayMode で「行リストをどこまで見せれば maxHeight に収まるか」を判定する

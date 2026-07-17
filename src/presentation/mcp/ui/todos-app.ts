@@ -721,6 +721,68 @@ export const TODOS_APP_HTML = `<!doctype html>
     min-height: 32px;
     cursor: pointer;
   }
+  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の未完了 — 全画面で表示」。
+   * 旧「すべて表示」ボタン(.fold-expand)+ 受動「残り n 件」(.fold-remaining)を置換する
+   * (両者は右上 ⤢ と役割重複のため廃止 — 上の .fold-remaining/.fold-expand は退行時の再利用に
+   * 備え残置するが、entry からは参照しなくなった=死んでも害は無い経緯記録)。モック
+   * docs/design/mocks/inline-preview.html の .more 相当(控えめ muted・件数だけ accent)。
+   * canRequestFullscreen なら button(タップで fullscreen 昇格)、非広告ホストなら div(受動・
+   * タップ不可)で同じ .fold-more を付ける(高さを揃え measureFooterBlockPx の probe と一致させる)。
+   * margin は measureFooterBlockPx が getComputedStyle で実測し budget 先引きに使う(定数二重管理回避)。 */
+  .fold-more {
+    display: block;
+    width: 100%;
+    margin: 8px 0 12px;
+    padding: 6px 2px 2px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: default;
+  }
+  /* button 版(fullscreen 広告ホスト)は押せることを示す(pointer)。div 版(受動)は既定カーソルのまま。 */
+  button.fold-more { cursor: pointer; min-height: 32px; }
+  /* 件数だけ accent で強調(モックの .more span 相当)。「他 [n件の未完了] — 全画面で表示」。 */
+  .fold-more-count { color: var(--accent); }
+
+  /* C0-a(2026-07-17 完了残骸の有界化): 完了行の退場アニメ。約5秒の undo 猶予後、entry(retireDoneRow)が
+   * 行の実高さを max-height に固定 → 次フレームで .exiting を付け max-height:0 へトランジションさせて
+   * 高さ0へ畳んで remove する。prefers-reduced-motion: reduce ではトランジションを止め即時 remove
+   * (entry 側で matchMedia 判定して .exiting を付けずに finish するが、CSS でも二重に無効化しておく)。 */
+  li.exiting {
+    overflow: hidden;
+    opacity: 0;
+    /* max-height は entry が inline style で 実高さ→0 に動かす。padding/margin も畳んで隙間を残さない。 */
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    min-height: 0;
+    transition: max-height 0.32s ease, opacity 0.32s ease, padding 0.32s ease, margin 0.32s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li.exiting { transition: none; }
+  }
+  /* C0-a: 完了行が退場猶予中に出す「取り消す」アフォーダンス(meta/tag スロット= rowMain 直下)。
+   * becoming タグと同じ位置・字面トーンだが、押せる操作面であることを示すため accent + pointer に。
+   * .row-main > .tag と同じ縦位置補正(タイトル1行目に揃える)を効かせるため .tag の隣に置く前提で
+   * align-self/margin を合わせる。 */
+  .row-main > .undo-exit {
+    align-self: flex-start;
+    margin-left: auto;
+    margin-top: 2px;
+    padding: 0 0 0 8px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+    flex: none;
+  }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1 が
    * containerDimensions.maxHeight から設定する CSS 変数で、fullscreen 中はホストが sheet 実寸を

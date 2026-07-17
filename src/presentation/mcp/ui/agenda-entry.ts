@@ -51,7 +51,7 @@ import { rowKey, idOfRowKey } from "./row-key";
 import { FEEDBACK, isCommitting } from "./feedback";
 // inline 畳み(P4-DM C1+C2/C3)の畳み共有カーネル(fold.ts)。todos-entry.ts と同じ純関数を使う
 // (occurrence 行単位の畳み。見出し高は rowBottoms の累積 offset に織り込まれるので無改造で流用)。
-import { canRequestFullscreen, computeInlineFit } from "./fold";
+import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
@@ -551,9 +551,11 @@ function renderTimeColumn(ev: EventItem): HTMLElement {
 
 /** 1行(li)を組み立てる(todos v3 の選択モデルを踏襲。行 = [時刻列][head][(選択時)ⓘ+確定])。 */
 function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
-	// 削除ゴースト(removed 由来)は専用の form で早期 return。
-	if (ghosts.some((g) => g.id === ev.id)) return renderGhostRow(ev);
-
+	// 【C0-c: 削除ゴースト(破線プレースホルダ)は廃止(2026-07-17 ユーザー裁定)】旧実装はここで
+	// ghosts 判定 → renderGhostRow(破線ボックス + 「削除」タグ)へ早期 return していたが、
+	// 「削除したものは見せなくていい(点々は不要)」に従い、削除行は視覚に一切出さない(即消滅)。
+	// ghosts 配列は announceBecoming の aria-live 通知(sync 由来の外部削除の音声版)には残すが、
+	// DOM 行にはしない(renderGhostRow は廃止・renderAll の ghostItems 合流も撤去)。todos-entry.ts と同判断。
 	const li = document.createElement("li");
 	// 行の DOM 特定・選択・スワイプは合成キー(§7.1)。data-id ではなく data-key を持たせる
 	// (グローバル click ハンドラの closest 判定も data-key で引く)。
@@ -856,34 +858,16 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	return li;
 }
 
-/** 削除ゴースト行(becoming-gone)。removed 由来の擬似 EventItem を「もう存在しない行」として描く:
- *  破線ボックス + 減光。時刻列は保つが操作子は置かない(削除済みに 44px タップ面を確保しない)。 */
-function renderGhostRow(ev: EventItem): HTMLLIElement {
-	const li = document.createElement("li");
-	li.className = "becoming-gone";
-	// 【2026-07-16 §7.8: delete の committing(opacity pulse)は本スライスでは付かない
-	// (todos-entry.ts F-2 と同判断)】ドクトリン表は「delete = ゴースト行 opacity pulse ×1」だが、
-	// ゴースト行はサーバー確定(removed 契約)後にしか描かれない — deleteEvent は楽観削除で行を
-	// 即座に一覧から除去する既存設計(rebuildFromConfirmed が optimisticDeletes で filter)
-	// なので、committing の 1.2s ウィンドウの間はそもそも「行」自体が画面に存在しない。この行に
-	// 到達する時点で pendingIds はもう delete 済み(成功/失敗いずれの確定描画も pendingIds.delete
-	// 後)なので、committing クラスを付ける対象が無い(startCommitting は T_hard 警告 +
-	// degrade ガードのためだけに呼ぶ。deleteEvent 参照)。
-	const rowMain = el("div", "row-main");
-	rowMain.appendChild(renderTimeColumn(ev));
-	const head = el("div", "head");
-	const title = el("div", "title");
-	title.textContent = ev.title;
-	head.appendChild(title);
-	rowMain.appendChild(head);
-	const tag = el("span", "tag");
-	// sync(S2): システム起因の外部削除は中立ラベル「同期(削除)」。ユーザー起因は「削除」。
-	const isSyncGhost = ghosts.find((g) => g.id === ev.id)?.sync === true;
-	tag.textContent = isSyncGhost ? "同期(削除)" : "削除";
-	rowMain.appendChild(tag);
-	li.appendChild(rowMain);
-	return li;
-}
+// 【C0-c: renderGhostRow(削除ゴースト行)は廃止(2026-07-17 ユーザー裁定)】
+// 旧実装はここに renderGhostRow(ev) があり、removed 由来の擬似 EventItem を破線ボックス + 減光 +
+// 「削除」/「同期(削除)」タグの becoming-gone 行として描いていた。ユーザー裁定「削除したものは
+// 見せなくていい(点々は不要)」に従い削除行は視覚に一切出さないことにしたため廃止した(呼び出し元
+// renderRow の早期 return と renderAll の ghostItems 合流も同時に撤去)。
+//   - 自分削除(delete-event / 楽観削除): optimisticDeletes で即除去 → 破線を残さず即消滅。
+//   - sync 由来の外部削除: nextEvents(events)から抜けて即消滅 + announceBecoming の aria-live 通知
+//     (「同期で N 件更新されました」)で「黙って消えて混乱」を防ぐ(視覚常設ゴーストは出さない)。
+// becoming-gone の CSS(agenda-app.ts)は退行時の再利用に備え残置(死んでも害は無い・経緯記録)。
+// todos-entry.ts の renderGhostRow 廃止コメントと同判断。
 
 // =============================================================================
 // セクション分け(日付見出し)とソート
@@ -946,23 +930,11 @@ function renderAll(): void {
 	const baseEvents = events ?? [];
 	const todayKey = localDateKey(new Date());
 
-	// 削除ゴースト(removed)を描画用の擬似 EventItem に変換して合流(通常のセクション分けに乗せる)。
-	const ghostItems: EventItem[] = ghosts.map((g) => ({
-		id: g.id,
-		recurrenceId: null,
-		title: g.title,
-		// 短文 start("YYYY-MM-DD" or "YYYY-MM-DD HH:MM")を offset なし ISO へ正規化(空白→T)。
-		start: g.start === undefined ? todayKey : g.start.replace(" ", "T"),
-		end: g.end === undefined ? null : g.end.replace(" ", "T"),
-		isAllDay: g.isAllDay ?? (g.start === undefined || !g.start.includes(":")),
-		location: g.location ?? null,
-		url: null,
-		notes: null,
-		status: null,
-		recurrence: null,
-		alarms: [],
-		travelMinutes: null,
-	}));
+	// 【C0-c: 削除ゴースト(ghostItems)の合流を廃止(2026-07-17 ユーザー裁定)】旧実装は ghosts
+	// (removed 由来)を擬似 EventItem に変換し日セクションへ合流させ、renderRow が破線ボックスに
+	// 描き替えていた。「削除したものは見せなくていい」に従い合流を撤去 — 削除行は視覚に出さない
+	// (自分削除=optimisticDeletes で即除去済み・sync 削除=events から抜けて即消滅。announceBecoming の
+	// aria-live 通知だけで外部削除を知らせる)。ghosts 配列は announce 用にだけ残す。
 	// affected の added 合成(案X 相当)。added で events に見つからない id だけ snapshot から擬似行を作る
 	// (通常 added は events に実在するので不要だが、mutate 応答が events を絞る場合の保険)。
 	const eventIds = new Set(baseEvents.map((t) => t.id));
@@ -973,7 +945,7 @@ function renderAll(): void {
 		}
 	}
 
-	const sections = sectionizeByDay(baseEvents.concat(ghostItems, affectedItems));
+	const sections = sectionizeByDay(baseEvents.concat(affectedItems));
 	const activeCount = sections.reduce((n, s) => n + s.items.length, 0);
 	if (activeCount === 0 && draft === null) {
 		const empty = el("div", "empty");
@@ -1022,30 +994,30 @@ function renderAll(): void {
 	applyInlineFold(foldAnchor);
 }
 
-// 「すべて表示」ボタン(.fold-expand)の実高さ(margin-bottom 込み)のキャッシュ。CSS 定数
-// (agenda-app.ts の .fold-expand)の二重管理を避けるため実測値をそのまま budget の先引きに使う。
-// ページ内で一度測れば以降は不変(フォント/CSS 変数が実行中に変わらない)なので毎 renderAll では
-// 測り直さない。todos-entry.ts:2596 と同じ設計。
-let cachedButtonBlockPx: number | null = null;
+// フッタ要約行(.fold-more)の実高さ(margin 込み)のキャッシュ。CSS 定数(agenda-app.ts の .fold-more)の
+// 二重管理を避けるため実測値をそのまま budget 先引きに使う。ページ内で一度測れば以降は不変。
+// 【2026-07-17 C0-b: probe 対象を「すべて表示」ボタン(.fold-expand)→ フッタ要約行(.fold-more)へ置換】
+// inline プレビュー化に伴い行より下に必ず並ぶのは「フッタ要約行 + FAB」。todos-entry.ts と同じ置換。
+let cachedFooterBlockPx: number | null = null;
 
-/** 「すべて表示」ボタン(.fold-expand)の高さ(下 margin 込み・px)を実測する(todos-entry.ts:2607 移植)。
- *  【なぜ .fold-expand を測るか】畳み判定の時点では canRequestFullscreen の結果(どちらのノードを
- *  append するか)が未確定で、かつ .fold-expand は min-height:32px を持ち .fold-remaining(padding のみ)
- *  より常に大きい — .fold-expand を budget 先引きに使えばどちらが append されても収まりを保証できる
- *  (安全側)。【なぜ visibility:hidden か】display:none は offsetHeight が 0 で測れない。visibility:hidden は
- *  レイアウトに参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
-function measureButtonBlockPx(): number {
-	if (cachedButtonBlockPx !== null) return cachedButtonBlockPx;
+/** フッタ要約行(.fold-more)の高さ(上下 margin 込み・px)を実測する(todos-entry.ts の measureFooterBlockPx 移植)。
+ *  button 版/div 版とも同じ .fold-more クラスなので1つの probe で両分岐を代表できる。
+ *  【なぜ visibility:hidden か】display:none は offsetHeight が 0 で測れない。visibility:hidden はレイアウトに
+ *  参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
+function measureFooterBlockPx(): number {
+	if (cachedFooterBlockPx !== null) return cachedFooterBlockPx;
+	// probe は button 版で測る(button.fold-more は min-height:32px を持ち div 版より常に高い=安全側)。
 	const probe = document.createElement("button");
 	probe.type = "button";
-	probe.className = "fold-expand";
-	probe.textContent = "すべて表示 (全00件)"; // 幅は width:100% 固定なのでテキスト長は高さに無関係
+	probe.className = "fold-more";
+	probe.textContent = "他 00件の予定 — 全画面で表示"; // 幅は width:100% 固定なのでテキスト長は高さに無関係
 	probe.style.visibility = "hidden";
 	root.appendChild(probe);
-	const marginBottomPx = Number.parseFloat(getComputedStyle(probe).marginBottom) || 0;
-	cachedButtonBlockPx = probe.offsetHeight + marginBottomPx;
+	const cs = getComputedStyle(probe);
+	const marginPx = (Number.parseFloat(cs.marginTop) || 0) + (Number.parseFloat(cs.marginBottom) || 0);
+	cachedFooterBlockPx = probe.offsetHeight + marginPx;
 	probe.remove();
-	return cachedButtonBlockPx;
+	return cachedFooterBlockPx;
 }
 
 /** + FAB(.fab-row。#quick-add-fab の親)の実高さ(margin-top 込み・px)を実測する(todos-entry.ts:2639 移植)。
@@ -1064,38 +1036,44 @@ function measureFabBlockPx(): number {
 }
 
 /**
- * C2 本体(P4-DM・2026-07-17): hostMaxHeightPx/hostDisplayMode(C1 が読んだ値)と「フル描画済み
- * (畳みなし)」の実測値から computeInlineFit(共有カーネル fold.ts)で収まり(full)か畳み(folded)かを
- * 判定し、畳むなら occurrence 行を横断で先頭 visibleCount 件だけ残して空になった日セクションを除去し、
- * 末尾に「すべて表示」(ボタン or 受動「残り n 件」)を挿す。**+ FAB は folded でも常に表示したまま**。
- * todos-entry.ts:2670 applyInlineFold を agenda 構造(flat な div.section + ul)へ移植したもの。
+ * C0-b 本体(P4-DM・2026-07-17 inline プレビュー化。旧 C2 動的畳みを改訂・todos-entry.ts の applyInlineFold と同型):
+ * inline = 直近 N_MAX occurrence のプレビュー / fullscreen = 全件(設計05 §4・モック inline-preview.html)。
+ * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行があれば末尾に
+ * フッタ要約行「他 n 件の予定 — 全画面で表示」を挿す(タップ=右上 ⤢ と同じ requestDisplayMode fullscreen)。
+ * **+ FAB は folded でも常に表示**。旧「すべて表示」ボタン + 受動「残り n 件」は ⤢ と役割重複のため廃止。
  *
- * 【bottomChrome = 「すべて表示」ボタン + FAB】budget の先引きに FAB 分も合算する(FAB を隠さない
- * 以上、畳んだ行 + すべて表示 + FAB の3つ全部が maxHeight に収まらなければ FAB がクリップされる)。
- * full 判定の fullHeight 側にも FAB を加算する(ボタンは full のとき出ないので fullHeight には含めない)。
+ * 【computeInlineFit は捨てない = 安全クランプ】N_MAX 件でも端末の maxHeight 次第では溢れるので、その物理
+ * フィットの逆算に computeInlineFit を再利用し min で合成する(fold.ts 冒頭コメント)。maxHeight 未送信は
+ * Infinity を渡す(full=全行フィット)ので、その場合のクランプは純粋に N_MAX が効く。
+ * 【bottomChrome = フッタ要約行 + FAB】budget の先引きにこの合計を使う(畳んだ行 + フッタ + FAB の3つ全部が
+ * maxHeight に収まるように)。full 判定の fullHeight 側には FAB を加算する(フッタは full のとき出ない)。
  */
 function applyInlineFold(foldAnchor: Comment): void {
-	// fullscreen 中は畳まない(全件 + 内部スクロールは applyHostContext の fullscreen-scroll が担う)。
-	// maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。FAB は常時表示
-	// なので hidden 管理は不要(quickAddFab.hidden の書き手は詳細ページ表示中の一時退避のみ)。
-	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) return;
+	// fullscreen 中はプレビュークランプしない(全件 + 内部スクロールは applyHostContext の fullscreen-scroll が担う)。
+	// inline 以外(displayMode 未送信のホスト等)は早期 return = 従来どおり全件表示(退行ゼロ)。
+	// 【2026-07-17 C0-b: hostMaxHeightPx===null の早期 return を撤去】新モデルでは inline は maxHeight の
+	// 有無に関わらず「上位 N 件プレビュー」に束ねる(N_MAX クランプは端末制約でなくプロダクト方針)。
+	// maxHeight が null のときは computeInlineFit へ Infinity を渡す(full=全行フィット扱い)。
+	if (hostDisplayMode !== "inline") return;
 
 	// 畳み対象の occurrence 行。agenda は日セクション(div.section)と ul が root 直下のフラットな兄弟で
 	// 並ぶので、通常行の ul(=draft-list 以外)配下の li を文書順に集める。ドラフト行(draft-list)は除外。
-	// ゴースト行(削除中断)も通常の li として1行に数える(todos と同じく特別扱いしない方が体感が一貫)。
 	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("ul:not(.draft-list) > li"));
 	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
 	const fabBlock = measureFabBlockPx();
 	// FAB は #root の外(兄弟)なので root.scrollHeight に含まれない — 明示的に加算する。
 	const fullHeight = root.scrollHeight + fabBlock;
-	const buttonBlock = measureButtonBlockPx();
-	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(「すべて表示」+ FAB)の合計高さ。
-	const bottomChrome = buttonBlock + fabBlock;
+	const footerBlock = measureFooterBlockPx();
+	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(フッタ要約行 + FAB)の合計高さ。
+	const bottomChrome = footerBlock + fabBlock;
 
-	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, bottomChrome);
-	if (fit.mode === "full") return; // 収まっているので何もしない(FAB は元々表示されたまま)。
+	// フィット件数: maxHeight 未送信は Infinity(=全行フィット)。full なら全行、folded なら visibleCount。
+	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
+	const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
+	// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
+	const visibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
+	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
 
-	const { visibleCount } = fit;
 	rows.slice(visibleCount).forEach((li) => li.remove());
 	// 空になった(=全行畳まれた)日セクションは見出しだけ宙ぶらりんにならないよう、ul と直前の
 	// .section 見出しをペアで除去する(agenda は section と ul がネストせず兄弟に並ぶため、
@@ -1109,30 +1087,26 @@ function applyInlineFold(foldAnchor: Comment): void {
 	}
 
 	const totalCount = rows.length; // 畳み対象の合計 occurrence 行数(ドラフトは対象外)
-	const remaining = totalCount - visibleCount;
-	// C3(設計04 §5): fullscreen 広告ホストだけボタン化する。canRequestFullscreen が apps.mdx:782 の
-	// 「View は requestDisplayMode 前に availableDisplayModes を確認する MUST」を担う純関数 —
-	// fullscreen 非広告ホスト(本アプリの現状=未受信)では false になり従来どおり受動「残り n 件」表示のまま
-	// (押しても何も起きない死にボタンを作らない・2026-07-16 fable 指摘)。
-	if (canRequestFullscreen(hostAvailableDisplayModes)) {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "fold-expand";
-		button.textContent = `すべて表示 (全${totalCount}件)`;
-		button.addEventListener("click", () => {
-			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を
-			// 拒否したら "inline" が返るだけでエラーではない — 何もしない(次回描画は hostcontextchanged 経由の
-			// hostDisplayMode 更新に委ねる)。通信失敗等はカードを壊さないよう握りつぶす(設計04 §5 C3)。
+	const remaining = totalCount - visibleCount; // = 「他 n 件」の n
+	const canFull = canRequestFullscreen(hostAvailableDisplayModes);
+	// フッタ要約行「他 n 件の予定 — 全画面で表示」(モック inline-preview.html の agenda 版文言)。canFull なら
+	// タップ可能な button(⤢ と同じ requestDisplayMode 昇格)、非広告ホストでは受動 div(タップ不可・CTA 無し)。
+	const footer = document.createElement(canFull ? "button" : "div");
+	footer.className = "fold-more";
+	footer.appendChild(document.createTextNode("他 "));
+	const count = el("span", "fold-more-count");
+	count.textContent = `${remaining}件の予定`;
+	footer.appendChild(count);
+	if (canFull) {
+		(footer as HTMLButtonElement).type = "button";
+		footer.appendChild(document.createTextNode(" — 全画面で表示"));
+		footer.addEventListener("click", () => {
+			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を拒否したら
+			// "inline" が返るだけでエラーではない — 何もしない。通信失敗等はカードを壊さないよう握りつぶす。
 			void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
 		});
-		foldAnchor.parentNode?.insertBefore(button, foldAnchor.nextSibling);
-	} else {
-		const notice = document.createElement("div");
-		notice.className = "fold-remaining";
-		// 受動表示(ボタンではない・タップ不可)。fullscreen 非広告ホストではここに留まる。
-		notice.textContent = `残り ${remaining} 件`;
-		foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
 	}
+	foldAnchor.parentNode?.insertBefore(footer, foldAnchor.nextSibling);
 }
 
 /** 読込中スケルトン(行の影3本。todos と同じ体感安定策)。 */

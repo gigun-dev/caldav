@@ -138,7 +138,7 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
-import { canRequestFullscreen, computeInlineFit } from "./fold";
+import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -446,6 +446,91 @@ let selMemoInput: HTMLInputElement | null = null;
 // delete-todo 応答が removed(ghost)を載せてくるので、成功時に applyStructuredContent 経由で
 // becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
 const optimisticDeletes = new Set<string>();
+
+// --- C0-a: 完了残骸の有界化(約5秒の undo 猶予 → 高さ0へ畳んで退場)--------------------------
+// 【なぜ必要か(2026-07-17 設計05 §4 裁定・実機バグ)】カード上でタップ完了した行(becoming-done)は
+// 位置記憶 + stickyData により「カード lifecycle スコープ」でその場に残る設計(下記 positionMemory
+// コメント)。しかし残骸が無制限に蓄積すると inline カードが maxHeight を突き破ってクリップする実機
+// バグの主因になった。よって「サーバー再取得(vm 差し替え)が来ない場合の有界化」の保険として、
+// 完了操作から約5秒の undo 猶予後に行を高さ0へ畳んで退場(remove)させる。退場はあくまで保険で、
+// 通常はサーバー再取得(未完了ビュー)で先に消える(退場タイマーが遅れて発火しても retiredDoneIds が
+// 二重退場・復活を防ぐ)。
+//   【モック inline-preview.html の旧ボツ案との関係(経緯・財産)】モック冒頭コメントは「(b) 時限フェード
+//   (約5秒で退場)」をボツ案として挙げていた(「undo 猶予が時間で切れるのは lifecycle 認識と不一致」)。
+//   その後の設計05 §4 で「lifecycle スコープ + 約5秒の undo 猶予後に退場で有界化」へ裁定が更新された
+//   (無制限蓄積のクリップ実害の方が重い)。本実装は設計05 §4(正典)に従う — モックのボツ案は
+//   「純粋な時限フェード(undo 導線なし)」への否定で、本実装は「猶予中は取り消せる」ので趣旨が違う。
+// 【agenda には無い】agenda(予定)は完了概念が無いので残骸問題そのものが起きない(この機構は todos 専用)。
+const DONE_EXIT_GRACE_MS = 5000; // 約5秒(設計05 §4「約5秒の undo 猶予」)
+// exitTimers: 退場待ちの行 id → setTimeout ハンドル(行ごと1本)。renderAll 再走(ポーリング等)で
+//   二重タイマーが張られないよう scheduleDoneExit が has() ガードする(冪等)。
+const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// retiredDoneIds: 退場済み(高さ0へ畳んで remove した)行の id。rebuildDisplay / renderAll が
+//   この集合の id を「もう再合成しない」ことで、ポーリング再描画や includeCompleted ビューの確定 vm
+//   から幽霊復活するのを防ぐ(退場の冪等性の要)。実質別ビュー切替(resetPositionMemory)でクリアし、
+//   サーバーが当該 id を未完了で返してきたら un-retire する(genuine な外部再開は再表示を許す)。
+const retiredDoneIds = new Set<string>();
+/** 完了行の退場タイマーを仕込む(約5秒後に retireDoneRow)。冪等 — 既にタイマーがある/退場済みなら何もしない
+ *  (renderAll 再走での二重タイマー・復活防止)。 */
+function scheduleDoneExit(id: string): void {
+	if (exitTimers.has(id) || retiredDoneIds.has(id)) return;
+	const timer = setTimeout(() => {
+		exitTimers.delete(id);
+		retireDoneRow(id);
+	}, DONE_EXIT_GRACE_MS);
+	exitTimers.set(id, timer);
+}
+/** 退場タイマーを取り消す(undo=再開時 / 外部再開検知時)。退場済みマークも解除して再表示を許す。 */
+function cancelDoneExit(id: string): void {
+	const t = exitTimers.get(id);
+	if (t !== undefined) {
+		clearTimeout(t);
+		exitTimers.delete(id);
+	}
+	retiredDoneIds.delete(id);
+}
+/** 完了行を退場させる(高さ0へ畳んで remove → 状態から追放して再描画)。
+ *  prefers-reduced-motion: reduce では畳みアニメを止めて即時 remove(モーション過敏配慮)。
+ *  DOM に行が見つからない(既に畳まれている等)場合も即 finish。 */
+function retireDoneRow(id: string): void {
+	if (retiredDoneIds.has(id)) return; // 既に退場済み(冪等)
+	// finish: 状態から追放し、確定土台の上に楽観を重ね直して再描画する。retiredDoneIds に入れることで
+	// rebuildDisplay / renderAll が二度と再合成しない(sticky/positionMemory も消す)。
+	const finish = (): void => {
+		if (retiredDoneIds.has(id)) return; // transitionend とフォールバック setTimeout の二重発火ガード
+		retiredDoneIds.add(id);
+		positionMemory.delete(id);
+		stickyData.delete(id);
+		optimisticToggle.delete(id);
+		rebuildFromConfirmed();
+		renderAll();
+	};
+	const li = root.querySelector<HTMLLIElement>(`li[data-id="${cssEscapeId(id)}"]`);
+	// 【reduced-motion / 行が DOM に無い → 即時 remove】matchMedia が無い環境(古い WebView)は
+	// 「モーション過敏でない」とみなして通常のアニメ経路へ(?? false)。
+	const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+	if (prefersReduced || li === null) {
+		finish();
+		return;
+	}
+	// 高さ0へ畳むトランジション: max-height は「値なし→0」だとアニメしないので、現在の実高さを一旦
+	// 明示してから次フレームで 0 にする(CSS トランジションの定番。.exiting が transition プロパティを持つ)。
+	li.style.maxHeight = `${li.offsetHeight}px`;
+	li.classList.add("exiting");
+	requestAnimationFrame(() => {
+		li.style.maxHeight = "0px";
+	});
+	li.addEventListener("transitionend", finish, { once: true });
+	// 保険: transitionend が来ない(要素が別要因で先に外れた等)場合でも必ず finish する。
+	setTimeout(finish, 500);
+}
+/** querySelector 用の id エスケープ(CSS.escape があれば使う。無い古い環境は素通し — 実 todo id は
+ *  UUID 系でセレクタ特殊文字を含まないため実害はほぼ無いが、防御的に用意する)。 */
+function cssEscapeId(id: string): string {
+	const cssApi = (window as unknown as { CSS?: { escape?: (s: string) => string } }).CSS;
+	return cssApi?.escape !== undefined ? cssApi.escape(id) : id;
+}
+
 // --- 並び順安定性(位置記憶。2026-07-14 ユーザー確定の仕様変更)---------------------------
 // 【なぜ位置記憶を持つか】完了操作でタスクが下(完了済みセクション)へ即移動するのは違和感がある、
 // becoming で「その場に留める」と決めたのに次の確定描画で再セクショニングされて結局落ちるのは
@@ -470,6 +555,11 @@ function resetPositionMemory(): void {
 	positionMemory.clear();
 	stickyData.clear();
 	positionSeq = 0;
+	// C0-a: 実質別ビューへ切り替えたら完了残骸の退場タイマー/退場済みマークもリセットする(前ビューの
+	// 保留タイマーが新ビューの無関係な行を退場させないように・別ビューでは残骸の連続性も無い)。
+	for (const t of exitTimers.values()) clearTimeout(t);
+	exitTimers.clear();
+	retiredDoneIds.clear();
 }
 /** 位置記憶に無い新規行の自然セクション(due/completed 規則)。初出時の配置と、非 manual 経路の
  *  per-item ロジックに揃える。completed は "completed"(初出時に既に完了していた行だけがここに来て
@@ -974,10 +1064,12 @@ function planEdit(aff: AffectedEntry): EditPlan {
  *  チェックは実 <button>(aria-pressed)にする — div+onclick は VoiceOver がボタンとして
  *  読まずキーボード操作もできないため。 */
 function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
-	// 削除ゴースト(removed 由来の擬似 TodoItem)は専用の form で早期 return
-	// (チェックボタンを持たない・操作不能・破線ボックス。詳細は renderGhostRow)。
-	if (ghosts.some((g) => g.id === task.id)) return renderGhostRow(task, todayKey);
-
+	// 【C0-c: 削除ゴースト(破線プレースホルダ)は廃止(2026-07-17 ユーザー裁定)】
+	// 旧実装はここで `ghosts.some((g) => g.id === task.id)` を判定し renderGhostRow(破線ボックス+
+	// 「削除」タグ)へ早期 return していたが、ユーザー裁定「基本削除しない(完了にする)し、削除した
+	// ものは見せなくていい(点々は不要)」に従い、削除された行は視覚には一切出さない(即消滅)。
+	// ghosts 配列自体は announceBecoming の aria-live 通知(sync 由来の外部削除を音声で知らせる)と
+	// positionMemory/stickyData の掃除にはまだ使うが、DOM 行としては描かない(renderGhostRow は廃止)。
 	const li = document.createElement("li");
 	// data-id: 行外タップ判定(document click の deselect / swipe close)で closest("li[data-id]") から
 	// 拾うため。renderAll は #root を innerHTML で作り直すので毎描画で付け直す。
@@ -1315,11 +1407,32 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		tagEl.textContent = tagText;
 		if (resumeTag) applyAnimResume(tagEl);
 	}
+	// C0-a: 完了行が退場猶予中(約5秒)なら、meta/tag 位置に「取り消す」アフォーダンスを出す。
+	// 【undo 導線について】既存の undo 導線は「塗り丸の再タップ=再開(toggleTask)」だが、猶予中である
+	// ことが見て分かる形が要る(設計05 §4「猶予中に見て分かる形に」)ので、明示のテキストリンク
+	// 「取り消す」を tag スロット(rowMain 直下・タイトル1行目に揃う)へ置く。タップ=同じ toggleTask で
+	// 再開し、その中で cancelDoneExit が退場タイマーを止める(丸の再タップと完全に等価)。
+	// 猶予中は「完了」タグより「取り消す」を優先する(両方出すと冗長・意味が割れる)。
+	const inGrace = task.completed && exitTimers.has(task.id) && !isDraft;
+	let undoEl: HTMLButtonElement | null = null;
+	if (inGrace) {
+		undoEl = document.createElement("button");
+		undoEl.type = "button";
+		undoEl.className = "undo-exit";
+		undoEl.textContent = "取り消す";
+		undoEl.setAttribute("aria-label", `「${task.title}」の完了を取り消す`);
+		undoEl.addEventListener("click", (e) => {
+			e.stopPropagation(); // 行選択に伝播させない(取り消しは独立操作)
+			void toggleTask(task);
+		});
+	}
 	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	if (tagEl !== null) rowMain.appendChild(tagEl);
+	// 猶予中は「取り消す」を、そうでなければ becoming タグを rowMain 直下へ(排他)。
+	if (undoEl !== null) rowMain.appendChild(undoEl);
+	else if (tagEl !== null) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ info ボタン(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {
@@ -2266,61 +2379,19 @@ function el(tag: string, className: string): HTMLElement {
 // 言語)と衝突するとのユーザー評価。v3 はアイコンを廃し、トグルは accent(唯一の彩度)の小型 button.sw
 // (makeSwitch)に統一した。
 
-/** 削除ゴースト行(becoming-gone)。removed:[{id,title,due?}] 由来の擬似 TodoItem を
- *  「もう存在しない行」として描く: 破線ボックス + 減光 + 破線丸。チェックボタンは
- *  置かない(操作不能 — 削除済みに 44px タップ面を確保する意味がなく、押せそうな見た目は
- *  誤操作を誘うだけ)。丸は装飾 span のみ。取消線は使わない(完了専用の記号)。 */
-function renderGhostRow(task: TodoItem, todayKey: string): HTMLLIElement {
-	const li = document.createElement("li");
-	li.className = "becoming-gone";
-	// 【2026-07-16 §7.8: delete の committing(opacity pulse)は本スライスでは付かない】
-	// ドクトリン表は「delete = ゴースト行 opacity pulse ×1」だが、ゴースト行はサーバー確定
-	// (removed 契約)後にしか描かれない — deleteTask は楽観削除で行を即座に一覧から除去する
-	// 既存設計(rebuildFromConfirmed が optimisticDeletes で filter)なので、committing の
-	// 1.2s ウィンドウの間はそもそも「行」自体が画面に存在しない(deleteTask のコメント参照)。
-	// この行に到達する時点で pendingIds はもう delete 済み(成功/失敗いずれの確定描画も
-	// pendingIds.delete 後)なので、committing クラスを付ける対象が無い。
-
-	// li が縦積み(2026-07-14 フィードバック対応)になったので、ghost 行も row-main で横並びに包む
-	// (通常行と同じ構造 = 破線丸・タイトル・タグが横一列に並ぶ)。detail は持たない。
-	const rowMain = document.createElement("div");
-	rowMain.className = "row-main";
-
-	const circle = document.createElement("span");
-	circle.className = "circle";
-	circle.setAttribute("aria-hidden", "true");
-	rowMain.appendChild(circle);
-
-	const header = document.createElement("div");
-	header.className = "row-head";
-	const title = document.createElement("div");
-	title.className = "title";
-	title.textContent = task.title;
-	header.appendChild(title);
-	const dueInfo = formatDue(task, todayKey);
-	if (dueInfo.text !== "") {
-		const meta = document.createElement("div");
-		meta.className = "meta";
-		const due = document.createElement("span");
-		due.className = "due";
-		// overdue の赤は付けない — 削除済みタスクに警告色は無意味(もうやらなくてよい)。
-		due.textContent = dueInfo.text;
-		meta.appendChild(due);
-		header.appendChild(meta);
-	}
-	rowMain.appendChild(header);
-
-	const tag = document.createElement("span");
-	tag.className = "tag";
-	// sync(E-2 スライス④): システム起因の外部削除は中立ラベル「同期(削除)」。ユーザー起因の
-	// 削除(server の removed)は従来どおり「削除」。ghosts の該当スナップショットの sync 印で分岐する。
-	const isSyncGhost = ghosts.find((g) => g.id === task.id)?.sync === true;
-	tag.textContent = isSyncGhost ? "同期(削除)" : "削除";
-	rowMain.appendChild(tag);
-
-	li.appendChild(rowMain);
-	return li;
-}
+// 【C0-c: renderGhostRow(削除ゴースト行)は廃止(2026-07-17 ユーザー裁定)】
+// 旧実装はここに renderGhostRow(task, todayKey) があり、removed:[{id,title,due?}] 由来の擬似
+// TodoItem を「もう存在しない行」= 破線ボックス + 減光 + 破線丸 + 「削除」/「同期(削除)」タグの
+// becoming-gone 行として描いていた(自分削除では optimisticDeletes の即除去により実際にはほぼ出ず、
+// サーバー確定 removed / sync 由来の外部削除でだけ1描画現れる位置づけだった)。
+// ユーザー裁定「基本削除しない(完了にする)し、削除したものは見せなくていい(点々は不要)」に従い、
+// 削除された行は視覚に一切出さないことにしたため、この関数を廃止した(呼び出し元 renderRow の
+// 早期 return と renderAll の ghostItems 合流も同時に撤去した)。
+//   - 自分削除(delete-todo / 楽観削除): optimisticDeletes で即除去 → 破線プレースホルダを残さず即消滅。
+//   - sync 由来の外部削除: nextTasks から抜けて即消滅 + announceBecoming の aria-live 音声通知
+//     (「同期で N 件更新されました」)で「黙って消えて混乱」を防ぐ(視覚常設ゴーストは出さない)。
+// becoming-gone の CSS(todos-app.ts)は退行時の再利用に備え残置(死んでも害は無い・経緯の記録)。
+// 財産(ボツ): 破線ゴーストの持続表示 — 「削除したものは見せない」の裁定で不要になった。
 
 /** snapshot(表示用短文 due)→ 描画用擬似 TodoItem。ghost 変換(renderAll のゴースト経路)と
  *  同じ due 正規化(空白→T)を行う。案X の核心: completed で tasks(未完了ビュー)から抜けた
@@ -2410,8 +2481,10 @@ function rebuildDisplay(baseAffected: AffectedEntry[], baseGhosts: TaskSnapshot[
 	// confirmedTasks(差分の土台)は決して破壊しない。
 	// 楽観削除(optimisticDeletes)中の行はここで即除去する = 削除ボタンを押した瞬間に行が消える
 	// (楽観適用)。確定土台 confirmedTasks 自体は消さない(失敗時のロールバックで復活させるため)。
+	// C0-a: 退場済み(retiredDoneIds)の完了行は再合成しない — includeCompleted ビューでは確定 vm に
+	// 完了行が残るので、退場後もこの filter が無いと幽霊復活する(冪等性の要)。
 	const displayTasks: TodoItem[] = (confirmedTasks ?? [])
-		.filter((t) => !optimisticDeletes.has(t.id))
+		.filter((t) => !optimisticDeletes.has(t.id) && !retiredDoneIds.has(t.id))
 		.map((t) => {
 			const ov = optimisticToggle.get(t.id);
 			const ed = optimisticEdits.get(t.id);
@@ -2519,39 +2592,21 @@ function renderAll(): void {
 	// tasks 未受領(null)でも draft(FAB で生やしたドラフト行)があれば一覧を描く。以降は baseTasks を使う。
 	const baseTasks = tasks ?? [];
 	const todayKey = localDateKey(new Date());
-	// 削除ゴースト(removed)は tasks にもう存在しないので、描画用の擬似 TodoItem に
-	// 変換して合流させる。due からソート位置が決まる(due 無しは期日なしセクション)ため、
-	// 専用の置き場を作らず通常のセクション分け・ソートにそのまま乗せるのが最小実装
-	// (renderRow 側が ghost 判定して becoming-gone の見た目に切り替える)。
-	const ghostItems: TodoItem[] = ghosts.map((g) => {
-		// removed.due はサーバー整形済みの "YYYY-MM-DD" / "YYYY-MM-DD HH:MM"(空白区切り)。
-		// tasks 側の due("T" 区切り ISO)と同じ経路(dueEpoch/formatDue)に乗せるため
-		// T へ正規化する(offset は無いが、ソート位置と表示にはローカル解釈で十分)。
-		const due = g.due === undefined ? null : g.due.replace(" ", "T");
-		return {
-			id: g.id,
-			title: g.title,
-			completed: false, // 完了折り畳みには絶対入れない(削除と完了の form を混ぜない)
-			status: null,
-			due,
-			isAllDay: due !== null && !due.includes("T"),
-			priority: 0,
-			percentComplete: null,
-			completedAt: null,
-			notes: null,
-			sortOrder: null,
-			// ghost(削除済み)は最小情報だけ描くので location/recurrence は持たない。
-			location: null,
-			recurrence: null,
-		};
-	});
+	// 【C0-c: 削除ゴースト(ghostItems)の合流を廃止(2026-07-17 ユーザー裁定)】旧実装はここで
+	// ghosts(removed 由来)を擬似 TodoItem に変換し通常セクションへ合流させ、renderRow が破線ボックス
+	// (becoming-gone)に描き替えていた。ユーザー裁定「削除したものは見せなくていい(点々は不要)」に
+	// 従い、削除行は視覚に一切出さない — よってここでの合流を削除した。ghosts 配列は announceBecoming の
+	// aria-live 通知(sync 由来の外部削除を音声で知らせる)と applyStructuredContent の positionMemory/
+	// stickyData 掃除にはまだ使うが、DOM 行にはしない(自分削除=optimisticDeletes で即除去済み・
+	// sync 削除=nextTasks から抜けて即消滅・どちらも持続プレースホルダを残さない)。
 	// affected の completed 合成(案X)。completed は tasks の未完了ビューから抜けるので、
 	// tasks に見つからない id だけ snapshot から擬似行を作って合流させる。added/reopened/edited は
 	// tasks に実在するので合成不要(既に tasks 側の行が becoming 装飾を受け取る)。
 	const taskIds = new Set(baseTasks.map((t) => t.id));
 	const affectedItems: TodoItem[] = [];
 	for (const a of affectedById.values()) {
-		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id)) {
+		// C0-a: 退場済み id は completed 合成もしない(退場後に mutate 応答の affected が残っていても再出させない)。
+		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id) && !retiredDoneIds.has(a.id)) {
 			affectedItems.push(snapshotToItem(a.task, true));
 		}
 	}
@@ -2559,16 +2614,16 @@ function renderAll(): void {
 	// manual: sectionizeManual が positionMemory / stickyData で「一度現れた行はその場に留める」を担う。
 	//   realLive  = 実在の確定/楽観重ね行(optimistic 仮行は除く。memory + sticky で管理)。
 	//   synthDone = done-in-place の合成行(memory は既存・sticky は無ければ補完)。
-	//   transient = memory に載せない一過性行 = optimistic 追加の仮行 + ghost(末尾ピン・投入順)。
+	//   transient = memory に載せない一過性行 = optimistic 追加の仮行(C0-c で ghost 合流は廃止)。
 	// 非 manual(期限順など・今回未実装)は従来の compareTasks 整列(sectionize)へ分岐する seam を残す。
 	let s: Sections;
 	if (sortMode === "manual") {
 		const realLive = baseTasks.filter((t) => !isOptimisticId(t.id));
 		const optimisticLive = baseTasks.filter((t) => isOptimisticId(t.id));
-		s = sectionizeManual(realLive, affectedItems, optimisticLive.concat(ghostItems), todayKey);
+		s = sectionizeManual(realLive, affectedItems, optimisticLive, todayKey);
 	} else {
 		// 非 manual 経路(温存。今回は到達しない)。従来どおり全行を compareTasks で整列する。
-		s = sectionize(baseTasks.concat(ghostItems, affectedItems), todayKey);
+		s = sectionize(baseTasks.concat(affectedItems), todayKey);
 	}
 
 	const activeCount = s.overdue.length + s.today.length + s.upcoming.length + s.noDue.length;
@@ -2629,33 +2684,36 @@ function renderAll(): void {
 	applyInlineFold(foldAnchor);
 }
 
-// 「すべて表示」ボタン(.fold-expand)の実高さ(margin-bottom 込み)のキャッシュ。CSS 定数
-// (todos-app.ts の .fold-expand)の二重管理を避けるため、実測した値をそのまま budget の
-// 先引きに使う(measureButtonBlockPx 参照)。ページ内で一度測れば以降は不変(フォント/CSS
-// 変数が実行中に変わることは無い)なので、renderAll のたびに measure し直すコストを避ける。
-let cachedButtonBlockPx: number | null = null;
+// フッタ要約行(.fold-more)の実高さ(margin 込み)のキャッシュ。CSS 定数(todos-app.ts の
+// .fold-more)の二重管理を避けるため、実測値をそのまま budget の先引きに使う。ページ内で一度測れば
+// 以降は不変(フォント/CSS 変数が実行中に変わることは無い)。
+// 【2026-07-17 C0-b で probe 対象を「すべて表示」ボタン(.fold-expand)→ フッタ要約行(.fold-more)へ
+//  置換】inline プレビュー化(すべて表示ボタン廃止)に伴い、行より下に必ず並ぶのは「フッタ要約行 + FAB」に
+//  なった。measure 対象も .fold-expand ではなくフッタ行 .fold-more に置き換える(cachedButtonBlockPx →
+//  cachedFooterBlockPx。budget 先引きの意味は不変=「行より下の chrome の高さを先に引く」)。 */
+let cachedFooterBlockPx: number | null = null;
 
-/** 「すべて表示」ボタン(.fold-expand)の高さ(下 margin 込み・px)を実測する。
- *  【なぜ受動表示(.fold-remaining)ではなく .fold-expand を測るか】畳み判定の時点では
- *  canRequestFullscreen の結果(=どちらのノードを実際に append するか)がまだ確定していない
- *  ことに加え、.fold-expand は min-height:32px を持ち .fold-remaining(パディングのみ)より
- *  常に大きい — .fold-expand の高さを budget の先引きに使えば、どちらが実際に append されても
- *  収まりを保証できる(安全側に倒す・過小の budget にはならない)。
- *  【なぜ hidden ではなく visibility:hidden か】display:none は offsetHeight が 0 になり
- *  測れない。visibility:hidden はレイアウトに参加する(一瞬 layout に載るが即 remove するので
- *  視覚的なちらつきは無い)。 */
-function measureButtonBlockPx(): number {
-	if (cachedButtonBlockPx !== null) return cachedButtonBlockPx;
+/** フッタ要約行(.fold-more)の高さ(上下 margin 込み・px)を実測する。
+ *  【なぜ probe を1回描いて測るか】判定の時点では canRequestFullscreen の結果(ボタン化するか受動表示か)が
+ *  未確定だが、.fold-more はどちらの分岐でも同じ CSS クラスを付ける(button か div かの差だけで高さは同じ)ので
+ *  1つの probe で両分岐の高さを代表できる。
+ *  【なぜ hidden ではなく visibility:hidden か】display:none は offsetHeight が 0 になり測れない。
+ *  visibility:hidden はレイアウトに参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
+function measureFooterBlockPx(): number {
+	if (cachedFooterBlockPx !== null) return cachedFooterBlockPx;
+	// probe は button 版で測る(button.fold-more は min-height:32px を持ち div 版より常に高い=安全側。
+	// どちらが実際に append されても budget の先引きが過小にならない)。
 	const probe = document.createElement("button");
 	probe.type = "button";
-	probe.className = "fold-expand";
-	probe.textContent = "すべて表示 (全00件)"; // 幅は width:100% で固定なのでテキスト長は高さに無関係
+	probe.className = "fold-more";
+	probe.textContent = "他 00件の未完了 — 全画面で表示"; // 幅は width:100% 固定なのでテキスト長は高さに無関係
 	probe.style.visibility = "hidden";
 	root.appendChild(probe);
-	const marginBottomPx = Number.parseFloat(getComputedStyle(probe).marginBottom) || 0;
-	cachedButtonBlockPx = probe.offsetHeight + marginBottomPx;
+	const cs = getComputedStyle(probe);
+	const marginPx = (Number.parseFloat(cs.marginTop) || 0) + (Number.parseFloat(cs.marginBottom) || 0);
+	cachedFooterBlockPx = probe.offsetHeight + marginPx;
 	probe.remove();
-	return cachedButtonBlockPx;
+	return cachedFooterBlockPx;
 }
 
 /** + FAB(.fab-row。#quick-add-fab の親)の実高さ(margin-top 込み・px)を実測する。
@@ -2684,58 +2742,58 @@ function measureFabBlockPx(): number {
 }
 
 /**
- * C2 本体(2026-07-17 動的フィット改訂 / 同日追更新で FAB 常時表示に変更): hostMaxHeightPx/
- * hostDisplayMode(C1 が読んだ値)と「フル描画済み(畳みなし)」の実測値から computeInlineFit
- * (純関数・fold.ts)で収まり(mode:"full")か畳み(mode:"folded")かを判定し、畳むなら
- * 4セクション横断で先頭 visibleCount 件だけ残して空になったセクションを畳み、末尾に
- * 「すべて表示」(ボタン or 受動「残り n 件」)を挿す。**+ FAB は folded でも常に表示したまま**
- * (上の measureFabBlockPx コメント参照 — ユーザー FB による fable 上書き)。
+ * C0-b 本体(2026-07-17 inline プレビュー化。旧 C2 動的畳みを改訂): inline = 上位 N_MAX 件の
+ * 未完了プレビュー / fullscreen = 全件、という役割分担にする(設計05 §4・モック inline-preview.html)。
+ * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行が
+ * あれば末尾にフッタ要約行「他 n 件の未完了 — 全画面で表示」を挿す。フッタのタップ=右上 ⤢ と同じ
+ * requestDisplayMode({mode:"fullscreen"})(導線は2つ・装置は1つ)。**+ FAB は folded でも常に表示**。
  *
- * 【旧・固定 N=6 の破綻からの根治(2026-07-17)】旧実装は「畳む件数を決めてからボタンを append
- * する」順序だったため、ボタン自身の高さが収まり計算の外にあり、かつ「件数が6件以下なら畳まない」
- * 閾値だったため6件ちょうど等で FAB がクリップされて隠れる再発バグを踏んだ(fold.ts 冒頭
- * コメント参照)。本実装は「まずフル描画して実測 → 1パスで判定・適用」に改める。
+ * 【旧「すべて表示」ボタン + 受動「残り n 件」の廃止(役割重複の解消)】旧実装は「maxHeight に収まる
+ * 限り全件・溢れたら畳む」動的モデルで、末尾に「すべて表示 (全n件)」ボタン(or 受動「残り n 件」)を
+ * 挿していた。だがこのボタンは右上 ⤢(fullscreen 昇格)と役割が重複していた(裁定 2026-07-17)。
+ * inline を「境界の効いた上位 N 件プレビュー」に一本化し、全件は ⤢/フッタで fullscreen へ、に整理した。
  *
- * 【bottomChrome = 「すべて表示」ボタン + FAB(同日追更新)】computeInlineFit のシグネチャは
- * そのまま(第4引数名は buttonBlock のままだが、実質「行より下に必ず置かれる要素群の合計高さ
- * (bottomChrome)」を渡す — FAB を隠さなくなった以上、畳んだ行 + すべて表示 + FAB の3つ全部が
- * maxHeight に収まらなければならないため、budget の先引きに FAB 分も合算する。full 判定の
- * fullHeight 側にも同じ理由で FAB を加算する(全行 + FAB が収まるかどうかで full/folded を
- * 決める — ボタンは full のときは出ないので fullHeight には含めない)。
+ * 【computeInlineFit は捨てない = 安全クランプとして再利用(fold.ts 冒頭コメント)】N_MAX=5 件でも
+ * 端末の maxHeight 次第(小さいホスト)では 5 件が溢れることがある。その物理フィットの逆算に
+ * computeInlineFit を使い、min(N_MAX, フィット件数) で「プロダクト方針(高々 N 件)」と「端末制約
+ * (それでも溢れるなら更に減らす)」を合成する。maxHeight 未送信のホストは Infinity を渡す(full 判定=
+ * 全行フィット)ので、その場合のクランプは純粋に N_MAX が効く。
+ *
+ * 【bottomChrome = フッタ要約行 + FAB】budget の先引きにこの合計を使う(畳んだ行 + フッタ + FAB の
+ * 3つ全部が maxHeight に収まるように)。full 判定の fullHeight 側には FAB を加算する(フッタは full の
+ * ときは出ないので含めない)。
  *
  * 【1パスで完結・再測定ループ無し】測る→判定する→適用する、を1回の renderAll 内で完結させる。
- * 適用後に size-changed が飛ぶことはあっても、それが maxHeight を変えるわけではないので
- * この関数が再度呼ばれて振動する(畳む→戻す→畳む…)ことは無い。
  */
 function applyInlineFold(foldAnchor: Comment): void {
-	// fullscreen 中は畳まない(全件 + 内部スクロールは C3/applyHostContext の fullscreen-scroll が
-	// 担う)。maxHeight 情報が無い(hostMaxHeightPx===null)ホストは不活性が既定(退行ゼロ)。
-	// FAB は常時表示なので(2026-07-17 追更新)、ここでの hidden 管理は不要 — quickAddFab.hidden の
-	// 書き手は openSheet/closeSheet 等(詳細ページ表示中の一時退避)のみに一本化されている。
-	if (hostDisplayMode !== "inline" || hostMaxHeightPx === null) return;
+	// fullscreen 中はプレビュークランプしない(全件 + 内部スクロールは C3/applyHostContext の
+	// fullscreen-scroll が担う)。inline 以外(hostDisplayMode が null=displayMode 未送信のホスト等)は
+	// 早期 return = 従来どおり全件表示(退行ゼロ)。
+	// 【2026-07-17 C0-b: hostMaxHeightPx===null の早期 return を撤去】旧実装は maxHeight 未送信なら
+	// 早期 return して畳まなかったが、新モデルでは inline は maxHeight の有無に関わらず「上位 N 件
+	// プレビュー」に束ねる(N_MAX クランプは端末制約ではなくプロダクト方針)。maxHeight が null のときは
+	// computeInlineFit へ Infinity を渡す(full=全行フィット扱い)ことで、クランプは N_MAX だけが効く。
+	if (hostDisplayMode !== "inline") return;
 
-	// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、hostMaxHeightPx が
-	// 有限のホスト(=このカードの実質的なメイン利用シナリオである claude.ai 等)でのみ発生し、
-	// renderAll 自体が1回の描画で完結する頻度(ユーザー操作/ポーリング単位)なので実害は小さい。
-	// renderRow が li.dataset.id を付けている(li[data-id])ので、セクション見出し(h2)や
-	// ゴースト行を含め通常行と同じ扱いで数えてよい(ゴーストも「1行」として畳み対象に含む —
-	// 削除中断も特別扱いしない方が体感として一貫する)。
+	// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、inline カードの描画頻度
+	// (ユーザー操作/ポーリング単位)なので実害は小さい。renderRow が li.dataset.id を付けているので
+	// セクション見出し(h2)は各行の offsetTop に押し下げとして織り込まれる(fold.ts の設計前提)。
 	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
 	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
 	const fabBlock = measureFabBlockPx();
-	// FAB は #root の外(兄弟要素)なので root.scrollHeight に含まれない — 明示的に加算する
-	// (measureFabBlockPx コメント参照。旧コメントの「root.scrollHeight が FAB を含む」は誤りだった)。
+	// FAB は #root の外(兄弟要素)なので root.scrollHeight に含まれない — 明示的に加算する。
 	const fullHeight = root.scrollHeight + fabBlock;
-	const buttonBlock = measureButtonBlockPx();
-	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(「すべて表示」+ FAB)の合計高さ。budget の
-	// 先引きにこの合計を使うことで、畳んだ行・ボタン・FAB の3つ全部が maxHeight に収まる
-	// (FAB を budget から除外していた場合、畳んでもなお FAB がクリップされる余地が残ってしまう)。
-	const bottomChrome = buttonBlock + fabBlock;
+	const footerBlock = measureFooterBlockPx();
+	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(フッタ要約行 + FAB)の合計高さ。
+	const bottomChrome = footerBlock + fabBlock;
 
-	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx, bottomChrome);
-	if (fit.mode === "full") return; // 収まっているので何もしない(FAB は元々表示されたまま)。
+	// フィット件数: maxHeight 未送信は Infinity(=全行フィット)。full なら全行、folded なら visibleCount。
+	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
+	const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
+	// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
+	const visibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
+	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
 
-	const { visibleCount } = fit;
 	rows.slice(visibleCount).forEach((li) => li.remove());
 	// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
 	for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
@@ -2744,33 +2802,31 @@ function applyInlineFold(foldAnchor: Comment): void {
 	}
 
 	const totalCount = rows.length; // 畳み対象4セクション横断の合計行数(完了済み・ドラフトは対象外)
-	const remaining = totalCount - visibleCount;
-	// C3(設計04 §5): fullscreen が広告されているホストだけボタン化する。canRequestFullscreen が
-	// apps.mdx:782 の「View は requestDisplayMode 前に availableDisplayModes を確認する MUST」を
-	// 担う純関数 — fullscreen 非広告ホスト(claude.ai で inline のみ広告・本アプリの現状=未受信)では
-	// false になり、従来どおりの受動「残り n 件」表示のまま(押しても何も起きない死にボタンを
-	// 作らない・2026-07-16 fable 指摘)。
-	if (canRequestFullscreen(hostAvailableDisplayModes)) {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "fold-expand";
-		button.textContent = `すべて表示 (全${totalCount}件)`;
-		button.addEventListener("click", () => {
-			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST・result.mode)。
-			// ホストが昇格を拒否した(sheet を出さなかった等)場合は "inline" が返るだけで、それ自体は
-			// エラーではない — 何もしない(次回描画は host-context-changed 経由の hostDisplayMode 更新に
-			// 委ねる。この then/catch では DOM を直接いじらない)。通信失敗等のエラーはカードを壊さない
-			// よう握りつぶす(設計04 §5 C3 の完了条件)。
+	const remaining = totalCount - visibleCount; // = 「他 n 件」の n
+	const canFull = canRequestFullscreen(hostAvailableDisplayModes);
+	// フッタ要約行「他 n 件の未完了 — 全画面で表示」(モック inline-preview.html の文言/控えめなトーン)。
+	// canFull(fullscreen 広告あり)ならタップ可能な button = ⤢ と同じ requestDisplayMode 昇格。非広告
+	// ホスト(本アプリの現状=未受信)では受動表示(タップ不可の div)= 死にリンクを作らない(設計05 §4・
+	// 2026-07-16 fable 指摘「押しても何も起きないリンクを出さない」)。受動では CTA「— 全画面で表示」を
+	// 付けない(操作できないのに操作を示唆しないため。現行の受動「残り n 件」と同じ受動トーン)。
+	const footer = document.createElement(canFull ? "button" : "div");
+	footer.className = "fold-more";
+	footer.appendChild(document.createTextNode("他 "));
+	const count = document.createElement("span");
+	count.className = "fold-more-count";
+	count.textContent = `${remaining}件の未完了`;
+	footer.appendChild(count);
+	if (canFull) {
+		(footer as HTMLButtonElement).type = "button";
+		footer.appendChild(document.createTextNode(" — 全画面で表示"));
+		footer.addEventListener("click", () => {
+			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を
+			// 拒否したら "inline" が返るだけでエラーではない — 何もしない(次回描画は host-context-changed
+			// 経由の hostDisplayMode 更新に委ねる)。通信失敗等はカードを壊さないよう握りつぶす。
 			void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
 		});
-		foldAnchor.parentNode?.insertBefore(button, foldAnchor.nextSibling);
-	} else {
-		const notice = document.createElement("div");
-		notice.className = "fold-remaining";
-		// 受動表示(ボタンではない・タップ不可)。fullscreen が広告されていないホストではここに留まる。
-		notice.textContent = `残り ${remaining} 件`;
-		foldAnchor.parentNode?.insertBefore(notice, foldAnchor.nextSibling);
 	}
+	foldAnchor.parentNode?.insertBefore(footer, foldAnchor.nextSibling);
 }
 
 /** 読込中スケルトン(行の影3本)。「(リマインダーはありません)」等のテキスト点滅より
@@ -2921,6 +2977,13 @@ function applyStructuredContent(sc: unknown): void {
 	}
 
 	confirmedTasks = nextTasks;
+	// C0-a: サーバーが当該 id を「未完了」で返してきたら退場マークを解除し、退場保留タイマーも取り消す
+	// (外部/別クライアントでの genuine な再開は再表示を許す。退場は「完了残骸の有界化」の保険であって
+	// 「未完了に戻った行を消し続ける」ためのものではない)。完了のまま(includeCompleted ビュー等)なら
+	// retiredDoneIds に留めて再合成しない。
+	for (const t of nextTasks) {
+		if (!t.completed) cancelDoneExit(t.id);
+	}
 	// サーバー由来(ユーザー起因)+ システム由来(sync)の affected を統合。sync 側は sync:true を
 	// 立て、renderRow/announceBecoming が中立ラベル「同期(...)」で描く。
 	const combinedAffected: AffectedEntry[] = serverAffected.concat(syncDiffToAffected(syncDiff));
@@ -3234,6 +3297,11 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	const nextStatus = nextCompleted ? "COMPLETED" : "NEEDS-ACTION";
 	// 楽観適用: 表示を即トグルし becoming を即時に乗せる(塗り丸+凍結リング / 破線に戻る)。
 	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
+	// C0-a(完了残骸の有界化): カード上で完了したら約5秒の undo 猶予後に退場するタイマーを仕込む。
+	// 再開(nextCompleted=false)なら退場タイマーを取り消す(= undo。退場済みマークも解除して再表示を許す)。
+	// タイマーは「タップ即」から起算する(iOS の undo 猶予と同じ体感 — サーバー確定を待たない)。
+	if (nextCompleted) scheduleDoneExit(task.id);
+	else cancelDoneExit(task.id);
 	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了/T_hard タイマーを仕込む
 	clearBanner();
 	rebuildFromConfirmed();
@@ -3319,6 +3387,10 @@ async function toggleTask(task: TodoItem): Promise<void> {
 		// update-todo 自体の失敗(transport / isError)→ 楽観変更をロールバックして元の status に戻す。
 		optimisticToggle.delete(task.id);
 		pendingIds.delete(task.id);
+		// C0-a: 完了失敗のロールバック時は退場タイマー/退場済みマークも解除する — さもないと、猶予中(<5s)に
+		// 失敗が確定したケースでは行が未完了へ戻るべきなのに retiredDoneIds に残って隠れ続けてしまう(稀な
+		// 競合だが、失敗時にタスクが消えるのは実害が大きい)。cancelDoneExit が両方を掃除して再表示を許す。
+		cancelDoneExit(task.id);
 		rebuildFromConfirmed();
 		renderAll();
 		// 再試行は「同じ mutation を再送」= toggleTask をもう一度呼ぶ(task は元の状態のスナップショット
