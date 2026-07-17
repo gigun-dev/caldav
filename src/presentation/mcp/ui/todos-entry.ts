@@ -457,24 +457,35 @@ let selMemoInput: HTMLInputElement | null = null;
 // becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
 const optimisticDeletes = new Set<string>();
 
-// --- C0-a: 完了残骸の有界化(約5秒の undo 猶予 → 高さ0へ畳んで退場)--------------------------
+// --- C0-a: 完了残骸の有界化(done タップ → グレーフェード → 約2秒で自然退場)------------------
 // 【なぜ必要か(2026-07-17 設計05 §4 裁定・実機バグ)】カード上でタップ完了した行(becoming-done)は
 // 位置記憶 + stickyData により「カード lifecycle スコープ」でその場に残る設計(下記 positionMemory
 // コメント)。しかし残骸が無制限に蓄積すると inline カードが maxHeight を突き破ってクリップする実機
 // バグの主因になった。よって「サーバー再取得(vm 差し替え)が来ない場合の有界化」の保険として、
-// 完了操作から約5秒の undo 猶予後に行を高さ0へ畳んで退場(remove)させる。退場はあくまで保険で、
-// 通常はサーバー再取得(未完了ビュー)で先に消える(退場タイマーが遅れて発火しても retiredDoneIds が
+// 完了操作から短い猶予後に行を高さ0へ畳んで退場(remove)させる。退場はあくまで保険で、通常は
+// サーバー再取得(未完了ビュー)で先に消える(退場タイマーが遅れて発火しても retiredDoneIds が
 // 二重退場・復活を防ぐ)。
 //   【モック inline-preview.html の旧ボツ案との関係(経緯・財産)】モック冒頭コメントは「(b) 時限フェード
 //   (約5秒で退場)」をボツ案として挙げていた(「undo 猶予が時間で切れるのは lifecycle 認識と不一致」)。
 //   その後の設計05 §4 で「lifecycle スコープ + 約5秒の undo 猶予後に退場で有界化」へ裁定が更新された
-//   (無制限蓄積のクリップ実害の方が重い)。本実装は設計05 §4(正典)に従う — モックのボツ案は
-//   「純粋な時限フェード(undo 導線なし)」への否定で、本実装は「猶予中は取り消せる」ので趣旨が違う。
+//   (無制限蓄積のクリップ実害の方が重い)。
+//   【> 2026-07-17 実機 FB(磨き込み FB2): 「取り消す」ボタン廃止 → グレーフェードで自然退場へ】
+//   当初(C0)は猶予中に「取り消す」テキストボタンを tag スロットへ出していたが、実機で
+//   「文字が上に偏る崩れ」が出たうえ、Todoist 等のベスプラ(完了項目はグレーに薄れてスッと消える)に
+//   照らすと明示ボタンは重い。よって「取り消す」ボタンは根ごと廃止し、done タップの瞬間から行が
+//   グレーに薄れ(opacity 低下 + 彩度落ち)、約2秒で max-height 畳みで自然退場する連続した1つの流れに
+//   変えた(done チェック → 薄くなる → すっと畳まれる)。猶予中の取り消しは「塗り丸の再タップ=再開」に
+//   一本化する(cancelDoneExit が退場タイマー/グレーフェードを止める)。猶予も 5000→2000ms に短縮
+//   (Todoist の完了フェードアウト尺に寄せる。長い 5s は「消えかけの残骸」が視界に残りすぎる)。
 // 【agenda には無い】agenda(予定)は完了概念が無いので残骸問題そのものが起きない(この機構は todos 専用)。
-const DONE_EXIT_GRACE_MS = 5000; // 約5秒(設計05 §4「約5秒の undo 猶予」)
+const DONE_EXIT_GRACE_MS = 2000; // 約2秒(実機 FB でグレーフェード退場へ変更・Todoist 準拠)
 // exitTimers: 退場待ちの行 id → setTimeout ハンドル(行ごと1本)。renderAll 再走(ポーリング等)で
 //   二重タイマーが張られないよう scheduleDoneExit が has() ガードする(冪等)。
 const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// graceStartAt: 退場待ちの行 id → 猶予開始時刻(ms epoch)。renderRow がグレーフェードアニメの
+//   animation-delay を負値で resume する(renderAll が li を作り直しても、タップからの経過位置から
+//   フェードを継続させ「頭出しに巻き戻る」チカチカを防ぐ。committing アニメの animUntil と同じ手法)。
+const graceStartAt = new Map<string, number>();
 // retiredDoneIds: 退場済み(高さ0へ畳んで remove した)行の id。rebuildDisplay / renderAll が
 //   この集合の id を「もう再合成しない」ことで、ポーリング再描画や includeCompleted ビューの確定 vm
 //   から幽霊復活するのを防ぐ(退場の冪等性の要)。実質別ビュー切替(resetPositionMemory)でクリアし、
@@ -484,19 +495,22 @@ const retiredDoneIds = new Set<string>();
  *  (renderAll 再走での二重タイマー・復活防止)。 */
 function scheduleDoneExit(id: string): void {
 	if (exitTimers.has(id) || retiredDoneIds.has(id)) return;
+	graceStartAt.set(id, Date.now()); // グレーフェードの起点(renderRow が resume delay に使う)
 	const timer = setTimeout(() => {
 		exitTimers.delete(id);
 		retireDoneRow(id);
 	}, DONE_EXIT_GRACE_MS);
 	exitTimers.set(id, timer);
 }
-/** 退場タイマーを取り消す(undo=再開時 / 外部再開検知時)。退場済みマークも解除して再表示を許す。 */
+/** 退場タイマーを取り消す(undo=再開時 / 外部再開検知時)。退場済みマーク・グレーフェード起点も解除して
+ *  再表示を許す。 */
 function cancelDoneExit(id: string): void {
 	const t = exitTimers.get(id);
 	if (t !== undefined) {
 		clearTimeout(t);
 		exitTimers.delete(id);
 	}
+	graceStartAt.delete(id);
 	retiredDoneIds.delete(id);
 }
 /** 完了行を退場させる(高さ0へ畳んで remove → 状態から追放して再描画)。
@@ -509,6 +523,7 @@ function retireDoneRow(id: string): void {
 	const finish = (): void => {
 		if (retiredDoneIds.has(id)) return; // transitionend とフォールバック setTimeout の二重発火ガード
 		retiredDoneIds.add(id);
+		graceStartAt.delete(id);
 		positionMemory.delete(id);
 		stickyData.delete(id);
 		optimisticToggle.delete(id);
@@ -1432,32 +1447,26 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		tagEl.textContent = tagText;
 		if (resumeTag) applyAnimResume(tagEl);
 	}
-	// C0-a: 完了行が退場猶予中(約5秒)なら、meta/tag 位置に「取り消す」アフォーダンスを出す。
-	// 【undo 導線について】既存の undo 導線は「塗り丸の再タップ=再開(toggleTask)」だが、猶予中である
-	// ことが見て分かる形が要る(設計05 §4「猶予中に見て分かる形に」)ので、明示のテキストリンク
-	// 「取り消す」を tag スロット(rowMain 直下・タイトル1行目に揃う)へ置く。タップ=同じ toggleTask で
-	// 再開し、その中で cancelDoneExit が退場タイマーを止める(丸の再タップと完全に等価)。
-	// 猶予中は「完了」タグより「取り消す」を優先する(両方出すと冗長・意味が割れる)。
+	// C0-a(> 2026-07-17 実機 FB2): 完了行が退場猶予中(約2秒)なら、行全体をグレーに薄れさせて
+	// 自然退場に向かわせる。旧実装(C0)はここで「取り消す」テキストボタンを tag スロットへ出していたが、
+	// 実機で文字が上に偏る崩れが出たうえベスプラ(Todoist の完了フェードアウト)に合わないため廃止。
+	// 代わりに .retiring クラスを付け、CSS の retire-fade アニメ(opacity 低下 + grayscale)を done タップ
+	// からの経過位置で resume する(li を作り直しても頭出しに巻き戻らないよう negative animation-delay と
+	// animation-duration を JS から与える。committing の animUntil resume と同じ手法)。退場の畳み
+	// (retireDoneRow の .exiting)はこのフェードの終端に連続して起きる。取り消しは「塗り丸の再タップ=
+	// 再開」に一本化(check の click ハンドラ→toggleTask→cancelDoneExit がフェード/タイマーを止める)。
 	const inGrace = task.completed && exitTimers.has(task.id) && !isDraft;
-	let undoEl: HTMLButtonElement | null = null;
 	if (inGrace) {
-		undoEl = document.createElement("button");
-		undoEl.type = "button";
-		undoEl.className = "undo-exit";
-		undoEl.textContent = "取り消す";
-		undoEl.setAttribute("aria-label", `「${task.title}」の完了を取り消す`);
-		undoEl.addEventListener("click", (e) => {
-			e.stopPropagation(); // 行選択に伝播させない(取り消しは独立操作)
-			void toggleTask(task);
-		});
+		li.classList.add("retiring");
+		li.style.animationDuration = `${DONE_EXIT_GRACE_MS}ms`;
+		const started = graceStartAt.get(task.id);
+		if (started !== undefined) li.style.animationDelay = `-${Math.max(0, Date.now() - started)}ms`;
 	}
 	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	// 猶予中は「取り消す」を、そうでなければ becoming タグを rowMain 直下へ(排他)。
-	if (undoEl !== null) rowMain.appendChild(undoEl);
-	else if (tagEl !== null) rowMain.appendChild(tagEl);
+	if (tagEl !== null) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ info ボタン(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {
@@ -2224,6 +2233,40 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 			expand.appendChild(input);
 			body.appendChild(expand);
 		}
+	}
+
+	// --- 位置通知行(読み取り専用。C2 実機 FB 修正・設計 05 §1-a/§2)-----------------------------------
+	// 【なぜ独立行が要るか(実機 FB の根治)】上の「場所」行は VTODO 直下の LOCATION(テキスト・編集可)を
+	// 読む・書く。しかし位置情報リマインダー(geofence)の場所は VALARM 内の structured-location
+	// (= DTO の proximityAlarm.location)にあり、LOCATION テキストとは別スロット(設計 05 §1-a の実例)。
+	// そのため一覧行には 📍「〜に到着時」バッジが出るのに、詳細の「場所」入力は空、という不整合が実機で
+	// 出ていた。これを埋めるために proximity を独立の読み取り専用行として出す。
+	// 【なぜ「場所」テキスト入力に流し込まないか(意味の破壊回避・指示)】proximityAlarm.location を編集可能な
+	// 場所テキストに入れると、保存時に LOCATION へ書き出され「通知条件の場所」と「場所テキスト」が混線する
+	// (2つの別スロットが1つに潰れる)。よって値は d(編集ドラフト)ではなく task.proximityAlarm から直接読み、
+	// input ではなく静的テキストで見せる(collectSheetChanges も触らない=保存対象外)。
+	// 【文言は一覧バッジと同一(proximityBadge 純関数を再利用)】「福登の自宅に到着時 / から出発時」。title が
+	// 無ければ「位置情報の通知」へ degrade(location-view.ts。mcp-location-view.test.ts で境界固定)。
+	// 【編集は未対応(経緯コメント)】proximity の変更・削除・新規作成は write の領分(C3〜C5・author 規約 C8)。
+	// read カード(C2)では表示のみ。編集 UI(到着/出発トグル・場所ピッカー)は C4 の場所/会議セミモーダルで
+	// vtodo にも展開する計画(設計 05 §5 末尾「到着/出発のトグルを添えて同じピッカーを共用」)。
+	// 【structuredLocation との併存(挙動不変)】VTODO 直下に別途 structuredLocation があるケースでも、上の
+	// 「場所」テキスト行は LOCATION をそのまま出す(不変)。この行は proximityAlarm がある行にだけ増える。
+	if (task.proximityAlarm !== null) {
+		const badge = proximityBadge(task.proximityAlarm);
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "位置通知";
+		const value = el("span", "f-value");
+		// 読み取り専用なので f-readonly(muted・map-pin + 文言)。一覧 .prox チップと視覚言語を揃える。
+		const ro = el("span", "f-readonly");
+		ro.appendChild(createIcon("map-pin"));
+		ro.appendChild(document.createTextNode(` ${badge.text}`));
+		ro.setAttribute("aria-label", badge.aria);
+		value.appendChild(ro);
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
 	}
 
 	page.appendChild(body);

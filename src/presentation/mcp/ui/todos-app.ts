@@ -1279,6 +1279,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   .f-value .chev { display: flex; align-items: center; color: var(--text-3); font-size: 13px; }
   .f-value .muted { color: var(--text-3); }
   .f-row.readonly .f-value { color: var(--text-3); }
+  /* C2(設計 05 §1-a): 位置通知行の読み取り専用値(map-pin + 「〜に到着時」)。一覧 .prox チップと
+   * トーンを揃える(muted・アイコンとテキストの縦位置を inline-flex で合わせる)。編集不可なので
+   * input を出さず静的テキスト(編集は write の領分 C3〜C5)。 */
+  .f-value .f-readonly { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .f-row .goto { display: flex; align-items: center; margin-left: auto; color: var(--text-3); }
 
   /* インライン展開部(繰り返しプリセット・曜日・終了)。浮遊させず行の下に流す(モック C)。
