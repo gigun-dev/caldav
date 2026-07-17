@@ -142,6 +142,9 @@ import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fo
 // C2(設計 05 §2): proximity バッジ文言の生成を純関数に隔離(mcp-location-view.test.ts で境界固定)。
 // 型(StructuredLocationView / ProximityAlarmView)も location-view.ts の写経を共有する。
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
+// 完了トグル coalesce / 楽観復活の判定(純関数コア。> 2026-07-17 実機 FB「done→undo で完了が残る」監査修正)。
+// ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
+import { coalesceAction, shouldReviveToggle } from "./toggle-coalesce";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -2588,10 +2591,30 @@ function rebuildDisplay(baseAffected: AffectedEntry[], baseGhosts: TaskSnapshot[
 			if (ed !== undefined) Object.assign(merged, ed);
 			return merged;
 		});
+	// 【> 2026-07-17 実機 FB 監査修正: 確定 vm から抜けた行への楽観トグルも表示へ復活させる(desired が常に勝つ)】
+	// バグ: done → サーバー確定(完了 → 未完了ビューから id が脱落)→ undo(optimisticToggle=未完了)としても、
+	// 上の map は confirmedTasks の行しか overlay しないため、脱落済み id の undo が「見えない」= 行が完了表示の
+	// まま残る(実機 FB「done 押してすぐ取り消すと完了状態で残る」の主因)。修正: confirmedTasks に居ない
+	// optimisticToggle 対象は stickyData の last-known スナップショットを土台に ov を重ねて復活させる(reopen が
+	// 即座に見える=サーバー再開の往復を待たない)。復活可否は純関数 shouldReviveToggle に固定(テスト参照)。
+	// 復活は in-flight 楽観の間だけ(settle/rollback で optimisticToggle が消えれば止まる)なので幽霊化しない。
+	const confirmedIds = new Set((confirmedTasks ?? []).map((t) => t.id));
 	for (const [id, ov] of optimisticToggle) {
-		// 該当行が確定一覧に居るときだけ becoming を立てる(既に確定 vm から抜けた・成功直前の
-		// 過渡でも二重表示にならないよう在庫確認する)。
-		if (confirmedTasks?.some((t) => t.id === id)) {
+		if (!shouldReviveToggle(confirmedIds.has(id), retiredDoneIds.has(id), optimisticDeletes.has(id), stickyData.has(id)))
+			continue;
+		const base = stickyData.get(id);
+		if (base === undefined) continue; // shouldReviveToggle が hasSticky=true を保証するが型のため再確認
+		const revived: TodoItem = { ...base, completed: ov.completed, status: ov.status };
+		const ed = optimisticEdits.get(id);
+		if (ed !== undefined) Object.assign(revived, ed);
+		displayTasks.push(revived);
+	}
+	for (const [id, ov] of optimisticToggle) {
+		// becoming(completed/reopened)は「今このフレームで実際に表示している行」= displayTasks に居る id に
+		// だけ立てる。confirmedTasks に居る行に加え、上で sticky から復活させた脱落行も含む(復活行の undo にも
+		// 「再開」ラベルが乗る)。以前は confirmedTasks 在庫だけを条件にしていたため、脱落行の楽観が装飾も
+		// 表示も得られず「完了のまま残る」バグになっていた(displayTasks 参照へ是正)。
+		if (displayTasks.some((t) => t.id === id)) {
 			affected.set(id, { id, kind: ov.completed ? "completed" : "reopened" });
 		}
 	}
@@ -3447,6 +3470,15 @@ async function flushToggle(task: TodoItem): Promise<void> {
 				optimisticToggle.delete(id);
 				pendingIds.delete(id);
 				cancelDoneExit(id); // 退場タイマー/退場済みマークも解除(失敗行が隠れ続けないように)
+				// 【監査修正の補足(sticky 汚染の修復)】確定 vm から抜けた行(=完了確定済みで未完了ビューから脱落)の
+				// reopen が失敗した場合、上記 rebuildDisplay の楽観復活(revive)で stickyData が未完了へ汚染されている。
+				// サーバー真実(脱落 ⟺ 完了)へ戻すため、確定一覧に居ない id は sticky を完了状態へ復元する
+				// (確定一覧に居る id は rebuildFromConfirmed が server 真実を描くので不要)。これをしないと、失敗後も
+				// 行が未完了で残る別バグを生む(revive の裏返し)。
+				if (!(confirmedTasks ?? []).some((t) => t.id === id)) {
+					const snap = stickyData.get(id);
+					if (snap !== undefined) stickyData.set(id, { ...snap, completed: true, status: "COMPLETED" });
+				}
 				rebuildFromConfirmed();
 				renderAll();
 				const verb = desired.completed ? "完了" : "再開";
@@ -3459,9 +3491,11 @@ async function flushToggle(task: TodoItem): Promise<void> {
 			// 再描画で最新の望みを保持し続けるため。desired==confirmed のときは重ねても値が一致=無害)。
 			await applyToggleConfirmed(result.structuredContent as TodosStructuredContent | undefined);
 			// coalesce: 往復/確定の間にユーザーが意図を変えていたら(desired と最新の望みが食い違う)、
-			// 最新 desired で補正を追送する(ループ)。楽観 UI は既に最新を映しているので視覚は飛ばない。
+			// 最新 desired で補正を追送する(ループ)。判定は純関数 coalesceAction に固定(mcp-toggle-coalesce.test.ts)。
+			// 【実機バグ「done→undo で完了が残る」の核】この判定を「latest===undefined なら settle」だけでなく
+			// 「latest≠sent なら必ず resend」に保つことで、完了往復の裏で undo された未完了意図を握りつぶさない。
 			const latest = desiredToggle.get(id);
-			if (latest !== undefined && latest.completed !== desired.completed) continue;
+			if (coalesceAction(desired.completed, latest?.completed) === "resend") continue;
 			// 落ち着いた: confirm 済みの状態が最新の望みと一致(or 新しい望み無し)。楽観/送信状態を解除する
 			// (confirmedTasks が既に真実なので、解除しても表示は変わらない)。
 			desiredToggle.delete(id);
