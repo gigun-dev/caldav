@@ -144,7 +144,7 @@ import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fo
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
 // 完了トグル coalesce / 楽観復活の判定(純関数コア。> 2026-07-17 実機 FB「done→undo で完了が残る」監査修正)。
 // ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
-import { coalesceAction, shouldReviveToggle } from "./toggle-coalesce";
+import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -2717,7 +2717,11 @@ function renderAll(): void {
 	for (const a of affectedById.values()) {
 		// C0-a: 退場済み id は completed 合成もしない(退場後に mutate 応答の affected が残っていても再出させない)。
 		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id) && !retiredDoneIds.has(a.id)) {
-			affectedItems.push(snapshotToItem(a.task, true));
+			// 【> 2026-07-17 実機 FB「done で notes が消える」修正】snapshot(TaskSnapshot は notes を持たない)から
+			// 作った最小行をそのまま synthDone にすると、sectionizeManual の liveById に載って notes まで揃った
+			// stickyData より優先され、完了行の notes が描画から消える。sticky を土台に merge して full な形を保つ
+			// (mergeCompletedBase・純関数 mcp-toggle-coalesce.test.ts で固定)。
+			affectedItems.push(mergeCompletedBase(stickyData.get(a.id), snapshotToItem(a.task, true)));
 		}
 	}
 	// --- 並べ替え段(sortMode の seam。今回は "manual" 固定 = 位置不変 item 3)------------------------

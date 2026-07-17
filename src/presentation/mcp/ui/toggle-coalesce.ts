@@ -55,3 +55,39 @@ export function shouldReviveToggle(
 	if (retired || optimisticallyDeleted) return false; // 退場/削除中は復活させない
 	return hasSticky; // 土台(sticky)があるときだけ復活できる
 }
+
+/** 完了 becoming(done-in-place)の描画土台を作る merge 規則(renderAll の synthDone 構築で使う)。
+ *  【なぜ要るか(実機バグ「done 状態で notes の表示が消える」)】完了確定で未完了ビュー(confirmedTasks)から
+ *  脱落した行は、サーバー応答の affected[].task スナップショット(TaskSnapshot = 最小フィールド。**notes を
+ *  持たない**)から擬似行 snapshotItem に合成される。この擬似行は notes:null。sectionizeManual では
+ *  この擬似行が liveById に載り、`liveById ?? stickyData` の優先順で **notes まで揃った sticky より優先** されて
+ *  しまうため、完了行の notes が描画から消える(再現条件: done→サーバー確定で脱落→becoming-done 表示のフレーム)。
+ *  【修正原則(コーディネーター指示)】行の描画土台は常に「最後に notes まで揃っていた full な形(sticky)」を
+ *  保ち、部分 snapshot で土台を上書きしない。sticky があればそれを土台にして、snapshot が権威を持つフィールド
+ *  (title/due/isAllDay と完了状態)だけを重ねる — notes/priority/location/recurrence/structuredLocation/
+ *  proximityAlarm は snapshot に無いので sticky の値を保つ。sticky が無い(初回が mutate 応答だった等)ときは
+ *  やむなく snapshotItem をそのまま使う(見せられる full データが存在しないため。best-effort)。
+ *  @param sticky その id の last-known full 行(sectionizeManual が realLive から更新した値)。無ければ undefined。
+ *  @param snapshotItem サーバー snapshot から作った最小擬似行(snapshotToItem の出力。notes:null 等)。
+ *  【純関数・構造的部分型】TodoItem を直接 import せず必要フィールドだけを構造制約にして「ui は末端」の設計を保つ
+ *  (todos-entry.ts が TodoItem を渡すと構造的に適合する)。 */
+export function mergeCompletedBase<
+	T extends {
+		completed: boolean;
+		status: string | null;
+		title: string;
+		due: string | null;
+		isAllDay: boolean;
+		notes: string | null;
+	},
+>(sticky: T | undefined, snapshotItem: T): T {
+	if (sticky === undefined) return snapshotItem;
+	return {
+		...sticky,
+		completed: true,
+		status: "COMPLETED",
+		title: snapshotItem.title,
+		due: snapshotItem.due,
+		isAllDay: snapshotItem.isAllDay,
+	};
+}

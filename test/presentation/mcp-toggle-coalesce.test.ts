@@ -10,7 +10,19 @@
 //      復活させて即座に見せる(= 確定行が無くても desired が勝つ)。退場済み/削除中は復活させない。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
-import { coalesceAction, shouldReviveToggle } from "../../src/presentation/mcp/ui/toggle-coalesce";
+import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "../../src/presentation/mcp/ui/toggle-coalesce";
+
+/** テスト用の最小 TodoItem 相当(mergeCompletedBase の構造制約を満たす分 + notes/priority)。 */
+interface Row {
+	id: string;
+	completed: boolean;
+	status: string | null;
+	title: string;
+	due: string | null;
+	isAllDay: boolean;
+	notes: string | null;
+	priority: number;
+}
 
 describe("coalesceAction(追送判定・last-write-wins)", () => {
 	test("送った状態と最新の望みが一致 → settle(確定)", () => {
@@ -52,5 +64,53 @@ describe("shouldReviveToggle(確定 vm から脱落した行の楽観復活)", (
 
 	test("sticky スナップショットが無い → 土台が無く復活できない(best-effort で見送り)", () => {
 		expect(shouldReviveToggle(false, false, false, false)).toBe(false);
+	});
+});
+
+describe("mergeCompletedBase(完了 becoming の描画土台 merge・notes 消失バグ修正)", () => {
+	// sticky = notes まで揃った last-known full 行(完了前の姿)。
+	const sticky: Row = {
+		id: "a",
+		completed: false,
+		status: "NEEDS-ACTION",
+		title: "牛乳を買う",
+		due: "2026-07-18",
+		isAllDay: true,
+		notes: "低脂肪のやつ",
+		priority: 5,
+	};
+	// snapshotItem = TaskSnapshot 由来の最小行(notes を持たない=null。priority も 0 に潰れている)。
+	const snapshotItem: Row = {
+		id: "a",
+		completed: true,
+		status: "COMPLETED",
+		title: "牛乳を買う",
+		due: "2026-07-18",
+		isAllDay: true,
+		notes: null,
+		priority: 0,
+	};
+
+	test("【バグ修正の核】sticky があれば notes を保持したまま完了状態を重ねる(notes が消えない)", () => {
+		const merged = mergeCompletedBase(sticky, snapshotItem);
+		expect(merged.notes).toBe("低脂肪のやつ"); // ← 以前は snapshot の notes:null で潰れて消えていた
+		expect(merged.priority).toBe(5); // notes 以外の full フィールド(priority 等)も sticky を保つ
+		expect(merged.completed).toBe(true); // 完了状態は snapshot 側(権威)を反映
+		expect(merged.status).toBe("COMPLETED");
+	});
+
+	test("snapshot が権威を持つフィールド(title/due/isAllDay)は snapshot 側を採る", () => {
+		// 完了時に title/due が変わっていた場合(反復 D4 等)は snapshot が新しい。
+		const changed: Row = { ...snapshotItem, title: "牛乳(2本)", due: "2026-07-19", isAllDay: false };
+		const merged = mergeCompletedBase(sticky, changed);
+		expect(merged.title).toBe("牛乳(2本)");
+		expect(merged.due).toBe("2026-07-19");
+		expect(merged.isAllDay).toBe(false);
+		expect(merged.notes).toBe("低脂肪のやつ"); // notes は依然 sticky を保持
+	});
+
+	test("sticky が無い(初回が mutate 応答だった等)→ snapshotItem をそのまま使う(best-effort)", () => {
+		const merged = mergeCompletedBase(undefined, snapshotItem);
+		expect(merged).toBe(snapshotItem);
 	});
 });
