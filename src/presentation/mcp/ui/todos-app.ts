@@ -1117,40 +1117,28 @@ export const TODOS_APP_HTML = `<!doctype html>
     outline: none;
     padding: 0;
   }
-  /* 【2026-07-16 実機FB: 編集でメモが拡大する(12→16px)のをやめる — scale 手法】
-   * iOS auto-zoom はフォーカス要素の **computed font-size** で発火するので、font-size は 16px の
-   * まま(zoom 回避)にし、transform:scale(.75) で**見た目だけ 12px** にする。これで一覧プレビュー
-   * .notes(12px)と編集入力の字大が完全一致し、選択で拡大する跳ねがゼロになる(iOS リマインダーも
-   * 編集中メモは小さいまま = ネイティブは 16px 制約が無いだけ。web ではこの scale が唯一の等価解)。
-   * §7.7 の「選択行だけメモがやや大きくなるのは許容」は撤回。
-   *   - width:133.34% + transform-origin:top left で scale(.75) の横縮みを補正し行幅を保つ。
-   *   - 【2026-07-17 実機FB: 編集で memo の padding(=箱の縦寸法)が跳ねるのをやめる — pre-scale
-   *     メトリクス再計算】旧実装は line-height:1.5・padding:6px 0(pre-scale)= 視覚 line-height
-   *     18px・視覚 padding 4.5px×2 だったが、.notes 側は line-height 1.35(12px 基準=16.2px)・
-   *     padding 無し・margin-top 1px なので、選択時に箱の縦寸法が跳ねていた(FB の直接原因)。
-   *     算術根拠: transform:scale は font-size と line-height 比を同時に縮小するため「font-size
-   *     ×0.75 の絶対値」と「line-height 比」が .notes 側と同一なら、scale 前後で視覚メトリクスは
-   *     恒等に一致する。ここでは font-size 16×0.75=12(=.notes の font-size と一致)・
-   *     line-height 比 1.35(=.notes と一致、上の .notes { line-height: 1.35 } 参照)を採用し、
-   *     padding は 0 にして margin-top:1px(pre-scale。margin は transform の対象外=scale の影響を
-   *     受けないため 1px のまま .notes の margin-top:1px と直接一致する)に置き換えた。
-   *   - 【WCAG 2.5.8(最小タップ実効高 24px)の担保を padding から min-height へ移す】旧実装は
-   *     padding でタップ高を稼いでいたが(視覚位置ごと押し広げる=今回の跳ね跳ねの原因)、padding
-   *     を落としたので同じ手段は使えない。代わりに min-height を使う — min-height は要素の
-   *     レイアウト最小高を保証するだけで、テキストの開始位置(1行目の視覚位置)を動かさない
-   *     (border/padding のような「箱を広げて中身を押し下げる」効果が無い)。24px ÷ 0.75(scale)=
-   *     32px(pre-scale)を指定する。memo-line は単一行の <input> 想定で通常はテキストの自然高
-   *     (12px×1.35=16.2px)しか無いため、min-height:32px(視覚24px)が下方向に不可視の余白として
-   *     効くだけで、上記の視覚メトリクス一致(.notes との整合)には影響しない。 */
+  /* 【2026-07-17 実機FB: 編集でメモ欄が「全体的に広がる」を根治 — scale トリックを撤去し素の 12px へ】
+   * 経緯(財産): かつては「iOS はフォーカス可能入力の font-size が 16px 未満だと focus auto-zoom する」
+   * を避けるため、memo 入力を font-size:16px にしたうえで transform:scale(.75) で見た目だけ 12px に
+   * 縮めていた(+ width:133.34% で横補正・min-height:32px で WCAG タップ高を確保)。しかしこの手法には
+   * 構造的欠陥があった: **transform:scale はレイアウトに影響しない**(視覚的に縮むだけで、要素は
+   * 縮小前の高さ=16px×1.35=21.6px、min-height 込みなら 32px をレイアウト上占有し続ける)。その結果
+   * 編集時のメモ欄は表示時の .notes(12px×1.35=16.2px)より高い箱を取り、行全体が下に広がっていた
+   * (ユーザー実機 FB「編集で title/memo など全体的に padding が広がる」の直接原因)。
+   *
+   * 根治: そもそも focus auto-zoom は viewport の maximum-scale=1 / user-scalable=no(このファイル冒頭の
+   * <meta viewport>・2026-07-17 追加)で**既に無効化済み**なので、16px 化 → scale で戻すという迂回自体が
+   * もう不要。memo 入力を素の font-size:12px にすれば、表示 .notes と font-size・line-height・margin-top が
+   * 完全一致し、レイアウト箱の高さも恒等一致する(選択で1pxも動かない)。scale/width補正/min-height は
+   * すべて撤去(scale が無いのでレイアウトの嘘が消える)。WCAG 2.5.8 は「memo 入力は行選択後にのみ現れる
+   * 全幅の1行入力で、水平方向に十分広いタップ標的」であることと、ユーザーの明示要件「編集で何も変化
+   * させない」を優先して、縦方向の min-height 上乗せはしない(視覚位置を動かす副作用の方が実害大)。 */
   .memo-line {
     display: block;
-    width: 133.34%;
+    width: 100%;
     font: inherit;
-    font-size: 16px;
+    font-size: 12px;
     line-height: 1.35;
-    transform: scale(0.75);
-    transform-origin: top left;
-    min-height: 32px;
     margin-top: 1px;
     padding: 0;
     color: var(--muted);
