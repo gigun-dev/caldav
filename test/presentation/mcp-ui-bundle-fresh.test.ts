@@ -16,9 +16,11 @@
 // minify の非決定性について: Bun の minifier はバージョン間で出力バイト列が変わりうる
 // (変数名の割り当てや空白の詰め方等)。ローカルの bun バージョンと CI の bun バージョンが
 // ずれると、entry を正しく再生成していても出力バイトが一致せずこのテストが誤って落ちる
-// (false positive)。これを防ぐため .github/workflows/ci.yml の setup-bun は
-// package.json 記載の bun バージョンではなく明示的に固定バージョンを指定している
-// (詳細はそちらのコメント参照)。ローカルも同じバージョンを使うこと。
+// (false positive)。これを防ぐため bun バージョンを固定する。固定値の単一の真実は
+// リポジトリ直下の **.tool-versions**(`bun 1.3.13`・asdf/mise 標準)に置き、CI(ci.yml の
+// setup-bun)は bun-version-file でそれを読む。ローカルも mise/asdf を使えば同ファイルで
+// 自動整合する(ci.yml 直書きにすると個人環境の数値を CI が抱える形になり単一の真実が失われる・
+// 詳細は ci.yml のコメント参照)。
 // =============================================================================
 
 import { describe, expect, it } from "bun:test";

@@ -31,16 +31,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # bun-version は latest ではなく明示固定(ローカル開発環境と一致させる)。
+      # bun バージョンは latest ではなく固定する。理由:
       # test/presentation/mcp-ui-bundle-fresh.test.ts が MCP Apps カード JS バンドルの
       # 鮮度をバイト一致で判定するため、CI とローカルで bun(の minifier)のバージョンが
       # ずれると、entry を正しく再生成していても出力バイト列が変わって CI だけ落ちる
-      # 誤検知が起きる。バージョン固定でローカル・CI・生成物の三者を揃える。
-      # 将来 bun を上げるときは「bun 更新 → bun run build:ui で再生成 → 生成物ごと
-      # コミット」を1コミットで行うこと(このバージョン番号も同時に更新する)。
+      # 誤検知が起きる。
+      # 【固定値の置き場: ci.yml 直書きをやめ .tool-versions に一元化(2026-07-17)】
+      # 番号を ci.yml に直書きすると「特定개발者のローカルに合わせた数値」を CI が抱える形になり、
+      # ローカル・CI・生成物の三者を揃える単一の真実がどこにも無くなる。バージョンは committed な
+      # .tool-versions(asdf/mise 標準・.nvmrc/.ruby-version と同じ発想)を単一の真実にし、
+      # setup-bun には bun-version-file でそれを読ませる。ローカルも mise/asdf を使えば同ファイルで
+      # 自動整合する(使わなくても「このリポジトリの bun はこれ」という宣言が1箇所に残る)。
+      # 将来 bun を上げるときは「.tool-versions 更新 → bun run build:ui で再生成 → 生成物ごと
+      # コミット」を1コミットで行う(鮮度テストが未再生成を弾く)。
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.13"
+          bun-version-file: ".tool-versions"
 
       # --frozen-lockfile: lockfile と package.json の乖離を CI で検出する
       # (ローカルで bun add し忘れコミットを防ぐ)。
