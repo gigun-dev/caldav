@@ -1157,12 +1157,15 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			}
 			tagText = isSync ? "同期(完了)" : "完了";
 		} else if (aff.kind === "reopened") {
-			li.classList.add("becoming-undone");
-			if (committing) {
-				li.classList.add("committing");
-				resumeCircle = true;
-			}
-			tagText = isSync ? "同期(再開)" : "再開";
+			// 【> 2026-07-17 実機 FB3: undo(再開)は「元に戻すだけ」— 特殊 state / 演出を外す】
+			// 旧実装はここで becoming-undone(reopened 専用の逆再生リング演出)+ committing ring-pulse +
+			// 「再開」タグを付けていた。ユーザー裁定「undo は元に戻すだけだから特殊な state は不要」に従い、
+			// 塗り丸再タップの undo は「チェックアイコンがあっさり戻り、行が即座に未完了の見た目へ」だけに
+			// する — ここでは何の装飾も付けない(aff.kind==="reopened" は依然 announceBecoming の aria-live
+			// 「未完了に戻しました」には使うので分岐自体は残すが、視覚は素の未完了行=li に .done が付かない
+			// ことで自然に達成される)。becoming-undone / li.becoming-undone .circle の CSS(todos-app.ts)は
+			// 退行時の再利用に備え残置(参照されなくなった=死んでも害は無い経緯記録)。
+			// sync 由来の外部再開も同様に無装飾(区別を見せない — ラベルは aria のみ)。
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
 			tagText = isSync ? "同期(追加)" : "追加";
@@ -2822,8 +2825,9 @@ function measureFabBlockPx(): number {
  * C0-b 本体(2026-07-17 inline プレビュー化。旧 C2 動的畳みを改訂): inline = 上位 N_MAX 件の
  * 未完了プレビュー / fullscreen = 全件、という役割分担にする(設計05 §4・モック inline-preview.html)。
  * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行が
- * あれば末尾にフッタ要約行「他 n 件の未完了 — 全画面で表示」を挿す。フッタのタップ=右上 ⤢ と同じ
- * requestDisplayMode({mode:"fullscreen"})(導線は2つ・装置は1つ)。**+ FAB は folded でも常に表示**。
+ * あれば末尾にフッタ要約行「他 n 件の未完了」を挿す(> 2026-07-17 実機 FB1 で CTA「— 全画面で表示」は削除)。
+ * フッタのタップ=右上 ⤢ と同じ requestDisplayMode({mode:"fullscreen"})(導線は2つ・装置は1つ)。
+ * **+ FAB は folded でも常に表示**。
  *
  * 【旧「すべて表示」ボタン + 受動「残り n 件」の廃止(役割重複の解消)】旧実装は「maxHeight に収まる
  * 限り全件・溢れたら畳む」動的モデルで、末尾に「すべて表示 (全n件)」ボタン(or 受動「残り n 件」)を
@@ -2881,11 +2885,13 @@ function applyInlineFold(foldAnchor: Comment): void {
 	const totalCount = rows.length; // 畳み対象4セクション横断の合計行数(完了済み・ドラフトは対象外)
 	const remaining = totalCount - visibleCount; // = 「他 n 件」の n
 	const canFull = canRequestFullscreen(hostAvailableDisplayModes);
-	// フッタ要約行「他 n 件の未完了 — 全画面で表示」(モック inline-preview.html の文言/控えめなトーン)。
-	// canFull(fullscreen 広告あり)ならタップ可能な button = ⤢ と同じ requestDisplayMode 昇格。非広告
-	// ホスト(本アプリの現状=未受信)では受動表示(タップ不可の div)= 死にリンクを作らない(設計05 §4・
-	// 2026-07-16 fable 指摘「押しても何も起きないリンクを出さない」)。受動では CTA「— 全画面で表示」を
-	// 付けない(操作できないのに操作を示唆しないため。現行の受動「残り n 件」と同じ受動トーン)。
+	// フッタ要約行「他 n 件の未完了」(> 2026-07-17 実機 FB1 で「— 全画面で表示」の CTA を削除・簡素化)。
+	// タップ= fullscreen 昇格の挙動はそのまま。CTA 文言を消してもタップ可能なことは色で示す —
+	// button 版(canFull)は .fold-more 全体をリンク色(accent)にする(todos-app.ts の button.fold-more)。
+	// これはカード内の他のタップ可能テキスト(ヘッダ Done・詳細ページのリンク行)と同じ「accent 色=押せる
+	// テキスト」という既存の視覚言語に合わせた選定(枠付きボタンにすると inline カードの静かなトーンを乱す)。
+	// 非広告ホスト(本アプリの現状=未受信)では受動表示(タップ不可の div・muted 色)= 死にリンクを作らない
+	// (設計05 §4・2026-07-16 fable 指摘「押しても何も起きないリンクを出さない」)。
 	const footer = document.createElement(canFull ? "button" : "div");
 	footer.className = "fold-more";
 	footer.appendChild(document.createTextNode("他 "));
@@ -2895,7 +2901,6 @@ function applyInlineFold(foldAnchor: Comment): void {
 	footer.appendChild(count);
 	if (canFull) {
 		(footer as HTMLButtonElement).type = "button";
-		footer.appendChild(document.createTextNode(" — 全画面で表示"));
 		footer.addEventListener("click", () => {
 			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を
 			// 拒否したら "inline" が返るだけでエラーではない — 何もしない(次回描画は host-context-changed

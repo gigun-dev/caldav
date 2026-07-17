@@ -742,15 +742,32 @@ export const TODOS_APP_HTML = `<!doctype html>
     text-align: left;
     cursor: default;
   }
-  /* button 版(fullscreen 広告ホスト)は押せることを示す(pointer)。div 版(受動)は既定カーソルのまま。 */
-  button.fold-more { cursor: pointer; min-height: 32px; }
-  /* 件数だけ accent で強調(モックの .more span 相当)。「他 [n件の未完了] — 全画面で表示」。 */
+  /* button 版(fullscreen 広告ホスト)は押せることを示す(pointer)。div 版(受動)は既定カーソルのまま。
+   * > 2026-07-17 実機 FB1: CTA 文言「— 全画面で表示」を消したので、button 版はテキスト全体を accent
+   * (リンク色)にして「押せるテキスト」であることを色で示す(ヘッダ Done 等と同じ視覚言語)。div 版
+   * (受動)は上の .fold-more の muted 色のまま = 押せないことを色で示す。 */
+  button.fold-more { cursor: pointer; min-height: 32px; color: var(--accent); }
+  /* 件数を強調(モックの .more span 相当)。button 版では全体が accent なので実質同色になるが、div 版
+   * (受動 muted)では件数だけ accent で浮かせて残件数を読み取りやすくする。 */
   .fold-more-count { color: var(--accent); }
 
-  /* C0-a(2026-07-17 完了残骸の有界化): 完了行の退場アニメ。約5秒の undo 猶予後、entry(retireDoneRow)が
-   * 行の実高さを max-height に固定 → 次フレームで .exiting を付け max-height:0 へトランジションさせて
-   * 高さ0へ畳んで remove する。prefers-reduced-motion: reduce ではトランジションを止め即時 remove
-   * (entry 側で matchMedia 判定して .exiting を付けずに finish するが、CSS でも二重に無効化しておく)。 */
+  /* C0-a(> 2026-07-17 実機 FB2: グレーフェード自然退場): 完了行は done タップの瞬間から .retiring が
+   * 付き、retire-fade アニメで opacity 低下 + grayscale(彩度落ち)へゆっくり薄れる。約2秒後に entry
+   * (retireDoneRow)が .exiting を足し、max-height:0 の畳みへ連続させる(done チェック → 薄くなる →
+   * すっと畳まれる、の1つの流れ)。animation-duration / negative animation-delay は entry が JS から与える
+   * (DONE_EXIT_GRACE_MS に一致させ、li 作り直しでも経過位置から resume させる)。
+   * 【旧 .undo-exit(取り消すボタン)は廃止】C0 では猶予中に .row-main > .undo-exit(accent テキスト
+   * ボタン)を出していたが、実機で文字が上に偏る崩れが出たうえベスプラに合わないため FB2 で撤去した
+   * (取り消しは塗り丸の再タップに一本化)。CSS も削除する(死んだ規則を残さない — 用途消滅が明白なため)。 */
+  @keyframes retire-fade {
+    from { opacity: 0.75; filter: grayscale(0); }
+    to { opacity: 0.32; filter: grayscale(1); }
+  }
+  li.retiring {
+    /* forwards: フェード終端(薄いグレー)を .exiting の畳みが始まるまで保持する。duration/delay は inline。 */
+    animation: retire-fade 2000ms ease forwards;
+  }
+  /* 完了行の退場アニメ(畳み)。retire-fade の薄れに連続して max-height:0 へ畳む(entry が実高さ→0)。 */
   li.exiting {
     overflow: hidden;
     opacity: 0;
@@ -762,26 +779,11 @@ export const TODOS_APP_HTML = `<!doctype html>
     min-height: 0;
     transition: max-height 0.32s ease, opacity 0.32s ease, padding 0.32s ease, margin 0.32s ease;
   }
+  /* prefers-reduced-motion: reduce ではフェード/畳みアニメを止める(entry も matchMedia 判定で .exiting を
+   * 付けず即 finish するが、CSS でも二重に無効化。retire-fade も止めて瞬時に静的な done 表示のまま消える)。 */
   @media (prefers-reduced-motion: reduce) {
+    li.retiring { animation: none; }
     li.exiting { transition: none; }
-  }
-  /* C0-a: 完了行が退場猶予中に出す「取り消す」アフォーダンス(meta/tag スロット= rowMain 直下)。
-   * becoming タグと同じ位置・字面トーンだが、押せる操作面であることを示すため accent + pointer に。
-   * .row-main > .tag と同じ縦位置補正(タイトル1行目に揃える)を効かせるため .tag の隣に置く前提で
-   * align-self/margin を合わせる。 */
-  .row-main > .undo-exit {
-    align-self: flex-start;
-    margin-left: auto;
-    margin-top: 2px;
-    padding: 0 0 0 8px;
-    font: inherit;
-    font-size: 12px;
-    color: var(--accent);
-    background: none;
-    border: none;
-    cursor: pointer;
-    white-space: nowrap;
-    flex: none;
   }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1 が

@@ -1099,7 +1099,7 @@ function measureFabBlockPx(): number {
  * C0-b 本体(P4-DM・2026-07-17 inline プレビュー化。旧 C2 動的畳みを改訂・todos-entry.ts の applyInlineFold と同型):
  * inline = 直近 N_MAX occurrence のプレビュー / fullscreen = 全件(設計05 §4・モック inline-preview.html)。
  * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行があれば末尾に
- * フッタ要約行「他 n 件の予定 — 全画面で表示」を挿す(タップ=右上 ⤢ と同じ requestDisplayMode fullscreen)。
+ * フッタ要約行「他 n 件の予定」を挿す(> 2026-07-17 実機 FB1 で CTA「— 全画面で表示」は削除。タップ=右上 ⤢ と同じ requestDisplayMode fullscreen)。
  * **+ FAB は folded でも常に表示**。旧「すべて表示」ボタン + 受動「残り n 件」は ⤢ と役割重複のため廃止。
  *
  * 【computeInlineFit は捨てない = 安全クランプ】N_MAX 件でも端末の maxHeight 次第では溢れるので、その物理
@@ -1149,8 +1149,10 @@ function applyInlineFold(foldAnchor: Comment): void {
 	const totalCount = rows.length; // 畳み対象の合計 occurrence 行数(ドラフトは対象外)
 	const remaining = totalCount - visibleCount; // = 「他 n 件」の n
 	const canFull = canRequestFullscreen(hostAvailableDisplayModes);
-	// フッタ要約行「他 n 件の予定 — 全画面で表示」(モック inline-preview.html の agenda 版文言)。canFull なら
-	// タップ可能な button(⤢ と同じ requestDisplayMode 昇格)、非広告ホストでは受動 div(タップ不可・CTA 無し)。
+	// フッタ要約行「他 n 件の予定」(> 2026-07-17 実機 FB1 で「— 全画面で表示」の CTA を削除・簡素化。
+	// todos-entry.ts と同判断)。タップ= fullscreen 昇格の挙動はそのまま。canFull なら button.fold-more を
+	// リンク色(accent)にしてタップ可能を色で示す(既存の「accent 色=押せるテキスト」視覚言語に合わせる)。
+	// 非広告ホストは受動 div(タップ不可・muted 色)= 死にリンクを作らない。
 	const footer = document.createElement(canFull ? "button" : "div");
 	footer.className = "fold-more";
 	footer.appendChild(document.createTextNode("他 "));
@@ -1159,7 +1161,6 @@ function applyInlineFold(foldAnchor: Comment): void {
 	footer.appendChild(count);
 	if (canFull) {
 		(footer as HTMLButtonElement).type = "button";
-		footer.appendChild(document.createTextNode(" — 全画面で表示"));
 		footer.addEventListener("click", () => {
 			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を拒否したら
 			// "inline" が返るだけでエラーではない — 何もしない。通信失敗等はカードを壊さないよう握りつぶす。

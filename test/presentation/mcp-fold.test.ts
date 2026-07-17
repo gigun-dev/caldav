@@ -101,7 +101,7 @@ describe("INLINE_PREVIEW_MAX(C0-b・inline プレビュー上限)", () => {
 	const clampPreview = (fitCount: number): number => Math.min(INLINE_PREVIEW_MAX, fitCount);
 
 	test("maxHeight 無制限(full=全行フィット)でもプレビューは高々 N 件に束ねる", () => {
-		// 例: 全12行フィットでも inline は 5 件だけ見せ、残り 7 件はフッタ「他 7 件 — 全画面で表示」へ。
+		// 例: 全12行フィットでも inline は 5 件だけ見せ、残り 7 件はフッタ「他 7 件の未完了」へ(タップで全画面)。
 		expect(clampPreview(12)).toBe(INLINE_PREVIEW_MAX);
 	});
 

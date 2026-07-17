@@ -293,7 +293,9 @@ export const AGENDA_APP_HTML = `<!doctype html>
     text-align: left;
     cursor: default;
   }
-  button.fold-more { cursor: pointer; min-height: 32px; }
+  /* > 2026-07-17 実機 FB1: CTA「— 全画面で表示」を消したので button 版はテキスト全体を accent(リンク色)に
+   * してタップ可能を色で示す(todos-app.ts と同判断)。div 版(受動)は上の .fold-more の muted のまま。 */
+  button.fold-more { cursor: pointer; min-height: 32px; color: var(--accent); }
   .fold-more-count { color: var(--accent); }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1(applyHostContext)が
