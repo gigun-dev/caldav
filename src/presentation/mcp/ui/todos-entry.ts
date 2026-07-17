@@ -2807,6 +2807,31 @@ function renderAll(): void {
 //  cachedFooterBlockPx。budget 先引きの意味は不変=「行より下の chrome の高さを先に引く」)。 */
 let cachedFooterBlockPx: number | null = null;
 
+// 【2026-07-17 実機 FB: 選択(編集モード)で inline プレビューの表示件数が減るバグの根治】
+// 症状: 未完了6件・inline が上位3件+「他3件」のとき、3行目「あ」をタップして編集モードに
+// 入ると「あ」自身が消え、2件+「他4件」に変わる。原因は applyInlineFold が renderAll の
+// たびに DOM を実測して visibleCount を決め直すこと — 選択行はタイトルが input 化しメモ行が
+// 増えて**背が伸びる**ため、rowBottoms が下にずれ computeInlineFit の budget クランプが
+// fitCount を 3→2 に減らし、選択中の行(=タップできた=見えていたはずの行)まで畳んで
+// remove してしまっていた。
+//
+// 不変条件(ユーザー指定): 「編集と閲覧のリストで表示中の件数は基本変わらない」。選択しても
+// プレビューのメンバーシップ(どの行が見えるか)と件数が変わってはならない。とりわけタップした
+// 行は必ず見えたままでなければならない。
+//
+// 対処案は2つ検討した(親から提示):
+//   (a) 静止時(selectedId===null)に算出した visibleCount をキャッシュし、選択中はそれを使う。
+//   (b) rowBottoms 算出時に選択行の伸びた分を差し引いて静止時相当に補正する。
+// (b) は「選択行の静止時高さ」を DOM から直接測れない(既に伸びた状態でしか観測できない)ため
+// 実装が壊れやすい。(a) を採用する — 選択は「行の並び順」を変えないので(sectionize/ソートは
+// selectedId を見ない)、静止時に決まった「先頭 N 件」というメンバーシップは選択中もそのまま
+// 有効であり、キャッシュを使い回すだけで不変条件を満たせる。
+// 【(a) のリスクと許容理由】選択中に外部更新(ポーリング等)でタスク集合が変わっても
+// visibleCount が古い値に張り付く可能性はあるが、選択解除(=次の selectedId===null の
+// renderAll)で必ず最新値に再同期される。選択中は編集に集中している短時間でありポーリング差分の
+// 実害は小さいと判断し許容する(過剰実装を避ける)。
+let cachedStaticVisibleCount: number | null = null;
+
 /** フッタ要約行(.fold-more)の高さ(上下 margin 込み・px)を実測する。
  *  【なぜ probe を1回描いて測るか】判定の時点では canRequestFullscreen の結果(ボタン化するか受動表示か)が
  *  未確定だが、.fold-more はどちらの分岐でも同じ CSS クラスを付ける(button か div かの差だけで高さは同じ)ので
@@ -2906,7 +2931,15 @@ function applyInlineFold(foldAnchor: Comment): void {
 	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
 	const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
 	// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
-	const visibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
+	const dynamicVisibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
+	// 【選択中は静止時の visibleCount に固定(上記 cachedStaticVisibleCount コメント参照)】
+	// selectedId===null の renderAll でだけ動的値を採用しキャッシュを更新する。選択中
+	// (selectedId!==null)は選択行が伸びて計算が縮んでも無視し、直近の静止時キャッシュを使う —
+	// これにより「タップした行が畳まれて消える」再発を構造的に防ぐ。キャッシュが無い(通常は
+	// 起こらない: 初回 renderAll は必ず selectedId===null で通る)場合のみ動的値へ防御的に
+	// フォールバックする。
+	const visibleCount = selectedId === null ? dynamicVisibleCount : (cachedStaticVisibleCount ?? dynamicVisibleCount);
+	if (selectedId === null) cachedStaticVisibleCount = visibleCount;
 	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
 
 	rows.slice(visibleCount).forEach((li) => li.remove());
