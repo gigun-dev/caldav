@@ -797,6 +797,45 @@ export const TODOS_APP_HTML = `<!doctype html>
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
     cursor: pointer;
   }
+  /* 【2026-07-17 追更新: fullscreen だけ FAB を画面右下に固定(ユーザー実機 FB)】
+   * FB「fullscreen で項目が少ないと + が上に詰まる。fullscreen なら + は画面右下でよい」への対応。
+   * 【なぜ inline は上の理由でフロー化したのに fullscreen は fixed に戻してよいのか】
+   * inline を fixed→フロー化した理由(上の v2.2 item4 コメント)は「auto-height iframe は
+   * viewport 底辺 = コンテンツ底辺になるため fixed が実質固定にならず、行挿入/畳み(P4-DM の
+   * inline fold)で #root の高さが変わるたびに FAB が一瞬ずれて戻る」だった。measureFabBlockPx が
+   * 「行の下に必ず並ぶ FAB の高さ」を budget の先引きに使う前提(todos-entry.ts 側コメント参照)も、
+   * FAB が通常フローに実在することに依存している。
+   * fullscreen ではこの前提がどちらも成立しない: #root.fullscreen-scroll(下記)は
+   * max-height: var(--host-max-height) の【固定高】の内部スクロールコンテナであり、
+   * applyInlineFold は hostDisplayMode !== "inline" で早期 return するため【fold 自体が
+   * 起きない】(#root の高さが動かない)。かつ fullscreen は sheet/fullScreenCover 1枚だけの
+   * コンテナなので viewport 底辺 = 実際の画面底辺と一致し、fixed が「本当に固定」として機能する。
+   * ゆえに fixed の副作用(戻るシフト)の発生源が構造的に無く、fullscreen 限定で fixed 右下固定に
+   * 戻して安全(inline のフロー化判断そのものを覆すものではない — 適用範囲を分けるだけ)。
+   * "#root.fullscreen-scroll ~ .fab-row" の一般兄弟結合子は、.fab-row が #root の【直後の
+   * 兄弟】(body 直下、entry.ts 側コメント参照)であることに依存する — DOM 構造を変えたら
+   * このセレクタも見直すこと。
+   * z-index は「fullscreen 内部スクロール中のコンテンツより前面に出す」だけの用途なので大きい値は
+   * 不要(1で足りる。将来 fullscreen 内にオーバーレイ要素が増えたら要調整)。
+   * right/bottom は 16px(iOS の標準的な余白トークンに合わせた経験値。inline の .fab-row の
+   * margin-top:8px とは独立の値でよい)。bottom には env(safe-area-inset-bottom) を加算し、
+   * ホームインジケータ等の safe area の上に FAB が来るようにする(fullScreenCover は safe area の
+   * 外まで描画されうるため)。 */
+  #root.fullscreen-scroll ~ .fab-row {
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    margin: 0;
+    justify-content: flex-end;
+    z-index: 1;
+  }
+  /* 内部スクロールの最終行が fixed FAB の下に隠れないよう、スクロールコンテナの下端に
+   * FAB 分の余白を予約する。40px(.fab の一辺)+16px(bottom)+8px(コンテンツとの余裕)を
+   * 切り上げて 72px とした(厳密な誤差より安全側に倒す — 予約が少し多くても最終行が窮屈に
+   * 見える程度で実害が小さいが、不足すると FAB が最終行に重なってタップミスを誘発する)。 */
+  #root.fullscreen-scroll {
+    padding-bottom: 72px;
+  }
 
   /* --- 優先度インライン記号(E-2 スライス③: タイトル前に表示)-----------------------
    * iOS リマインダーは優先度の「!」記号をタイトルの左に置く。このプロトタイプは以前 meta 行

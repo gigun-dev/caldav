@@ -315,6 +315,39 @@ export const AGENDA_APP_HTML = `<!doctype html>
     font-family: inherit; font-size: 18px; line-height: 1; color: #fff; background: var(--accent);
     border: none; border-radius: 50%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28); cursor: pointer;
   }
+  /* 【2026-07-17 追更新: fullscreen だけ FAB を画面右下に固定(todos-app.ts の同修正を移植)】
+   * FB「fullscreen で項目が少ないと + が上に詰まる。fullscreen なら + は画面右下でよい」への対応。
+   * inline を fixed→フロー化した理由(上の .fab-row コメント)は、auto-height iframe では fixed が
+   * 実質固定にならず、行挿入/畳み(inline fold)で #root の高さが変わるたびに FAB が一瞬ずれて戻る
+   * ことだった。measureFabBlockPx が「行の下に必ず並ぶ FAB の高さ」を budget の先引きに使う前提
+   * (下の measureFabBlockPx コメント参照)も、FAB が通常フローに実在することに依存している。
+   * fullscreen ではこの前提がどちらも成立しない: #root.fullscreen-scroll は
+   * max-height: var(--host-max-height) の【固定高】の内部スクロールコンテナであり、
+   * applyInlineFold は hostDisplayMode !== "inline" で早期 return するため【fold 自体が
+   * 起きない】(#root の高さが動かない)。かつ fullscreen は sheet/fullScreenCover 1枚だけの
+   * コンテナなので viewport 底辺 = 実際の画面底辺と一致し、fixed が「本当に固定」として機能する。
+   * ゆえに fixed の副作用の発生源が構造的に無く、fullscreen 限定で fixed 右下固定に戻して安全
+   * (inline のフロー化判断そのものを覆すものではない — 適用範囲を分けるだけ)。
+   * "#root.fullscreen-scroll ~ .fab-row" の一般兄弟結合子は、.fab-row が #root の【直後の兄弟】
+   * (body 直下、entry.ts 側コメント参照)であることに依存する — DOM 構造を変えたらこのセレクタも
+   * 見直すこと。z-index は内部スクロール中のコンテンツより前面に出すだけの用途なので大きい値は
+   * 不要(1で足りる)。right/bottom は 16px(iOS の標準的な余白トークンに合わせた経験値。
+   * bottom には env(safe-area-inset-bottom) を加算し、fullScreenCover が safe area の外まで
+   * 描画されうることに備える(todos-app.ts と同値)。 */
+  #root.fullscreen-scroll ~ .fab-row {
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    margin: 0;
+    justify-content: flex-end;
+    z-index: 1;
+  }
+  /* 内部スクロールの最終行が fixed FAB の下に隠れないよう、スクロールコンテナの下端に FAB 分の
+   * 余白を予約する(40px の FAB 一辺 + 16px の bottom + 8px の余裕を切り上げ。todos-app.ts と同値
+   * — 不足すると FAB が最終行に重なりタップミスを誘発するので安全側に倒す)。 */
+  #root.fullscreen-scroll {
+    padding-bottom: 72px;
+  }
 
   /* --- 詳細ページ(モック C。todos v3 と同一部品)--- */
   .page-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-hair); }
