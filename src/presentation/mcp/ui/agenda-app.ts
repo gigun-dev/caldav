@@ -142,6 +142,11 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .meta .recur { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
   .meta .vid { display: inline-flex; align-items: center; color: var(--muted); }
   .meta .span { white-space: nowrap; }
+  /* C2(設計 05 §2): 🎥参加チップ(会議 Join)。accent 色でアクション性を出し、タップで
+   * conference.url を開く(agenda-entry.ts appendJoinChip)。旧 .vid(URL の印だけ)の後継。
+   * 🔗参照 URL チップ(会議に化けていない独立リンク)は muted のアイコンのみ(参照は控えめに)。 */
+  .meta .join-chip { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--accent); text-decoration: none; flex: none; }
+  .meta .ref-chip { display: inline-flex; align-items: center; color: var(--muted); text-decoration: none; flex: none; }
   /* 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は tag を「meta に何かあれば meta 右端(.meta .tag)・
    * meta が空なら rowMain 直下(.row-main > .tag)」で出し分けていたが、meta の有無で縦位置が
    * 揺れて見える(agenda-entry.ts の tagEl 組み立てコメント参照)。tag は常に rowMain 直下に統一し、

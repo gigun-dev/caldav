@@ -139,6 +139,9 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
 import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
+// C2(設計 05 §2): proximity バッジ文言の生成を純関数に隔離(mcp-location-view.test.ts で境界固定)。
+// 型(StructuredLocationView / ProximityAlarmView)も location-view.ts の写経を共有する。
+import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -205,6 +208,13 @@ interface TodoItem {
 	location: string | null;
 	// RRULE 要約。未設定(非反復)は null。一覧行に繰り返しバッジ、詳細展開に完全表記を出す。
 	recurrence: TodoRecurrence | null;
+	// C1(設計 05 §2)の派生: VTODO 直下の X-APPLE-STRUCTURED-LOCATION(構造化場所)。未設定は null。
+	// proximityAlarm.location を優先するため一覧の 📍 バッジでは通常使わない(C2 todos 指示 6)が、
+	// 契約を取りこぼさないよう写経する(task-dto.ts が付与)。
+	structuredLocation: StructuredLocationView | null;
+	// C1(設計 05 §1-a/§2): proximity(到着/出発)VALARM。geofence リマインダーの実体。未設定は null。
+	// 一覧行の 📍「〜に到着時 / から出発時」バッジの源(C2 todos 指示 5)。
+	proximityAlarm: ProximityAlarmView | null;
 }
 
 /** 差分レンズ用の自己完結スナップショット(案X・2026-07-13。server.ts の TaskSnapshot と同型)。
@@ -1389,6 +1399,21 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		loc.setAttribute("aria-label", `場所 ${task.location}`);
 		meta.appendChild(loc);
 	}
+	// C2(設計 05 §1-a/§2): 📍 proximity バッジ(「〜に到着時 / から出発時」)。geofence リマインダーの
+	// 一覧側の印。文言(到着/出発の語彙・title 欠落時の「位置情報の通知」degrade)は純関数 proximityBadge に
+	// 隔離(mcp-location-view.test.ts で境界固定)。場所は proximityAlarm.location を優先する裁定(指示 6)は
+	// proximityBadge が prox.location だけを見ることで実装済み(Task.structuredLocation にはフォールバックしない)。
+	// 既存の loc(LOCATION 文字列)チップと視覚言語を揃える(map-pin + テキスト・truncate)が、意味は別
+	// (loc=場所名の表示 / prox=位置通知の条件)なので別チップとして並べる。
+	if (task.proximityAlarm !== null) {
+		const badge = proximityBadge(task.proximityAlarm);
+		const prox = document.createElement("span");
+		prox.className = "prox";
+		prox.appendChild(createIcon("map-pin"));
+		prox.appendChild(document.createTextNode(` ${badge.text}`));
+		prox.setAttribute("aria-label", badge.aria);
+		meta.appendChild(prox);
+	}
 	// becoming マイクロラベル(通常は meta 右端。margin-left:auto で押し出す)。読み上げ対象の
 	// テキスト(装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
 	// 【2026-07-15 実機フィードバック: due 無しタスクの完了/再開でラベルが2段目に落ち上下がずれる】
@@ -2417,6 +2442,9 @@ function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
 		// 次応答で通常経路(taskFromVTodo 由来の実 tasks 行)に戻れば本来の値が乗る。
 		location: null,
 		recurrence: null,
+		// C1 派生: snapshot(becoming 用の最小情報)は場所/proximity を持たない。次応答で実行に戻る。
+		structuredLocation: null,
+		proximityAlarm: null,
 	};
 }
 
@@ -2440,6 +2468,9 @@ function optimisticRowToItem(row: OptimisticRow): TodoItem {
 		// 場所/繰り返しは quick-add の領分外(チャット/詳細編集に委ねる)なので仮行は持たない。
 		location: null,
 		recurrence: null,
+		// C1 派生: 楽観 create 行は proximity/構造化場所を持たない(確定 vm で埋まる)。
+		structuredLocation: null,
+		proximityAlarm: null,
 	};
 }
 
@@ -2461,6 +2492,9 @@ function draftToItem(d: { id: string; title: string; notes: string }): TodoItem 
 		sortOrder: null,
 		location: null,
 		recurrence: null,
+		// C1 派生: 未送信ドラフトは場所/proximity を持たない(作成フローは C3〜)。
+		structuredLocation: null,
+		proximityAlarm: null,
 	};
 }
 

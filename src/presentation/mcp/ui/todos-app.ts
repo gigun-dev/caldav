@@ -932,6 +932,10 @@ export const TODOS_APP_HTML = `<!doctype html>
    * アイコンとテキストの縦位置を揃える(絵文字は文字扱いでベースライン整列が自動だったが、
    * svg は既定 inline で下端が微妙にズレるため明示的に align-items:center する)。 */
   .recur { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); white-space: nowrap; }
+  /* C2(設計 05 §1-a/§2): 📍 proximity バッジ(「〜に到着時 / から出発時」)。.loc(場所名表示)と
+   * 視覚言語を揃える(map-pin + テキスト・muted・truncate)。意味は別(位置通知の条件)だが、
+   * meta 行の他チップ(due/⟳/📍)と自然に混ざるよう同じトーンにする。長い場所名は truncate する。 */
+  .prox { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   /* メモ有りアイコン。タイトル本文と隣接するので少し間を空け、色を落として主張を抑える。 */
   .note-mark {
     display: inline-flex;

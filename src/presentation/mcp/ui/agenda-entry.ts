@@ -52,6 +52,16 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // inline 畳み(P4-DM C1+C2/C3)の畳み共有カーネル(fold.ts)。todos-entry.ts と同じ純関数を使う
 // (occurrence 行単位の畳み。見出し高は rowBottoms の累積 offset に織り込まれるので無改造で流用)。
 import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
+// C2(設計 05 §2): 場所/会議/参照 URL の「行に何を出すか」を決める純関数群(location-view.ts)。
+// 判断は純関数に隔離し(mcp-location-view.test.ts で境界を固定)、DOM 組み立てだけをここで行う。
+import {
+	type ConferenceView,
+	type ProximityAlarmView,
+	type StructuredLocationView,
+	agendaInlineBadge,
+	resolveLocationTitle,
+	showReferenceUrl,
+} from "./location-view";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
@@ -137,6 +147,11 @@ interface EventItem {
 	alarms: number[];
 	// 移動時間(分)。未設定は null。
 	travelMinutes: number | null;
+	// C1(設計 05 §2)の派生3スロット(read)。structuredContent で自動的に届く(event-dto.ts が付与)。
+	// ui は末端なので C1 の型は location-view.ts へ写経した View 型を使う(src/ 直接 import は禁止)。
+	structuredLocation: StructuredLocationView | null;
+	proximityAlarm: ProximityAlarmView | null;
+	conference: ConferenceView | null;
 }
 
 /** 差分レンズ用の自己完結スナップショット(events-view-model.ts の EventSnapshot と同型)。
@@ -717,7 +732,7 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		head.addEventListener("click", () => setSelected(key));
 	}
 
-	// --- meta 行: 繰り返し ⟳ / 📍場所 / URL video / 跨ぎ日〜M/D / becoming ラベル(右端)-------------
+	// --- meta 行: 繰り返し ⟳ / 🎥参加 / 📍場所 / 🔗参照 URL / 跨ぎ日〜M/D / becoming ラベル(右端)-------
 	const meta = el("div", "meta");
 	// 日時変更(edited)のインライン旧→新。start/end のどちらか。
 	const appendDiff = (parent: HTMLElement, before: string, after: string): void => {
@@ -767,20 +782,65 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		sp.textContent = span;
 		meta.appendChild(sp);
 	}
-	// URL があれば video アイコン(参加アフォーダンスの一覧側の印。詳細ページに参加行が出る)。
-	if (ev.url !== null && ev.url.trim() !== "") {
-		const v = el("span", "vid");
-		v.appendChild(createIcon("video"));
-		v.setAttribute("aria-label", "オンライン");
-		meta.appendChild(v);
-	}
-	// 場所チップ(truncate は CSS .meta .loc)。
-	if (ev.location !== null && ev.location.trim() !== "") {
+	// --- C2(設計 05 §2): 📍場所 / 🎥参加 / 🔗参照 URL の一覧側描画 -------------------------------
+	// 【出し分けの判断は純関数 location-view.ts に隔離】どのバッジを主要にするか(inline は1つ)・
+	// 参照 URL を独立で出すか、の判断はテスト済み純関数に委ね、ここは DOM 組み立てだけを担う。
+	// 【inline / fullscreen の情報量(指示 4)】inline(プレビュー)は「📍タイトル or 🎥参加 の主要1つ」に
+	// 束ねる(agendaInlineBadge)。fullscreen は両方出してよいので、場所と会議を並べる。旧実装の
+	// 「vid アイコン(URL の印)+ location 全文チップ」は、この3スロット統一形へ揃えて置き換えた
+	// (壊すのではなく揃える — 指示 1「既存の location 表示を 📍 付きの統一形に整える」)。
+	const isFull = hostDisplayMode === "fullscreen";
+	const locTitle = resolveLocationTitle(ev.structuredLocation, ev.location);
+	const inlineBadge = agendaInlineBadge(ev.conference, ev.structuredLocation, ev.location);
+	// 会議「参加」チップを meta に足す(タップで conference.url を Join として開く)。
+	// 【開き方(指示 2)】既存の詳細ページ join-link と同じ `<a target="_blank" rel="noopener">` を踏襲する
+	// (カードのサンドボックスは navigation 遮断だが、外部リンクは a[target=_blank] で開けるホストなら開く。
+	// 開けないホストでは degrade して長押しコピー可能。App SDK の openLink は既存カードに前例が無いので使わない)。
+	// head の click(行選択)へ伝播させないよう stopPropagation する(タップ=参加であって選択ではない)。
+	// 任意ドメイン(x.com 等)でも「参加」として出す(設計 05 §2・whitelist しない=判定は C1 が済ませている)。
+	const appendJoinChip = (): void => {
+		if (ev.conference === null) return;
+		const a = document.createElement("a");
+		a.className = "join-chip";
+		a.href = ev.conference.url;
+		a.target = "_blank";
+		a.rel = "noopener noreferrer";
+		a.appendChild(createIcon("video"));
+		a.appendChild(document.createTextNode(" 参加"));
+		a.setAttribute("aria-label", "会議に参加");
+		a.addEventListener("click", (e) => e.stopPropagation());
+		meta.appendChild(a);
+	};
+	// 📍場所チップ(タイトルのみ・truncate は CSS .meta .loc)。住所全文は出さない(詳細ページの責務)。
+	const appendLocChip = (): void => {
+		if (locTitle === null) return;
 		const loc = el("span", "loc");
 		loc.appendChild(createIcon("map-pin"));
-		loc.appendChild(document.createTextNode(` ${ev.location}`));
-		loc.setAttribute("aria-label", `場所 ${ev.location}`);
+		loc.appendChild(document.createTextNode(` ${locTitle}`));
+		loc.setAttribute("aria-label", `場所 ${locTitle}`);
 		meta.appendChild(loc);
+	};
+	if (isFull) {
+		// fullscreen: 会議・場所の両方を出す(会議 → 場所の順で並べる)。
+		appendJoinChip();
+		appendLocChip();
+	} else if (inlineBadge !== null) {
+		// inline: 主要1つだけ(会議優先。会議が無い行は場所タイトル)。
+		if (inlineBadge.kind === "conference") appendJoinChip();
+		else appendLocChip();
+	}
+	// 🔗 参照 URL(会議に化けていない独立リンクのとき)。message: スキーム等も生値で渡す(開けるかはホスト判断)。
+	// conference.source === "url" のときは URL が既に「参加」チップになっているので二重に出さない(判定は純関数)。
+	if (showReferenceUrl(ev.url, ev.conference)) {
+		const ref = document.createElement("a");
+		ref.className = "ref-chip";
+		ref.href = ev.url!; // showReferenceUrl が非 null を保証(型絞りは boolean を跨げないので ! を使う)
+		ref.target = "_blank";
+		ref.rel = "noopener noreferrer";
+		ref.appendChild(createIcon("link"));
+		ref.setAttribute("aria-label", "参照リンクを開く");
+		ref.addEventListener("click", (e) => e.stopPropagation());
+		meta.appendChild(ref);
 	}
 	// becoming マイクロラベル。
 	// 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は「meta に何かあれば meta 右端・meta が空なら
@@ -1316,6 +1376,11 @@ function snapshotToItem(snap: EventSnapshot): EventItem {
 		recurrence: null,
 		alarms: [],
 		travelMinutes: null,
+		// C1 派生3スロット: snapshot(差分レンズ用の最小情報)は場所/会議を持たない。null で足りる
+		// (擬似行は becoming 表示用で、派生バッジは confirmedEvents 側の実行が担う)。
+		structuredLocation: null,
+		proximityAlarm: null,
+		conference: null,
 	};
 }
 
@@ -1335,6 +1400,11 @@ function optimisticRowToItem(row: OptimisticRow): EventItem {
 		recurrence: row.recurrence,
 		alarms: row.alarms,
 		travelMinutes: row.travelMinutes,
+		// C1 派生3スロット: 楽観 create 行は派生前(サーバー確定で埋まる)。in-flight 中は null で
+		// バッジを出さず、確定 vm の EventItem に置き換わった時点で 📍/🎥/🔗 が生える。
+		structuredLocation: null,
+		proximityAlarm: null,
+		conference: null,
 	};
 }
 
@@ -1354,6 +1424,10 @@ function draftToItem(d: { id: string; title: string; notes: string }): EventItem
 		recurrence: null,
 		alarms: [],
 		travelMinutes: null,
+		// C1 派生3スロット: 未送信ドラフトは場所/会議を持たない(作成フローは C3〜)。
+		structuredLocation: null,
+		proximityAlarm: null,
+		conference: null,
 	};
 }
 
