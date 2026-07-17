@@ -36,6 +36,36 @@ describe("taskFromVTodo: location", () => {
 	});
 });
 
+describe("taskFromVTodo: structuredLocation / proximityAlarm(C1・設計 05 §1-a)", () => {
+	test("proximity/場所いずれも無ければ両フィールド null", () => {
+		const ics = vtodoIcs(["UID:t-noloc", "DTSTAMP:20260101T000000Z", "SUMMARY:場所なし"]);
+		const task = taskFromVTodo(firstTodo(ics));
+		expect(task.structuredLocation).toBeNull();
+		expect(task.proximityAlarm).toBeNull();
+	});
+
+	test("自宅到着 VTODO: proximityAlarm に ARRIVE + VALARM 内 location が載る", () => {
+		const ics = vtodoIcs([
+			"UID:t-home",
+			"DTSTAMP:20260101T000000Z",
+			"SUMMARY:自宅に到着時に通知",
+			"BEGIN:VALARM",
+			"ACTION:DISPLAY",
+			"TRIGGER;VALUE=DATE-TIME:19760401T005545Z",
+			"X-APPLE-PROXIMITY:ARRIVE",
+			"X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-APPLE-RADIUS=100;X-TITLE=福登の自宅:geo:35.017639,136.954547",
+			"END:VALARM",
+		]);
+		const task = taskFromVTodo(firstTodo(ics));
+		expect(task.proximityAlarm).toEqual({
+			proximity: "ARRIVE",
+			location: { title: "福登の自宅", address: null, geo: { lat: 35.017639, lon: 136.954547 }, radiusMeters: 100 },
+		});
+		// VTODO 直下に structured-location は無いので structuredLocation は null(場所は proximity 側)。
+		expect(task.structuredLocation).toBeNull();
+	});
+});
+
 describe("taskFromVTodo: recurrence", () => {
 	test("RRULE が無ければ null", () => {
 		const ics = vtodoIcs(["UID:r0", "DTSTAMP:20260101T000000Z", "SUMMARY:単発タスク"]);

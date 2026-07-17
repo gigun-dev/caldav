@@ -17,7 +17,8 @@
 // 「層境界の健全性」を優先した判断。将来 domain/ical/timezone 配下に格上げしてもよい)。
 // =============================================================================
 
-import type { VTodo } from "../../domain/ical/semantics";
+import type { VTodo, StructuredLocation, ProximityAlarm } from "../../domain/ical/semantics";
+import { readStructuredLocation, readProximityAlarm } from "../../domain/ical/semantics";
 import type { CalDate, CalDateTime, Frequency, RecurrenceRule } from "../../domain/ical/values";
 import { decodeText, InvalidValueError } from "../../domain/ical/values";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis, getZoneOffsetMillis } from "../../domain/ical/timezone";
@@ -111,6 +112,24 @@ export interface Task {
 		count: number | null;
 		until: string | null;
 	} | null;
+	/**
+	 * C1(設計 05 §1-b/§2「場所」スロット): X-APPLE-STRUCTURED-LOCATION から派生した構造化場所。
+	 * 未設定は null。表示テキスト location(上記 LOCATION)とは別の additive フィールド
+	 * (座標・住所・半径・タイトル)。既存 location は不変。
+	 *
+	 * 【proximityAlarm.location との違い】proximity(下記)を持つ VTODO では場所は VALARM 内の
+	 * structured-location に入る(設計 05 §1-a の実例)。VTODO 直下に X-APPLE-STRUCTURED-LOCATION が
+	 * 別途あるケースは稀なので、この structuredLocation は通常 null で、場所は proximityAlarm.location に
+	 * 載る想定。両方読めるようにしておくのは「どちらの流儀で書かれても取りこぼさない」degrade 方針。
+	 */
+	structuredLocation: StructuredLocation | null;
+	/**
+	 * C1(設計 05 §1-a/§2): proximity(到着/出発)VALARM から派生した geofence リマインダー。
+	 * vtodo の「指定した場所に到着時/出発時に通知」の実体。無ければ null。iOS の位置情報リマインダーは
+	 * CloudKit 独自で CalDAV に同期されない見込み(location フィールドの JSDoc 参照)だが、他クライアント
+	 * や本サーバー author 規約(C8)で書かれた proximity VALARM はこのフィールドで読める。
+	 */
+	proximityAlarm: ProximityAlarm | null;
 }
 
 function pad2(n: number): string {
@@ -328,6 +347,10 @@ export function taskFromVTodo(
 		sortOrder,
 		location,
 		recurrence,
+		// C1(設計 05): 場所 / proximity の read 派生(semantics 層の純関数に委譲)。VTODO 直下の
+		// X-APPLE-STRUCTURED-LOCATION と、VALARM 内の X-APPLE-PROXIMITY をそれぞれ読む。無ければ null。
+		structuredLocation: readStructuredLocation(vtodo.raw),
+		proximityAlarm: readProximityAlarm(vtodo.raw),
 	};
 }
 

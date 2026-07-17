@@ -45,6 +45,18 @@ export {
 	startRelativeAlarmMinutesBefore,
 } from "./vevent-alarm";
 
+// C1(設計 05): 場所 / 会議 / proximity の read 派生プリミティブ(event-dto/task-dto の共有カーネル)。
+// スキーマ変更ゼロ・read 専用。write(C8)はここでは扱わない(structured-location.ts 冒頭コメント)。
+export {
+	type StructuredLocation,
+	type ProximityAlarm,
+	type Conference,
+	structuredLocationFromProperty,
+	readStructuredLocation,
+	readProximityAlarm,
+	readConference,
+} from "./structured-location";
+
 // E-1 スライス②-b: 既存 VTODO の部分更新プリミティブ(UpdateTodo/CompleteTodo/DeleteTodo が使う
 // patch 方式。vtodo-write.ts の buildVTodoCalendar とは対称的に「既存 Component の一部だけ書き
 // 換える」ロスレス編集を担う)。

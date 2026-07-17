@@ -15,8 +15,13 @@
 // 純関数で「層境界の健全性」を「値の重複回避」より優先する既存判断)。
 // =============================================================================
 
-import type { VEvent } from "../../domain/ical/semantics";
-import { startRelativeAlarmMinutesBefore } from "../../domain/ical/semantics";
+import type { VEvent, StructuredLocation, ProximityAlarm, Conference } from "../../domain/ical/semantics";
+import {
+	startRelativeAlarmMinutesBefore,
+	readStructuredLocation,
+	readProximityAlarm,
+	readConference,
+} from "../../domain/ical/semantics";
 import type { CalDate, CalDateTime, Frequency, RecurrenceRule } from "../../domain/ical/values";
 import { decodeText, InvalidValueError, parseDurationValue } from "../../domain/ical/values";
 import { calDateTimeToEpochMillis, getZoneOffsetMillis } from "../../domain/ical/timezone";
@@ -72,6 +77,24 @@ export interface Event {
 	 * 移動時間(X-APPLE-TRAVEL-DURATION)の分。未設定は null。Apple 拡張の DURATION を分に畳んで返す。
 	 */
 	travelMinutes: number | null;
+	/**
+	 * C1(設計 05 §1-b/§2「場所」スロット): X-APPLE-STRUCTURED-LOCATION から派生した構造化場所。
+	 * 未設定は null。表示テキスト location(LOCATION)とは別に、座標・住所・半径・タイトルを構造化して
+	 * 返す(カードが 📍 と住所/地図を出し分けるための additive フィールド。既存 location は不変)。
+	 */
+	structuredLocation: StructuredLocation | null;
+	/**
+	 * C1(設計 05 §1-a/§2): proximity(到着/出発)VALARM から派生。event に位置トリガーがあれば載る
+	 * (主は vtodo だが event にもあれば同様に読む)。無ければ null。時刻ベース alarms とは別枠
+	 * (alarms 側は isStartRelativeAlarm が proximity を除外済み — 二重計上しない)。
+	 */
+	proximityAlarm: ProximityAlarm | null;
+	/**
+	 * C1(設計 05 §1-c/§2「会議」スロット): URL / DESCRIPTION 走査で派生した会議(Join)リンク。
+	 * 会議でない(参照 URL のまま)は null。会議が source:"url" になっても既存 url フィールドは
+	 * 生値のまま残す(後方互換・カード側で「参加」と「参照リンク」を出し分ける)。
+	 */
+	conference: Conference | null;
 }
 
 function pad2(n: number): string {
@@ -179,23 +202,47 @@ function readEventMeta(
 	vevent: VEvent,
 	zoneOf: (tzid: string) => string,
 	timeZone: string,
-): Pick<Event, "id" | "title" | "location" | "url" | "notes" | "status" | "recurrence" | "alarms" | "travelMinutes"> {
+): Pick<
+	Event,
+	| "id"
+	| "title"
+	| "location"
+	| "url"
+	| "notes"
+	| "status"
+	| "recurrence"
+	| "alarms"
+	| "travelMinutes"
+	| "structuredLocation"
+	| "proximityAlarm"
+	| "conference"
+> {
 	// URL(§3.8.4.6)。VEvent レンズに url アクセサが無い(vevent.ts は読み取り専用で変更しない方針)ため
 	// raw から直接読む(task-dto.ts が DESCRIPTION を raw から読むのと同じやり方)。URI 値型なので
 	// decodeText はしない(生値のまま返す — location/notes は TEXT で decodeText するのと非対称)。
 	const urlProp = vevent.raw.properties.find((p) => p.name === "URL");
+	const url = urlProp !== undefined ? urlProp.value : null;
+	// DESCRIPTION は decodeText して意味的文字列に(会議ブロック走査は実改行入りの decode 済み text に
+	// 対して行う必要がある — structured-location.ts readConference のコメント参照)。
+	const notes = vevent.description !== undefined ? decodeText(vevent.description) : null;
 	return {
 		id: vevent.uid ?? "",
 		// task-dto.ts と同じく Task DTO は decodeText した意味的文字列で返す(生 TEXT を UI に見せない)。
 		title: vevent.summary !== undefined ? decodeText(vevent.summary) : "",
 		location: vevent.location !== undefined ? decodeText(vevent.location) : null,
-		url: urlProp !== undefined ? urlProp.value : null,
-		notes: vevent.description !== undefined ? decodeText(vevent.description) : null,
+		url,
+		notes,
 		// STATUS は大文字化済み(VEvent.status getter)。3値以外の生値も握りつぶさず通す(degrade 方針)。
 		status: (vevent.status ?? null) as Event["status"],
 		recurrence: formatRecurrence(vevent, zoneOf, timeZone),
 		alarms: readStartRelativeAlarms(vevent),
 		travelMinutes: readTravelMinutes(vevent),
+		// C1(設計 05): 場所 / proximity / 会議の read 派生(semantics 層の純関数に委譲)。
+		// structuredLocation は VEVENT 直下の X-APPLE-STRUCTURED-LOCATION、proximityAlarm は
+		// VALARM 内の X-APPLE-PROXIMITY、conference は URL/DESCRIPTION 走査。いずれも無ければ null。
+		structuredLocation: readStructuredLocation(vevent.raw),
+		proximityAlarm: readProximityAlarm(vevent.raw),
+		conference: readConference(url, notes),
 	};
 }
 
