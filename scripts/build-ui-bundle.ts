@@ -33,7 +33,7 @@ import { dirname, join } from "node:path";
  *  (tsconfig 側は src/presentation/mcp/ui/*-entry.ts glob で追従するので編集不要 —
  *   tsconfig.json / tsconfig.ui.json のコメント参照)。 */
 const UI_DIR = join(import.meta.dirname, "..", "src", "presentation", "mcp", "ui");
-const TARGETS = [
+export const TARGETS = [
 	{
 		entry: join(UI_DIR, "todos-entry.ts"),
 		out: join(UI_DIR, "todos-bundle.ts"),
@@ -48,7 +48,13 @@ const TARGETS = [
 	},
 ] as const;
 
-async function buildOne(target: (typeof TARGETS)[number]): Promise<void> {
+// generateBundleFileContent: 「エントリから *-bundle.ts の完全な中身(banner + body)を作る」
+// 純関数として buildOne から切り出したもの(Bun.build を呼ぶだけで writeFile はしない)。
+// 切り出した理由: test/presentation/mcp-ui-bundle-fresh.test.ts が「今の entry から生成される
+// はずの内容」と「実際にコミットされている *-bundle.ts」をバイト比較する鮮度テストを書くため。
+// スクリプト本体とテストが別ロジックで生成すると、ロジックが乖離したときに鮮度テストが
+// 意味をなさなくなる(テスト側のバグで green になる)ので、必ずこの1つの関数を両方から呼ぶ。
+export async function generateBundleFileContent(target: (typeof TARGETS)[number]): Promise<string> {
 	const result = await Bun.build({
 		entrypoints: [target.entry],
 		target: "browser",
@@ -108,16 +114,22 @@ async function buildOne(target: (typeof TARGETS)[number]): Promise<void> {
 
 	const body = `export const ${target.constName} = ${JSON.stringify(escaped)} as const;\n`;
 
-	await mkdir(dirname(target.out), { recursive: true });
-	await writeFile(target.out, banner + body, "utf-8");
-
-	console.log(`✓ ${target.out} を生成しました(minified ${js.length} bytes / escaped ${escaped.length} bytes)`);
+	return banner + body;
 }
 
 async function main() {
 	for (const target of TARGETS) {
-		await buildOne(target);
+		const content = await generateBundleFileContent(target);
+		await mkdir(dirname(target.out), { recursive: true });
+		await writeFile(target.out, content, "utf-8");
+		console.log(`✓ ${target.out} を生成しました(${content.length} bytes)`);
 	}
 }
 
-await main();
+// import.meta.main で直接実行時のみ走らせる。test/presentation/mcp-ui-bundle-fresh.test.ts が
+// generateBundleFileContent・TARGETS を import する際に main()(= writeFile を伴う本生成)まで
+// 副作用として走ってしまうと、「entry から生成した内容 vs 実ファイル」を比較するはずのテストが
+// 比較前に実ファイルを上書きしてしまい、鮮度テストとして意味をなさなくなる(常に green になる)。
+if (import.meta.main) {
+	await main();
+}
