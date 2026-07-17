@@ -78,7 +78,14 @@ export const TODOS_APP_HTML = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- 【2026-07-17 実機FB: fullscreen 昇格時のリサイズでズームロックが外れる事故】ホスト側
+     (swift-mcp-app AppCardWebViewFactory.relockZoom)は scrollView を 1:1 にロックして防衛して
+     いるが、fullscreen 昇格でコンテナがリサイズされると WebKit が viewport を再計算しロックが
+     外れる実機事故があった。カード側の根本対処として maximum-scale=1・user-scalable=no を明示する
+     (カードは data 一覧・編集の UI アプリでピンチズームは不要というユーザー裁定 2026-07-17
+     「拡大いらない」。文字が小さすぎて読めない a11y 懸念は「文字サイズを縮小しすぎない」設計側の
+     責務として担保し、ズーム機能自体には頼らない)。ホスト側ロックとの二重防衛。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <style>
   /* ---------------------------------------------------------------------------
    * テーマ変数一枚(ファイル冒頭「テーマ変数の方針」参照)。
@@ -141,6 +148,13 @@ export const TODOS_APP_HTML = `<!doctype html>
     }
   }
   * { box-sizing: border-box; }
+  /* 【2026-07-17 実機FB: checkbox タップ時にグレー矩形が一瞬出る】WebKit の既定 tap-highlight
+   * (タップされた要素のヒット矩形へ被せる半透明グレー)。円が青く塗られる自前の押下フィードバック
+   * (li.becoming-done の ring-pulse/circle-pop アニメ等)と二重になり、しかも矩形は円の外接四角
+   * (44px タップ領域そのもの)なので円の輪郭とずれて見える違和感の原因だった。iOS ネイティブの
+   * リマインダーにこの灰色矩形は存在しない(ネイティブはハイライトを個別ビューが自前で描く)ため、
+   * このカードも「押下反応は自前で持つ UI アプリ」の方針に合わせ全要素で無効化する。 */
+  * { -webkit-tap-highlight-color: transparent; }
   /* lucide アイコン共通(2026-07-15 絵文字/文字グリフからの置換)。svg は既定 inline で
    * ベースラインが文字より下に沈むため、テキストと同じ行に混在する箇所(.loc/.recur 以外の
    * 素朴な inline 配置箇所)向けに軽い引き上げをデフォルトにしておく。flex コンテナ側で
@@ -390,6 +404,18 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 違和感の解消を優先する(S-D §7.7 の「選択行だけ字がわずかに大きくなるのは許容」をタイトルに
    * 関しては撤回)。 */
   .title { overflow-wrap: break-word; line-height: 1.35; font-size: 16px; }
+  /* 【2026-07-17 実機FB: 編集モードで title/memo の padding(=箱の縦寸法)が変わる】
+   * .notes に line-height を明示していなかったため body 継承の "normal"(ブラウザ既定、この
+   * フォントスタックではおおよそ 1.15〜1.2 程度で不確定)に依存しており、.memo-line 側の
+   * pre-scale メトリクスとの算術的な突き合わせができなかった(コメントで根拠を示せない = 将来
+   * ズレても気づけない)。.title の line-height(1.35)を流用して明示し、決定的な値にする
+   * (見た目の変化は browser 既定比で ±1〜2px 程度に留まる想定・実機で許容範囲を確認)。
+   * 下の .memo-line が同じ 1.35 比率を pre-scale 側で使うことで、×0.75 後にこの .notes と
+   * 視覚メトリクスが一致する(scale は font-size と line-height 比を同時に縮小するため、
+   * 両者が同じ「font-size 側の絶対値 × line-height 比」を持てば scale 前後で比率は不変 —
+   * 16px×0.75=12px(.notes の font-size と一致)・line-height 比 1.35 は共通なので算術的に
+   * 一致が保証される)。 */
+  .notes { line-height: 1.35; }
   li.done .title {
     text-decoration: line-through;
     color: var(--muted);
@@ -1066,20 +1092,30 @@ export const TODOS_APP_HTML = `<!doctype html>
    * .title-edit は以前 font:inherit(body の 14px を継承)で自動ズームの対象だったため 16px を
    * 明示する。表示専用の .title(非入力)は据え置き(一覧の行密度を保つため、ズーム対策が
    * 要らない要素まで拡大しない)。
-   * 【S-D スライス④: todos/agenda で padding 不一致(2px 0 と 0 0 1px)だったのを統一】
-   * S-E(title 垂直ズレ修正)の前提としてまず両カード同値に揃える。値は agenda 側の
-   * 最小値 0 0 1px を採用(揃えること自体が目的で、実際の行高調整は S-E に委ねる)。 */
+   * 【S-D スライス④: todos/agenda で padding 不一致(2px 0 と 0 0 1px)だったのを統一(2026-07-17
+   * 撤回・下記参照)】旧判断は「S-E(title 垂直ズレ修正)の前提としてまず両カード同値に揃える」
+   * ため agenda 側の最小値 0 0 1px を採用したものだった。これは「事実として誤り」になった —
+   * 実機 FB(2026-07-17)で「選択(編集化)しても title の位置が1px も動いてはいけない」という、
+   * S-E よりさらに厳しい基準が判明したため、この 1px の底 padding 自体が原因の1つと特定した
+   * (表示 .title は padding 無し・line-height 1.35 のみで箱の高さが決まるため、編集側に 1px でも
+   * padding があると箱が一致しない)。padding を 0(.title と同一=無し)にし、line-height を明示的に
+   * 1.35(.title と同値)にすることで、表示→編集の切替で title の1行目位置・行高が完全一致する。
+   * agenda 側の .title-edit は本 FB の対象範囲外(親指示は todos-app.ts 限定)のためそのまま
+   * 0 0 1px を維持する — 「両カード同値」という S-D スライス④の目的自体は本改訂で崩れるが、
+   * agenda 側の実機挙動は未確認のため独断で追随修正しない(agenda-app.ts 側コメントに記録済み・
+   * 親への報告事項)。 */
   .title-edit {
     display: block;
     flex: 1;
     min-width: 0;
     font: inherit;
     font-size: 16px;
+    line-height: 1.35;
     color: var(--fg);
     border: none;
     background: none;
     outline: none;
-    padding: 0 0 1px;
+    padding: 0;
   }
   /* 【2026-07-16 実機FB: 編集でメモが拡大する(12→16px)のをやめる — scale 手法】
    * iOS auto-zoom はフォーカス要素の **computed font-size** で発火するので、font-size は 16px の
@@ -1088,19 +1124,35 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 編集中メモは小さいまま = ネイティブは 16px 制約が無いだけ。web ではこの scale が唯一の等価解)。
    * §7.7 の「選択行だけメモがやや大きくなるのは許容」は撤回。
    *   - width:133.34% + transform-origin:top left で scale(.75) の横縮みを補正し行幅を保つ。
-   *   - タップ実効高さは WCAG 2.5.8(最小 24px)以上を pre-scale の line-height+padding で確保する:
-   *     (16×1.5 + 6×2)=36px、×0.75 = 27px ≥ 24px。scale は padding/line-height も 0.75 倍する点に注意。
-   *   - 【要実機検証】focus zoom 非発火・キャレット/選択ハンドルの見た目(scale 済み input の既知の
-   *     弱点)。壊れたら font-size:12px 素+auto-zoom 許容 or 16px 素へ即戻せる(CSS 数行・完全可逆)。 */
+   *   - 【2026-07-17 実機FB: 編集で memo の padding(=箱の縦寸法)が跳ねるのをやめる — pre-scale
+   *     メトリクス再計算】旧実装は line-height:1.5・padding:6px 0(pre-scale)= 視覚 line-height
+   *     18px・視覚 padding 4.5px×2 だったが、.notes 側は line-height 1.35(12px 基準=16.2px)・
+   *     padding 無し・margin-top 1px なので、選択時に箱の縦寸法が跳ねていた(FB の直接原因)。
+   *     算術根拠: transform:scale は font-size と line-height 比を同時に縮小するため「font-size
+   *     ×0.75 の絶対値」と「line-height 比」が .notes 側と同一なら、scale 前後で視覚メトリクスは
+   *     恒等に一致する。ここでは font-size 16×0.75=12(=.notes の font-size と一致)・
+   *     line-height 比 1.35(=.notes と一致、上の .notes { line-height: 1.35 } 参照)を採用し、
+   *     padding は 0 にして margin-top:1px(pre-scale。margin は transform の対象外=scale の影響を
+   *     受けないため 1px のまま .notes の margin-top:1px と直接一致する)に置き換えた。
+   *   - 【WCAG 2.5.8(最小タップ実効高 24px)の担保を padding から min-height へ移す】旧実装は
+   *     padding でタップ高を稼いでいたが(視覚位置ごと押し広げる=今回の跳ね跳ねの原因)、padding
+   *     を落としたので同じ手段は使えない。代わりに min-height を使う — min-height は要素の
+   *     レイアウト最小高を保証するだけで、テキストの開始位置(1行目の視覚位置)を動かさない
+   *     (border/padding のような「箱を広げて中身を押し下げる」効果が無い)。24px ÷ 0.75(scale)=
+   *     32px(pre-scale)を指定する。memo-line は単一行の <input> 想定で通常はテキストの自然高
+   *     (12px×1.35=16.2px)しか無いため、min-height:32px(視覚24px)が下方向に不可視の余白として
+   *     効くだけで、上記の視覚メトリクス一致(.notes との整合)には影響しない。 */
   .memo-line {
     display: block;
     width: 133.34%;
     font: inherit;
     font-size: 16px;
-    line-height: 1.5;
+    line-height: 1.35;
     transform: scale(0.75);
     transform-origin: top left;
-    padding: 6px 0;
+    min-height: 32px;
+    margin-top: 1px;
+    padding: 0;
     color: var(--muted);
     border: none;
     background: none;

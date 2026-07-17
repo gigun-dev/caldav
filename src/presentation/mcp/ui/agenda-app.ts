@@ -27,7 +27,9 @@ export const AGENDA_APP_HTML = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- 【2026-07-17 実機FB: fullscreen 昇格時のリサイズでズームロックが外れる事故(todos-app.ts と
+     同一の対処。理由・根拠はそちらのコメント参照 — 重複させない)】 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <style>
   :root {
     color-scheme: light dark;
@@ -71,6 +73,11 @@ export const AGENDA_APP_HTML = `<!doctype html>
     }
   }
   * { box-sizing: border-box; margin: 0; }
+  /* 【2026-07-17 実機FB: checkbox/行タップ時にグレー矩形が一瞬出る(todos-app.ts と同じ WebKit
+   * 既定 tap-highlight)】このカードも押下反応(now バー・becoming の一過性アニメ等)を自前で持つ
+   * UI アプリであり、iOS ネイティブのカレンダー/リマインダーにこの灰色矩形は無いため無効化する
+   * (todos-app.ts の同コメント参照。理由は完全に同一)。 */
+  * { -webkit-tap-highlight-color: transparent; }
   .lucide-icon { vertical-align: -0.125em; }
   [hidden] { display: none !important; }
   body {
@@ -230,8 +237,12 @@ export const AGENDA_APP_HTML = `<!doctype html>
   /* 【S-D スライス②: focus zoom 是正(todos-app.ts と対称)】iOS Safari/WKWebView は 16px 未満の
    * フォーカス可能入力でオートズームする。.title-edit/.memo-line を 16px 化し、行高が広がらない
    * よう line-height を詰める(選択行だけ文字がわずかに大きく見えるのは親裁定で許容 §7.7)。
-   * 【S-D スライス④: padding 統一】todos-app.ts と揃えて 0 0 1px に統一済み(元々こちらが
-   * 最小値だったので変更なし。統一の判断根拠は todos-app.ts の同箇所コメント参照)。 */
+   * 【S-D スライス④: padding 統一(2026-07-17 撤回・下記参照)】旧コメント「todos-app.ts と揃えて
+   * 0 0 1px に統一済み」は 2026-07-17 実機 FB(選択で title/memo の箱寸法が動く)で todos 側が
+   * padding 0(.title に padding 無し)へ変更されたため、この agenda 側 1px も事実として旧判断に
+   * なった。ただし agenda はこの FB の対象範囲外(親からの指示は todos-app.ts 限定)のため、
+   * ここでは padding は変更せず「todos と揃っていない状態に戻った」ことだけを記録する
+   * (agenda 側で同種の 1px 縦ズレが起きていないか要実機確認・親への報告事項)。 */
   .title-edit { display: block; width: 100%; font: inherit; font-size: 16px; font-weight: 480; color: var(--fg); border: none; background: none; outline: none; padding: 0 0 1px; }
   .memo-line { display: block; width: 100%; font: inherit; font-size: 16px; line-height: 1.2; color: var(--text-3); border: none; background: none; outline: none; margin-top: 2px; padding: 0; }
   .title-edit::placeholder, .memo-line::placeholder { color: var(--text-3); }
