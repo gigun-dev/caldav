@@ -2,6 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "caldav",
   "main": "src/index.ts",
+  // MCP Apps カード JS の自動生成物(*-bundle.ts)を、worker を esbuild でバンドルする前に
+  // 毎回生成する(2026-07-17 非コミット化)。src/presentation/mcp/ui/*-app.ts が *-bundle.ts を
+  // 静的 import するため、この command が dev/deploy(Cloudflare Workers Builds 含む)の前段で
+  // 走ることで「entry から常に最新の bundle が埋まる」ことを保証する。生成物は .gitignore 対象
+  // (再生成し忘れによる staleness を構造的に排除・詳細 scripts/build-ui-bundle.ts)。
+  "build": { "command": "bun run build:ui" },
   "account_id": "4b00d8d779cdc4e8fbc1840248d21722",
   "compatibility_date": "2026-07-10",
   "vars": {

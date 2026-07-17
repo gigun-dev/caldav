@@ -100,8 +100,12 @@ export async function generateBundleFileContent(target: (typeof TARGETS)[number]
 // ${entryRel} 冒頭コメント参照)。
 //
 // 再生成コマンド: \`bun run build:ui\`(= \`bun run scripts/build-ui-bundle.ts\`)。
-// ${entryRel} を変更したら必ず再生成し、この生成物ごとコミットすること
-// (tsc の型チェック・bun test・deploy 前の Makefile が最新のこのファイルを前提にしている)。
+// 【このファイルは .gitignore 対象・git 管理しない(2026-07-17 方針転換)】以前は生成物を
+// コミットしていたが「entry を直したのに再生成し忘れて古い bundle をデプロイする」事故が起きた。
+// 生成物をコミットしない運用に変え、毎ビルドで entry から必ず生成する:
+//   - デプロイ/ローカル: wrangler.jsonc の build.command が \`bun run build:ui\` を deploy/dev の前に自動実行。
+//   - CI・make check: typecheck/test の前に生成ステップを回す(bundle を import する前に必ず存在させる)。
+// これで staleness(古い成果物)は構造的に発生し得ず、鮮度テストや bun バージョンのバイト固定も不要になった。
 //
 // JSON.stringify で文字列リテラル化している理由(テンプレートリテラルを使わない理由):
 // バンドル後の JS にはバックスラッシュ・バッククォート・改行が任意に含まれ得るため、
@@ -126,10 +130,9 @@ async function main() {
 	}
 }
 
-// import.meta.main で直接実行時のみ走らせる。test/presentation/mcp-ui-bundle-fresh.test.ts が
-// generateBundleFileContent・TARGETS を import する際に main()(= writeFile を伴う本生成)まで
-// 副作用として走ってしまうと、「entry から生成した内容 vs 実ファイル」を比較するはずのテストが
-// 比較前に実ファイルを上書きしてしまい、鮮度テストとして意味をなさなくなる(常に green になる)。
+// 直接実行(bun run build:ui / wrangler build hook)時のみ writeFile を走らせる。generateBundleFileContent
+// や TARGETS を他モジュールが import しても副作用(ファイル生成)を出さないための素直なガード
+// (現状 import 参照は無いが、純関数 export として切り出してある形は保つ — 生成ロジックの正は1箇所)。
 if (import.meta.main) {
 	await main();
 }

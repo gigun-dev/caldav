@@ -31,27 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # bun バージョンは latest ではなく固定する。理由:
-      # test/presentation/mcp-ui-bundle-fresh.test.ts が MCP Apps カード JS バンドルの
-      # 鮮度をバイト一致で判定するため、CI とローカルで bun(の minifier)のバージョンが
-      # ずれると、entry を正しく再生成していても出力バイト列が変わって CI だけ落ちる
-      # 誤検知が起きる。
-      # 【固定値の置き場: ci.yml 直書きをやめ .tool-versions に一元化(2026-07-17)】
-      # 番号を ci.yml に直書きすると「特定개발者のローカルに合わせた数値」を CI が抱える形になり、
-      # ローカル・CI・生成物の三者を揃える単一の真実がどこにも無くなる。バージョンは committed な
-      # .tool-versions(asdf/mise 標準・.nvmrc/.ruby-version と同じ発想)を単一の真実にし、
-      # setup-bun には bun-version-file でそれを読ませる。ローカルも mise/asdf を使えば同ファイルで
-      # 自動整合する(使わなくても「このリポジトリの bun はこれ」という宣言が1箇所に残る)。
-      # 将来 bun を上げるときは「.tool-versions 更新 → bun run build:ui で再生成 → 生成物ごと
-      # コミット」を1コミットで行う(鮮度テストが未再生成を弾く)。
+      # bun バージョンは pin しない(2026-07-17 非コミット化に伴い撤回)。以前は MCP Apps カード JS
+      # バンドルを git にコミットし、その鮮度をバイト一致テストで守っていたため minifier のバイト差が
+      # 出ないよう bun を固定していた。今は bundle をコミットせず毎ビルドで entry から生成する運用に
+      # 変えたので、バイト一致で守る対象が無く、bun のバージョン差はデプロイ物のバイトを変えるだけで
+      # 機能同一(壊れない)。よって固定を外す(setup-bun 既定の latest でよい)。
       - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: ".tool-versions"
 
       # --frozen-lockfile: lockfile と package.json の乖離を CI で検出する
       # (ローカルで bun add し忘れコミットを防ぐ)。
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # MCP Apps カード JS バンドルを生成する(2026-07-17 非コミット化)。*-bundle.ts は gitignore 対象で
+      # リポジトリに存在しないため、これ以降のステップ(boundaries/typecheck/test)が src/.../ui/*-app.ts →
+      # *-bundle.ts の静的 import を解決できるよう、依存インストール直後・チェック群の前に生成しておく。
+      - name: Generate UI bundle
+        run: bun run build:ui
 
       # 層境界 → tsc → test の順。境界違反や型エラーは「そもそもビルドが壊れている」
       # ので、実行に時間のかかる test より先に落とす(fail-fast)。

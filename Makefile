@@ -21,7 +21,7 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install hooks up dev proxy tunnel seed test test-worker typecheck boundaries check deploy deploy-proxy deploy-migrations migrate-local reset-local mobileconfig typegen
+.PHONY: help install hooks up dev proxy tunnel seed ui test test-worker typecheck boundaries check deploy deploy-proxy deploy-migrations migrate-local reset-local mobileconfig typegen
 
 help: ## このヘルプを表示
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -93,7 +93,13 @@ mobileconfig: ## iOS 用 .mobileconfig を生成(CALDAV_HOST 等は env で上�
 #     bun test では原理的に書けない。
 # 振り分け基準: 新しいテストを足すとき、上記の import/検証対象に該当するかどうかで
 # test/ 配下(bun)と test/worker/ 配下(vitest)のどちらに置くかを決める。
-test: ## テストを実行(bun レーン。test/worker/ は拾わない — test-worker 参照)
+ui: ## MCP Apps カード JS バンドルを生成(*-entry.ts → *-bundle.ts)。生成物は gitignore 対象。
+	# 2026-07-17 非コミット化: bundle を git 管理せず毎ビルド生成する運用にしたため、
+	# typecheck/test が *-bundle.ts の静的 import を解決できるよう前段でこれを回す
+	# (check の依存にも入れてある)。デプロイ/dev は wrangler.jsonc の build.command が自動実行。
+	bun run build:ui
+
+test: ui ## テストを実行(bun レーン。test/worker/ は拾わない — test-worker 参照)
 	# `bun test`(引数なし)ではなく `bun run test`(package.json の test script)を
 	# 呼ぶ。script 側でテスト対象ディレクトリを明示列挙しており、それにより
 	# test/worker/(cloudflare:workers 依存で bun からは import できない)を
@@ -120,12 +126,14 @@ test-worker: ## テストを実行(vitest-pool-workers レーン、実 workerd �
 # 型セットが共存できない(DOM グローバルが Cloudflare 拡張型と衝突する)。専用の
 # tsconfig.ui.json(DOM lib を足す)を持つため、test/worker と同じく tsc の実行を分ける。
 # make check がこの3レーンをまとめて回すので、UI のブラウザ TS も CI で型検査される。
-typecheck: typegen ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから、3レーン分)
+typecheck: typegen ui ## tsc --noEmit(worker-configuration.d.ts を自動再生成してから、3レーン分)
 	bun run typecheck
 	bun run typecheck:worker
 	bun run typecheck:ui
 
-boundaries: ## 層境界チェック(dependency-cruiser)
+boundaries: ui ## 層境界チェック(dependency-cruiser)
+	# ui を前段に置く理由: dependency-cruiser は src の import を辿るため、*-app.ts が静的 import する
+	# *-bundle.ts(gitignore 対象・未生成だと未解決モジュール扱い)を先に生成しておく。
 	bun run boundaries
 
 check: boundaries typecheck test test-worker ## CI と同じ順(境界→型→テスト→workerテスト)で全チェック
