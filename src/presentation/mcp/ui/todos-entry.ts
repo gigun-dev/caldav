@@ -2201,40 +2201,39 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		body.appendChild(row);
 	}
 
-	// --- 場所行(トグル + 展開内 text input。OFF=除去。OFF 時は値位置に「なし」placeholder)-----------
+	// --- 場所行(読み取り専用・値があるときだけ。2026-07-17 ユーザー裁定で編集入力を廃止)-----------------
+	// 【ユーザー裁定(2026-07-17)】「vtodo において場所というカラムは位置通知のためにあるだけ。古い
+	// (編集可能な)場所カラムはもう不要」。iOS リマインダー自身も自由テキストの場所欄を持たず、場所=
+	// geofence 通知(下の「位置通知」行 = proximityAlarm)のみ、という Apple の意味論に一致する。
+	// 【なぜ編集入力(トグル + text input)を消したか】旧実装(v3)は VTODO 直下 LOCATION を編集可能な
+	// 場所カラムとして載せていた(モック要件1・下の「旧実装の経緯」)。しかし LOCATION テキストと
+	// 位置通知(VALARM structured-location)の2スロットが並ぶと「どちらが本当の場所か」が混乱し、
+	// 裁定で「場所 = 位置通知のみ」へ一本化した。編集入力は廃止し、collectSheetChanges からも location の
+	// 収集を外す(下記)。
+	// 【ただし既存 LOCATION データは不可視にしない(裁定の条件)】チャット経由で LLM が create-todo/
+	// update-todo の location 引数で書いた LOCATION テキストが在るデータは、読み取り専用行で見せる
+	// (書き込み経路はサーバー側に残る = カード UI から編集導線が消えるだけ)。空なら行ごと出さない。
+	// 【旧実装の経緯(ボツではなく裁定なので積層して残す)】v3 で「場所」を編集可能カラムとして載せたのは
+	// モック要件1(iOS リマインダーの詳細フォームに場所欄がある、という当時の理解)に基づく。その後の
+	// 実データ調査(設計 05 §1-a)で「iOS の場所リマインダーは geofence VALARM であって LOCATION 自由
+	// テキストではない」と判明し、2026-07-17 裁定で編集カラムを撤去した。将来 LOCATION 自由テキストの
+	// 編集需要が再燃したら、この経緯を踏まえて別 UI(位置通知とは明確に別ラベル)で復活させること。
 	{
-		const row = el("div", "f-row");
-		const label = el("span", "f-label");
-		label.textContent = "場所";
-		const value = el("span", "f-value");
-		if (d.location === null) {
-			const ph = el("span", "placeholder");
-			ph.textContent = "なし";
-			value.appendChild(ph);
-		}
-		// ON のときは値位置を空にして、下の展開 input に入力を集約する(二重表示しない)。
-		row.appendChild(label);
-		row.appendChild(value);
-		row.appendChild(
-			makeSwitch(d.location !== null, "場所", () => {
-				// OFF→ON は空文字("")で開く(入力欄が出る)。ON→OFF は null(除去)。
-				d.location = d.location === null ? "" : null;
-				renderAll();
-			}),
-		);
-		body.appendChild(row);
-		if (d.location !== null) {
-			const expand = el("div", "f-expand");
-			const input = document.createElement("input");
-			input.type = "text";
-			input.value = d.location;
-			input.placeholder = "場所";
-			input.setAttribute("aria-label", "場所");
-			input.addEventListener("input", () => {
-				d.location = input.value;
-			});
-			expand.appendChild(input);
-			body.appendChild(expand);
+		const loc = task.location !== null ? task.location.trim() : "";
+		if (loc !== "") {
+			const row = el("div", "f-row");
+			const label = el("span", "f-label");
+			label.textContent = "場所";
+			const value = el("span", "f-value");
+			// 位置通知行と同じ f-readonly の流儀(muted・map-pin + テキスト・truncate)。
+			const ro = el("span", "f-readonly");
+			ro.appendChild(createIcon("map-pin"));
+			ro.appendChild(document.createTextNode(` ${loc}`));
+			ro.setAttribute("aria-label", `場所 ${loc}`);
+			value.appendChild(ro);
+			row.appendChild(label);
+			row.appendChild(value);
+			body.appendChild(row);
 		}
 	}
 
@@ -2360,10 +2359,13 @@ function collectSheetChanges(task: TodoItem, d: SheetDraft): UpdateTodoChanges {
 	}
 	// 優先度(代表値バケットが変わったときだけ)。
 	if (d.priority !== priorityToSegment(task.priority)) changes.priority = d.priority;
-	// 場所(OFF=null で除去 / 空文字も除去扱い)。現在値も空文字は null 同一視して比較する。
-	const nextLoc = d.location === null || d.location.trim() === "" ? null : d.location;
-	const curLoc = task.location === null || task.location.trim() === "" ? null : task.location;
-	if (nextLoc !== curLoc) changes.location = nextLoc;
+	// 【2026-07-17 ユーザー裁定: 場所(LOCATION)の編集収集を廃止】旧実装は d.location(編集入力)と
+	// task.location を比較して changes.location を送っていたが、詳細ページから編集入力自体を撤去した
+	// (場所 = 位置通知のみ、という Apple の意味論への一本化。上の「場所行」コメント参照)。よって
+	// カード UI からは location を変更・除去しない(d.location はもう UI で書き換わらない)。
+	// 【update-todo の location 引数はサーバー側に残す(意図)】チャット経由で LLM が location を
+	// 書き込む経路は不変。カード UI の編集導線だけを消す、というのが裁定の趣旨(collectSheetChanges の
+	// changes.location 消費側 = update-todo の updateArgs.location は温存する)。
 	// 繰り返し(custom は触らない)。プリセット/曜日/終了のいずれかが変わったときだけ全置換で送る。
 	if (d.recurPreset !== "custom") {
 		const orig = recurrenceToPreset(task.recurrence);
