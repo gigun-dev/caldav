@@ -2807,6 +2807,11 @@ function renderAll(): void {
 //  cachedFooterBlockPx。budget 先引きの意味は不変=「行より下の chrome の高さを先に引く」)。 */
 let cachedFooterBlockPx: number | null = null;
 
+// 直近の描画で inline プレビューを実際に畳んだ(フッタ「他 N件」を出した)か。applyInlineFold が
+// 毎描画で設定し、FAB(+)ハンドラが「折り畳み中の追加は fullscreen へ昇格してから」の判定に読む
+// (宣言は applyInlineFold のコメント参照)。
+let lastFoldActive = false;
+
 // 【2026-07-17 実機 FB: 選択(編集モード)で inline プレビューの表示件数が減るバグの根治】
 // 症状: 未完了6件・inline が上位3件+「他3件」のとき、3行目「あ」をタップして編集モードに
 // 入ると「あ」自身が消え、2件+「他4件」に変わる。原因は applyInlineFold が renderAll の
@@ -2906,6 +2911,12 @@ function measureFabBlockPx(): number {
  * 【1パスで完結・再測定ループ無し】測る→判定する→適用する、を1回の renderAll 内で完結させる。
  */
 function applyInlineFold(foldAnchor: Comment): void {
+	// 【lastFoldActive: 「今この描画で実際に畳んだ(フッタ『他 N件』を出した)か」の記録(2026-07-17)】
+	// FAB(+)ハンドラが「折り畳み中に追加しようとしたら fullscreen へ昇格してから追加する」判定に使う
+	// (プレビュー truncate 中に新規行を足すと top-N の窓の外にソートされて見えなくなる/フッタの下に
+	// 出る不自然さ=実機FB を、そもそも畳みの無い全件表示へ逃がして回避する・ユーザー提案)。
+	// 早期 return する2経路(inline でない / 全件見えている)はいずれも「畳んでいない」ので false のまま。
+	lastFoldActive = false;
 	// fullscreen 中はプレビュークランプしない(全件 + 内部スクロールは C3/applyHostContext の
 	// fullscreen-scroll が担う)。inline 以外(hostDisplayMode が null=displayMode 未送信のホスト等)は
 	// 早期 return = 従来どおり全件表示(退行ゼロ)。
@@ -2942,6 +2953,7 @@ function applyInlineFold(foldAnchor: Comment): void {
 	if (selectedId === null) cachedStaticVisibleCount = visibleCount;
 	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
 
+	lastFoldActive = true; // ここに到達 = 実際に畳んでフッタを出す(FAB の fullscreen 昇格判定に使う)。
 	rows.slice(visibleCount).forEach((li) => li.remove());
 	// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
 	for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
@@ -4079,7 +4091,29 @@ quickAddFab.addEventListener("click", (e) => {
 	commitSelection();
 	draft = null;
 	selectedId = null;
-	startDraft();
+
+	// 【折り畳み中の追加は fullscreen へ昇格してから(2026-07-17 実機FB・ユーザー提案)】
+	// inline プレビューは上位 N 件だけを見せる truncate なので、畳んだ状態で新規行を足すと
+	// (1) 新規行が top-N の窓の外にソートされてフッタ「他 N件」の下に出る不自然さ、
+	// (2) 追加確定後にその行が畳みに飲まれて見えなくなる、という2つの破綻が起きる(実機FB)。
+	// 並び順やピン留めで inline のまま辻褄を合わせるより、「全件表示+スクロールできる fullscreen へ
+	// 上げてから追加する」方が単純で自然(iOS リマインダーでも新規追加は全件の見える文脈で行う)。
+	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから startDraft する
+	// (applyInlineFold は inline でなくなり畳まないので、新規行が全件の末尾に見えたまま残る)。
+	// 昇格不可(ホストが fullscreen 非対応=canRequestFullscreen false)や拒否/失敗のときは inline の
+	// まま追加へフォールバックする(この経路でも draft 行は section 外の ul なので畳み対象外=消えはしない。
+	// フッタとの上下は fullscreen 非対応ホストでのみ残る軽微な既知事項)。
+	if (lastFoldActive && canRequestFullscreen(hostAvailableDisplayModes)) {
+		app
+			.requestDisplayMode({ mode: "fullscreen" })
+			.then(() => {
+				applyHostContext(); // 昇格結果(displayMode=fullscreen)を反映してから
+				startDraft(); //         畳まれない全件表示の末尾にドラフトを生やす
+			})
+			.catch(() => startDraft()); // 拒否/失敗は inline のまま追加(フォールバック)
+	} else {
+		startDraft();
+	}
 });
 
 // --- ヘッダ Done(S-E: 旧・行内 confirm の撤去先)---------------------------------------------
