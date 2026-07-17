@@ -432,13 +432,16 @@ const createTodoItemFieldsShape = {
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。iOS 準拠: 1=高、5=中、9=低(「緊急」段階は無い)。省略時は未設定。",
 	),
-	// LOCATION(§3.8.1.7)。空文字は「未設定」と同義に扱い LOCATION を書かない(2026-07-15 追加)。
-	// iOS 標準アプリの位置情報リマインダー(ジオフェンス)とは別物 — こちらは素の TEXT な LOCATION
-	// (task-dto.ts の Task.location コメント参照)。
-	location: z.string().optional().describe(
-		"LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義(LOCATION を書かない)。" +
-			"iOS の位置情報通知(ジオフェンス)とは別の、単なる場所テキスト。",
-	),
+	// 【B(> 2026-07-17 実機 FB 第2ラウンド): VTODO の自由テキスト LOCATION 引数を全廃】
+	// 旧実装は create-todo/create-todos に location(素の TEXT LOCATION)引数を持たせていたが、
+	// ユーザー裁定で撤去した。撤去の重要な理由: **テキスト location が引数にあると、LLM が「自宅に着いたら
+	// 通知して」のような依頼を LOCATION テキストの書き込みで済ませてしまい、あたかも geofence(位置情報)
+	// 通知が設定されたかのように誤解させる罠になる**。iOS の「場所リマインダー」は LOCATION テキストでは
+	// なく proximity VALARM(X-APPLE-PROXIMITY + structured-location)であり(設計 05 §1-a の実データ)、
+	// その正しい書き込みは C8(author 規約)で VALARM の形として入る予定。それまでは「場所=位置通知」の
+	// 意味を壊さないよう、自由テキスト LOCATION の書き込み口を LLM に一切見せない(引数から消す)。
+	// VEVENT の location(会議/場所)は別物なので触らない(create-event/update-event の location は温存)。
+	// 読み取り(task-dto.ts の Task.location)は既存 ICS 互換のため温存する — 消すのは書き込み引数だけ。
 	recurrence: createTodoRecurrenceInputShape.optional().describe(
 		'「毎日/毎週〜」のようにゼロから反復リマインダーを作るときに指定する(タスク③)。' +
 			"既存の反復マスターへの完了操作(complete-todo)とは別物 — こちらは新規作成時の RRULE 生成。",
@@ -589,11 +592,11 @@ const updateTodoInputShape = {
 	priority: z.number().int().min(0).max(9).optional().describe(
 		"PRIORITY(0-9)。0 を渡すと未設定に戻る。省略時は変更しない。",
 	),
-	// LOCATION(§3.8.1.7)。due の三値と対称(2026-07-15 追加): 省略=変更しない / null=除去 / 文字列=差し替え。
-	location: z.string().nullable().optional().describe(
-		"LOCATION(場所)。三値: 省略=変更しない / null=場所を外す / 文字列=差し替え。" +
-			"iOS の位置情報通知(ジオフェンス)とは別の、単なる場所テキスト(§3.8.1.7 の TEXT)。",
-	),
+	// 【B(> 2026-07-17 実機 FB 第2ラウンド): VTODO の自由テキスト LOCATION 引数を全廃】create-todo と同じ理由 —
+	// テキスト location を引数に出すと、LLM が「◯◯に着いたら通知」を LOCATION 書き込みで済ませて geofence
+	// 通知だと誤解させる罠になる(iOS の場所リマインダーは proximity VALARM。設計 05 §1-a)。proximity の
+	// 書き込みは C8(author 規約)で正しい形(VALARM)として入る予定。それまで自由テキスト location の書き込み口は
+	// LLM に見せない。VEVENT の location(会議/場所)は別物なので update-event 側は温存。読み取り(Task.location)も温存。
 	// recurrence(2026-07-15 追加): 反復の設定/変更/除去。updateTodoRecurrenceInputShape 参照。
 	recurrence: updateTodoRecurrenceInputShape.optional().describe(
 		'反復リマインダーの設定/変更/除去。省略=変更しない / frequency:"none"=反復を除去 /' +
@@ -1488,7 +1491,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ title, notes, due, timeZone, priority, calendarId, recurrence, location }) => {
+		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
 			try {
 				// recurrence 正規化(Case E): frequency:"none" は presentation 限定の語彙なので、
 				// application 層に渡す前にここで吸収する(上の createTodoRecurrenceInputShape
@@ -1511,7 +1514,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					timeZone,
 					priority,
 					calendarId,
-					location, // 空文字は CreateTodo/buildVTodoCalendar 側で「未設定」に倒す(LOCATION を書かない)。
+					// B: location 引数は全廃(上の createTodoItemFieldsShape コメント参照)。CreateTodo は location を
+					// 受け取らなくなり LOCATION を書かない — 場所の意味は proximity VALARM(C8)に一本化する。
 					recurrence: normalizedRecurrence,
 				});
 				// affected: 新規作成 = "added"。新 UID は createTodo が返した task.id。確定一覧は
@@ -1601,7 +1605,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 							timeZone,
 							priority: item.priority,
 							calendarId,
-							location: item.location, // create-todo と同じく空文字は未設定扱い。
+							// B: location 引数は全廃(create-todo と同じ。createTodoItemFieldsShape のコメント参照)。
 							recurrence: normalizedRecurrence,
 						});
 						succeeded.push({ id: task.id, kind: "added", task: snapshotFromTask(task) });
@@ -1870,7 +1874,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, title, notes, due, timeZone, priority, status, location, recurrence }) => {
+		async ({ id, calendarId, title, notes, due, timeZone, priority, status, recurrence }) => {
 			try {
 				// recurrence 正規化(2026-07-15): presentation 5値 + optional を application の三値
 				// (undefined=据え置き / null=除去 / 4値=全置換)へ写す。none + サブフィールド併用は
@@ -1893,9 +1897,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					due,
 					timeZone,
 					priority,
-					// location は三値(undefined=据え置き / null=除去 / 文字列=差し替え)をそのまま渡す
-					// (zod の .nullable().optional() で null と undefined が区別されて届く)。
-					location,
+					// B: location 引数は全廃(update の inputSchema から削除。UpdateTodo へ location を渡さない=
+					// LOCATION を更新しない。読み取り互換のため既存 LOCATION は round-trip で保持される)。
 					recurrence: normalizedRecurrence,
 					status,
 				});
@@ -1925,9 +1928,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					if (notes !== undefined) provided.add("notes");
 					if (due !== undefined) provided.add("due");
 					if (priority !== undefined) provided.add("priority");
-					// location/recurrence(2026-07-15)。どちらも buildEditedChanges では field のみ載せる
-					// (recurrence は「編集済み」バッジへ degrade する contract。location も最小は field のみ)。
-					if (location !== undefined) provided.add("location");
+					// recurrence(2026-07-15)。buildEditedChanges では field のみ載せる(「編集済み」バッジへ degrade する contract)。
+					// (B: location は update-todo 引数から全廃したので changed 判定にも含めない)。
 					if (recurrence !== undefined) provided.add("recurrence");
 					const changes = before !== undefined ? buildEditedChanges(before, task, provided) : undefined;
 					affected = [{ id: task.id, kind: "edited", task: snapshotFromTask(task), ...(changes !== undefined ? { changes } : {}) }];

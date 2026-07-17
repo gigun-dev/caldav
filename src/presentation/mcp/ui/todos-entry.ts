@@ -361,6 +361,28 @@ let completedOpen = false; // 完了済み <details> の開閉。再描画で閉
 //   rebuildDisplay が confirmedTasks の該当行にこれを重ね、becoming(completed/reopened)も付ける。
 //   成功/失敗のどちらでもこの Map から delete する(成功=確定 vm が真実に、失敗=元へ戻す)。
 const optimisticToggle = new Map<string, { completed: boolean; status: string | null }>();
+// --- A-1(> 2026-07-17 実機 FB 第2ラウンド: 完了トグルの反応性)coalesce 用 state ---------------
+// 【問題】旧 toggleTask 冒頭の `if (pendingIds.has(id)) return;`(二重送信ガード)が、done 直後の
+//   取り消しタップ(update-todo 往復 ~1s の窓に入る)を黙って捨てていた(undo が効かない主因)。
+// 【新方式: 意図の記録 + 追送(coalesce・last-write-wins)】タップは常に楽観 UI へ即時反映し、
+//   「望みの最終状態」を desiredToggle に記録する。in-flight の update-todo が返った時点で、記録した
+//   desired と送った状態が食い違っていれば補正の update-todo を1発だけ追送する(連打しても追送は
+//   常に最新1発に coalesce = 最後の意図だけがサーバーへ届く)。これで「黙って捨てる」が無くなる。
+// 【二重送信防止はどう保つか】旧ガードの目的(同一行へ update-todo を多重発火しない)は、flushToggle が
+//   inFlightToggle で「その id の送信ループは1本だけ」を保証することで維持する — 追加タップは新しい
+//   ネットワーク呼び出しを起こさず、走っている flush ループが desiredToggle を読んで追送するだけ。
+// desiredToggle: id → 望みの最終トグル状態(タップのたびに上書き)。flush ループが「まだ送っていない/
+//   食い違う」最終状態としてこれを消費し、確定できたら delete する。
+const desiredToggle = new Map<string, { completed: boolean; status: string }>();
+// inFlightToggle: いま flushToggle のループが走っている id(= 送信ループの単一性ガード。旧 pendingIds.has
+//   ガードの役割を「送信ループが既にあるか」に限定して引き継ぐ)。flush の全終了経路で必ず delete する。
+const inFlightToggle = new Set<string>();
+// --- A-2(> 2026-07-17 実機 FB 第2ラウンド: 追加直後(緑=仮 id)の完了タップ)------------------------
+// pendingToggleIntents: 仮 id(create-todo in-flight の緑行)→ 望みの完了状態。旧実装は
+//   `if (isOptimisticId(id)) return;` でこのタップを黙って捨てていた。新方式では意図をここにキューし、
+//   仮行は optimisticRowToItem がこの意図を反映して即チェックを描く。create-todo 確定で実 id が判明した
+//   時点で applyQueuedToggle が実 id へ update-todo を発火する(create 失敗時は意図ごと破棄)。
+const pendingToggleIntents = new Map<string, boolean>();
 // optimisticRows: quick-add 送信中の仮タスク(id は "optimistic:<乱数>")。create-todo が
 //   採番する実 id が確定するまでの表示用。rebuildDisplay が confirmedTasks の末尾に重ね、
 //   becoming-in(追加)を付ける。成功時に該当仮行を除去してから確定 vm を適用する。
@@ -384,10 +406,10 @@ let optimisticRows: OptimisticRow[] = [];
 // 上書き。id → 変更したフィールドだけの部分上書き。rebuildDisplay が confirmedTasks の該当行へ
 // この値を重ねる(値だけ差し替え = becoming-edit のインライン旧→新はサーバー応答の changes に任せる、
 // という仕様B-2)。成功で確定 vm に置き換わり、失敗でこの Map から抜いて元値へ戻す(ロールバック)。
-// 【v2 追加】location / recurrence も楽観上書きに含める(詳細セミモーダルの ✓ が update-todo で
-// 場所・繰り返しを部分更新できるようになったため)。location は string|null(null=除去)、
+// 【v2 追加】recurrence も楽観上書きに含める(詳細セミモーダルの ✓ が繰り返しを部分更新できるため)。
 // recurrence は TodoRecurrence|null(null=繰り返し除去)。rebuildDisplay が Object.assign で重ねる。
-type OptimisticEdit = Partial<Pick<TodoItem, "title" | "due" | "isAllDay" | "priority" | "notes" | "location" | "recurrence">>;
+// 【B(> 2026-07-17): location を Pick から除去】自由テキスト場所の編集を全廃したので楽観上書き対象からも外す。
+type OptimisticEdit = Partial<Pick<TodoItem, "title" | "due" | "isAllDay" | "priority" | "notes" | "recurrence">>;
 const optimisticEdits = new Map<string, OptimisticEdit>();
 /** 仮行 id 判定(differ から除外・トグル禁止に使う)。 */
 function isOptimisticId(id: string): boolean {
@@ -457,7 +479,7 @@ let selMemoInput: HTMLInputElement | null = null;
 // becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
 const optimisticDeletes = new Set<string>();
 
-// --- C0-a: 完了残骸の有界化(done タップ → グレーフェード → 約2秒で自然退場)------------------
+// --- C0-a: 完了残骸の有界化(done タップ → タイトルのグレーフェード → 約3秒で自然退場)------------------
 // 【なぜ必要か(2026-07-17 設計05 §4 裁定・実機バグ)】カード上でタップ完了した行(becoming-done)は
 // 位置記憶 + stickyData により「カード lifecycle スコープ」でその場に残る設計(下記 positionMemory
 // コメント)。しかし残骸が無制限に蓄積すると inline カードが maxHeight を突き破ってクリップする実機
@@ -473,12 +495,15 @@ const optimisticDeletes = new Set<string>();
 //   当初(C0)は猶予中に「取り消す」テキストボタンを tag スロットへ出していたが、実機で
 //   「文字が上に偏る崩れ」が出たうえ、Todoist 等のベスプラ(完了項目はグレーに薄れてスッと消える)に
 //   照らすと明示ボタンは重い。よって「取り消す」ボタンは根ごと廃止し、done タップの瞬間から行が
-//   グレーに薄れ(opacity 低下 + 彩度落ち)、約2秒で max-height 畳みで自然退場する連続した1つの流れに
-//   変えた(done チェック → 薄くなる → すっと畳まれる)。猶予中の取り消しは「塗り丸の再タップ=再開」に
-//   一本化する(cancelDoneExit が退場タイマー/グレーフェードを止める)。猶予も 5000→2000ms に短縮
-//   (Todoist の完了フェードアウト尺に寄せる。長い 5s は「消えかけの残骸」が視界に残りすぎる)。
+//   グレーに薄れ、猶予後に max-height 畳みで自然退場する連続した1つの流れに変えた(done チェック →
+//   薄くなる → すっと畳まれる)。猶予中の取り消しは「塗り丸の再タップ=再開」に一本化する
+//   (cancelDoneExit が退場タイマー/グレーフェードを止める)。
+//   【> 2026-07-17 実機 FB 第2ラウンド(A-3 / A-4)】(A-3)グレーにする対象を「タイトルのテキストのみ」に
+//   絞る(丸チェックやメタ行=due/繰り返し等は通常の done 表示のまま。行全体を退色させると「もう消えた
+//   行」に見えすぎるとの FB)。→ retire-fade は li ではなくタイトル要素にだけ当てる。
+//   (A-4)猶予を 2000→3000ms に延長(「消えるまで 3s くらい待ってもいい」= undo/確認の余裕を増やす)。
 // 【agenda には無い】agenda(予定)は完了概念が無いので残骸問題そのものが起きない(この機構は todos 専用)。
-const DONE_EXIT_GRACE_MS = 2000; // 約2秒(実機 FB でグレーフェード退場へ変更・Todoist 準拠)
+const DONE_EXIT_GRACE_MS = 3000; // 約3秒(> 2026-07-17 実機 FB A-4: 2000→3000。undo 猶予の余裕を増やす)
 // exitTimers: 退場待ちの行 id → setTimeout ハンドル(行ごと1本)。renderAll 再走(ポーリング等)で
 //   二重タイマーが張られないよう scheduleDoneExit が has() ガードする(冪等)。
 const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1222,6 +1247,9 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// --- head(2行: タイトル / meta)------------------------------------------------
 	const head = document.createElement("div");
 	head.className = "head";
+	// A-3(> 2026-07-17 実機 FB): グレーフェード(退場猶予中)の対象をタイトル要素だけに絞るための参照。
+	// 非選択行=.title div / 選択行=.title-edit input のどちらかを掴む(下の inGrace ブロックで使う)。
+	let titleEl: HTMLElement | null = null;
 
 	if (sel) {
 		// 選択中: タイトルは枠なし input(下線なし・背景は CSS の .row.selected が担う)。
@@ -1274,6 +1302,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		}
 		head.appendChild(titleRow);
 		selTitleInput = ti;
+		titleEl = ti; // A-3: 選択中の稀な退場猶予行でもフェード対象はタイトル input に限る
 
 		// 「メモを追加」行 = 枠なし単一行 input(空なら placeholder、既存メモがあれば値表示)。
 		// 直接 input 方式を採る(モック要件2 の「タップで textarea 化 or 直接 input」の後者)。
@@ -1315,6 +1344,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			title.appendChild(priInline);
 		}
 		title.appendChild(document.createTextNode(task.title));
+		titleEl = title; // A-3: グレーフェードはこの .title 要素にだけ当てる
 		if (task.notes !== null && task.notes.trim() !== "") {
 			const noteMark = document.createElement("span");
 			noteMark.className = "note-mark";
@@ -1342,12 +1372,11 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 
 	// --- meta 行: due / 繰り返しバッジ / 場所チップ / becoming ラベル(右端)----------------------
 	// becoming ラベル(tag)は meta の右端(margin-left:auto)へ移設(モック要件1・④のずれ修正)。
-	// location チップは task.location が非空のとき新設(truncate)。
+	// (B: 自由テキスト場所チップは全廃。場所の意味は proximity バッジに一本化)。
 	const dueInfo = formatDue(task, todayKey);
 	const hasInline = editPlan !== null && (editPlan.dueChange !== null || editPlan.priChange !== null);
 	const hasMore = editPlan !== null && editPlan.moreCount > 0;
 	const hasRecur = task.recurrence !== null && editPlan?.dueChange == null;
-	const hasLoc = task.location !== null && task.location.trim() !== "";
 	const meta = document.createElement("div");
 	meta.className = "meta";
 
@@ -1407,16 +1436,11 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		recur.setAttribute("aria-label", recurText === "" ? "繰り返し" : `繰り返し ${recurText}`);
 		meta.appendChild(recur);
 	}
-	// 場所チップ(v2 新設・モック要件1)。truncate は CSS .meta .loc(overflow:hidden)。
-	// 2026-07-15: 絵文字 "📍" から lucide "map-pin" のインライン SVG へ置換。
-	if (hasLoc && task.location !== null) {
-		const loc = document.createElement("span");
-		loc.className = "loc";
-		loc.appendChild(createIcon("map-pin"));
-		loc.appendChild(document.createTextNode(` ${task.location}`));
-		loc.setAttribute("aria-label", `場所 ${task.location}`);
-		meta.appendChild(loc);
-	}
+	// 【B(> 2026-07-17 実機 FB 第2ラウンド): vtodo 自由テキスト場所(LOCATION)チップは全廃】旧実装は
+	// task.location(VTODO 直下 LOCATION テキスト)を 📍 チップで一覧表示していたが、ユーザー裁定
+	// 「location は通知(geofence)のためにあり、既存のテキスト場所は不要=実装すらいらない」に従い削除した。
+	// 場所の意味は下の proximity バッジ(位置通知)に一本化する。Task.location(read DTO)は互換のため温存する
+	// が、カード UI では一切表示しない(既存 ICS の LOCATION は round-trip で残るが不可視)。
 	// C2(設計 05 §1-a/§2): 📍 proximity バッジ(「〜に到着時 / から出発時」)。geofence リマインダーの
 	// 一覧側の印。文言(到着/出発の語彙・title 欠落時の「位置情報の通知」degrade)は純関数 proximityBadge に
 	// 隔離(mcp-location-view.test.ts で境界固定)。場所は proximityAlarm.location を優先する裁定(指示 6)は
@@ -1450,20 +1474,21 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		tagEl.textContent = tagText;
 		if (resumeTag) applyAnimResume(tagEl);
 	}
-	// C0-a(> 2026-07-17 実機 FB2): 完了行が退場猶予中(約2秒)なら、行全体をグレーに薄れさせて
-	// 自然退場に向かわせる。旧実装(C0)はここで「取り消す」テキストボタンを tag スロットへ出していたが、
-	// 実機で文字が上に偏る崩れが出たうえベスプラ(Todoist の完了フェードアウト)に合わないため廃止。
-	// 代わりに .retiring クラスを付け、CSS の retire-fade アニメ(opacity 低下 + grayscale)を done タップ
-	// からの経過位置で resume する(li を作り直しても頭出しに巻き戻らないよう negative animation-delay と
-	// animation-duration を JS から与える。committing の animUntil resume と同じ手法)。退場の畳み
-	// (retireDoneRow の .exiting)はこのフェードの終端に連続して起きる。取り消しは「塗り丸の再タップ=
-	// 再開」に一本化(check の click ハンドラ→toggleTask→cancelDoneExit がフェード/タイマーを止める)。
+	// C0-a(> 2026-07-17 実機 FB2 / A-3): 完了行が退場猶予中(約3秒)なら、タイトルのテキストだけをグレーに
+	// 薄れさせて自然退場に向かわせる。旧実装(C0)はここで「取り消す」テキストボタンを tag スロットへ出して
+	// いたが、実機で文字が上に偏る崩れが出たうえベスプラ(Todoist の完了フェードアウト)に合わないため廃止。
+	// 代わりに **タイトル要素だけ** に .retiring を付け(A-3: 丸チェック/メタ行は通常の done 表示のまま —
+	// 行全体を退色させると「もう消えた行」に見えすぎる FB)、CSS の retire-fade アニメ(opacity 低下 +
+	// grayscale)を done タップからの経過位置で resume する(要素を作り直しても頭出しに巻き戻らないよう
+	// negative animation-delay と animation-duration を JS から与える。committing の animUntil resume と同じ
+	// 手法)。退場の畳み(retireDoneRow の li.exiting)はこのフェードの終端に連続して起きる。取り消しは
+	// 「塗り丸の再タップ=再開」に一本化(check の click→toggleTask→cancelDoneExit がフェード/タイマーを止める)。
 	const inGrace = task.completed && exitTimers.has(task.id) && !isDraft;
-	if (inGrace) {
-		li.classList.add("retiring");
-		li.style.animationDuration = `${DONE_EXIT_GRACE_MS}ms`;
+	if (inGrace && titleEl !== null) {
+		titleEl.classList.add("retiring");
+		titleEl.style.animationDuration = `${DONE_EXIT_GRACE_MS}ms`;
 		const started = graceStartAt.get(task.id);
-		if (started !== undefined) li.style.animationDelay = `-${Math.max(0, Date.now() - started)}ms`;
+		if (started !== undefined) titleEl.style.animationDelay = `-${Math.max(0, Date.now() - started)}ms`;
 	}
 	// meta は中身があるとき or 選択中(レイアウトの高さを保つため)に付ける。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
@@ -1721,13 +1746,15 @@ interface SheetDraft {
 	until: string | null; // "YYYY-MM-DD"
 	count: number | null; // 既存 count(UI から新規設定はしない=表示のみの第3状態)
 	priority: number; // 代表値 0/1/5/9
-	location: string | null; // null=場所トグル OFF
+	// 【B(> 2026-07-17): location フィールドは全廃】自由テキスト場所の編集を撤去したため SheetDraft から
+	// location を除去した(場所 = 位置通知 = proximityAlarm の read のみ。makeSheetDraft/collectSheetChanges/
+	// collectCreateDetails からも location 参照を除去)。
 	// recurOpen: 繰り返し行を「タップで行下にインライン展開」しているか(v3。v2 の menu-pop 廃止に伴う新状態)。
 	// v2 はポップオーバーで選ばせていたが、v3 は行の下に chips を流すのでその開閉状態が要る。
 	recurOpen: boolean;
 }
 
-/** task から作業コピーを作る。日付/時刻/繰り返し/優先度/場所を逆写像で初期化する。 */
+/** task から作業コピーを作る。日付/時刻/繰り返し/優先度を逆写像で初期化する(B: location は全廃)。 */
 function makeSheetDraft(task: TodoItem): SheetDraft {
 	const { preset, weekdays } = recurrenceToPreset(task.recurrence);
 	const rec = task.recurrence;
@@ -1745,7 +1772,6 @@ function makeSheetDraft(task: TodoItem): SheetDraft {
 		until: rec?.until != null ? rec.until.slice(0, 10) : null,
 		count: rec?.count ?? null,
 		priority: priorityToSegment(task.priority),
-		location: task.location,
 		recurOpen: false,
 	};
 }
@@ -2201,41 +2227,15 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		body.appendChild(row);
 	}
 
-	// --- 場所行(読み取り専用・値があるときだけ。2026-07-17 ユーザー裁定で編集入力を廃止)-----------------
-	// 【ユーザー裁定(2026-07-17)】「vtodo において場所というカラムは位置通知のためにあるだけ。古い
-	// (編集可能な)場所カラムはもう不要」。iOS リマインダー自身も自由テキストの場所欄を持たず、場所=
-	// geofence 通知(下の「位置通知」行 = proximityAlarm)のみ、という Apple の意味論に一致する。
-	// 【なぜ編集入力(トグル + text input)を消したか】旧実装(v3)は VTODO 直下 LOCATION を編集可能な
-	// 場所カラムとして載せていた(モック要件1・下の「旧実装の経緯」)。しかし LOCATION テキストと
-	// 位置通知(VALARM structured-location)の2スロットが並ぶと「どちらが本当の場所か」が混乱し、
-	// 裁定で「場所 = 位置通知のみ」へ一本化した。編集入力は廃止し、collectSheetChanges からも location の
-	// 収集を外す(下記)。
-	// 【ただし既存 LOCATION データは不可視にしない(裁定の条件)】チャット経由で LLM が create-todo/
-	// update-todo の location 引数で書いた LOCATION テキストが在るデータは、読み取り専用行で見せる
-	// (書き込み経路はサーバー側に残る = カード UI から編集導線が消えるだけ)。空なら行ごと出さない。
-	// 【旧実装の経緯(ボツではなく裁定なので積層して残す)】v3 で「場所」を編集可能カラムとして載せたのは
-	// モック要件1(iOS リマインダーの詳細フォームに場所欄がある、という当時の理解)に基づく。その後の
-	// 実データ調査(設計 05 §1-a)で「iOS の場所リマインダーは geofence VALARM であって LOCATION 自由
-	// テキストではない」と判明し、2026-07-17 裁定で編集カラムを撤去した。将来 LOCATION 自由テキストの
-	// 編集需要が再燃したら、この経緯を踏まえて別 UI(位置通知とは明確に別ラベル)で復活させること。
-	{
-		const loc = task.location !== null ? task.location.trim() : "";
-		if (loc !== "") {
-			const row = el("div", "f-row");
-			const label = el("span", "f-label");
-			label.textContent = "場所";
-			const value = el("span", "f-value");
-			// 位置通知行と同じ f-readonly の流儀(muted・map-pin + テキスト・truncate)。
-			const ro = el("span", "f-readonly");
-			ro.appendChild(createIcon("map-pin"));
-			ro.appendChild(document.createTextNode(` ${loc}`));
-			ro.setAttribute("aria-label", `場所 ${loc}`);
-			value.appendChild(ro);
-			row.appendChild(label);
-			row.appendChild(value);
-			body.appendChild(row);
-		}
-	}
+	// --- 【B(> 2026-07-17 実機 FB 第2ラウンド): 読み取り専用「場所」(LOCATION)行も全廃】-----------------
+	// 直前コミット 32c3d2f は「編集入力は廃止するが、既存 LOCATION データは読み取り専用行で見せる」に
+	// 留めていた。しかし最終裁定「location は通知(geofence)のためにあり、既存のテキスト場所は不要 —
+	// 実装すらいらない」により、その読み取り専用行も削除した(位置通知行=proximityAlarm だけを残す)。
+	// Task.location(read DTO)は互換のため温存するが、カード UI では一切表示・編集しない。
+	// 【経緯(積層・財産)】v3 で編集可能「場所」カラム(モック要件1)→ 32c3d2f で読み取り専用行へ縮退 →
+	// 本ラウンドで完全撤去、という3段階。将来 LOCATION 自由テキストの需要が再燃したら位置通知とは明確に
+	// 別ラベルの UI で復活させること(設計 05 §1-a: iOS の場所リマインダーは geofence VALARM であって
+	// LOCATION 自由テキストではない、が撤去の根拠)。
 
 	// --- 位置通知行(読み取り専用。C2 実機 FB 修正・設計 05 §1-a/§2)-----------------------------------
 	// 【なぜ独立行が要るか(実機 FB の根治)】上の「場所」行は VTODO 直下の LOCATION(テキスト・編集可)を
@@ -2252,13 +2252,17 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	// 【編集は未対応(経緯コメント)】proximity の変更・削除・新規作成は write の領分(C3〜C5・author 規約 C8)。
 	// read カード(C2)では表示のみ。編集 UI(到着/出発トグル・場所ピッカー)は C4 の場所/会議セミモーダルで
 	// vtodo にも展開する計画(設計 05 §5 末尾「到着/出発のトグルを添えて同じピッカーを共用」)。
-	// 【structuredLocation との併存(挙動不変)】VTODO 直下に別途 structuredLocation があるケースでも、上の
-	// 「場所」テキスト行は LOCATION をそのまま出す(不変)。この行は proximityAlarm がある行にだけ増える。
+	// 【B(> 2026-07-17): 自由テキスト「場所」行を全廃したので、この位置通知行が場所系の唯一の行になった】
+	// 以前は上に LOCATION テキスト行が並んでいたが撤去済み(上の B コメント参照)。この行は proximityAlarm が
+	// ある行にだけ増える(read カード=表示のみ。編集は C4 の場所/会議セミモーダルで vtodo にも展開予定)。
 	if (task.proximityAlarm !== null) {
 		const badge = proximityBadge(task.proximityAlarm);
 		const row = el("div", "f-row");
 		const label = el("span", "f-label");
-		label.textContent = "位置通知";
+		// ラベルは「位置通知」ではなく「場所」(ユーザー裁定 2026-07-17)。自由テキスト場所を全廃した今、
+		// 「場所」の名は geofence の場所が引き継ぐ — iOS リマインダーの詳細も「場所」ラベルで到着/出発を
+		// 表示するのと同じ意味論。値の文言(proximityBadge)はそのまま。
+		label.textContent = "場所";
 		const value = el("span", "f-value");
 		// 読み取り専用なので f-readonly(muted・map-pin + 文言)。一覧 .prox チップと視覚言語を揃える。
 		const ro = el("span", "f-readonly");
@@ -2359,13 +2363,10 @@ function collectSheetChanges(task: TodoItem, d: SheetDraft): UpdateTodoChanges {
 	}
 	// 優先度(代表値バケットが変わったときだけ)。
 	if (d.priority !== priorityToSegment(task.priority)) changes.priority = d.priority;
-	// 【2026-07-17 ユーザー裁定: 場所(LOCATION)の編集収集を廃止】旧実装は d.location(編集入力)と
-	// task.location を比較して changes.location を送っていたが、詳細ページから編集入力自体を撤去した
-	// (場所 = 位置通知のみ、という Apple の意味論への一本化。上の「場所行」コメント参照)。よって
-	// カード UI からは location を変更・除去しない(d.location はもう UI で書き換わらない)。
-	// 【update-todo の location 引数はサーバー側に残す(意図)】チャット経由で LLM が location を
-	// 書き込む経路は不変。カード UI の編集導線だけを消す、というのが裁定の趣旨(collectSheetChanges の
-	// changes.location 消費側 = update-todo の updateArgs.location は温存する)。
+	// 【B(> 2026-07-17 実機 FB 第2ラウンド): 場所(LOCATION)の編集収集は完全撤去】旧実装は d.location と
+	// task.location を比較して changes.location を送っていたが、詳細ページから編集入力を撤去(32c3d2f)し、
+	// 本ラウンドで SheetDraft.location・引数・server 側 shape まで全廃した(場所 = 位置通知 = proximityAlarm の
+	// read のみ、が最終裁定)。よって collectSheetChanges は location を一切収集しない。
 	// 繰り返し(custom は触らない)。プリセット/曜日/終了のいずれかが変わったときだけ全置換で送る。
 	if (d.recurPreset !== "custom") {
 		const orig = recurrenceToPreset(task.recurrence);
@@ -2501,11 +2502,15 @@ function snapshotToItem(snap: TaskSnapshot, completed: boolean): TodoItem {
  *  高速パス(タイトルのみ)では due=null / priority=0 / notes=null(従来と同じ)。
  *  id は "optimistic:" prefix のまま(差分除外印)。 */
 function optimisticRowToItem(row: OptimisticRow): TodoItem {
+	// A-2(> 2026-07-17 実機 FB 第2ラウンド): 仮行(緑)に対する完了タップの意図がキューされていれば、
+	// 確定を待たずにその場でチェックを描く(タップした瞬間に反応する)。意図が無ければ従来どおり未完了。
+	const queued = pendingToggleIntents.get(row.id);
+	const completed = queued ?? false;
 	return {
 		id: row.id,
 		title: row.title,
-		completed: false,
-		status: "NEEDS-ACTION",
+		completed,
+		status: completed ? "COMPLETED" : "NEEDS-ACTION",
 		due: row.due,
 		isAllDay: row.isAllDay,
 		priority: row.priority,
@@ -3372,92 +3377,130 @@ async function retryFetch(): Promise<void> {
  * (set-todo-status 等)を足す判断になる — その場合もこの関数のツール名を差し替えるだけ。
  */
 async function toggleTask(task: TodoItem): Promise<void> {
-	// 仮行(quick-add 未確定)はサーバー id が無いのでトグルできない(create 確定後に本物 id で操作)。
-	if (isOptimisticId(task.id)) return;
-	// 二重送信ガード: in-flight の同一行は弾く(UI はブロックしないので描画反映前の連打はここで止める)。
-	if (pendingIds.has(task.id)) return;
+	// A-2(> 2026-07-17 実機 FB 第2ラウンド): 仮行(create-todo in-flight の緑行)はサーバー id が無いので
+	// 即トグルできないが、旧実装のように黙って捨てない — 望みの完了状態を pendingToggleIntents にキューし、
+	// 楽観 UI は即反映(optimisticRowToItem が意図を読んでチェックを描く)。create 確定で実 id が判明した
+	// 時点で applyQueuedToggle が実 id へトグルを適用する。連続タップは最後の意図で上書き(coalesce)。
+	if (isOptimisticId(task.id)) {
+		pendingToggleIntents.set(task.id, !task.completed);
+		clearBanner();
+		rebuildFromConfirmed();
+		renderAll();
+		return;
+	}
 
 	const nextCompleted = !task.completed;
 	const nextStatus = nextCompleted ? "COMPLETED" : "NEEDS-ACTION";
-	// 楽観適用: 表示を即トグルし becoming を即時に乗せる(塗り丸+凍結リング / 破線に戻る)。
+	// A-1: 楽観 UI は「常に」即時反映する(in-flight 中の再タップも捨てない = 反応性 FB の核心)。
+	// 望みの最終状態を desiredToggle に記録し、送信ループ(flushToggle)がそれを confirm まで追送する。
 	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
-	// C0-a(完了残骸の有界化): カード上で完了したら約5秒の undo 猶予後に退場するタイマーを仕込む。
+	desiredToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
+	// C0-a(完了残骸の有界化): カード上で完了したら約3秒の undo 猶予後に退場するタイマーを仕込む。
 	// 再開(nextCompleted=false)なら退場タイマーを取り消す(= undo。退場済みマークも解除して再表示を許す)。
 	// タイマーは「タップ即」から起算する(iOS の undo 猶予と同じ体感 — サーバー確定を待たない)。
 	if (nextCompleted) scheduleDoneExit(task.id);
 	else cancelDoneExit(task.id);
-	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了/T_hard タイマーを仕込む
+	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了タイマーを仕込む
 	clearBanner();
 	rebuildFromConfirmed();
 	renderAll();
 	announceBecoming(); // aria-live へ「〜を完了しました」等を即時通知(視覚 becoming と対)
 
+	// 【二重送信防止(旧 pendingIds.has ガードの置き換え)】送信ループが既に走っていれば、そのループが
+	// 次の往復後に desiredToggle を読んで追送する — ここで新規の update-todo を発火しない(1 id 1ループ)。
+	if (inFlightToggle.has(task.id)) return;
+	await flushToggle(task);
+}
+
+/**
+ * A-1 の送信ループ(coalesce・last-write-wins)。desiredToggle[id] を confirm できるまで update-todo を
+ * 送り続ける。往復のたびに「送った状態」と「今の望み」を突き合わせ、食い違えば補正を1発追送する
+ * (連打しても常に最新1発だけがサーバーへ届く)。inFlightToggle で「この id の送信ループは1本だけ」を
+ * 保証する(= 二重送信防止。旧 `pendingIds.has` ガードの目的をここで担保する)。
+ * @param task 再試行バナー/calendarId/タイトル表示のためのスナップショット(望みは desiredToggle から読む)。
+ */
+async function flushToggle(task: TodoItem): Promise<void> {
+	const id = task.id;
+	inFlightToggle.add(id);
 	try {
-		// calendarId は今表示中のコレクション(currentCalendarId)を必ず渡す(2026-07-14 実機バグ修正)。
-		// 渡さないと server 既定 "tasks" を探して reading-list 等のカードからの操作が TodoNotFound になる。
-		// null(初回応答前)のときだけ省略して server 既定に委ねる(その状態では実質 tasks を見ている)。
-		const updateArgs: Record<string, unknown> = { id: task.id, status: nextStatus };
-		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
-		// 【2026-07-17 TZ グラウンディング】完了/再開の応答は buildTodosViewModel で確定一覧を
-		// 組み直す。timeZone を載せないと応答表示ゾーンが UTC に落ち、一覧の時刻付き DUE がズレる
-		// (mutate 応答をそのまま確定描画するため refreshArgs と同様に閲覧デバイスのゾーンを常時送る)。
-		updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-		const result = await app.callServerTool({
-			name: "update-todo",
-			arguments: updateArgs,
-		});
-		if (result.isError) {
-			const first = result.content?.[0];
-			const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
-			throw new Error(text);
-		}
-		// 成功 → 楽観を解除してから確定 vm を適用する(解除前に applyStructuredContent すると
-		// rebuildDisplay が楽観を二重に重ねてしまうため、必ずここで先に落とす)。
-		optimisticToggle.delete(task.id);
-		pendingIds.delete(task.id);
-		// 【E-2 ② での方針】update-todo の structuredContent は「サーバー確定の全一覧 + affected
-		// (completed/reopened の becoming メタ)」を返す契約。tasks が乗っていればそれを確定描画に
-		// 使い、追加の refresh は呼ばない(refresh 応答には affected が無く becoming が消えるため)。
-		const structuredContent = result.structuredContent as TodosStructuredContent | undefined;
-		if (structuredContent?.tasks !== undefined) {
-			if (isDefaultView(currentView)) {
-				// 既定ビュー: mutate 応答の tasks は未完了ビュー固定で currentView と一致 → そのまま適用。
-				applyStructuredContent(structuredContent);
-			} else {
-				// 【view 状態非保持バグ修正・2026-07-14】非既定ビュー(例 includeCompleted:true):
-				// mutate 応答 tasks は未完了ビュー固定で currentView と矛盾するので、tasks は refresh-todos
-				// (currentView 付き)で取り直し、mutate 応答の becoming メタ(affected/removed)だけ合成する。
-				try {
-					const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
-					if (refreshed.isError) {
-						const first = refreshed.content?.[0];
-						const text = first !== undefined && first.type === "text" ? first.text : "(詳細不明)";
-						throw new Error(text);
-					}
-					const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
-					const composed: TodosStructuredContent = {
-						tasks: rsc?.tasks ?? [],
-						view: rsc?.view,
-						affected: structuredContent.affected,
-						removed: structuredContent.removed,
-					};
-					applyStructuredContent(composed);
-				} catch (e) {
-					// 取り直し失敗 → degrade。mutate 自体は成功しているので楽観解除済みの表示を維持し、
-					// 「再読み込み失敗」だけ告げる(再試行は fetchLatest のみ = update-todo は再送しない)。
-					// 楽観は既に解除済みなので、次の focus refetch がビューを正す(rebuildFromConfirmed で再描画)。
-					rebuildFromConfirmed();
-					renderAll();
-					showBanner(
-						`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-						() => void retryFetch(),
-					);
-				}
-			}
-		} else {
-			// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
+		// desiredToggle[id] が「送った内容と一致」に落ち着くまで回る。
+		while (true) {
+			const desired = desiredToggle.get(id);
+			if (desired === undefined) return; // 望みが消えた(ロールバック等)→ 送るものは無い
+			let result: Awaited<ReturnType<typeof app.callServerTool>>;
 			try {
-				await fetchLatest();
+				// calendarId は今表示中のコレクション(currentCalendarId)を必ず渡す(2026-07-14 実機バグ修正)。
+				// null(初回応答前)のときだけ省略して server 既定に委ねる。timeZone は時刻付き DUE の UTC 落ち
+				// 防止で常時送る(refreshArgs と同様)。
+				const updateArgs: Record<string, unknown> = { id, status: desired.status };
+				if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+				updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+				result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
+				if (result.isError) {
+					const first = result.content?.[0];
+					throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+				}
+			} catch (e) {
+				// update-todo 自体の失敗(transport / isError)→ 楽観をロールバックして元へ戻す。
+				// coalesce 中でも「サーバー真実(confirmedTasks)へ戻す」のが最も安全(中途半端な意図を残さない)。
+				desiredToggle.delete(id);
+				optimisticToggle.delete(id);
+				pendingIds.delete(id);
+				cancelDoneExit(id); // 退場タイマー/退場済みマークも解除(失敗行が隠れ続けないように)
+				rebuildFromConfirmed();
+				renderAll();
+				const verb = desired.completed ? "完了" : "再開";
+				// 再試行 = 同じ最終状態を再送(toggleTask は task の元状態から nextCompleted を再計算するので、
+				// 失敗でロールバック済みの task スナップショットに対して同じ意図に解決する)。
+				showBanner(`「${task.title}」の${verb}を保存できませんでした`, () => void toggleTask(task));
+				return;
+			}
+			// 確定 vm を適用(view 別分岐・reload 失敗は degrade。楽観はまだ解除しない = 下の coalesce 判定と
+			// 再描画で最新の望みを保持し続けるため。desired==confirmed のときは重ねても値が一致=無害)。
+			await applyToggleConfirmed(result.structuredContent as TodosStructuredContent | undefined);
+			// coalesce: 往復/確定の間にユーザーが意図を変えていたら(desired と最新の望みが食い違う)、
+			// 最新 desired で補正を追送する(ループ)。楽観 UI は既に最新を映しているので視覚は飛ばない。
+			const latest = desiredToggle.get(id);
+			if (latest !== undefined && latest.completed !== desired.completed) continue;
+			// 落ち着いた: confirm 済みの状態が最新の望みと一致(or 新しい望み無し)。楽観/送信状態を解除する
+			// (confirmedTasks が既に真実なので、解除しても表示は変わらない)。
+			desiredToggle.delete(id);
+			optimisticToggle.delete(id);
+			pendingIds.delete(id);
+			return;
+		}
+	} finally {
+		inFlightToggle.delete(id);
+	}
+}
+
+/**
+ * update-todo 応答の確定 vm を反映する(既定ビュー=そのまま / 非既定ビュー=refresh-todos で取り直し
+ * becoming メタだけ合成)。reload 失敗は degrade(mutate 自体は成功しているのでロールバックしない・
+ * 「再読み込み失敗」バナーのみ)。旧 toggleTask の success 分岐をそのまま関数へ切り出したもの。
+ */
+async function applyToggleConfirmed(structuredContent: TodosStructuredContent | undefined): Promise<void> {
+	// 【E-2 ② での方針】update-todo の structuredContent は「サーバー確定の全一覧 + affected」を返す契約。
+	if (structuredContent?.tasks !== undefined) {
+		if (isDefaultView(currentView)) {
+			applyStructuredContent(structuredContent);
+		} else {
+			// 【view 状態非保持バグ修正・2026-07-14】非既定ビュー: mutate 応答 tasks は未完了ビュー固定で
+			// currentView と矛盾するので tasks は refresh-todos で取り直し、becoming メタ(affected/removed)だけ合成。
+			try {
+				const refreshed = await app.callServerTool({ name: "refresh-todos", arguments: refreshArgs() });
+				if (refreshed.isError) {
+					const first = refreshed.content?.[0];
+					throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+				}
+				const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+				const composed: TodosStructuredContent = {
+					tasks: rsc?.tasks ?? [],
+					view: rsc?.view,
+					affected: structuredContent.affected,
+					removed: structuredContent.removed,
+				};
+				applyStructuredContent(composed);
 			} catch (e) {
 				rebuildFromConfirmed();
 				renderAll();
@@ -3467,26 +3510,36 @@ async function toggleTask(task: TodoItem): Promise<void> {
 				);
 			}
 		}
-	} catch (e) {
-		// update-todo 自体の失敗(transport / isError)→ 楽観変更をロールバックして元の status に戻す。
-		optimisticToggle.delete(task.id);
-		pendingIds.delete(task.id);
-		// C0-a: 完了失敗のロールバック時は退場タイマー/退場済みマークも解除する — さもないと、猶予中(<5s)に
-		// 失敗が確定したケースでは行が未完了へ戻るべきなのに retiredDoneIds に残って隠れ続けてしまう(稀な
-		// 競合だが、失敗時にタスクが消えるのは実害が大きい)。cancelDoneExit が両方を掃除して再表示を許す。
-		cancelDoneExit(task.id);
-		rebuildFromConfirmed();
-		renderAll();
-		// 再試行は「同じ mutation を再送」= toggleTask をもう一度呼ぶ(task は元の状態のスナップショット
-		// なので nextCompleted も同じに解決する)。二重送信は先頭の pendingIds ガードが引き続き守る。
-		// 文言の出し分け(E-2 スライス⑤・小修正): 完了操作(→COMPLETED)と再開操作(→NEEDS-ACTION)で
-		// 語を変える。以前は両方「完了を保存できませんでした」で、再開失敗時に文言が実態とズレていた。
-		const verb = nextCompleted ? "完了" : "再開";
-		showBanner(
-			`「${task.title}」の${verb}を保存できませんでした`,
-			() => void toggleTask(task),
-		);
+	} else {
+		// tasks が乗らない応答(旧サーバー等)への degrade: refresh で確定一覧を取り直す。
+		try {
+			await fetchLatest();
+		} catch (e) {
+			rebuildFromConfirmed();
+			renderAll();
+			showBanner(
+				`更新は送信されましたが再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+				() => void retryFetch(),
+			);
+		}
 	}
+}
+
+/**
+ * A-2: create-todo 確定後、その仮行にキューされていた完了トグルの意図を実 id へ適用する。
+ * 実 id は create 応答の affected(kind:"added")から取る(1回の create-todo 呼び出しの結果=1件)。
+ * 望みが「完了」で、確定した実行がまだ未完了なら toggleTask を実 id 行に対して呼ぶ(= 通常の coalesce
+ * 経路に合流する)。実 id を特定できない/既に望みの状態なら何もしない(best-effort)。
+ */
+function applyQueuedToggle(optimisticId: string, createSc: TodosStructuredContent | undefined): void {
+	const desiredCompleted = pendingToggleIntents.get(optimisticId);
+	pendingToggleIntents.delete(optimisticId);
+	if (desiredCompleted !== true) return; // 未完了のまま = 仮行は元々未完了なので何もしない
+	const realId = createSc?.affected?.find((a) => a.kind === "added")?.id;
+	if (realId === undefined) return;
+	const realRow = confirmedTasks?.find((t) => t.id === realId);
+	if (realRow === undefined || realRow.completed === desiredCompleted) return;
+	void toggleTask(realRow); // realRow.completed=false → 完了へトグル(desiredToggle/flush 経路に乗る)
 }
 
 /**
@@ -3604,16 +3657,16 @@ async function deleteTask(task: TodoItem): Promise<void> {
 
 /** 詳細編集の保存(インライン選択の commit・詳細シートの ✓)で update-todo へ渡す「変更フィールドだけ」の
  *  集合(部分更新)。ここに入れたキーだけ送る(未指定=変更しない、が update-todo の契約)。
- *  【v2 で recurrence / location を追加】旧・詳細展開フォームは status/recurrence を対象外にしていたが、
- *  v2 の詳細セミモーダルは繰り返し・場所も編集できる(サーバー契約が並行拡張された。モック要件6)。 */
+ *  【v2 で recurrence を追加 / B(> 2026-07-17)で location を全廃】旧・詳細展開フォームは status/recurrence を
+ *  対象外にしていたが v2 の詳細セミモーダルは繰り返しを編集できる。場所(LOCATION)は当初 v2 で編集対象だったが、
+ *  裁定(場所 = 位置通知 = proximityAlarm の read のみ)で編集導線・引数ともに全廃した(下記 location フィールド削除)。 */
 interface UpdateTodoChanges {
 	title?: string;
 	// due: "YYYY-MM-DD"(終日)/ "YYYY-MM-DDTHH:MM:SS"(時刻付き)/ null(期日を外す)。
 	due?: string | null;
 	priority?: number; // 0/1/5/9(代表値。0=未設定に戻す)
 	notes?: string; // "" でメモをクリア
-	// 場所(LOCATION)。string=設定 / null=除去(update-todo の location 契約)。
-	location?: string | null;
+	// (B: location フィールドは全廃 — 自由テキスト場所の編集を撤去し server の updateTodoInputShape からも削除)。
 	// 繰り返し(RRULE)。"none"=除去・全置換・due 必須(update-todo の recurrence 契約)。custom は送らない。
 	recurrence?: RecurArgs;
 }
@@ -3653,9 +3706,9 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 	}
 	if (changes.priority !== undefined) overrides.priority = changes.priority;
 	if (changes.notes !== undefined) overrides.notes = changes.notes === "" ? null : changes.notes;
-	// v2 追加: 場所 / 繰り返しの楽観上書き。location は null=除去。recurrence は RecurArgs → TodoRecurrence 形へ
-	// 変換して重ねる("none"=繰り返し除去=null)。表示(一覧の ⟳ バッジ・シート再オープン時の初期値)へ即反映する。
-	if (changes.location !== undefined) overrides.location = changes.location;
+	// v2 追加: 繰り返しの楽観上書き。recurrence は RecurArgs → TodoRecurrence 形へ変換して重ねる
+	// ("none"=繰り返し除去=null)。表示(一覧の ⟳ バッジ・シート再オープン時の初期値)へ即反映する。
+	// (B: location の楽観上書きは全廃 — カード UI から場所を編集しないため)。
 	if (changes.recurrence !== undefined) {
 		overrides.recurrence =
 			changes.recurrence.frequency === "none"
@@ -3695,10 +3748,10 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 		}
 		if (changes.priority !== undefined) updateArgs.priority = changes.priority;
 		if (changes.notes !== undefined) updateArgs.notes = changes.notes;
-		// v2 追加: 場所(null=除去)/ 繰り返し(RecurArgs をそのまま。"none"=除去・全置換・due 必須)。
+		// v2 追加: 繰り返し(RecurArgs をそのまま。"none"=除去・全置換・due 必須)。
 		// 時刻付き until を含む recurrence でも until は date-only 文字列なので timeZone は不要(due の
 		// 時刻付き分岐で既に timeZone を添えている。recurrence の DTSTART/DUE はサーバーが due から組む)。
-		if (changes.location !== undefined) updateArgs.location = changes.location;
+		// (B: location 引数は全廃 — server の updateTodoInputShape からも削除済み。カード UI は場所を書かない)。
 		if (changes.recurrence !== undefined) updateArgs.recurrence = changes.recurrence;
 		const result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
 		if (result.isError) {
@@ -3782,15 +3835,14 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 // 【役割分担】quick-add はタイトルのみ。due/優先度/メモ/反復はチャット(LLM の create-todo)の領分。
 
 /** 新規作成の詳細フィールド。ドラフト行のインライン確定(高速パス)は due=null / priority=0 / notes=""
- *  で呼ばれ、作成モード詳細ページ(collectCreateDetails)は期日/優先度/メモ/場所/繰り返しを全部載せる。
- *  location/recurrence は作成モード詳細でのみ付く(undefined=送らない。仮行の楽観表示には出さないが、
- *  create-todo には送られ、確定 vm が正しい値を返す)。 */
+ *  で呼ばれ、作成モード詳細ページ(collectCreateDetails)は期日/優先度/メモ/繰り返しを載せる。
+ *  recurrence は作成モード詳細でのみ付く(undefined=送らない。仮行の楽観表示には出さないが、
+ *  create-todo には送られ、確定 vm が正しい値を返す)。(B: location は全廃)。 */
 interface QuickAddDetails {
 	due: { due: string; isAllDay: boolean } | null;
 	priority: number;
 	notes: string;
-	// 場所(LOCATION)。null/undefined=送らない。作成モード詳細で ON かつ非空のときだけ入る。
-	location?: string | null;
+	// (B: location フィールドは全廃 — 作成カード UI から自由テキスト場所を送らない。server shape からも削除)。
 	// 繰り返し(RRULE)。作成モード詳細で「しない/カスタム」以外を選んだときだけ入る(frequency は "none" 以外)。
 	recurrence?: RecurArgs;
 }
@@ -3813,8 +3865,7 @@ function collectCreateDetails(d: SheetDraft): QuickAddDetails {
 		due,
 		priority: d.priority,
 		notes: d.notes.trim(),
-		location: d.location === null || d.location.trim() === "" ? null : d.location,
-		recurrence,
+		recurrence, // B: location は載せない
 	};
 }
 
@@ -3860,8 +3911,7 @@ async function createTodoFor(optimisticId: string, title: string, details: Quick
 		// priority は 0(なし)なら送らない(省略=未設定)。1/5/9 のときだけ載せる。
 		if (details.priority > 0) args.priority = details.priority;
 		if (details.notes !== "") args.notes = details.notes;
-		// 場所(作成モード詳細でのみ付く)。null/空は送らない(create-todo は空文字を未設定扱いするが送らないのが素直)。
-		if (details.location != null && details.location.trim() !== "") args.location = details.location;
+		// (B: location 引数は全廃 — create-todo の自由テキスト場所は送らない。server の createTodoInputShape からも削除)。
 		// 繰り返し(作成モード詳細でのみ付く)。frequency は "none" 以外(collectCreateDetails が保証)。
 		if (details.recurrence !== undefined) args.recurrence = details.recurrence;
 		const result = await app.callServerTool({ name: "create-todo", arguments: args });
@@ -3920,10 +3970,15 @@ async function createTodoFor(optimisticId: string, title: string, details: Quick
 				);
 			}
 		}
+		// A-2: この仮行に完了タップの意図がキューされていれば、確定した実 id へ適用する
+		// (create 応答 structuredContent.affected の added id を実 id として使う)。
+		applyQueuedToggle(optimisticId, structuredContent);
 	} catch (e) {
 		// create-todo 自体の失敗(transport / isError)→ 仮行を除去してロールバックする。
 		removeOptimisticRow(optimisticId);
 		pendingIds.delete(optimisticId);
+		// A-2: create 失敗ならキューした完了意図も破棄する(適用先の実 id が生まれないため)。
+		pendingToggleIntents.delete(optimisticId);
 		rebuildFromConfirmed();
 		renderAll();
 		// 【v3】旧・quick-add 入力欄へのタイトル復元は廃止(入力欄自体が無くなった)。追加失敗は稀で、
