@@ -135,6 +135,28 @@ describe("ListKnownLocations", () => {
 		expect(locations).toEqual([]);
 	});
 
+	it("recencyKey が両方欠落(LAST-MODIFIED/DTSTAMP 無し)で同点でも uid tie-break で決定的に並ぶ(F)", async () => {
+		// RFC 5545 上 DTSTAMP は必須プロパティなので実データではほぼ起こらないが、非準拠データで
+		// recencyKey が空文字同士になっても dedup/並びが走査順に依存して不定にならないことを保証する。
+		const { resourceRepo, uc } = setup();
+		const withoutTimestamp = async (uid: string, lines: string[]) => {
+			const resource = await CalendarObjectResource.fromIcs(
+				mkResourceUri(`${uid}.ics`),
+				ics("VEVENT", [`UID:${uid}`, "DTSTART:20260718T010000Z", `SUMMARY:${uid}`, ...lines]),
+			);
+			resourceRepo.seed(TEST_OWNER, mkCollectionId("calendar"), resource);
+		};
+		// uid の辞書式順序をあえて登録順と逆にして、recencyKey ではなく uid で決着している
+		// (単なる走査順の偶然ではない)ことを確認する。
+		await withoutTimestamp("z-later-uid", ["X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE=名古屋駅:geo:35.170915,136.881537"]);
+		await withoutTimestamp("a-earlier-uid", ["X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE=岐阜駅:geo:35.412221,136.756215"]);
+
+		const { locations } = await uc.execute({ owner: TEST_OWNER, calendarId: "calendar" });
+		// compareCandidate は同点(recencyKey="")時に uid 昇順を「先」とするので、"a-earlier-uid" 由来の
+		// 岐阜駅が先頭に来る。実行を複数回しても常に同じ順序になる(=決定的)ことが本テストの主眼。
+		expect(locations.map((l) => l.title)).toEqual(["岐阜駅", "名古屋駅"]);
+	});
+
 	it("構造化場所が無いイベント/タスクだけの場合は空配列", async () => {
 		const { resourceRepo, uc } = setup();
 		await seedEvent(resourceRepo, "calendar", "e-plain", "20260717T000000Z", ["LOCATION:ただのテキスト場所"]);

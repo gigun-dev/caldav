@@ -519,10 +519,20 @@ const graceStartAt = new Map<string, number>();
 //   から幽霊復活するのを防ぐ(退場の冪等性の要)。実質別ビュー切替(resetPositionMemory)でクリアし、
 //   サーバーが当該 id を未完了で返してきたら un-retire する(genuine な外部再開は再表示を許す)。
 const retiredDoneIds = new Set<string>();
+// heldDoneExitIds: 監査 C(選択編集中の行が外部完了で退場すると編集テキストが黙って消える)対策。
+// 「ユーザーが触っている行を土台ごと消さない」不変条件(2026-07-17 の fold 選択固定と同じ精神)を
+// 退場機構にも適用する。selectedId===id の間は退場(タイマー開始/実行のどちらも)を保留し、id を
+// ここへ積んでおく。選択解除(commitSelection)時に resumeHeldDoneExit で退場猶予を仕込み直す。
+const heldDoneExitIds = new Set<string>();
 /** 完了行の退場タイマーを仕込む(約5秒後に retireDoneRow)。冪等 — 既にタイマーがある/退場済みなら何もしない
- *  (renderAll 再走での二重タイマー・復活防止)。 */
+ *  (renderAll 再走での二重タイマー・復活防止)。選択(編集)中の行(selectedId===id)は開始せず保留する
+ *  (監査 C)。 */
 function scheduleDoneExit(id: string): void {
 	if (exitTimers.has(id) || retiredDoneIds.has(id)) return;
+	if (selectedId === id) {
+		heldDoneExitIds.add(id);
+		return;
+	}
 	graceStartAt.set(id, Date.now()); // グレーフェードの起点(renderRow が resume delay に使う)
 	const timer = setTimeout(() => {
 		exitTimers.delete(id);
@@ -531,7 +541,7 @@ function scheduleDoneExit(id: string): void {
 	exitTimers.set(id, timer);
 }
 /** 退場タイマーを取り消す(undo=再開時 / 外部再開検知時)。退場済みマーク・グレーフェード起点も解除して
- *  再表示を許す。 */
+ *  再表示を許す。保留中(heldDoneExitIds)のマークも合わせて解除する。 */
 function cancelDoneExit(id: string): void {
 	const t = exitTimers.get(id);
 	if (t !== undefined) {
@@ -540,12 +550,24 @@ function cancelDoneExit(id: string): void {
 	}
 	graceStartAt.delete(id);
 	retiredDoneIds.delete(id);
+	heldDoneExitIds.delete(id);
+}
+/** 選択解除(commitSelection)で呼ぶ: 直前まで選択されていた行 id の退場が保留(heldDoneExitIds)されて
+ *  いれば、いま改めて退場猶予を仕込み直す(監査 C の「保留 → 選択解除で再開」の本体)。 */
+function resumeHeldDoneExit(id: string | null): void {
+	if (id === null) return;
+	if (heldDoneExitIds.delete(id)) scheduleDoneExit(id);
 }
 /** 完了行を退場させる(高さ0へ畳んで remove → 状態から追放して再描画)。
  *  prefers-reduced-motion: reduce では畳みアニメを止めて即時 remove(モーション過敏配慮)。
- *  DOM に行が見つからない(既に畳まれている等)場合も即 finish。 */
+ *  DOM に行が見つからない(既に畳まれている等)場合も即 finish。選択(編集)中の行(selectedId===id)は
+ *  タイマー発火時点で選択に入っていた場合の防御として、ここでも保留する(監査 C)。 */
 function retireDoneRow(id: string): void {
 	if (retiredDoneIds.has(id)) return; // 既に退場済み(冪等)
+	if (selectedId === id) {
+		heldDoneExitIds.add(id);
+		return;
+	}
 	// finish: 状態から追放し、確定土台の上に楽観を重ね直して再描画する。retiredDoneIds に入れることで
 	// rebuildDisplay / renderAll が二度と再合成しない(sticky/positionMemory も消す)。
 	const finish = (): void => {
@@ -1597,6 +1619,13 @@ function commitSelection(): boolean {
 	selTitleInput = null;
 	selMemoInput = null;
 	if (selectedId === null) return false;
+	// 監査 C: この commitSelection は「selectedId の選択を終える」呼び出し側の唯一の共通経路
+	// (setSelected の別行切替・commitDraftEnter・Enter コミット等、全 callsite がここを通ってから
+	// selectedId を変更/null にする)。よってここを「選択解除」の単一フックにでき、選択中に保留して
+	// いた退場(heldDoneExitIds)をここで再開できる。呼び出し側が新しい selectedId を代入するより
+	// 前に呼ぶが、resumeHeldDoneExit は「これから確定する id」に対して行うので、直後の選択切替とは
+	// 独立して安全(新 id が同じ id になるケースは setSelected の同一 id 早期 return で弾かれる)。
+	resumeHeldDoneExit(selectedId);
 	// --- ドラフト行(未送信の新規行)の確定 = create-todo(タイトル非空のときだけ)------------------
 	if (draft !== null && selectedId === draft.id) {
 		const title = (inputTitle !== null ? inputTitle.value : draft.title).trim();
@@ -2959,8 +2988,20 @@ function applyInlineFold(foldAnchor: Comment): void {
 	// これにより「タップした行が畳まれて消える」再発を構造的に防ぐ。キャッシュが無い(通常は
 	// 起こらない: 初回 renderAll は必ず selectedId===null で通る)場合のみ動的値へ防御的に
 	// フォールバックする。
-	const visibleCount = selectedId === null ? dynamicVisibleCount : (cachedStaticVisibleCount ?? dynamicVisibleCount);
+	let visibleCount = selectedId === null ? dynamicVisibleCount : (cachedStaticVisibleCount ?? dynamicVisibleCount);
 	if (selectedId === null) cachedStaticVisibleCount = visibleCount;
+	// 【監査 D: 選択中でも選択行が可視集合に入る保証】選択中は上の cachedStaticVisibleCount で
+	// 「件数」は固定しているが、外部更新(sync 由来の並び替え・新規行の挿入等)で rows の**メンバー
+	// シップ**が変わると、選択行が先頭 visibleCount の外へ押し出されて slice(visibleCount) で
+	// remove されうる(不変条件「タップ行は必ず見えたまま」を破る別経路 — cachedStaticVisibleCount
+	// は「件数」しか固定しないので、これだけでは選択行自体の残留は保証できない)。選択行が rows の
+	// 先頭 visibleCount に入っていなければ、選択行の index+1 まで visibleCount を拡大して必ず含める。
+	// maxHeight の予算を超えうるが、「編集中の行が見える」ことを優先する(キーボード回避はホスト側の
+	// 責務であってこのカード内 fold の関心事ではない)。
+	if (selectedId !== null) {
+		const selectedIndex = rows.findIndex((li) => li.dataset.id === selectedId);
+		if (selectedIndex >= visibleCount) visibleCount = selectedIndex + 1;
+	}
 	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
 
 	lastFoldActive = true; // ここに到達 = 実際に畳んでフッタを出す(FAB の fullscreen 昇格判定に使う)。
@@ -3182,8 +3223,20 @@ function applyStructuredContent(sc: unknown): void {
 	// 誤って退場させることはない。scheduleDoneExit は冪等(exitTimers.has/retiredDoneIds.has で二重仕込み
 	// を防止)なので、自分の楽観トグルで既にタイマー済みの id を再度渡しても無害(タイマーが延長も
 	// リセットもされない)。
+	// 【2026-07-18 監査 B: done→undo 追送中のレース】done→即 undo(reopen)した直後、reopen の
+	// update-todo がまだ in-flight（flushToggle の追送中）の間に、先行した done の完了応答が
+	// ここへ届くことがある(desiredToggle は「最新のユーザー意図」に更新済みだが、応答は届いた順)。
+	// この combinedAffected は応答時点のサーバー遷移を表すだけで、ユーザーの「今」の意図を反映しない
+	// ので、無条件に scheduleDoneExit すると reopen 応答が届くまでの間だけ行が退場し(cancelDoneExit
+	// は reopen 応答時にしか効かない)、最新意図が「未完了」なのに一瞬消える演出になってしまう。
+	// desiredToggle[id] を見て、最新の望みが「未完了」(completed:false)ならタイマーを仕込まない
+	// (意図と逆向きの退場演出をしない)。desiredToggle に無い id(この応答で確定して以降ユーザー操作が
+	// 無い)は従来どおり素通しする。
 	for (const a of combinedAffected) {
-		if (a.kind === "completed") scheduleDoneExit(a.id);
+		if (a.kind !== "completed") continue;
+		const desired = desiredToggle.get(a.id);
+		if (desired !== undefined && !desired.completed) continue;
+		scheduleDoneExit(a.id);
 	}
 	// 削除された id は位置記憶 / sticky から追い出す(2026-07-14 並び順安定性)。これをしないと、
 	// 削除で消えた行が stickyData の last-known データを頼りに「幽霊住人」として復活してしまう

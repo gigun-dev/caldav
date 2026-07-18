@@ -65,6 +65,10 @@ interface Candidate {
 	// LAST-MODIFIED(無ければ DTSTAMP)の生値("YYYYMMDDTHHMMSSZ" 形式・§3.3.5 UTC)をそのまま使う。
 	// この形式は固定幅の UTC 文字列なので、辞書式比較 = 時系列比較として妥当(パース不要の軽量比較)。
 	recencyKey: string;
+	// tie-break 用の安定キー(リソースの uid)。recencyKey が両方欠落(RFC 5545 上 DTSTAMP は
+	// 必須プロパティなので実データではほぼ不可能だが、壊れた/非準拠データでは起こりうる)して
+	// 空文字同士になった場合でも dedup の勝敗・最終的な並びを決定的にするため保持する。
+	uid: string;
 }
 
 export class ListKnownLocations {
@@ -90,10 +94,10 @@ export class ListKnownLocations {
 				// のが実データの実態 — override 分も含めて走査しても「同じ場所を二重に候補へ足す」
 				// だけで実害は無い。dedup で1件に畳まれる)。
 				for (const vevent of resource.payload.events()) {
-					this.collectFrom(vevent.raw, candidates);
+					this.collectFrom(vevent.raw, resource.uid, candidates);
 				}
 				for (const vtodo of resource.payload.todos()) {
-					this.collectFrom(vtodo.raw, candidates);
+					this.collectFrom(vtodo.raw, resource.uid, candidates);
 				}
 			}
 			if (scanned >= MAX_RESOURCES_SCANNED) break;
@@ -108,17 +112,17 @@ export class ListKnownLocations {
 	 * 拾う(タイトル無し・座標無しの部分情報は「既知の場所」候補として選べないので捨てる — C1 の
 	 * degrade 方針とは異なり、write 支援ツールのここでは「選択可能な候補」であることを要求する)。
 	 */
-	private collectFrom(component: Component, out: Candidate[]): void {
+	private collectFrom(component: Component, uid: string, out: Candidate[]): void {
 		const recencyKey = rawValue(component, "LAST-MODIFIED") ?? rawValue(component, "DTSTAMP") ?? "";
 
 		const direct = readStructuredLocation(component);
 		if (direct !== null && direct.title !== null && direct.geo !== null) {
-			out.push({ loc: direct as Candidate["loc"], recencyKey });
+			out.push({ loc: direct as Candidate["loc"], recencyKey, uid });
 		}
 
 		const proximity = readProximityAlarm(component);
 		if (proximity !== null && proximity.location.title !== null && proximity.location.geo !== null) {
-			out.push({ loc: proximity.location as Candidate["loc"], recencyKey });
+			out.push({ loc: proximity.location as Candidate["loc"], recencyKey, uid });
 		}
 	}
 
@@ -137,6 +141,18 @@ function rawValue(c: Component, name: string): string | undefined {
 }
 
 /**
+ * 「新しい順」の比較(降順)。recencyKey が同点なら uid の辞書式昇順比較で決定的に順序付ける
+ * (F: recencyKey 単独では両方 "" のケースで不定になっていた・上のコメント参照)。
+ * Array.sort の慣習どおり、a が先(新しい/勝つ)なら負、b が先なら正、0 なら完全に同点
+ * (理論上 uid が同じ = 同一リソース由来で同じ場所を2回拾った場合のみ起こり、順序はどちらでも実害が無い)。
+ */
+function compareCandidate(a: Candidate, b: Candidate): number {
+	if (a.recencyKey !== b.recencyKey) return a.recencyKey > b.recencyKey ? -1 : 1;
+	if (a.uid !== b.uid) return a.uid < b.uid ? -1 : 1;
+	return 0;
+}
+
+/**
  * title + 座標(小数第6位で丸め・約11cm精度)で dedup し、recencyKey 降順(新しい順)で並べる。
  * 同じ場所が複数イベント/タスクで使われていても1件に畳み、そのうち最も新しい recencyKey を勝たせる
  * (「最近使った順」を裏付ける最新の利用実績を採用)。radius/address は「最も新しい出現」の値を採用
@@ -147,11 +163,14 @@ function dedupeAndSort(candidates: Candidate[]): KnownLocation[] {
 	for (const c of candidates) {
 		const key = `${c.loc.title}|${c.loc.geo.lat.toFixed(6)}|${c.loc.geo.lon.toFixed(6)}`;
 		const existing = byKey.get(key);
-		if (existing === undefined || c.recencyKey > existing.recencyKey) {
+		// recencyKey が同点(典型的には両方 "" — LAST-MODIFIED/DTSTAMP 双方欠落)のときは
+		// uid の辞書式比較で決定的に勝敗を付ける(F: tie-break 追加。recencyKey だけだと
+		// 同点はどちらが Map に残るか走査順依存になり dedup/並びが不定になっていた)。
+		if (existing === undefined || compareCandidate(c, existing) < 0) {
 			byKey.set(key, c);
 		}
 	}
-	const merged = [...byKey.values()].sort((a, b) => (a.recencyKey < b.recencyKey ? 1 : a.recencyKey > b.recencyKey ? -1 : 0));
+	const merged = [...byKey.values()].sort((a, b) => compareCandidate(a, b));
 	return merged.slice(0, MAX_RESULTS).map((c) => ({
 		title: c.loc.title,
 		address: c.loc.address,
