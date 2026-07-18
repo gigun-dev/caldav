@@ -293,13 +293,16 @@ export const AGENDA_APP_HTML = `<!doctype html>
     min-height: 32px;
     cursor: pointer;
   }
-  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の予定 — 全画面で表示」。
+  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の予定」。
    * 旧「すべて表示」ボタン(.fold-expand)+ 受動「残り n 件」(.fold-remaining)を置換(右上 ⤢ と
    * 役割重複のため廃止・上の2クラスは退行時再利用に残置=死んでも害は無い経緯記録)。モック
-   * inline-preview.html の .more 相当(控えめ muted・件数だけ accent)。todos-app.ts と同定義。 */
+   * inline-preview.html の .more 相当(控えめ muted・件数だけ accent)。todos-app.ts と同定義。
+   * 【2026-07-18 ユーザー裁定: action-row(下記)の子に変更】.fold-more は行内の左側フレックス項目に
+   * なる(width:100% を外し flex で action-add の左に伸縮させる。todos-app.ts の同改訂と同判断)。 */
   .fold-more {
     display: block;
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 8px 0 12px;
     padding: 6px 2px 2px;
     font: inherit;
@@ -314,6 +317,34 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * してタップ可能を色で示す(todos-app.ts と同判断)。div 版(受動)は上の .fold-more の muted のまま。 */
   button.fold-more { cursor: pointer; min-height: 32px; color: var(--accent); }
   .fold-more-count { color: var(--accent); }
+
+  /* 【2026-07-18 ユーザー裁定: inline の浮遊 FAB を撤去し + を「他 n件」フッタと同じ行に統合】
+   * todos-app.ts の .action-row/.action-add 改訂と同判断・同型(経緯は todos-app.ts のコメント参照)。
+   * action-row はリストの通常フロー最終行として常に1つだけ存在し、左に「他 n件の予定」(畳みが
+   * あるときだけ・.fold-more)、右に ⊕(.action-add)を置く。fullscreen では浮遊 FAB(.fab-row。
+   * 下記)を維持し、action-row 自体を出さない(applyInlineFold が hostDisplayMode!=="inline" で
+   * 早期 return)。 */
+  .action-row {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    margin-top: 8px;
+  }
+  .action-add {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 20px;
+    color: var(--accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1(applyHostContext)が
    * containerDimensions.maxHeight から設定する CSS 変数。inline に戻ると applyHostContext がこの
@@ -344,12 +375,20 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * measureFabBlockPx が測る「行の下に必ず並ぶ FAB の高さ」という前提(fold の budget 先引き)が
    * 崩れる。todos が同じ理由でフロー化した経緯に倣い、agenda も .fab-row(#root 直後・body 直下の
    * 通常フロー要素)の中に flex + justify-content:flex-end で右寄せする。フロー配置だと行挿入で
-   * FAB がその場から1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。 */
+   * FAB がその場から1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。
+   *
+   * 【2026-07-18 ユーザー裁定で inline 分は撤回: 浮遊 FAB(.fab-row)は inline では非表示に】
+   * 上記フロー化は「fixed の副作用」を消したが、flow のままだと畳み計算に FAB 高さの先引きを
+   * 要求し続ける別の脆さが残った(todos-app.ts の同改訂コメント参照)。inline では + を「他 n件」
+   * フッタと同じ行(action-row。上の .action-row/.action-add 定義参照)へ統合し、浮遊 FAB 自体を
+   * 隠す(display:none が既定)。fullscreen だけ下の "#root.fullscreen-scroll ~ .fab-row" が ID
+   * セレクタで上書きし、position:fixed の浮遊 FAB を復活させる。 */
   .fab-row {
-    display: flex;
+    display: none;
     justify-content: flex-end;
     /* 旧 fixed FAB のための body padding-bottom 退避を廃止した(body のコメント参照)ので、
-     * FAB とその上の #root の間隔をここで確保する(todos-app.ts の .fab-row と同値)。 */
+     * FAB とその上の #root の間隔をここで確保する(fullscreen 復活時のみ意味を持つ値。
+     * todos-app.ts の .fab-row と同値)。 */
     margin-top: 8px;
   }
   .fab {
@@ -378,6 +417,9 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * bottom には env(safe-area-inset-bottom) を加算し、fullScreenCover が safe area の外まで
    * 描画されうることに備える(todos-app.ts と同値)。 */
   #root.fullscreen-scroll ~ .fab-row {
+    /* 2026-07-18: 上の .fab-row の既定が display:none(inline では浮遊 FAB を隠す)へ変わったため、
+     * fullscreen ではここで明示的に display:flex へ戻す(todos-app.ts と同判断)。 */
+    display: flex;
     position: fixed;
     right: 16px;
     bottom: calc(16px + env(safe-area-inset-bottom, 0px));

@@ -753,17 +753,23 @@ export const TODOS_APP_HTML = `<!doctype html>
     min-height: 32px;
     cursor: pointer;
   }
-  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の未完了 — 全画面で表示」。
+  /* C0-b(2026-07-17 inline プレビュー化): フッタ要約行「他 n 件の未完了」。
    * 旧「すべて表示」ボタン(.fold-expand)+ 受動「残り n 件」(.fold-remaining)を置換する
    * (両者は右上 ⤢ と役割重複のため廃止 — 上の .fold-remaining/.fold-expand は退行時の再利用に
    * 備え残置するが、entry からは参照しなくなった=死んでも害は無い経緯記録)。モック
    * docs/design/mocks/inline-preview.html の .more 相当(控えめ muted・件数だけ accent)。
    * canRequestFullscreen なら button(タップで fullscreen 昇格)、非広告ホストなら div(受動・
-   * タップ不可)で同じ .fold-more を付ける(高さを揃え measureFooterBlockPx の probe と一致させる)。
-   * margin は measureFooterBlockPx が getComputedStyle で実測し budget 先引きに使う(定数二重管理回避)。 */
+   * タップ不可)で同じ .fold-more を付ける。
+   * 【2026-07-18 ユーザー裁定: action-row(下記)の子に変更】旧実装は .fold-more 単体が flow の
+   * 独立ブロック(display:block;width:100%)で、高さは measureFooterBlockPx が直接実測していた。
+   * 今は「他 n件」+ ⊕ が1つの action-row に同居するため、.fold-more は行内の左側フレックス項目に
+   * なる(width:100% を外し flex で action-add の左に伸縮させる。詳細は .action-row 定義参照)。
+   * margin/padding は measureActionRowBlockPx が action-row ごと実測し budget 先引きに使う
+   * (定数二重管理回避・値そのものは意味を保つため変更していない)。 */
   .fold-more {
     display: block;
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 8px 0 12px;
     padding: 6px 2px 2px;
     font: inherit;
@@ -782,6 +788,40 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* 件数を強調(モックの .more span 相当)。button 版では全体が accent なので実質同色になるが、div 版
    * (受動 muted)では件数だけ accent で浮かせて残件数を読み取りやすくする。 */
   .fold-more-count { color: var(--accent); }
+
+  /* 【2026-07-18 ユーザー裁定: inline の浮遊 FAB を撤去し + を「他 n件」フッタと同じ行に統合】
+   * inline カードの絶対配置浮遊 FAB は「行フローの外」にいるため、畳み計算に「FAB 高さの先引き」
+   * という別会計を要求し続け、クリップ系バグの温床になっていた(直近の再発はホスト側レースが
+   * 真因だったが、構造自体の脆さは残っていた)。action-row はリストの通常フロー最終行として
+   * 常に1つだけ存在し(todos-entry.ts の applyInlineFold/buildActionRow 参照)、左に「他 n件の
+   * 未完了」(畳みがあるときだけ・.fold-more)、右に ⊕(.action-add)を置く。fold 会計は
+   * 「action-row 1つ分の高さ」だけを先引きすればよくなる(旧「フッタ + 浮遊 FAB」の合計から単純化 —
+   * measureActionRowBlockPx コメント参照)。fullscreen では浮遊 FAB(.fab-row。下記)を維持し、
+   * action-row 自体を出さない(applyInlineFold が hostDisplayMode!=="inline" で早期 return)。 */
+  .action-row {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    margin-top: 8px;
+  }
+  /* ⊕ 追加ボタン(旧 #quick-add-fab の役割を継承)。タップ領域 44px・アイコンは accent 色で
+   * .fold-more の「押せるテキスト」と同じ視覚言語に揃える(円形の塗りボタンにはしない — fullscreen
+   * 限定の浮遊 .fab と役割が違う場所だと分かるよう、意図的にトーンを変える)。 */
+  .action-add {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 20px;
+    color: var(--accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
 
   /* C0-a(> 2026-07-17 実機 FB2: グレーフェード自然退場 / A-3: 対象はタイトルのみ): 完了行は done タップ
    * の瞬間から **タイトル要素だけ** に .retiring が付き、retire-fade アニメで opacity 低下 + grayscale
@@ -874,12 +914,25 @@ export const TODOS_APP_HTML = `<!doctype html>
    * body 直下の通常フロー要素)の中に flex + justify-content:flex-end で右寄せする。
    * auto-height iframe は独立スクロールを持たずページ全高が常に見えるため、視覚的な位置は
    * 現行の右下とほぼ変わらない(要実機確認)。フロー配置だと行挿入で FAB がその場から
-   * 1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。 */
+   * 1回だけ自然に押し下げられる「流れ」になり、「戻る」動き(fixed の副作用)が消える。
+   *
+   * 【2026-07-18 ユーザー裁定で inline 分は撤回: 浮遊 FAB(.fab-row)は inline では非表示に】
+   * 上記 v2.2 item4 のフロー化は「fixed の副作用(戻るシフト)」を消す対処としては機能したが、
+   * flow 配置のままだと今度は「畳み計算に FAB 高さの先引きを要求し続ける」という別の脆さが残った
+   * (measureFabBlockPx・fold.ts の bottomChrome 会計。クリップ系バグの再発源になっていた)。
+   * inline では + を「他 n件」フッタと同じ行(action-row。上の .action-row/.action-add 定義参照)へ
+   * 統合し、浮遊 FAB 自体を隠す(display:none が既定)。fullscreen だけ下の
+   * "#root.fullscreen-scroll ~ .fab-row" が ID セレクタで上書きし、position:fixed の浮遊 FAB を
+   * 復活させる(全画面では浮遊 FAB が iOS の文法・fold 自体が起きないので会計の脆さも無い)。
+   * v2.2 item4 のフロー化の発見自体はボツにせず「消さずに積む」— fullscreen 側は今もこの経緯の
+   * 上に立っている(fixed の副作用が起きない条件は下の #root.fullscreen-scroll ~ .fab-row コメント
+   * 参照)。 */
   .fab-row {
-    display: flex;
+    display: none;
     justify-content: flex-end;
     /* 旧 fixed FAB のための body padding-bottom 退避を廃止したので(body のコメント参照)、
-     * FAB とその上の #root の間隔をここで確保する。 */
+     * FAB とその上の #root の間隔をここで確保する(fullscreen 復活時のみ意味を持つ値。
+     * fullscreen 側の実際の値は margin:0 で上書きされる — 下の #root.fullscreen-scroll ~ .fab-row 参照)。 */
     margin-top: 8px;
   }
   .fab {
@@ -924,6 +977,9 @@ export const TODOS_APP_HTML = `<!doctype html>
    * ホームインジケータ等の safe area の上に FAB が来るようにする(fullScreenCover は safe area の
    * 外まで描画されうるため)。 */
   #root.fullscreen-scroll ~ .fab-row {
+    /* 2026-07-18: 上の .fab-row の既定が display:none(inline では浮遊 FAB を隠す)へ変わったため、
+     * fullscreen ではここで明示的に display:flex へ戻す(旧実装は base が flex だったので不要だった)。 */
+    display: flex;
     position: fixed;
     right: 16px;
     bottom: calc(16px + env(safe-area-inset-bottom, 0px));

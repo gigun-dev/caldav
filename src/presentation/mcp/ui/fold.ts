@@ -76,6 +76,17 @@
 // 以上、畳んだ行・ボタン・FAB の3つ全部が maxHeight に収まっていなければ、根治したはずの
 // 「FAB がクリップされて隠れる」再発バグが今度は folded 側で再発してしまうため
 // (computeInlineFit の bottomChrome 引数コメント・todos-entry.ts の measureFabBlockPx 参照)。
+//
+// 【2026-07-18 ユーザー裁定: 浮遊 FAB(絶対配置)そのものを inline から撤去】
+// 上の 2026-07-17 追更新は「FAB を隠さない」ことは正しく守ったが、「フッタ + FAB の2つが別々の
+// flow 要素として bottomChrome に同居する」という会計の複雑さ自体は残っており、直近の再発
+// (原因はホスト側レースだったが、構造の脆さがバグを呼び込みやすくしていた)を受けてユーザーが
+// 構造そのものを見直す判断をした。inline では絶対配置の浮遊 FAB を完全に廃止し、+ を「他 n件」
+// フッタと同じ1行(action-row)の右端へ統合する(*-entry.ts の buildActionRow・fullscreen だけ
+// 浮遊 FAB を維持)。この結果、bottomChrome/fullHeight の先引き対象は「action-row 1つ分の高さ」
+// だけになり、旧「フッタ + FAB の合計」という非対称な会計は解消された(*-entry.ts の
+// measureActionRowBlockPx コメント参照)。computeInlineFit 自体のシグネチャ・ロジックは無改造
+// (呼び出し側が渡す bottomChrome の“中身”が1要素分に単純化されただけ)。
 // =============================================================================
 
 /** computeInlineFit の戻り値。件数を決め打ちで返すのではなく、「畳まず全部見せてよいか

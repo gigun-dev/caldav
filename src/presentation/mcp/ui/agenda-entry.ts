@@ -1141,13 +1141,6 @@ function renderAll(): void {
 		root.appendChild(ul);
 	}
 
-	// C2(P4-DM・設計04 §5): 「すべて表示」/「残り n 件」の挿入位置マーカー。日セクション群の直後・
-	// ドラフト行「新規」セクションの手前に置く(畳んでも入力中のドラフト行は隠さない方針 —
-	// applyInlineFold が畳み対象を「root > ul:not(.draft-list) > li」に絞っているのと同じ理由。
-	// todos-entry.ts:2555 の foldAnchor と同じ役割)。畳まないときは何も挿さない=マーカーだけ残って無害。
-	const foldAnchor = document.createComment("fold-anchor");
-	root.appendChild(foldAnchor);
-
 	// ドラフト行(FAB で生やした未送信の新規行)を末尾に選択状態で描く(sectionize に混ぜない)。
 	if (draft !== null) {
 		const section = el("div", "section");
@@ -1163,67 +1156,126 @@ function renderAll(): void {
 
 	// C2(P4-DM・2026-07-17): renderAll「最終段」の表示切りだけを行う畳み。ここより前の
 	// セクショニング/楽観適用/becoming 装飾には一切触れない(畳みはフル描画済み DOM を実測して
-	// 行を間引くだけの後処理。todos-entry.ts:2589 の applyInlineFold(foldAnchor) と同じ位置づけ)。
-	applyInlineFold(foldAnchor);
+	// 行を間引くだけの後処理。todos-entry.ts:2589 の applyInlineFold と同じ位置づけ)。
+	// 【2026-07-18 ユーザー裁定: fold-anchor マーカーは廃止】旧実装はここに Comment ノードを置き、
+	// applyInlineFold がその直後(=日セクション群の直後・ドラフト「新規」セクションの手前)へ
+	// フッタを挿していた。⊕ を統合した action-row は「ドラフト行より下の flow 最終行」に出す必要が
+	// ある(todos と同じ item3: ドラフト行はアクション行の上に出る)ため、マーカー位置への
+	// insertBefore ではなく、ドラフトを含めた全ての appendChild が終わったこの時点で
+	// applyInlineFold が root.appendChild するだけでよくなった(todos-entry.ts と同じ単純化)。
+	applyInlineFold();
 }
 
-// フッタ要約行(.fold-more)の実高さ(margin 込み)のキャッシュ。CSS 定数(agenda-app.ts の .fold-more)の
-// 二重管理を避けるため実測値をそのまま budget 先引きに使う。ページ内で一度測れば以降は不変。
-// 【2026-07-17 C0-b: probe 対象を「すべて表示」ボタン(.fold-expand)→ フッタ要約行(.fold-more)へ置換】
-// inline プレビュー化に伴い行より下に必ず並ぶのは「フッタ要約行 + FAB」。todos-entry.ts と同じ置換。
-let cachedFooterBlockPx: number | null = null;
+// アクション行(.action-row = 旧フッタ要約行 .fold-more + ⊕ 追加ボタン)の実高さ(margin 込み)の
+// キャッシュ。CSS 定数(agenda-app.ts の .action-row/.fold-more)の二重管理を避けるため実測値を
+// そのまま budget 先引きに使う。ページ内で一度測れば以降は不変。
+// 【2026-07-17 C0-b で probe 対象を「すべて表示」ボタン(.fold-expand)→ フッタ要約行(.fold-more)へ
+//  置換】→【2026-07-18 ユーザー裁定で「フッタ + 浮遊 FAB」→「フッタ+⊕ を1行に統合した action-row」へ
+//  再置換】(todos-entry.ts と同じ経緯・cachedFooterBlockPx → cachedActionRowBlockPx)。
+let cachedActionRowBlockPx: number | null = null;
 
-/** フッタ要約行(.fold-more)の高さ(上下 margin 込み・px)を実測する(todos-entry.ts の measureFooterBlockPx 移植)。
- *  button 版/div 版とも同じ .fold-more クラスなので1つの probe で両分岐を代表できる。
- *  【なぜ visibility:hidden か】display:none は offsetHeight が 0 で測れない。visibility:hidden はレイアウトに
- *  参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
-function measureFooterBlockPx(): number {
-	if (cachedFooterBlockPx !== null) return cachedFooterBlockPx;
-	// probe は button 版で測る(button.fold-more は min-height:32px を持ち div 版より常に高い=安全側)。
-	const probe = document.createElement("button");
-	probe.type = "button";
-	probe.className = "fold-more";
-	probe.textContent = "他 00件の予定 — 全画面で表示"; // 幅は width:100% 固定なのでテキスト長は高さに無関係
+/** アクション行(.action-row)の高さ(上下 margin 込み・px)を実測する(todos-entry.ts の
+ *  measureActionRowBlockPx 移植)。
+ *  【2026-07-18 ユーザー裁定: 浮遊 FAB 廃止 → + をフッタ行へ統合(fold 会計の簡素化)】
+ *  旧実装は「フッタ要約行(.fold-more)」と「浮遊 FAB(.fab-row)」が別々の flow 要素で、budget の
+ *  先引き(bottomChrome)も両者の合計・fullHeight にも FAB 分を別途加算していた(旧
+ *  measureFabBlockPx。inline の浮遊 FAB を CSS で隠したため不要になった=削除。経緯は
+ *  todos-entry.ts の同名コメント参照)。+ は「他 n件の予定」フッタと同じ行(.action-row)の右端に
+ *  統合したため、action-row は inline では常に flow 最終行として1つだけ存在する(畳みが無いときも
+ *  左が空なだけで行自体は出る。applyInlineFold・buildActionRow 参照)。そのため bottomChrome は
+ *  「action-row 1つ分の高さ」に単純化され、fullHeight 側の加算も同じ値でよくなった(action-row は
+ *  畳んでも畳まなくても常に flow に実在するため)。
+ *  【なぜ probe を1回描いて測るか】button 版/div 版とも同じ .fold-more クラスを含む1つの probe で
+ *  両分岐を代表できる(action-row 自体の高さは ⊕(44px 固定)の min-height が支配的なので、左の
+ *  フッタ有無やテキスト長では変わらない設計 — agenda-app.ts の .action-row CSS 参照)。
+ *  【なぜ visibility:hidden か】display:none は offsetHeight が 0 で測れない。visibility:hidden は
+ *  レイアウトに参加する(一瞬 layout に載るが即 remove するのでちらつきは無い)。 */
+function measureActionRowBlockPx(): number {
+	if (cachedActionRowBlockPx !== null) return cachedActionRowBlockPx;
+	const probe = document.createElement("div");
+	probe.className = "action-row";
 	probe.style.visibility = "hidden";
+	const footerProbe = document.createElement("button");
+	footerProbe.type = "button";
+	footerProbe.className = "fold-more";
+	footerProbe.textContent = "他 00件の予定";
+	probe.appendChild(footerProbe);
+	const addProbe = document.createElement("button");
+	addProbe.type = "button";
+	addProbe.className = "action-add";
+	probe.appendChild(addProbe);
 	root.appendChild(probe);
 	const cs = getComputedStyle(probe);
 	const marginPx = (Number.parseFloat(cs.marginTop) || 0) + (Number.parseFloat(cs.marginBottom) || 0);
-	cachedFooterBlockPx = probe.offsetHeight + marginPx;
+	cachedActionRowBlockPx = probe.offsetHeight + marginPx;
 	probe.remove();
-	return cachedFooterBlockPx;
+	return cachedActionRowBlockPx;
 }
 
-/** + FAB(.fab-row。#quick-add-fab の親)の実高さ(margin-top 込み・px)を実測する(todos-entry.ts:2639 移植)。
- *  【FAB は #root の外(兄弟要素)】agenda-app.ts の HTML 骨格は `<div id="root">...</div>` の直後に
- *  `<div class="fab-row"><button id="quick-add-fab">...` を置く(再描画の影響を受けないよう #root の外)。
- *  したがって **`root.scrollHeight` は FAB の高さを含まない** — fold 判定の fullHeight/budget は
- *  どちらも「rows + FAB」を土台にするので、FAB(.fab-row)の高さは別途実測して足し合わせる。
- *  【なぜ実要素を直接測るか】FAB は畳んでも常時表示(ユーザー FB による todos の判断に揃える —
- *  + 追加は主要アクションなので inline カードでも常に見えているべき)なので probe を作らず実在の
- *  .fab-row を直接読む。キャッシュしない(offsetHeight 読み取り1回のみで軽微)。 */
-function measureFabBlockPx(): number {
-	const fabRow = quickAddFab.closest(".fab-row") as HTMLElement | null;
-	if (fabRow === null) return quickAddFab.offsetHeight; // 防御的フォールバック(通常到達しない)
-	const marginTopPx = Number.parseFloat(getComputedStyle(fabRow).marginTop) || 0;
-	return fabRow.offsetHeight + marginTopPx;
+/** アクション行(フッタ「他 n 件の予定」+ ⊕)を組み立てる(todos-entry.ts の buildActionRow 移植)。
+ *  remaining が null なら畳みが無い(左は空・⊕ だけの行)。⊕ のクリックは agenda の追加フロー
+ *  (triggerCreateEvent。旧 quickAddFab ハンドラを抽出した共通関数)をそのまま呼ぶ。 */
+function buildActionRow(remaining: number | null): HTMLElement {
+	const row = document.createElement("div");
+	row.className = "action-row";
+	if (remaining !== null) {
+		const canFull = canRequestFullscreen(hostAvailableDisplayModes);
+		// フッタ要約行「他 n 件の予定」(> 2026-07-17 実機 FB1 で「— 全画面で表示」の CTA を削除・簡素化。
+		// todos-entry.ts と同判断)。タップ= fullscreen 昇格の挙動はそのまま。canFull なら button.fold-more を
+		// リンク色(accent)にしてタップ可能を色で示す(既存の「accent 色=押せるテキスト」視覚言語に合わせる)。
+		// 非広告ホストは受動 div(タップ不可・muted 色)= 死にリンクを作らない。
+		const footer = document.createElement(canFull ? "button" : "div");
+		footer.className = "fold-more";
+		footer.appendChild(document.createTextNode("他 "));
+		const count = el("span", "fold-more-count");
+		count.textContent = `${remaining}件の予定`;
+		footer.appendChild(count);
+		if (canFull) {
+			(footer as HTMLButtonElement).type = "button";
+			footer.addEventListener("click", () => {
+				// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を拒否したら
+				// "inline" が返るだけでエラーではない — 何もしない。通信失敗等はカードを壊さないよう握りつぶす。
+				void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+			});
+		}
+		row.appendChild(footer);
+	}
+	// ⊕(旧 #quick-add-fab の役割を継承)。inline では常に出す — folded 有無に関わらず主要な
+	// 追加導線を隠さない。
+	const addBtn = document.createElement("button");
+	addBtn.type = "button";
+	addBtn.className = "action-add";
+	addBtn.setAttribute("aria-label", "予定を追加");
+	addBtn.appendChild(createIcon("plus"));
+	addBtn.addEventListener("click", (e) => {
+		e.stopPropagation(); // 旧 quickAddFab ハンドラと同じ理由(document click の選択解除に巻き込まない)。
+		triggerCreateEvent();
+	});
+	row.appendChild(addBtn);
+	return row;
 }
 
 /**
  * C0-b 本体(P4-DM・2026-07-17 inline プレビュー化。旧 C2 動的畳みを改訂・todos-entry.ts の applyInlineFold と同型):
  * inline = 直近 N_MAX occurrence のプレビュー / fullscreen = 全件(設計05 §4・モック inline-preview.html)。
- * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行があれば末尾に
- * フッタ要約行「他 n 件の予定」を挿す(> 2026-07-17 実機 FB1 で CTA「— 全画面で表示」は削除。タップ=右上 ⤢ と同じ requestDisplayMode fullscreen)。
- * **+ FAB は folded でも常に表示**。旧「すべて表示」ボタン + 受動「残り n 件」は ⤢ と役割重複のため廃止。
+ * 表示件数を **min(INLINE_PREVIEW_MAX, computeInlineFit のフィット件数)** にクランプし、隠れた行があれば
+ * flow 最終行のアクション行(.action-row)左に「他 n 件の予定」を出す。タップ=右上 ⤢ と同じ
+ * requestDisplayMode fullscreen。**⊕(追加)はアクション行の右に統合し、folded でも常に表示**
+ * (2026-07-18 ユーザー裁定: 浮遊 FAB 廃止・詳細は measureActionRowBlockPx コメント)。
+ * 旧「すべて表示」ボタン + 受動「残り n 件」は ⤢ と役割重複のため廃止。
  *
  * 【computeInlineFit は捨てない = 安全クランプ】N_MAX 件でも端末の maxHeight 次第では溢れるので、その物理
  * フィットの逆算に computeInlineFit を再利用し min で合成する(fold.ts 冒頭コメント)。maxHeight 未送信は
  * Infinity を渡す(full=全行フィット)ので、その場合のクランプは純粋に N_MAX が効く。
- * 【bottomChrome = フッタ要約行 + FAB】budget の先引きにこの合計を使う(畳んだ行 + フッタ + FAB の3つ全部が
- * maxHeight に収まるように)。full 判定の fullHeight 側には FAB を加算する(フッタは full のとき出ない)。
+ * 【bottomChrome = アクション行1つ分(2026-07-18 単純化)】旧「フッタ + FAB」の合計だった bottomChrome は
+ * action-row 1つの高さに単純化された(measureActionRowBlockPx コメント参照)。full 判定の fullHeight 側にも
+ * 同じ値を加算する(action-row は folded/full どちらでも常に flow 最終行として実在するため)。
  */
-function applyInlineFold(foldAnchor: Comment): void {
+function applyInlineFold(): void {
 	// fullscreen 中はプレビュークランプしない(全件 + 内部スクロールは applyHostContext の fullscreen-scroll が担う)。
-	// inline 以外(displayMode 未送信のホスト等)は早期 return = 従来どおり全件表示(退行ゼロ)。
+	// inline 以外(displayMode 未送信のホスト等)は早期 return = 従来どおり全件表示(退行ゼロ)。アクション行自体も
+	// 出さない(2026-07-18 ユーザー裁定: fullscreen では浮遊 FAB を復活させ、アクション行は畳みが無い
+	// fullscreen では冗長=出さない)。
 	// 【2026-07-17 C0-b: hostMaxHeightPx===null の早期 return を撤去】新モデルでは inline は maxHeight の
 	// 有無に関わらず「上位 N 件プレビュー」に束ねる(N_MAX クランプは端末制約でなくプロダクト方針)。
 	// maxHeight が null のときは computeInlineFit へ Infinity を渡す(full=全行フィット扱い)。
@@ -1233,54 +1285,39 @@ function applyInlineFold(foldAnchor: Comment): void {
 	// 並ぶので、通常行の ul(=draft-list 以外)配下の li を文書順に集める。ドラフト行(draft-list)は除外。
 	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("ul:not(.draft-list) > li"));
 	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
-	const fabBlock = measureFabBlockPx();
-	// FAB は #root の外(兄弟)なので root.scrollHeight に含まれない — 明示的に加算する。
-	const fullHeight = root.scrollHeight + fabBlock;
-	const footerBlock = measureFooterBlockPx();
-	// bottomChrome: 畳んだ行より下に必ず並ぶ要素(フッタ要約行 + FAB)の合計高さ。
-	const bottomChrome = footerBlock + fabBlock;
+	// 2026-07-18 単純化: 旧「フッタ + 浮遊 FAB」の合計だった bottomChrome/fullHeight 先引きは、両者が
+	// 1つの action-row(常に flow 最終行として実在)へ統合されたことで「action-row 1つ分」に単純化された。
+	const actionRowBlock = measureActionRowBlockPx();
+	const fullHeight = root.scrollHeight + actionRowBlock;
+	const bottomChrome = actionRowBlock;
 
 	// フィット件数: maxHeight 未送信は Infinity(=全行フィット)。full なら全行、folded なら visibleCount。
 	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
 	const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
 	// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
 	const visibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
-	if (visibleCount >= rows.length) return; // 全部見えている(N_MAX 以下)→ フッタ不要・何もしない。
+	const folded = visibleCount < rows.length;
 
-	rows.slice(visibleCount).forEach((li) => li.remove());
-	// 空になった(=全行畳まれた)日セクションは見出しだけ宙ぶらりんにならないよう、ul と直前の
-	// .section 見出しをペアで除去する(agenda は section と ul がネストせず兄弟に並ぶため、
-	// ul の直前の要素兄弟がその日の見出しになる。todos は section が ul を内包するので section 単位で
-	// 消していたが、agenda はフラット構造なのでペアで消す — 構造差に由来する唯一の非対称)。
-	for (const ul of Array.from(root.querySelectorAll<HTMLElement>("ul:not(.draft-list)"))) {
-		if (ul.children.length > 0) continue;
-		const prev = ul.previousElementSibling;
-		if (prev !== null && prev.classList.contains("section")) prev.remove();
-		ul.remove();
+	if (folded) {
+		rows.slice(visibleCount).forEach((li) => li.remove());
+		// 空になった(=全行畳まれた)日セクションは見出しだけ宙ぶらりんにならないよう、ul と直前の
+		// .section 見出しをペアで除去する(agenda は section と ul がネストせず兄弟に並ぶため、
+		// ul の直前の要素兄弟がその日の見出しになる。todos は section が ul を内包するので section 単位で
+		// 消していたが、agenda はフラット構造なのでペアで消す — 構造差に由来する唯一の非対称)。
+		for (const ul of Array.from(root.querySelectorAll<HTMLElement>("ul:not(.draft-list)"))) {
+			if (ul.children.length > 0) continue;
+			const prev = ul.previousElementSibling;
+			if (prev !== null && prev.classList.contains("section")) prev.remove();
+			ul.remove();
+		}
 	}
 
 	const totalCount = rows.length; // 畳み対象の合計 occurrence 行数(ドラフトは対象外)
-	const remaining = totalCount - visibleCount; // = 「他 n 件」の n
-	const canFull = canRequestFullscreen(hostAvailableDisplayModes);
-	// フッタ要約行「他 n 件の予定」(> 2026-07-17 実機 FB1 で「— 全画面で表示」の CTA を削除・簡素化。
-	// todos-entry.ts と同判断)。タップ= fullscreen 昇格の挙動はそのまま。canFull なら button.fold-more を
-	// リンク色(accent)にしてタップ可能を色で示す(既存の「accent 色=押せるテキスト」視覚言語に合わせる)。
-	// 非広告ホストは受動 div(タップ不可・muted 色)= 死にリンクを作らない。
-	const footer = document.createElement(canFull ? "button" : "div");
-	footer.className = "fold-more";
-	footer.appendChild(document.createTextNode("他 "));
-	const count = el("span", "fold-more-count");
-	count.textContent = `${remaining}件の予定`;
-	footer.appendChild(count);
-	if (canFull) {
-		(footer as HTMLButtonElement).type = "button";
-		footer.addEventListener("click", () => {
-			// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。ホストが昇格を拒否したら
-			// "inline" が返るだけでエラーではない — 何もしない。通信失敗等はカードを壊さないよう握りつぶす。
-			void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
-		});
-	}
-	foldAnchor.parentNode?.insertBefore(footer, foldAnchor.nextSibling);
+	const remaining = totalCount - visibleCount; // = 「他 n 件」の n(folded でなければ使わない)
+	// 【2026-07-18 ユーザー裁定: アクション行は常設(畳みの有無に関わらず inline では必ず出す)】
+	// 旧実装は畳んだときだけフッタを append していたが、⊕ を統合した今は「畳みが無いときは左が
+	// 空の行」として常に出す(root の flow 最終行に置くことで浮遊 FAB を廃止できる)。
+	root.appendChild(buildActionRow(folded ? remaining : null));
 }
 
 /** 読込中スケルトン(行の影3本。todos と同じ体感安定策)。 */
@@ -3521,7 +3558,7 @@ function buildLocationSemimodal(d: SheetDraft): HTMLElement {
 	return modal;
 }
 
-// --- FAB(+)= fullscreen 作成フォームを開く(C3: 設計05 §4)-------------------------------------
+// --- + = fullscreen 作成フォームを開く(C3: 設計05 §4)-------------------------------------
 // 【vevent 作成 = fullscreen 詳細フォーム(inline quick-add は DTSTART 必須で API 契約上不成立・
 // 設計05 §4 裁定)】旧実装はここで startDraft() だけを呼び「末尾にドラフト行を生やして inline 選択」
 // していたが、その体験は廃止した。ただし内部的には startDraft()(draft を1件作る)→
@@ -3531,8 +3568,15 @@ function buildLocationSemimodal(d: SheetDraft): HTMLElement {
 // して一覧末尾にドラフト行を描いても、直後の openCreateSheet() が sheetState を立てて再度 renderAll()
 // する — ブラウザは最終状態しかペイントしないため、ユーザーにはドラフト行は一切見えず fullscreen
 // フォームだけが開く(旧「FAB→ドラフト行→ⓘ→詳細ページ」の3手を1手に自動化したのと等価)。
-quickAddFab.addEventListener("click", (e) => {
-	e.stopPropagation();
+//
+// 【2026-07-18 ユーザー裁定: 浮遊 FAB(#quick-add-fab)を廃止し action-row の ⊕ へ統合】
+// 押下時のロジックを triggerCreateEvent() へ抽出し、浮遊 FAB(fullscreen 限定で復活)と
+// action-row の ⊕(inline)の両方から呼ぶ(todos-entry.ts の triggerQuickAdd と同じ抽出)。
+// 【todos との差(報告事項)】todos の ⊕ は「折り畳み中だけ fullscreen へ昇格」だが、agenda の
+// vevent 作成はそもそも inline quick-add が API 契約上成立しない(DTSTART 必須)ため、折り畳みの
+// 有無に関わらず常に fullscreen 昇格を試みる(lastFoldActive 条件を課さない・設計05 §4 裁定は
+// 本改訂でも変更していない)。
+function triggerCreateEvent(): void {
 	commitSelection();
 	draft = null;
 	selectedId = null;
@@ -3543,7 +3587,7 @@ quickAddFab.addEventListener("click", (e) => {
 	};
 	// 昇格を試みる(拒否/未対応ホストでも openForm 自体は行う — 作成フォームは #root 内のカード内
 	// ページ遷移として inline でも成立するため、fullscreen はあくまで「全件が見える文脈」の付加価値。
-	// todos-entry.ts の畳み昇格と違い、ここでは lastFoldActive 条件を課さない(FAB を押した時点で
+	// todos-entry.ts の畳み昇格と違い、ここでは lastFoldActive 条件を課さない(⊕ を押した時点で
 	// 常に作成フォームへ入る合意 — 設計05 §4「vevent 作成 = fullscreen 詳細フォーム」)。
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
 		app
@@ -3556,6 +3600,10 @@ quickAddFab.addEventListener("click", (e) => {
 	} else {
 		openForm();
 	}
+}
+quickAddFab.addEventListener("click", (e) => {
+	e.stopPropagation();
+	triggerCreateEvent();
 });
 
 // --- グローバルクリック: 選択解除(確定)/ スワイプ露出畳み ----------------------------------------
