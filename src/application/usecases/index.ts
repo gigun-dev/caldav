@@ -209,6 +209,11 @@ export {
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
 	InvalidUrlError,
+	// C8(設計 05): 場所(structuredLocation)/ 会議(conference)の write 検証エラー(server.ts の
+	// isEventInputError が catch する)。validateStructuredLocation/validateConferenceUrl 自体は
+	// update-event.ts が "./create-event" から直接 import するので、ここでの再 export は不要。
+	InvalidStructuredLocationError,
+	InvalidConferenceUrlError,
 	type CreateEventInput,
 	type CreateEventOutput,
 	type CreateEventError,
@@ -228,3 +233,11 @@ export {
 	type DeleteEventInput,
 	type DeleteEventOutput,
 } from "./delete-event";
+
+// C5(設計 05 §3・§5・§6): list-known-locations — 過去の構造化場所の集約(セミモーダル候補用)。
+export {
+	ListKnownLocations,
+	type ListKnownLocationsInput,
+	type ListKnownLocationsOutput,
+	type KnownLocation,
+} from "./list-known-locations";

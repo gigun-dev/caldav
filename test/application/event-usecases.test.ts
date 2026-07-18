@@ -17,6 +17,8 @@ import {
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
 	InvalidUrlError,
+	InvalidStructuredLocationError,
+	InvalidConferenceUrlError,
 } from "../../src/application/usecases";
 import {
 	FakeCalendarCollectionRepository,
@@ -167,6 +169,53 @@ describe("event usecases", () => {
 		expect(webexEvent.url).toBe("webex:meeting-id");
 	});
 
+	// --- CreateEvent: structuredLocation / conference(C8・設計 05)-----------------
+
+	it("structuredLocation を指定すると LOCATION が title になり読み戻せる(round-trip)", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "岐阜大学で会議",
+			start: "2026-07-15",
+			structuredLocation: { title: "岐阜大学", address: "岐阜県岐阜市柳戸1-1", lat: 35.463012, lon: 136.737202, radius: 100 },
+		});
+		expect(event.location).toBe("岐阜大学");
+		expect(event.structuredLocation).toEqual({
+			title: "岐阜大学",
+			address: "岐阜県岐阜市柳戸1-1",
+			geo: { lat: 35.463012, lon: 136.737202 },
+			radiusMeters: 100,
+		});
+	});
+
+	it("conference を指定すると DESCRIPTION に会議ブロックが追記され、conference/notes 両方が読み戻せる", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "面談",
+			start: "2026-07-15",
+			notes: "面談のお知らせです。",
+			conference: { url: "https://meet.google.com/xpk-yooe-eev" },
+		});
+		expect(event.notes).toBe("面談のお知らせです。\n\n----( ビデオ通話 )----\nhttps://meet.google.com/xpk-yooe-eev\n---===---");
+		expect(event.conference).toEqual({ url: "https://meet.google.com/xpk-yooe-eev", source: "description" });
+	});
+
+	it("conference.url は http(s) 以外だと InvalidConferenceUrlError", async () => {
+		await expect(
+			createEvent.execute({ owner: TEST_OWNER, title: "壊れた会議", start: "2026-07-15", conference: { url: "message:abc" } }),
+		).rejects.toBeInstanceOf(InvalidConferenceUrlError);
+	});
+
+	it("structuredLocation の座標範囲外は InvalidStructuredLocationError", async () => {
+		await expect(
+			createEvent.execute({
+				owner: TEST_OWNER,
+				title: "壊れた場所",
+				start: "2026-07-15",
+				structuredLocation: { title: "どこか", lat: 999, lon: 0 },
+			}),
+		).rejects.toBeInstanceOf(InvalidStructuredLocationError);
+	});
+
 	// --- UpdateEvent -----------------------------------------------------------
 
 	async function seedEvent(args: Parameters<CreateEvent["execute"]>[0]): Promise<string> {
@@ -290,6 +339,53 @@ describe("event usecases", () => {
 		await expect(
 			updateEvent.execute({ owner: TEST_OWNER, eventId: "no-such", title: "x" }),
 		).rejects.toBeInstanceOf(EventNotFoundError);
+	});
+
+	// --- UpdateEvent: structuredLocation / conference(C8・設計 05)------------------
+
+	it("structuredLocation を三値で更新できる(設定→除去。LOCATION テキストは除去時も温存)", async () => {
+		const id = await seedEvent({ owner: TEST_OWNER, title: "場所更新", start: "2026-07-15" });
+		const set = await updateEvent.execute({
+			owner: TEST_OWNER,
+			eventId: id,
+			structuredLocation: { title: "岐阜大学", lat: 35.463012, lon: 136.737202 },
+		});
+		expect(set.event.location).toBe("岐阜大学");
+		expect(set.event.structuredLocation?.title).toBe("岐阜大学");
+
+		const cleared = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, structuredLocation: null });
+		expect(cleared.event.structuredLocation).toBeNull();
+		// null は「構造化データのみ除去」— LOCATION テキストは温存する契約(vevent-patch.ts コメント)。
+		expect(cleared.event.location).toBe("岐阜大学");
+	});
+
+	it("conference を三値で更新できる(設定→除去。notes 本文は独立して温存される)", async () => {
+		const id = await seedEvent({ owner: TEST_OWNER, title: "会議更新", start: "2026-07-15", notes: "本文です。" });
+		const set = await updateEvent.execute({
+			owner: TEST_OWNER,
+			eventId: id,
+			conference: { url: "https://meet.google.com/abc" },
+		});
+		expect(set.event.conference).toEqual({ url: "https://meet.google.com/abc", source: "description" });
+		expect(set.event.notes).toBe("本文です。\n\n----( ビデオ通話 )----\nhttps://meet.google.com/abc\n---===---");
+
+		// conference だけ除去 → notes 本文は既存 split から復元されて温存される(蓄積した空行も無い)。
+		const cleared = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, conference: null });
+		expect(cleared.event.conference).toBeNull();
+		expect(cleared.event.notes).toBe("本文です。");
+	});
+
+	it("notes だけ更新しても既存の conference は温存される(独立 patch)", async () => {
+		const id = await seedEvent({
+			owner: TEST_OWNER,
+			title: "混在更新",
+			start: "2026-07-15",
+			notes: "旧本文",
+			conference: { url: "https://meet.google.com/abc" },
+		});
+		const updated = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, notes: "新本文" });
+		expect(updated.event.conference).toEqual({ url: "https://meet.google.com/abc", source: "description" });
+		expect(updated.event.notes).toBe("新本文\n\n----( ビデオ通話 )----\nhttps://meet.google.com/abc\n---===---");
 	});
 
 	// --- DeleteEvent -----------------------------------------------------------

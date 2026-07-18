@@ -17,14 +17,18 @@
 
 import {
 	buildVTimezone,
+	composeDescriptionWithConference,
 	ICalendarObject,
 	isValidIanaZone,
 	localFieldsToEpochMillis,
 	serialize,
+	splitConferenceFromDescription,
 	UnsupportedTimeZoneError as DomainUnsupportedTimeZoneError,
 	zoneResolverFor,
 	type Component,
+	type ConferenceInput,
 	type RecurrenceRule,
+	type StructuredLocationInput,
 } from "../../domain/ical";
 import {
 	patchVEventFields,
@@ -35,7 +39,7 @@ import {
 import { stampUpdate } from "../../domain/ical/semantics";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
 import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
-import { parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
+import { decodeText, parseCalDate, type CalDate, type CalDateTime } from "../../domain/ical/values";
 import { isSameResourceConflict, PutCalendarObject, type PutCalendarObjectError } from "./put-calendar-object";
 import { lookupEvent, EventNotFoundError, type LookedUpEvent } from "./event-lookup";
 import {
@@ -49,13 +53,17 @@ import {
 import {
 	EventTimeZoneRequiredError,
 	InvalidAlarmsError,
+	InvalidConferenceUrlError,
 	InvalidEndError,
 	InvalidStartError,
+	InvalidStructuredLocationError,
 	InvalidTravelMinutesError,
 	InvalidUrlError,
 	StartAfterEndError,
 	StartEndTypeMismatchError,
 	validateAndBuildAlarms,
+	validateConferenceUrl,
+	validateStructuredLocation,
 	validateTravelMinutes,
 	validateUrl,
 } from "./create-event";
@@ -112,6 +120,18 @@ export interface UpdateEventInput {
 	alarms?: number[] | null;
 	/** 移動時間(X-APPLE-TRAVEL-DURATION・分)。三値: 省略=変更しない / null=除去 / 正整数=設定。 */
 	travelMinutes?: number | null;
+	/**
+	 * C8(設計 05 §1-b・§2「場所」スロット)。三値: 省略=変更しない / null=構造化場所を除去
+	 * (LOCATION テキストは温存。vevent-patch.ts の VEventPatchFields.structuredLocation コメント参照)/
+	 * StructuredLocationInput=設定(LOCATION も title で上書き)。
+	 */
+	structuredLocation?: StructuredLocationInput | null;
+	/**
+	 * C8(設計 05 §1-c・§2「会議」スロット)。三値: 省略=変更しない / null=DESCRIPTION から会議ブロックを
+	 * 除去(notes 本文は温存)/ ConferenceInput=設定・差し替え(既存 notes 本文と再合成する)。
+	 * notes を同時指定した場合は新 notes + 新 conference を合成する。
+	 */
+	conference?: ConferenceInput | null;
 }
 
 // --- 出力 DTO ---
@@ -135,6 +155,8 @@ export type UpdateEventError =
 	| InvalidAlarmsError
 	| InvalidTravelMinutesError
 	| InvalidUrlError
+	| InvalidStructuredLocationError
+	| InvalidConferenceUrlError
 	| EventNotFoundError
 	| PutCalendarObjectError;
 
@@ -201,6 +223,11 @@ export class UpdateEvent {
 		if (input.travelMinutes !== undefined && input.travelMinutes !== null) validateTravelMinutes(input.travelMinutes);
 		// url も同じ「lookup 前の安価な失敗」に揃える(null=除去は検証不要・undefined=据え置きも同様)。
 		if (input.url !== undefined && input.url !== null) validateUrl(input.url);
+		// structuredLocation/conference も同じ規律(C8)。
+		if (input.structuredLocation !== undefined && input.structuredLocation !== null) {
+			validateStructuredLocation(input.structuredLocation);
+		}
+		if (input.conference !== undefined && input.conference !== null) validateConferenceUrl(input.conference.url);
 
 		const collectionId = mkCollectionId(input.calendarId ?? "calendar");
 		const looked = await lookupEvent(this.resourceRepo, input.owner, collectionId, input.eventId);
@@ -219,9 +246,36 @@ export class UpdateEvent {
 		// recurrence patch(据え置き/除去/全置換)。全置換は新 or 既存 DTSTART をアンカーに UNTIL 値型を揃える。
 		const recurrencePatch = this.buildRecurrencePatch(input, parsedStart, looked, zoneOf);
 
+		// DESCRIPTION の再合成(C8): notes/conference のどちらか一方だけを patch したい場合でも、
+		// もう一方は既存 DESCRIPTION から split して温存する(composeDescriptionWithConference /
+		// splitConferenceFromDescription は互いの逆写像 — ファイル冒頭 structured-location-write.ts
+		// コメント参照)。どちらも undefined(触らない)なら DESCRIPTION 自体を patch しない
+		// (patchVEventFields の description は undefined=触らない の二値なので、既存の "notes まるごと
+		// 上書き" 挙動を壊さないよう、変更が無いときは既存 event-dto.ts Event.notes と同じ「未分割の
+		// 生 DESCRIPTION」を保つ)。
+		let descriptionPatch: string | undefined;
+		if (input.notes !== undefined || input.conference !== undefined) {
+			const existingRaw = looked.vevent.description; // encodeText 済みの生値(decodeText して split)。
+			const existing = splitConferenceFromDescription(existingRaw !== undefined ? decodeText(existingRaw) : undefined);
+			const notes = input.notes !== undefined ? input.notes : existing.notes;
+			const conference: ConferenceInput | undefined =
+				input.conference === undefined
+					? existing.conference !== undefined
+						? { url: existing.conference }
+						: undefined
+					: input.conference === null
+						? undefined
+						: input.conference;
+			// composeDescriptionWithConference は undefined を返しうる(notes/conference 両方無し)。
+			// patchVEventFields.description は「undefined=触らない」二値なので、除去したい(空にしたい)
+			// ときは空文字を明示して DESCRIPTION を空の TEXT にする(除去 API が無い既存契約に合わせる —
+			// vevent-patch.ts に description の三値除去が無いのは既存仕様であり本タスクのスコープ外)。
+			descriptionPatch = composeDescriptionWithConference(notes, conference) ?? "";
+		}
+
 		let patched: Component = patchVEventFields(looked.vevent.raw, {
 			summary: input.title,
-			description: input.notes,
+			description: descriptionPatch,
 			location: input.location,
 			url: input.url,
 			start: parsedStart?.patch,
@@ -229,6 +283,7 @@ export class UpdateEvent {
 			recurrence: recurrencePatch,
 			alarms: alarmsPatch,
 			travelMinutes: input.travelMinutes,
+			structuredLocation: input.structuredLocation,
 		});
 
 		patched = stampUpdate(patched, nowStampFromDate(new Date()));

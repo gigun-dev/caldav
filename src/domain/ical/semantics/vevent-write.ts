@@ -34,6 +34,7 @@ import { appendSubComponent, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { formatRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { buildStartRelativeAlarm } from "./vevent-alarm";
+import { upsertStructuredLocationProperty, type StructuredLocationInput } from "./structured-location-write";
 import type { NowStamp } from "./vtodo-stamp";
 
 // PRODID(§3.7.3)。vtodo-write.ts の局所定数と同値(サーバー発 ICS の product identifier は
@@ -114,6 +115,15 @@ export interface VEventFields {
 	 * 【値の妥当性(正整数)検証は application 層の責務】このファイルは分数値をそのまま DURATION 化する。
 	 */
 	travelMinutes?: number;
+	/**
+	 * C8(設計 05 §1-b・§2「場所」スロット): 構造化された場所。省略なら X-APPLE-STRUCTURED-LOCATION を
+	 * 書かない。設定時は author 規約どおり **LOCATION を structuredLocation.title で上書きする**
+	 * (=このファイル内で location フィールドより後に適用する。LOCATION と structuredLocation を
+	 * 両方渡すのは想定外の組み合わせだが、後勝ちにして防御的に倒す — zod describe で両立を避けるよう
+	 * 案内するのは application/presentation 層の責務)。DESCRIPTION への合成(会議ブロック)とは異なる
+	 * 独立プロパティなので、このファイルは他フィールドと同じ「渡されたら書く」に徹する。
+	 */
+	structuredLocation?: StructuredLocationInput;
 }
 
 // X-APPLE-TRAVEL-DURATION の VALUE=DURATION パラメータ(Apple 拡張だが値型は RFC 5545 の DURATION)。
@@ -167,6 +177,13 @@ export function buildVEventCalendar(fields: VEventFields): Component {
 	}
 	if (fields.location !== undefined && fields.location !== "") {
 		vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.location));
+	}
+	if (fields.structuredLocation !== undefined) {
+		// author 規約(設計 05 §1-b): LOCATION は structuredLocation.title で(上書き含め)確定させ、
+		// X-APPLE-STRUCTURED-LOCATION を additive に足す。location フィールドの後に適用するので
+		// 両方渡された場合は structuredLocation が勝つ(VEventFields.structuredLocation コメント参照)。
+		vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.structuredLocation.title));
+		vevent = upsertStructuredLocationProperty(vevent, fields.structuredLocation);
 	}
 	if (fields.url !== undefined && fields.url !== "") {
 		// URL は URI 値型(§3.8.4.6)なので encodeText しない(生値のまま。VEventFields.url コメント参照)。

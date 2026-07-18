@@ -26,6 +26,11 @@ import type { Component, Parameter } from "../structure/types";
 import { appendSubComponent, removeProperty, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { buildStartRelativeAlarm, isStartRelativeAlarm } from "./vevent-alarm";
+import {
+	removeStructuredLocationProperty,
+	upsertStructuredLocationProperty,
+	type StructuredLocationInput,
+} from "./structured-location-write";
 import { type CalDateTime } from "../values/cal-date-time";
 import { formatRecurrenceRule, parseRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { localFieldsToEpochMillis } from "../timezone";
@@ -100,6 +105,15 @@ export interface VEventPatchFields {
 	 * 正整数=設定(`PT{n}M`)。location/url の三値と同じパターン(値の妥当性検証は application 層)。
 	 */
 	travelMinutes?: number | null;
+	/**
+	 * C8(設計 05 §1-b・§2「場所」スロット)。三値: undefined=触らない / null=X-APPLE-STRUCTURED-LOCATION
+	 * を除去(**LOCATION テキストは触らない** — title から書いた LOCATION と、ユーザーが別途 location
+	 * フィールドで上書きした LOCATION の区別がここでは付かないため、安全側に倒して「構造化データだけ
+	 * 消す」。LOCATION 表示テキストも消したいなら location:null を併用する契約。呼び出し側 zod
+	 * describe に明記する)/ StructuredLocationInput=設定(LOCATION も title で上書き。vevent-write.ts
+	 * の VEventFields.structuredLocation と同じ author 規約)。
+	 */
+	structuredLocation?: StructuredLocationInput | null;
 }
 
 /**
@@ -155,6 +169,14 @@ export function patchVEventFields(vevent: Component, fields: VEventPatchFields):
 	}
 	if (fields.alarms !== undefined) {
 		out = applyAlarmsPatch(out, fields.alarms);
+	}
+	if (fields.structuredLocation !== undefined) {
+		if (fields.structuredLocation === null) {
+			out = removeStructuredLocationProperty(out);
+		} else {
+			out = upsertProperty(out, "LOCATION", encodeText(fields.structuredLocation.title));
+			out = upsertStructuredLocationProperty(out, fields.structuredLocation);
+		}
 	}
 
 	return out;

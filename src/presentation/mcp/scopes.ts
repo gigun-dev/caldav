@@ -44,6 +44,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
 	"list-calendars",
 	"list-todos",
 	"refresh-todos",
+	// C5(設計 05): 既知の場所ツールも list-* の照会系(read)。
+	"list-known-locations",
 ]);
 
 /** ツール名が write(mutation)系かどうか。READ_ONLY_TOOLS に無いものは全て write 扱い(safe default)。 */

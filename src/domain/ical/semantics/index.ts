@@ -57,6 +57,18 @@ export {
 	readConference,
 } from "./structured-location";
 
+// C8(設計 05): 場所 / 会議の write 派生(read の逆写像。structured-location.ts と対称なファイル分割)。
+export {
+	type StructuredLocationInput,
+	type ConferenceInput,
+	buildStructuredLocationProperty,
+	upsertStructuredLocationProperty,
+	removeStructuredLocationProperty,
+	buildConferenceBlock,
+	composeDescriptionWithConference,
+	splitConferenceFromDescription,
+} from "./structured-location-write";
+
 // E-1 スライス②-b: 既存 VTODO の部分更新プリミティブ(UpdateTodo/CompleteTodo/DeleteTodo が使う
 // patch 方式。vtodo-write.ts の buildVTodoCalendar とは対称的に「既存 Component の一部だけ書き
 // 換える」ロスレス編集を担う)。

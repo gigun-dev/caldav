@@ -19,6 +19,7 @@
 import {
 	buildVEventCalendar,
 	buildVTimezone,
+	composeDescriptionWithConference,
 	ICalendarObject,
 	isValidIanaZone,
 	localFieldsToEpochMillis,
@@ -29,7 +30,9 @@ import {
 	zoneResolverFor,
 	type CalDateTime,
 	type Component,
+	type ConferenceInput,
 	type RecurrenceRule,
+	type StructuredLocationInput,
 	type VEventDateValue,
 	type VEventFields,
 } from "../../domain/ical";
@@ -79,6 +82,20 @@ export interface CreateEventInput {
 	alarms?: number[];
 	/** 移動時間(X-APPLE-TRAVEL-DURATION・分)。正整数のみ。省略なら書かない。 */
 	travelMinutes?: number;
+	/**
+	 * C8(設計 05 §1-b・§2「場所」スロット): 構造化された場所(タイトル+座標)。既存 location(表示
+	 * テキスト)とは additive — 両方渡された場合は structuredLocation.title が LOCATION を上書きする
+	 * (vevent-write.ts の author 規約)。省略なら X-APPLE-STRUCTURED-LOCATION を書かない。
+	 */
+	structuredLocation?: StructuredLocationInput;
+	/**
+	 * C8(設計 05 §1-c・§2「会議」スロット): 会議(Join)リンク。既存 url(参照 URL)とは別物 —
+	 * 両者は同時に設定でき、conference は DESCRIPTION の「ビデオ通話」ブロックとして書く
+	 * (composeDescriptionWithConference。author 規約は設計 05 §1-c)。url を会議として使い回したい
+	 * 場合は conference.url に同じ値を渡す(サーバー側で url→conference の自動昇格はしない —
+	 * 「参照リンクのつもりが意図せず参加ボタンになる」事故を避けるため明示指定を要求する)。
+	 */
+	conference?: ConferenceInput;
 }
 
 // alarms の上限件数(docs/modeling/12 §1「最大2件」= 通知 + 予備の通知)。UI/UC の都合の制約で
@@ -192,6 +209,34 @@ export class InvalidTravelMinutesError extends Error {
 	}
 }
 
+/**
+ * structuredLocation の geo(lat/lon)が範囲外、または radius が非正のときのエラー(C8)。
+ * title の空文字チェックは zod(presentation 層)の min(1) 相当に委ねず、ここでも防御的に見る
+ * (他の InvalidXxxError と同じ層に検証を揃える方針)。
+ */
+export class InvalidStructuredLocationError extends Error {
+	readonly kind = "InvalidStructuredLocationError" as const;
+	constructor(readonly reason: "title-empty" | "lat-out-of-range" | "lon-out-of-range" | "radius-non-positive", message: string) {
+		super(message);
+		this.name = "InvalidStructuredLocationError";
+	}
+}
+
+/**
+ * conference.url が http(s) URL でないときのエラー(C8)。読み取り側 readConference/HTTP_URL_RE が
+ * `https?://` 直入れ or DESCRIPTION ブロック内の http(s) URL しか会議と認識しない(structured-location.ts
+ * 参照)ため、http(s) 以外を書いても読み戻すと会議として復元されず round-trip が壊れる。書く前に
+ * 弾いて壊れた ICS を作らない(InvalidUrlError が url を http/https に限定しない方針と対称的に、
+ * conference は「会議として読み戻せること」がここでの唯一の目的なので http(s) 限定にする)。
+ */
+export class InvalidConferenceUrlError extends Error {
+	readonly kind = "InvalidConferenceUrlError" as const;
+	constructor(readonly url: string) {
+		super(`conference.url must be an http(s) URL so it round-trips as a conference (design 05 §1-c), got: "${url}"`);
+		this.name = "InvalidConferenceUrlError";
+	}
+}
+
 export type CreateEventError =
 	| InvalidStartError
 	| InvalidEndError
@@ -205,6 +250,8 @@ export type CreateEventError =
 	| InvalidAlarmsError
 	| InvalidTravelMinutesError
 	| InvalidUrlError
+	| InvalidStructuredLocationError
+	| InvalidConferenceUrlError
 	| PutCalendarObjectError;
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -256,6 +303,33 @@ export function validateUrl(url: string): void {
 	}
 }
 
+/**
+ * structuredLocation 入力(title/lat/lon/radius)を検証する(C8)。create/update-event 共有。
+ * geo は WGS84 の素朴な範囲(§緯度 -90..90 / 経度 -180..180)、radius は正数(0 は「半径なし」と
+ * 区別が付かなくなるので許可しない — 省略時 undefined と混同しないための境界)。
+ */
+export function validateStructuredLocation(loc: StructuredLocationInput): void {
+	if (loc.title === "") {
+		throw new InvalidStructuredLocationError("title-empty", "structuredLocation.title must not be empty");
+	}
+	if (!Number.isFinite(loc.lat) || loc.lat < -90 || loc.lat > 90) {
+		throw new InvalidStructuredLocationError("lat-out-of-range", `structuredLocation.lat must be in [-90, 90], got ${loc.lat}`);
+	}
+	if (!Number.isFinite(loc.lon) || loc.lon < -180 || loc.lon > 180) {
+		throw new InvalidStructuredLocationError("lon-out-of-range", `structuredLocation.lon must be in [-180, 180], got ${loc.lon}`);
+	}
+	if (loc.radius !== undefined && loc.radius <= 0) {
+		throw new InvalidStructuredLocationError("radius-non-positive", `structuredLocation.radius must be > 0, got ${loc.radius}`);
+	}
+}
+
+/** conference.url が http(s) であることを検証する(InvalidConferenceUrlError コメント参照)。create/update-event 共有。 */
+export function validateConferenceUrl(url: string): void {
+	if (!/^https?:\/\//i.test(url)) {
+		throw new InvalidConferenceUrlError(url);
+	}
+}
+
 // 「時刻付き start/end のパース結果」。VEventDateValue(vevent-write に渡す形)+ epoch(比較・窓用)+
 // dueTimeInfo(recurrence の UNTIL 値型を DTSTART に合わせるための壁時計 + TZID)を束ねる。
 interface ParsedInstant {
@@ -295,6 +369,8 @@ export class CreateEvent {
 		const alarms = input.alarms !== undefined ? validateAndBuildAlarms(input.alarms) : undefined;
 		if (input.travelMinutes !== undefined) validateTravelMinutes(input.travelMinutes);
 		if (input.url !== undefined) validateUrl(input.url);
+		if (input.structuredLocation !== undefined) validateStructuredLocation(input.structuredLocation);
+		if (input.conference !== undefined) validateConferenceUrl(input.conference.url);
 
 		// VTIMEZONE: start か end が時刻付き(DATE-TIME)なら生成する。窓は start/end/UNTIL/反復ホライズンを
 		// 覆う([min 開始, max 終了 + 3年 or UNTIL] ± 余白)。create-todo.ts と同じ発想で組む。
@@ -319,11 +395,14 @@ export class CreateEvent {
 
 		const uid = crypto.randomUUID();
 		const now = nowStampFromDate(new Date());
+		// DESCRIPTION は notes(本文)+ conference(ビデオ通話ブロック)を合成する(設計 05 §1-c・
+		// composeDescriptionWithConference)。conference 省略時は notes のみ(既存挙動と不変)。
+		const description = composeDescriptionWithConference(input.notes, input.conference);
 		const fields: VEventFields = {
 			uid,
 			now,
 			summary: input.title,
-			description: input.notes,
+			description,
 			start: start.value,
 			end: end?.value,
 			vtimezone,
@@ -332,6 +411,7 @@ export class CreateEvent {
 			recurrence,
 			alarms,
 			travelMinutes: input.travelMinutes,
+			structuredLocation: input.structuredLocation,
 		};
 		const component = buildVEventCalendar(fields);
 		const ics = serialize(component);

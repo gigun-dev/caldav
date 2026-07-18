@@ -160,9 +160,16 @@ export function readProximityAlarm(c: Component): ProximityAlarm | null {
 // `----( ビデオ通話 )----` 〜 `---===---`、英語 UI は `----( Video Call )----`。括弧内の前後空白は
 // 実装ゆらぎに備えて任意許容する。[\s\S]*? で改行含む最短一致でブロック本文を捕捉する
 // (decode 済み DESCRIPTION に対して適用する = 折り返し解除後・実改行入りのテキストを走査)。
-const VIDEO_CALL_BLOCK_RE = /----\(\s*(?:ビデオ通話|Video Call)\s*\)----([\s\S]*?)---===---/;
+//
+// 【C8 で export した理由(read 専用ファイルだが正規表現だけ write 側と共有する)】
+// structured-location-write.ts(C8・author 規約の encode)が「DESCRIPTION から会議ブロックを
+// 除いた残り(=素の notes)」を取り出す splitConferenceFromDescription で同じブロック検出が要る。
+// 正規表現を2箇所に複製すると日本語/英語ブロックの語彙が変わったときにズレる事故が起きるため、
+// このファイルを「ブロック記法の唯一の情報源」としてここから re-export する(値のロジック自体は
+// 変えない・read/write の責務分離は保ったまま定数だけ共有)。
+export const VIDEO_CALL_BLOCK_RE = /----\(\s*(?:ビデオ通話|Video Call)\s*\)----([\s\S]*?)---===---/;
 // http(s) URL の素朴な抽出(空白まで)。会議リンクは1行1 URL で入るので空白境界で十分。
-const HTTP_URL_RE = /https?:\/\/[^\s]+/;
+export const HTTP_URL_RE = /https?:\/\/[^\s]+/;
 
 /**
  * 会議 / 参照 URL を判別する(設計 05 §1-c・§2 のヒューリスティック)。

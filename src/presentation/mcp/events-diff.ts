@@ -99,5 +99,15 @@ export function buildEventEditedChanges(before: Event, after: Event, provided: R
 		changes.push({ field: "travelMinutes" });
 	}
 
+	// C8(設計 05): 構造化場所 / 会議も location/url と同じ「field のみ」degrade(座標や URL を
+	// そのまま before/after に出すと長い・崩れやすいため)。
+	if (provided.has("structuredLocation")) {
+		changes.push({ field: "structuredLocation" });
+	}
+
+	if (provided.has("conference")) {
+		changes.push({ field: "conference" });
+	}
+
 	return changes.length > 0 ? changes : undefined;
 }

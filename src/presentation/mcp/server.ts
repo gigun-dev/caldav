@@ -95,7 +95,12 @@ import {
 	InvalidAlarmsError,
 	InvalidTravelMinutesError,
 	InvalidUrlError,
+	// C8(設計 05): 場所(structuredLocation)/ 会議(conference)の write 検証エラー。
+	InvalidStructuredLocationError,
+	InvalidConferenceUrlError,
 	eventFromOccurrence,
+	// C5(設計 05): 既知の場所ツール。
+	ListKnownLocations,
 } from "../../application/usecases";
 import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
 import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
@@ -644,9 +649,45 @@ const moveTodoInputShape = {
 // shape(createTodoRecurrenceInputShape / updateTodoRecurrenceInputShape)をそのまま再利用する
 // (判別ロジックの二重管理を避ける — normalizeCreateTodoRecurrenceInput 等も共有できる)。
 // start/end の形式規約は create-todo の due と同じ("YYYY-MM-DD" 終日 / "...T..." 時刻付き)。
+// C8(設計 05 §1-b・§2「場所」スロット): structuredLocation の shape(create/update 共通)。
+// 【location との使い分け(LLM trap 回避)】todos の location 撤去(過去タスク)と同じ精神で、
+// 「テキストの場所」(location・自由記述の LOCATION)と「構造化された場所」(structuredLocation・
+// 座標付き)を describe で明確に書き分ける。LLM が両方同時に埋めがちな罠を避けるため、
+// structuredLocation.describe に「location とは独立に扱われ、両方指定した場合は
+// structuredLocation.title が表示テキストを上書きする」ことを明記する(vevent-write.ts の
+// author 規約と同じ挙動を LLM 向けに説明)。
+const structuredLocationInputSchema = z
+	.object({
+		title: z.string().min(1).describe("表示名(例「岐阜大学」「福登の自宅」)。LOCATION テキストにもこの値が使われる(location フィールドより優先)。"),
+		address: z.string().optional().describe("住所(表示用の補足テキスト)。省略可。"),
+		lat: z.number().min(-90).max(90).describe("緯度(WGS84)。"),
+		lon: z.number().min(-180).max(180).describe("経度(WGS84)。"),
+		radius: z.number().positive().optional().describe("ジオフェンス半径(メートル)。省略可(半径なしの地点として扱う)。"),
+	})
+	.describe(
+		"座標付きの構造化された場所(list-known-locations が返す既知の場所や、地図検索で選んだ地点を想定)。" +
+			'自由記述のテキストだけを設定したい場合は location フィールドを使うこと(structuredLocation は "この地点" を' +
+			"座標込みで表す場合にのみ使う — 単なる場所の説明文をここに入れない)。",
+	);
+
+// C8(設計 05 §1-c・§2「会議」スロット): conference の shape(create/update 共通)。
+const conferenceInputSchema = z
+	.object({
+		provider: z.string().optional().describe("表示用のラベル(例 \"Google Meet\"・\"Zoom\")。ICS には保存されない(ワイヤに載るのは url のみ)。"),
+		url: z.string().describe(
+			"参加(Join)リンク。http(s) URL のみ受け付ける(§1-c: 読み取り側が会議と認識できる形にする必要があるため)。",
+		),
+	})
+	.describe(
+		'会議(ビデオ通話の Join リンク)。既存の url フィールド(参照 URL・お知らせページ等)とは別物 — ' +
+			"conference は DESCRIPTION に「ビデオ通話」ブロックとして書かれ、実機で「参加」ボタンとして解釈される。" +
+			"参照リンクを会議として使い回したいときは、url とは別に conference.url にも同じ値を明示すること" +
+			"(自動昇格はしない)。",
+	);
+
 const createEventItemFieldsShape = {
 	title: z.string().describe("SUMMARY(タイトル)。"),
-	notes: z.string().optional().describe("DESCRIPTION(メモ)。"),
+	notes: z.string().optional().describe("DESCRIPTION(メモ本文)。会議(conference)を指定すると、この本文の末尾に" + "「ビデオ通話」ブロックが自動追記される(本文自体は変更されない)。"),
 	start: z.string().describe(
 		'開始(DTSTART・必須)。2形態: "YYYY-MM-DD"(終日)または "YYYY-MM-DDTHH:MM:SS"(時刻付き・timeZone と組)。' +
 			"offset 付き ISO8601 は不可(TZID を一意に導出できないため)。",
@@ -676,6 +717,13 @@ const createEventItemFieldsShape = {
 		.positive()
 		.optional()
 		.describe("移動時間(X-APPLE-TRAVEL-DURATION・分)。正整数。省略なら設定しない。"),
+	// C8(設計 05): 場所(structuredLocation)/ 会議(conference)。既存 location/url とは additive
+	// (両者を混同しないための describe は各 schema コメント参照)。proximity(到着/出発通知)の
+	// write は本フォーム(vevent)のスコープ外 — VALARM 到着/出発は vtodo 用(設計 05 §6 C8 に
+	// 含まれるが、create-todo 側の後続タスクへ送る。§1-a の X-APPLE-PROXIMITY VALARM 書き出しは
+	// このリリースでは実装しない)。
+	structuredLocation: structuredLocationInputSchema.optional(),
+	conference: conferenceInputSchema.optional(),
 };
 
 const createEventInputShape = {
@@ -743,11 +791,35 @@ const updateEventInputShape = {
 		.nullable()
 		.optional()
 		.describe("移動時間(X-APPLE-TRAVEL-DURATION・分)。省略=変更しない / null=外す / 正整数=設定。"),
+	// C8(設計 05): 場所(structuredLocation)/ 会議(conference)の三値 patch。
+	structuredLocation: structuredLocationInputSchema
+		.nullable()
+		.optional()
+		.describe(
+			"構造化された場所。省略=変更しない / null=構造化データのみ除去(LOCATION テキストは温存。" +
+				"表示テキストも外したい場合は location:null を併用)/ オブジェクト=設定・差し替え" +
+				"(LOCATION も title で上書き)。",
+		),
+	conference: conferenceInputSchema
+		.nullable()
+		.optional()
+		.describe(
+			"会議(Join リンク)。省略=変更しない / null=DESCRIPTION から会議ブロックのみ除去(notes 本文は温存)/ " +
+				"オブジェクト=設定・差し替え。",
+		),
 };
 
 const deleteEventInputShape = {
 	id: z.string().describe("削除対象の VEVENT UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "calendar"。'),
+};
+
+// C5(設計 05 §3・§5・§6): list-known-locations の入力。
+const listKnownLocationsInputShape = {
+	calendarId: z.string().optional().describe(
+		"走査対象コレクション ID。省略時は認証ユーザー配下の全カレンダー/リマインダーリストを横断して集計する" +
+			"(構造化場所がどのコレクションにあるか事前に分からないため。単一コレクションに絞りたい場合のみ指定)。",
+	),
 };
 
 const listTodosInputShape = {
@@ -2123,6 +2195,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		error instanceof InvalidAlarmsError ||
 		error instanceof InvalidTravelMinutesError ||
 		error instanceof InvalidUrlError ||
+		// C8(設計 05): 場所(structuredLocation)/ 会議(conference)の入力検証エラー。
+		error instanceof InvalidStructuredLocationError ||
+		error instanceof InvalidConferenceUrlError ||
 		error instanceof EventNotFoundError;
 
 	server.registerTool(
@@ -2136,7 +2211,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
 			inputSchema: createEventInputShape,
 		},
-		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes }) => {
+		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes, structuredLocation, conference }) => {
 			try {
 				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
@@ -2154,6 +2229,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					recurrence: normalizedRecurrence,
 					alarms,
 					travelMinutes,
+					structuredLocation,
+					conference,
 				});
 				const cid = calendarId ?? "calendar";
 				// timeZone は「そのまま echo」する(検証は UC 側が時刻付きイベントに対して既に済ませている。
@@ -2209,6 +2286,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 							recurrence: normalizedRecurrence,
 							alarms: item.alarms,
 							travelMinutes: item.travelMinutes,
+							structuredLocation: item.structuredLocation,
+							conference: item.conference,
 						});
 						createdEvents.push(toWireEvent(event, cid, event.recurrence !== null));
 						succeeded.push({ id: event.id, kind: "added", event: snapshotFromEvent(event) });
@@ -2251,7 +2330,22 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
 		},
-		async ({ id, calendarId, title, notes, start, end, timeZone, location, url, recurrence, alarms, travelMinutes }) => {
+		async ({
+			id,
+			calendarId,
+			title,
+			notes,
+			start,
+			end,
+			timeZone,
+			location,
+			url,
+			recurrence,
+			alarms,
+			travelMinutes,
+			structuredLocation,
+			conference,
+		}) => {
 			try {
 				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
@@ -2273,6 +2367,9 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					// alarms(三値: undefined/null/配列)・travelMinutes(三値)もそのまま渡す。
 					alarms,
 					travelMinutes,
+					// structuredLocation/conference(三値)もそのまま渡す(C8)。
+					structuredLocation,
+					conference,
 				});
 
 				// 「渡された(非 undefined)フィールド」を changed とみなす素朴判定(todos-diff.ts と同じ)。
@@ -2286,6 +2383,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				if (recurrence !== undefined) provided.add("recurrence");
 				if (alarms !== undefined) provided.add("alarms");
 				if (travelMinutes !== undefined) provided.add("travelMinutes");
+				if (structuredLocation !== undefined) provided.add("structuredLocation");
+				if (conference !== undefined) provided.add("conference");
 				const changes = before !== undefined ? buildEventEditedChanges(before, event, provided) : undefined;
 
 				const cid = calendarId ?? "calendar";
@@ -2332,6 +2431,32 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				return eventsToolResponse(vm);
 			} catch (error) {
 				if (error instanceof EventNotFoundError) return toolError(error.message);
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- list-known-locations(C5・設計 05 §3・§5・§6)-----------------------------------------
+	server.registerTool(
+		"list-known-locations",
+		{
+			title: "List known locations",
+			description:
+				"座標付きの構造化された場所(structuredLocation)を、過去の予定/リマインダーから distinct に集約して返す。" +
+				"vevent の「場所または会議」入力・vtodo の到着/出発通知(到着地点)の候補として使う既知の場所の一覧" +
+				"(セミモーダルの「既知の場所」候補用)。最近使った順(recency)に並ぶ。",
+			inputSchema: listKnownLocationsInputShape,
+		},
+		async ({ calendarId }) => {
+			try {
+				const listKnownLocations = new ListKnownLocations(deps.collectionRepo, deps.resourceRepo);
+				const { locations } = await listKnownLocations.execute({ owner: principal, calendarId });
+				const vm = { locations };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+					structuredContent: vm as { [key: string]: unknown },
+				};
+			} catch (error) {
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},
