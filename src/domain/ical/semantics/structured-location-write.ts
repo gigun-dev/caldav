@@ -119,6 +119,16 @@ export function buildConferenceBlock(conference: ConferenceInput): string {
  * それは Apple 純正クライアントが書いたものであり、サーバー側の author 規約としては「本文はまるごと
  * 温存し、会議ブロックは末尾に足す」方が壊れにくい(本文中の任意の位置に挿入すると、notes 自体に
  * 会議ブロックと紛らわしいテキストが含まれていた場合の split 誤爆リスクが増える)。
+ *
+ * 【意図的な仕様差分(2026-07-18 監査で「事故か意図か判別しにくい」と指摘された2点・明記して固定)】
+ * この author 規約により、Apple 産の DESCRIPTION(本文中間にブロック・英語ヘッダ「----( Video Call
+ * )----」)をサーバーが一度でも書き換えると、以下2点は**意図的に**発生する — バグではないので直さない:
+ * ①ブロックが末尾へ再配置される(上記の「末尾に足す」規約どおり。本文中間の位置は復元しない)。
+ * ②ヘッダが日本語「----( ビデオ通話 )----」に書き換わる(VIDEO_CALL_BLOCK_HEADER 定数は英語ヘッダを
+ * read はできる/write はしない — 上の「実データに忠実な日本語ブロックで統一する」コメント参照。
+ * read 側 VIDEO_CALL_BLOCK_RE は英語ヘッダも認識するので compose→split の往復自体は壊れない)。
+ * この2点は「サーバーが一度でも書き込んだ DESCRIPTION は author 規約の形に正規化される」という
+ * 一貫した仕様であり、split 自体のバグ(監査#4・段落連結)とは別物。
  */
 export function composeDescriptionWithConference(
 	notes: string | undefined,
@@ -154,6 +164,16 @@ export function splitConferenceFromDescription(
 	// ブロックの直前にある改行を最大2つまで含めて除去範囲を広げる(欲張らず compose の契約分だけ)。
 	const before = description.slice(0, match.index).replace(/\n{1,2}$/, "");
 	const after = description.slice(match.index + match[0]!.length).replace(/^\n{1,2}/, "");
-	const notesRaw = `${before}${after}`;
+	// 【2026-07-18 監査#4・段落連結バグ修正】旧実装は `${before}${after}` で区切りなしに連結していた。
+	// compose 側は「notes 末尾にブロックを追記」(§1-c 裁定コメント参照)しか作らないので before は
+	// 常に notes 全文・after は常に "" になり、この関数単体では顕在化しなかった。しかし split は
+	// compose の逆写像として「本文の途中にブロックがある DESCRIPTION」(Apple 純正クライアントが
+	// 書いた実データ・上のコメントで触れている paiza 実例のような形)も受理する必要があり、その場合
+	// before/after が両方非空になって「ブロック前後のテキストが区切りなしで連結される」データ変形が
+	// 起きていた(監査で発見。テストが本文中間ケースを持っていなかったため見逃していた)。
+	// before/after が両方非空のときだけ空行(\n\n)を1つ挟む(compose の区切り契約と対称に保つ)。
+	// 片方だけ非空(ブロックが先頭/末尾)のときは元々の trim 済み文字列をそのまま使い、余分な空行を
+	// 作らない。
+	const notesRaw = before !== "" && after !== "" ? `${before}\n\n${after}` : `${before}${after}`;
 	return { notes: notesRaw !== "" ? notesRaw : undefined, conference: conferenceUrl };
 }

@@ -154,6 +154,12 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * 🔗参照 URL チップ(会議に化けていない独立リンク)は muted のアイコンのみ(参照は控えめに)。 */
   .meta .join-chip { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--accent); text-decoration: none; flex: none; }
   .meta .ref-chip { display: inline-flex; align-items: center; color: var(--muted); text-decoration: none; flex: none; }
+  /* 【2026-07-18 死コード化(監査#3・todos-app.ts と同型の裁定波及)】agenda-entry.ts の renderRow は
+   * もう .tag 要素(tagEl)を生成しない — becoming の視覚は行のシマー(becoming-in)・opacity pulse
+   * (becoming-edit)等の非テキスト演出だけに一本化した。以下 .tag 系セレクタ(このブロック〜
+   * li.becoming-*.row-main > .tag 系・opacity-pulse keyframes)は DOM に要素が無いため常に無効だが、
+   * becoming の縦位置調整史(v2.1 修正C)・pulse 演出の実装史の記録として削除せず残す
+   * (コメント規律: 消すのは事実として誤りのときだけ)。 */
   /* 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は tag を「meta に何かあれば meta 右端(.meta .tag)・
    * meta が空なら rowMain 直下(.row-main > .tag)」で出し分けていたが、meta の有無で縦位置が
    * 揺れて見える(agenda-entry.ts の tagEl 組み立てコメント参照)。tag は常に rowMain 直下に統一し、

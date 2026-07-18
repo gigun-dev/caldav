@@ -99,6 +99,19 @@ describe("composeDescriptionWithConference ↔ splitConferenceFromDescription(�
 		expect(splitConferenceFromDescription(undefined)).toEqual({ notes: undefined, conference: undefined });
 	});
 
+	test("会議ブロックが本文の途中にある Apple 産 DESCRIPTION でも前後が空行1つで連結される(監査#4)", () => {
+		// composeDescriptionWithConference は常に末尾追記(§1-c 裁定)なので、Apple 純正クライアント
+		// 由来の「本文中間にブロックがある」形は手組みで再現する(splitConferenceFromDescription は
+		// compose の生成物だけでなく、そういう実データも受理する必要がある — 上の関数コメント参照)。
+		const block = buildConferenceBlock({ url: "https://meet.google.com/xpk-yooe-eev" });
+		const desc = `前半の本文です。\n\n${block}\n\n後半の本文です。`;
+		const { notes, conference } = splitConferenceFromDescription(desc);
+		// 旧実装は before+after を区切りなしで連結し「前半の本文です。後半の本文です。」に潰れていた
+		// (段落境界が消える事故)。修正後は空行1つを挟んで両パラグラフが判別可能なまま残る。
+		expect(notes).toBe("前半の本文です。\n\n後半の本文です。");
+		expect(conference).toBe("https://meet.google.com/xpk-yooe-eev");
+	});
+
 	test("会議ブロックを split で除去しても notes に余分な空行が残らない(繰り返し update での蓄積を防ぐ)", () => {
 		const desc = composeDescriptionWithConference("本文", { url: "https://meet.google.com/abc" });
 		const { notes } = splitConferenceFromDescription(desc);

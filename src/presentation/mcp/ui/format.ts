@@ -51,6 +51,24 @@ export function dayDiff(dateKey: string, todayKey: string): number {
 	return Math.round((toUtc(dateKey) - toUtc(todayKey)) / 86_400_000);
 }
 
+/** "YYYY-MM-DD" に日数を加減した "YYYY-MM-DD"(UTC 深夜基準。DST ズレ回避は dayDiff と同じ理由)。
+ *  agenda-entry.ts の終日イベント「終了」既定日算出(開始+1日)で使う(2026-07-18 監査#2)。 */
+export function addDaysToDateKey(dateKey: string, days: number): string {
+	const [y, m, d] = dateKey.split("-").map(Number);
+	const t = Date.UTC(y ?? 0, (m ?? 1) - 1, (d ?? 1) + days);
+	const dt = new Date(t);
+	return localDateKeyUtc(dt);
+}
+
+/** addDaysToDateKey 専用: UTC 基準の Date から "YYYY-MM-DD" を組む(localDateKey はローカル基準なので
+ *  UTC 演算結果には使えない — 呼び出し元の環境 TZ によっては日付がズレる)。 */
+function localDateKeyUtc(d: Date): string {
+	const y = d.getUTCFullYear();
+	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const day = String(d.getUTCDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
+}
+
 /** "YYYY-MM-DD" の曜日1文字(その日付のローカル深夜から取る。カレンダー上の曜日は世界共通なので
  *  ゾーン換算は不要)。範囲外は ""(防御)。 */
 export function weekdayOf(dateKey: string): string {

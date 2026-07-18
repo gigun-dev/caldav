@@ -75,7 +75,7 @@ import {
 	type LocationPickerValue,
 } from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
-import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
+import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf, addDaysToDateKey } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
 import {
 	type RecurrenceSummary,
@@ -431,6 +431,20 @@ function el(tag: string, className: string): HTMLElement {
 	return e;
 }
 
+/** 外部リンク(会議「参加」・参照 URL)を App SDK 経由で開く共通ヘルパー(2026-07-18 監査#1)。
+ *  出典: node_modules/@modelcontextprotocol/ext-apps/dist/src/app.d.ts の `App#openLink`
+ *  (`openLink(params: McpUiOpenLinkRequest["params"]): Promise<{ isError?: boolean }>`。
+ *  spec.types.d.ts の `McpUiOpenLinkRequest` は `{ method: "ui/open-link"; params: { url: string } }`)。
+ *  `<a target="_blank">` の素朴タップは swift-mcp-app 等の navigation 遮断ホストで不発になるため、
+ *  click を preventDefault してこちらを第一手段にする。isError/例外は握りつぶす — 呼び出し元は
+ *  `<a href>` を残したままなので、ホストが対応していなくても長押しコピー/共有で degrade できる。 */
+function openExternalLink(e: MouseEvent, url: string): void {
+	e.preventDefault();
+	app.openLink({ url }).catch(() => {
+		// 意図的に無視: ホスト未対応・拒否時は <a href> の長押しコピーへ degrade する(上のコメント参照)。
+	});
+}
+
 // =============================================================================
 // イベントの日付/時刻整形(時刻列が行の錨・日付見出しセクション。モック A の言語)
 // =============================================================================
@@ -660,18 +674,24 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	// 2行目以降の同 id occurrence を無装飾にする。
 	const aff = affRaw !== undefined && !alreadySeen && !isEditingRecurring ? affRaw : undefined;
 	if (aff !== undefined || isEditingRecurring) seenAffectedIds.add(ev.id);
-	let tagText: string | null = null;
 	let editPlan: EditPlan | null = null;
 	// needsRowMainDelay/needsTagDelay: 上の animElapsedMs による animation-delay 補正を、実際に
 	// アニメ対象になる DOM(rowMain=add の wake-sweep / tagEl=edit の opacity-pulse)へ後で当てる
 	// ためのフラグ(rowMain/tagEl はこの時点でまだ生成されていない)。
 	let needsRowMainDelay = false;
 	let needsTagDelay = false;
+	// 【2026-07-18 becoming テキストタグ全廃(todos 側の同日裁定を agenda へ波及・監査#3)】
+	// 旧実装はここで tagText に "追加"/"変更"/sync 時「同期(...)」を積み、meta 右端の .tag span へ
+	// 描いていた(isSync = aff.sync === true で出し分け)。todos-entry.ts で 2026-07-18 に「テキストの
+	// 意味が薄い(行のシマー・opacity pulse 等の非テキスト演出で状態は十分伝わる)」との実機 FB を受け
+	// 全廃した裁定と同型のため、agenda 側も同じ理由で追随する。tagText 自体(型・生成箇所)も削除し、
+	// isSync 変数も出し分け先を失ったので併せて削除する。
+	// 【何を残すか】(1) becoming-in/becoming-edit クラス・inflight シマー・committing の opacity pulse
+	// (li の CSS 演出)はそのまま維持。(2) editPlan(開始/終了のインライン旧→新差分表示・「他N件」)は
+	// タグとは別物(値そのものの提示でテキストラベルではない)なので維持。
 	if (aff !== undefined) {
-		const isSync = aff.sync === true;
 		if (aff.kind === "added") {
 			li.classList.add("becoming-in");
-			tagText = isSync ? "同期(追加)" : "追加";
 			if (isOptimisticId(ev.id) && committing) {
 				li.classList.add("inflight");
 				needsRowMainDelay = true;
@@ -679,8 +699,10 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
-			tagText = isSync ? "同期(変更)" : editPlan.tag;
 			// opacity pulse ×1: becoming タグ自体を committing 中だけ脈動させる(手応え)。
+			// 【2026-07-18 テキストタグ全廃に伴う死コード化】タグ要素(tagEl)自体を描かなくなったため、
+			// この "committing" クラス付与と needsTagDelay は pulse の対象を持たない死コードになったが、
+			// CSS 側(agenda-app.ts)と対称に残置する(消すのは事実として誤りのときだけ・経緯記録)。
 			if (committing) {
 				li.classList.add("committing");
 				needsTagDelay = true;
@@ -689,10 +711,9 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	} else if (isEditingRecurring) {
 		// 【v2.1 悲観パスの視覚表現】値をローカルに書けない(occurrence 展開はサーバーでしか
 		// 成立しない技術事実は不変)ため実 diff は出せないが、「編集した」ことは見せる — 楽観 edit
-		// と同じ語彙(becoming-edit・タグ「変更」)を強制表示し、confirm 描画で実 diff の aff に
-		// 自然収束させる(待ち表示を挟まない = §7.8 v2.1 のドクトリンそのもの)。
+		// と同じ becoming-edit クラスを強制表示し、confirm 描画で実 aff に自然収束させる(待ち表示を
+		// 挟まない = §7.8 v2.1 のドクトリンそのもの)。テキストタグ("変更")は全廃済みなので付けない。
 		li.classList.add("becoming-edit");
-		tagText = "変更";
 		if (committing) {
 			li.classList.add("committing");
 			needsTagDelay = true;
@@ -853,10 +874,13 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	const locTitle = resolveLocationTitle(ev.structuredLocation, ev.location);
 	const inlineBadge = agendaInlineBadge(ev.conference, ev.structuredLocation, ev.location);
 	// 会議「参加」チップを meta に足す(タップで conference.url を Join として開く)。
-	// 【開き方(指示 2)】既存の詳細ページ join-link と同じ `<a target="_blank" rel="noopener">` を踏襲する
-	// (カードのサンドボックスは navigation 遮断だが、外部リンクは a[target=_blank] で開けるホストなら開く。
-	// 開けないホストでは degrade して長押しコピー可能。App SDK の openLink は既存カードに前例が無いので使わない)。
-	// head の click(行選択)へ伝播させないよう stopPropagation する(タップ=参加であって選択ではない)。
+	// 【開き方(2026-07-18 監査#1 で修正)】旧実装は `<a target="_blank">` の素朴なタップ任せだった。
+	// swift-mcp-app(第一接続先の iOS ホスト)は window.open/navigation をサンドボックスで封じるため、
+	// 通常タップが不発になる(長押しコピーだけ効く状態)。App SDK の正規経路 `app.openLink({ url })`
+	// (node_modules/@modelcontextprotocol/ext-apps の App#openLink・ui/open-link メソッド)を
+	// 第一手段にする — click で preventDefault し openLink を呼ぶ。ホストが未対応/拒否(isError)でも
+	// 例外を投げず握りつぶし、`<a href>` 自体は残すので長押しコピー/共有の degrade 経路は生きる。
+	// head の click(行選択)へ伝播させないよう stopPropagation は維持する(タップ=参加であって選択ではない)。
 	// 任意ドメイン(x.com 等)でも「参加」として出す(設計 05 §2・whitelist しない=判定は C1 が済ませている)。
 	const appendJoinChip = (): void => {
 		if (ev.conference === null) return;
@@ -868,7 +892,10 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		a.appendChild(createIcon("video"));
 		a.appendChild(document.createTextNode(" 参加"));
 		a.setAttribute("aria-label", "会議に参加");
-		a.addEventListener("click", (e) => e.stopPropagation());
+		a.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openExternalLink(e, ev.conference!.url);
+		});
 		meta.appendChild(a);
 	};
 	// 📍場所チップ(タイトルのみ・truncate は CSS .meta .loc)。住所全文は出さない(詳細ページの責務)。
@@ -899,25 +926,27 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		ref.rel = "noopener noreferrer";
 		ref.appendChild(createIcon("link"));
 		ref.setAttribute("aria-label", "参照リンクを開く");
-		ref.addEventListener("click", (e) => e.stopPropagation());
+		// join-chip と同じ理由(監査#1)で openLink 経由に統一。
+		ref.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openExternalLink(e, ev.url!);
+		});
 		meta.appendChild(ref);
 	}
-	// becoming マイクロラベル。
-	// 【2026-07-16 v2.1・C(タグ縦位置)】旧実装は「meta に何かあれば meta 右端・meta が空なら
-	// rowMain 直下」と配置が行の中身次第で揺れていた(meta が空/非空で縦位置が変わって見えた)。
-	// todos 側の S-E と同型に「常に rowMain 直下」へ統一し、CSS 側(agenda-app.ts の
-	// `.row-main > .tag`)で align-self:flex-start + margin-top の縦補正 + margin-left:auto を持たせる
-	// (タイトル1行目の高さに揃えつつ右端へ押し出す。meta の有無に見た目が左右されない)。
-	let tagEl: HTMLElement | null = null;
-	if (tagText !== null) {
-		tagEl = el("span", "tag");
-		tagEl.textContent = tagText;
-		if (needsTagDelay) tagEl.style.animationDelay = `-${animElapsedMs}ms`;
-	}
+	// 【2026-07-18 becoming マイクロラベル(旧 tagEl = meta 右端 or rowMain 直下の [.tag] span)を全廃・監査#3】
+	// todos-entry.ts の同日裁定(「完了も追加もテキスト不要」)を波及させ、"追加"/"変更"/「同期(...)」の
+	// テキストタグそのものを描かなくなった(tagText 変数ごと上の aff.kind 分岐で削除済み)。
+	// 【旧コメント(2026-07-16 v2.1・C のレイアウト調整史・財産として残す)】旧実装は「meta に何かあれば
+	// meta 右端・meta が空なら rowMain 直下」と配置が行の中身次第で揺れていたのを、todos 側の S-E と
+	// 同型に「常に rowMain 直下」へ統一し、CSS 側(agenda-app.ts の `.row-main > .tag`)で
+	// align-self:flex-start + margin-top の縦補正 + margin-left:auto を持たせていた。タグ自体が無くなった
+	// 今はこの位置調整 CSS も死コード化している(削除はせず経緯記録として残置。CSS 側にも同旨コメントを
+	// 添える)。needsTagDelay/animElapsedMs は committing クラスの opacity pulse resume 用フラグとして
+	// 上の aff.kind 分岐でまだ使うため(pulse 自体は死コード化済み・そちらのコメント参照)宣言は残す。
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	if (tagEl !== null) rowMain.appendChild(tagEl);
+	// 【2026-07-18】旧 `if (tagEl !== null) rowMain.appendChild(tagEl)` は tagEl 全廃に伴い削除。
 
 	// --- trailing: 選択中の行だけ ⓘ(詳細)+ 確定ボタン(todos v3 と同一)---------------------------
 	// 【2026-07-18 ⓘ の扱い(FB2 対応の判断メモ)】上の head クリック変更で、非ドラフト行は selectedId に
@@ -1953,6 +1982,16 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 		row.appendChild(
 			makeSwitch(d.hasEnd, "終了", () => {
 				d.hasEnd = !d.hasEnd;
+				// 【監査#2・終日イベントの既定終了日バグ】終日を ON にした直後、endDate の初期値が
+				// (makeSheetDraft で) startDate と同日のことがある。サーバー(create-event.ts の
+				// StartAfterEndError)は排他的終端(§3.8.2.2 I3)で end<=start を弾くため、そのまま
+				// 保存すると必ず失敗する。終日は「開始+1日」を既定にする(排他的終端の慣習・
+				// iOS カレンダーが「終日1日」を start=D, end=D+1 で表すのと同じ発想)。
+				// 時刻付きは startTime/endTime の既定(09:00/10:00)で既に end>start が保たれるため
+				// 触らない(endDate はそのまま同日でよい)。
+				if (d.hasEnd && d.isAllDay && d.endDate <= d.startDate) {
+					d.endDate = addDaysToDateKey(d.startDate, 1);
+				}
 				renderAll();
 			}),
 		);
@@ -2990,6 +3029,16 @@ function appendEventCreateFields(body: HTMLElement, d: SheetDraft): void {
 		row.appendChild(
 			makeSwitch(d.hasEnd, "終了", () => {
 				d.hasEnd = !d.hasEnd;
+				// 【監査#2・終日イベントの既定終了日バグ】終日を ON にした直後、endDate の初期値が
+				// (makeSheetDraft で) startDate と同日のことがある。サーバー(create-event.ts の
+				// StartAfterEndError)は排他的終端(§3.8.2.2 I3)で end<=start を弾くため、そのまま
+				// 保存すると必ず失敗する。終日は「開始+1日」を既定にする(排他的終端の慣習・
+				// iOS カレンダーが「終日1日」を start=D, end=D+1 で表すのと同じ発想)。
+				// 時刻付きは startTime/endTime の既定(09:00/10:00)で既に end>start が保たれるため
+				// 触らない(endDate はそのまま同日でよい)。
+				if (d.hasEnd && d.isAllDay && d.endDate <= d.startDate) {
+					d.endDate = addDaysToDateKey(d.startDate, 1);
+				}
 				renderAll();
 			}),
 		);
