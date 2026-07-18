@@ -428,6 +428,65 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .sw.on::after { left: auto; right: 2px; }
 
   .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+  /* --- C3(設計05 §4): 作成フォームのセグメント(予定|リマインダー・片方向)---
+   * モック create-event-with-semimodal.html の .segment を移植(iOS の segmented control 風)。 */
+  .segment { display: flex; margin: 4px 0 0; background: var(--surface); border-radius: var(--radius); padding: 2px; }
+  .segment button { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; padding: 7px 0; border-radius: 6px; cursor: pointer; }
+  .segment button[aria-selected="true"] { background: var(--bg); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
+
+  /* --- C4(設計05 §5): 「場所または会議」統合トリガ行 --- */
+  .location-trigger { cursor: pointer; }
+  .location-trigger .lt-icon { display: inline-flex; align-items: center; color: var(--muted); }
+  .location-trigger .lt-clear { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: none; color: var(--muted); cursor: pointer; padding: 0; }
+
+  /* --- C4: 場所/会議セミモーダル(カード内 CSS オーバーレイ。WKWebView 内の純粋な DOM/CSS で、
+   * サンドボックスの全通信遮断とは無関係 — 設計05 §5 冒頭コメント参照)。position:fixed で
+   * 画面(= #root の実効ビューポート)を覆う。todos/agenda 共通の CSS トークン(--bg/--surface/
+   * --border/--accent 等)をそのまま使う。 */
+  .loc-dimmer {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32);
+    z-index: 20;
+  }
+  .loc-semimodal {
+    position: fixed; left: 0; right: 0; bottom: 0; max-height: 78vh;
+    background: var(--bg); color: var(--fg);
+    border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.25);
+    display: flex; flex-direction: column;
+    z-index: 21;
+  }
+  .loc-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--border); margin: 8px auto 4px; flex: none; }
+  .loc-sm-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 8px; flex: none; }
+  .loc-sm-title { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .loc-sm-done { border: none; background: none; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; padding: 0; cursor: pointer; }
+  .loc-sm-body { flex: 1; overflow-y: auto; padding: 0 16px 20px; }
+  .loc-sm-search {
+    display: flex; align-items: center; gap: 8px; background: var(--surface);
+    border-radius: var(--radius); padding: 9px 12px; margin: 4px 0 16px;
+  }
+  .loc-sm-search input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 15px; outline: none; }
+  .loc-sm-section { margin-bottom: 18px; }
+  .loc-sm-section-title { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  .loc-sm-empty { font-size: 13px; color: var(--muted); padding: 8px 2px; }
+  .loc-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .loc-chip {
+    border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+    font: inherit; font-size: 14px; padding: 7px 14px; border-radius: 999px; cursor: pointer;
+  }
+  .loc-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .loc-chip-url-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; background: var(--surface); border-radius: var(--radius); padding: 9px 12px; }
+  .loc-chip-url-row input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
+  .loc-chip-url-confirm { flex: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .loc-place-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .loc-place-item {
+    display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; width: 100%;
+    border: none; background: none; text-align: left; color: var(--fg); font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .loc-place-item + .loc-place-item { border-top: 1px solid var(--border); }
+  .loc-place-item .lucide-icon { color: var(--muted); flex: none; margin-top: 2px; }
+  .loc-pi-text { flex: 1; }
+  .loc-pi-title { font-size: 14.5px; }
+  .loc-pi-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
 <body>

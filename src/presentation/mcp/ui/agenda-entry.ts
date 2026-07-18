@@ -62,6 +62,18 @@ import {
 	resolveLocationTitle,
 	showReferenceUrl,
 } from "./location-view";
+// C3+C4(設計 05 §4・§5): 作成フォームの「場所または会議」セミモーダルの選択結果 ⇄ create-event
+// 引数の変換(write 側)。location-view.ts(read 側)とは別ファイル(役割が違う: 読みは3スロットの
+// 表示判断、書きは1つの選択結果からどちらのスロットへ書くかの判断)。
+import {
+	CONFERENCE_PROVIDERS,
+	knownLocationToPickerValue,
+	locationPickerIconName,
+	locationPickerLabel,
+	locationPickerToCreateArgs,
+	type KnownLocationView,
+	type LocationPickerValue,
+} from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
@@ -351,6 +363,29 @@ interface SheetDraft {
 	alarm1Open: boolean;
 	travelMinutes: number | null;
 	travelOpen: boolean;
+	// --- C3(設計 05 §4): 作成モード専用フィールド(create:true のときだけ意味を持つ。編集モードでは
+	// 初期化されるが未使用のまま放置される — 型を1つに保つため SheetDraft へ同居させた) ---
+	// 予定/リマインダー セグメント(片方向: event→todo のみ切替可・設計 05 §4)。
+	formKind: "event" | "todo";
+	// C4(設計 05 §5): 「場所または会議」統合入力の確定値(vevent 作成時のみ)。
+	locationValue: LocationPickerValue | null;
+	// C4 セミモーダルの開閉状態。
+	locationPickerOpen: boolean;
+	// list-known-locations の結果キャッシュ。null=未取得(セミモーダルを開いたときに一度だけ fetch)。
+	knownLocations: KnownLocationView[] | null;
+	// list-known-locations が in-flight かどうか(knownLocations===null と分離: [] という「0件確定」と
+	// 「まだ取得中」を区別するため)。
+	knownLocationsLoading: boolean;
+	// ビデオ通話チップ確定前の一時状態(タスク指示の暫定裁定: 全チップが URL 入力を要求するため、
+	// 「その他URL」専用ではなく共通化した — CONFERENCE_PROVIDERS のどれを選んだかの一時保持)。
+	conferenceProviderDraft: string | null;
+	conferenceUrlDraft: string;
+	// --- C3: vtodo(リマインダー)作成モードのフィールド(due は startDate/startTime/isAllDay を
+	// 使い回す — create-todo の due と create-event の start は同じ2形態("YYYY-MM-DD" /
+	// "YYYY-MM-DDTHH:MM:SS")なので、専用フィールドを増やさず既存の start* を「due」として再利用する) ---
+	todoHasDue: boolean;
+	// PRIORITY(iOS 準拠: 1=高 5=中 9=低)。null=なし。
+	todoPriority: number | null;
 }
 
 // --- 診断/エラー表示(todos と同じ2分割: status=接続フェーズ / banner=操作失敗)------------------
@@ -963,15 +998,28 @@ function sectionizeByDay(items: EventItem[]): Array<{ dayKey: string; items: Eve
 
 function renderAll(): void {
 	// カード内ページ遷移(v3): sheetState が立っていれば詳細ページを #root に描く。
-	if (sheetState !== null) {
+	// 【C3(設計05 §4): 作成モードは buildCreatePage へ完全に分離】旧実装は buildDetailPage を
+	// create/edit 兼用で使っていたが、C3(セグメント切替・場所/会議セミモーダル)を編集モードにまで
+	// 波及させると update-event 側の既存挙動を壊すリスクが大きいため、作成モードだけ新関数
+	// buildCreatePage(d) に切り出した(currentSheetEvent は編集モードの行引き当てだけを担う形に戻す)。
+	if (sheetState !== null && sheetDraft !== null) {
+		if (sheetState.create === true) {
+			root.innerHTML = "";
+			selTitleInput = null;
+			selMemoInput = null;
+			root.appendChild(buildCreatePage(sheetDraft));
+			return;
+		}
 		const sheetTask = currentSheetEvent();
-		if (sheetTask !== null && sheetDraft !== null) {
+		if (sheetTask !== null) {
 			root.innerHTML = "";
 			selTitleInput = null;
 			selMemoInput = null;
 			root.appendChild(buildDetailPage(sheetTask, sheetDraft));
 			return;
 		}
+	}
+	if (sheetState !== null) {
 		// 対象行が消えた(削除・外部同期)/ draft 消失 → 一覧描画へ流す。
 		sheetState = null;
 		sheetDraft = null;
@@ -1470,6 +1518,17 @@ function makeSheetDraft(ev: EventItem): SheetDraft {
 		alarm1Open: false,
 		travelMinutes: ev.travelMinutes,
 		travelOpen: false,
+		// C3 作成モードの既定値。編集モード(openSheet)で作った SheetDraft でも同居するが、
+		// buildDetailPage(編集用)はこれらのフィールドを一切読まないので無害(未使用のまま)。
+		formKind: "event",
+		locationValue: null,
+		locationPickerOpen: false,
+		knownLocations: null,
+		knownLocationsLoading: false,
+		conferenceProviderDraft: null,
+		conferenceUrlDraft: "",
+		todoHasDue: true,
+		todoPriority: null,
 	};
 }
 
@@ -2097,6 +2156,9 @@ interface CreateDetails {
 	recurrence?: RecurArgs;
 	alarms?: number[];
 	travelMinutes?: number | null;
+	// C3+C4(設計05 §4・§5): 「場所または会議」セミモーダルの確定値(create-event の
+	// structuredLocation/conference へ写す。locationPickerToCreateArgs が実際の変換を担う)。
+	locationValue?: LocationPickerValue | null;
 }
 
 /** ドラフト行の高速確定(既定「今日・終日」)の CreateDetails。 */
@@ -2125,6 +2187,7 @@ function collectCreateDetails(d: SheetDraft): CreateDetails {
 		recurrence,
 		alarms: alarms.length > 0 ? alarms : undefined,
 		travelMinutes: d.travelMinutes,
+		locationValue: d.locationValue,
 	};
 }
 
@@ -2647,6 +2710,13 @@ async function createEventFor(optimisticId: string, title: string, details: Crea
 		if (details.recurrence !== undefined) args.recurrence = details.recurrence;
 		if (details.alarms !== undefined && details.alarms.length > 0) args.alarms = details.alarms;
 		if (details.travelMinutes != null) args.travelMinutes = details.travelMinutes;
+		// C4(設計05 §5): セミモーダルの確定値を structuredLocation / conference へ写す
+		// (locationPickerToCreateArgs が空オブジェクトを返せば何も足さない=既存 location/url と独立)。
+		if (details.locationValue !== undefined) {
+			const locArgs = locationPickerToCreateArgs(details.locationValue ?? null);
+			if (locArgs.structuredLocation !== undefined) args.structuredLocation = locArgs.structuredLocation;
+			if (locArgs.conference !== undefined) args.conference = locArgs.conference;
+		}
 		const result = await app.callServerTool({ name: "create-event", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -2690,13 +2760,717 @@ async function createEventFor(optimisticId: string, title: string, details: Crea
 	}
 }
 
-// --- FAB(+)= 末尾にドラフト行を生やす ----------------------------------------------------
+// =============================================================================
+// C3(設計05 §4): fullscreen 作成フォーム本体。
+// =============================================================================
+// 【なぜ buildDetailPage(編集用)と完全に別関数にしたか】renderAll の分岐コメント参照。
+// 場所/URL 行を「場所または会議」統合トリガ(C4)へ置き換える・予定/リマインダー セグメントを足す、
+// という2つの変更を編集モードへ波及させると update-event の既存契約(location/url は独立フィールド
+// のまま・§8 の author 規約)を壊しかねないため、作成モードだけ新しいレンダリング経路に切り出した。
+// 代償として allday/開始/終了/移動時間/繰り返し/通知/予備の通知の行組み立てコードが buildDetailPage と
+// 重複するが、いずれも valueRow/buildRecurExpand/buildSingleChoiceExpand/makeSwitch という既存の
+// 共有ヘルパー(ロジックはここに1つしか無い)を呼ぶだけの「行の並べ方」の重複であり、判断ロジック自体
+// の二重管理にはならない(親への報告事項: 望むなら次のリファクタで両関数からの共通抽出も可能)。
+
+/** C3: FAB から開く fullscreen 作成フォーム(旧ドラフト行モデルの後継)。 */
+function buildCreatePage(d: SheetDraft): HTMLElement {
+	const page = el("div", "detail-page");
+
+	// --- ヘッダ: キャンセル / 追加(iOS モーダルシート文法。モックの「新規」中央タイトルは
+	// このカードの既存詳細ページ(戻る/保存 pattern)に語彙を揃え省略した) -----------------------
+	const head = el("div", "page-head");
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.className = "link link-back";
+	cancel.textContent = "キャンセル";
+	cancel.setAttribute("aria-label", "作成をキャンセル");
+	cancel.addEventListener("click", () => {
+		draft = null;
+		closeSheet();
+	});
+	const submit = document.createElement("button");
+	submit.type = "button";
+	submit.className = "link link-save";
+	submit.textContent = "追加";
+	submit.addEventListener("click", () => {
+		const title = d.title.trim();
+		if (title === "") return;
+		sheetState = null;
+		sheetDraft = null;
+		selectedId = null;
+		draft = null;
+		quickAddFab.hidden = false;
+		if (d.formKind === "event") {
+			enqueueCreate(title, collectCreateDetails(d));
+		} else {
+			const details = collectTodoCreateDetails(d);
+			renderAll();
+			void createTodoFor(title, details);
+		}
+	});
+	head.appendChild(cancel);
+	head.appendChild(submit);
+	page.appendChild(head);
+
+	// --- セグメント(予定|リマインダー・片方向: event→todo のみ・設計05 §4)-------------------------
+	const segment = el("div", "segment");
+	segment.setAttribute("role", "tablist");
+	const segEvent = document.createElement("button");
+	segEvent.type = "button";
+	segEvent.setAttribute("role", "tab");
+	segEvent.setAttribute("aria-selected", String(d.formKind === "event"));
+	segEvent.textContent = "予定";
+	segEvent.addEventListener("click", () => {
+		d.formKind = "event";
+		renderAll();
+	});
+	const segTodo = document.createElement("button");
+	segTodo.type = "button";
+	segTodo.setAttribute("role", "tab");
+	segTodo.setAttribute("aria-selected", String(d.formKind === "todo"));
+	segTodo.textContent = "リマインダー";
+	segTodo.addEventListener("click", () => {
+		d.formKind = "todo";
+		renderAll();
+	});
+	segment.appendChild(segEvent);
+	segment.appendChild(segTodo);
+	page.appendChild(segment);
+
+	const body = el("div", "detail-body");
+
+	// --- タイトル(予定/リマインダー共通)---------------------------------------------------------
+	const titleInput = document.createElement("input");
+	titleInput.className = "d-title";
+	titleInput.type = "text";
+	titleInput.value = d.title;
+	titleInput.placeholder = "タイトル";
+	titleInput.setAttribute("aria-label", "タイトル");
+	titleInput.addEventListener("input", () => {
+		d.title = titleInput.value;
+	});
+	body.appendChild(titleInput);
+
+	if (d.formKind === "event") appendEventCreateFields(body, d);
+	else appendTodoCreateFields(body, d);
+
+	page.appendChild(body);
+
+	// --- C4: 場所/会議セミモーダル(vevent 作成時のみ・カード内オーバーレイ)---------------------------
+	if (d.formKind === "event" && d.locationPickerOpen) {
+		page.appendChild(buildLocationDimmer(d));
+		page.appendChild(buildLocationSemimodal(d));
+	}
+
+	return page;
+}
+
+/** vevent(予定)作成モードのフィールド一式(タイトル以降)。「場所または会議」統合トリガ(C4)以外は
+ *  buildDetailPage の編集用フィールドと同じ並べ方(行の錨は共通ヘルパーが担う)。 */
+function appendEventCreateFields(body: HTMLElement, d: SheetDraft): void {
+	// 場所または会議(C4 トリガ行)。
+	body.appendChild(buildLocationTriggerRow(d));
+
+	// 終日
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "終日";
+		const value = el("span", "f-value");
+		row.appendChild(label);
+		row.appendChild(value);
+		row.appendChild(
+			makeSwitch(d.isAllDay, "終日", () => {
+				d.isAllDay = !d.isAllDay;
+				renderAll();
+			}),
+		);
+		body.appendChild(row);
+	}
+	// 開始
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "開始";
+		const value = el("span", "f-value");
+		const di = document.createElement("input");
+		di.className = "naked";
+		di.type = "date";
+		di.value = d.startDate;
+		di.setAttribute("aria-label", "開始日");
+		di.addEventListener("change", () => {
+			d.startDate = di.value;
+		});
+		value.appendChild(di);
+		if (!d.isAllDay) {
+			const ti = document.createElement("input");
+			ti.className = "naked";
+			ti.type = "time";
+			ti.value = d.startTime;
+			ti.setAttribute("aria-label", "開始時刻");
+			ti.addEventListener("change", () => {
+				d.startTime = ti.value === "" ? "09:00" : ti.value;
+			});
+			value.appendChild(ti);
+		}
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
+	}
+	// 終了
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "終了";
+		const value = el("span", "f-value");
+		if (d.hasEnd) {
+			const di = document.createElement("input");
+			di.className = "naked";
+			di.type = "date";
+			di.value = d.endDate;
+			di.setAttribute("aria-label", "終了日");
+			di.addEventListener("change", () => {
+				d.endDate = di.value;
+			});
+			value.appendChild(di);
+			if (!d.isAllDay) {
+				const ti = document.createElement("input");
+				ti.className = "naked";
+				ti.type = "time";
+				ti.value = d.endTime;
+				ti.setAttribute("aria-label", "終了時刻");
+				ti.addEventListener("change", () => {
+					d.endTime = ti.value === "" ? "10:00" : ti.value;
+				});
+				value.appendChild(ti);
+			}
+		} else {
+			const ph = el("span", "placeholder");
+			ph.textContent = "なし";
+			value.appendChild(ph);
+		}
+		row.appendChild(label);
+		row.appendChild(value);
+		row.appendChild(
+			makeSwitch(d.hasEnd, "終了", () => {
+				d.hasEnd = !d.hasEnd;
+				renderAll();
+			}),
+		);
+		body.appendChild(row);
+	}
+	// 移動時間
+	body.appendChild(
+		valueRow("移動時間", travelLabel(d.travelMinutes), d.travelOpen, false, () => {
+			d.travelOpen = !d.travelOpen;
+			renderAll();
+		}),
+	);
+	if (d.travelOpen) {
+		const options = [{ value: null, label: "なし" }, ...TRAVEL_PRESETS.map((p) => ({ value: p.minutes, label: p.label }))];
+		body.appendChild(
+			buildSingleChoiceExpand(options, d.travelMinutes, (v) => {
+				d.travelMinutes = v;
+				d.travelOpen = false;
+				renderAll();
+			}),
+		);
+	}
+	// 繰り返し
+	body.appendChild(
+		valueRow("繰り返し", recurValueText(d.recurPreset, d.weekdays), d.recurOpen, d.recurPreset === "custom", () => {
+			d.recurOpen = !d.recurOpen;
+			renderAll();
+		}),
+	);
+	if (d.recurOpen) body.appendChild(buildRecurExpand(d));
+	// カレンダー(読み取り専用。move-event 同様このカードは複数コレクション選択 UI を持たない)。
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "カレンダー";
+		const value = el("span", "f-value");
+		const val = el("span", "muted");
+		val.textContent = currentCalendarId ?? "";
+		value.appendChild(val);
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
+	}
+	// 通知
+	body.appendChild(
+		valueRow("通知", alarmLabel(d.alarms[0] ?? null), d.alarmOpen, false, () => {
+			d.alarmOpen = !d.alarmOpen;
+			renderAll();
+		}),
+	);
+	if (d.alarmOpen) {
+		const options = [{ value: null, label: "なし" }, ...ALARM_PRESETS.map((p) => ({ value: p.minutes, label: p.label }))];
+		body.appendChild(
+			buildSingleChoiceExpand(options, d.alarms[0] ?? null, (v) => {
+				if (v === null) d.alarms = [];
+				else d.alarms = [v, ...(d.alarms.length > 1 ? [d.alarms[1] as number] : [])];
+				d.alarmOpen = false;
+				renderAll();
+			}),
+		);
+	}
+	// 予備の通知
+	if ((d.alarms[0] ?? null) !== null) {
+		body.appendChild(
+			valueRow("予備の通知", alarmLabel(d.alarms[1] ?? null), d.alarm1Open, false, () => {
+				d.alarm1Open = !d.alarm1Open;
+				renderAll();
+			}),
+		);
+		if (d.alarm1Open) {
+			const options = [{ value: null, label: "なし" }, ...ALARM_PRESETS.map((p) => ({ value: p.minutes, label: p.label }))];
+			body.appendChild(
+				buildSingleChoiceExpand(options, d.alarms[1] ?? null, (v) => {
+					const first = d.alarms[0] as number;
+					if (v === null) d.alarms = [first];
+					else d.alarms = [first, v];
+					d.alarm1Open = false;
+					renderAll();
+				}),
+			);
+		}
+	}
+	// メモ
+	const notesInput = document.createElement("textarea");
+	notesInput.className = "d-notes";
+	notesInput.value = d.notes;
+	notesInput.placeholder = "メモ";
+	notesInput.setAttribute("aria-label", "メモ");
+	notesInput.addEventListener("input", () => {
+		d.notes = notesInput.value;
+	});
+	body.appendChild(notesInput);
+}
+
+/** vtodo(リマインダー)作成モードのフィールド一式(タイトル以降)。設計05 §4「リマインダー側に
+ *  場所テキスト行は出さない」に従い場所関連は一切出さない。due は startDate/startTime を再利用
+ *  (create-event の start と create-todo の due は同じ2形態の文字列規約なので、専用フィールドを
+ *  増やさず使い回す)。 */
+function appendTodoCreateFields(body: HTMLElement, d: SheetDraft): void {
+	// メモ
+	const notesInput = document.createElement("textarea");
+	notesInput.className = "d-notes";
+	notesInput.value = d.notes;
+	notesInput.placeholder = "メモ";
+	notesInput.setAttribute("aria-label", "メモ");
+	notesInput.addEventListener("input", () => {
+		d.notes = notesInput.value;
+	});
+	body.appendChild(notesInput);
+
+	// 期日(due。任意なので todoHasDue トグルを持つ。時刻は常に含める — モック datetime-local に合わせる)。
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "期日";
+		const value = el("span", "f-value");
+		if (d.todoHasDue) {
+			const di = document.createElement("input");
+			di.className = "naked";
+			di.type = "date";
+			di.value = d.startDate;
+			di.setAttribute("aria-label", "期日");
+			di.addEventListener("change", () => {
+				d.startDate = di.value;
+			});
+			const ti = document.createElement("input");
+			ti.className = "naked";
+			ti.type = "time";
+			ti.value = d.startTime;
+			ti.setAttribute("aria-label", "期日の時刻");
+			ti.addEventListener("change", () => {
+				d.startTime = ti.value === "" ? "18:00" : ti.value;
+			});
+			value.appendChild(di);
+			value.appendChild(ti);
+		} else {
+			const ph = el("span", "placeholder");
+			ph.textContent = "なし";
+			value.appendChild(ph);
+		}
+		row.appendChild(label);
+		row.appendChild(value);
+		row.appendChild(
+			makeSwitch(d.todoHasDue, "期日", () => {
+				d.todoHasDue = !d.todoHasDue;
+				renderAll();
+			}),
+		);
+		body.appendChild(row);
+	}
+	// 繰り返し(due アンカー。due 無しでは選ばせない — create-todo は recurrence に due 必須)。
+	if (d.todoHasDue) {
+		body.appendChild(
+			valueRow("繰り返し", recurValueText(d.recurPreset, d.weekdays), d.recurOpen, d.recurPreset === "custom", () => {
+				d.recurOpen = !d.recurOpen;
+				renderAll();
+			}),
+		);
+		if (d.recurOpen) body.appendChild(buildRecurExpand(d));
+	}
+	// リスト(読み取り専用の degrade。todos カードのような複数リスト選択 UI は持たず、
+	// create-todo の calendarId を省略してサーバー既定 "tasks" に委ねる — 暫定判断・親へ報告)。
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "リスト";
+		const value = el("span", "f-value");
+		const val = el("span", "muted");
+		val.textContent = "タスク";
+		value.appendChild(val);
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
+	}
+	// 優先順位(iOS 準拠: 1=高 5=中 9=低)。
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "優先順位";
+		const value = el("span", "f-value");
+		const chips = el("div", "chips");
+		const options: ReadonlyArray<{ value: number | null; label: string }> = [
+			{ value: null, label: "なし" },
+			{ value: 9, label: "低" },
+			{ value: 5, label: "中" },
+			{ value: 1, label: "高" },
+		];
+		for (const opt of options) {
+			const b = document.createElement("button");
+			b.type = "button";
+			b.textContent = opt.label;
+			b.setAttribute("aria-pressed", String(d.todoPriority === opt.value));
+			b.addEventListener("click", () => {
+				d.todoPriority = opt.value;
+				renderAll();
+			});
+			chips.appendChild(b);
+		}
+		value.appendChild(chips);
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
+	}
+}
+
+/** vtodo 作成の SheetDraft → create-todo 引数(タイトルは呼び出し側が別に渡す)。 */
+interface TodoCreateDetails {
+	notes: string;
+	due: string | null;
+	recurrence?: RecurArgs;
+	priority: number | null;
+}
+function collectTodoCreateDetails(d: SheetDraft): TodoCreateDetails {
+	let recurrence: RecurArgs | undefined;
+	if (d.todoHasDue && d.recurPreset !== "none" && d.recurPreset !== "custom") {
+		const args = presetToArgs(d.recurPreset, d.weekdays);
+		if (args !== null && args.frequency !== "none") {
+			if (d.recurEnd === "until" && d.until != null) args.until = d.until;
+			recurrence = args;
+		}
+	}
+	return {
+		notes: d.notes.trim(),
+		due: d.todoHasDue ? `${d.startDate}T${d.startTime}:00` : null,
+		recurrence,
+		priority: d.todoPriority,
+	};
+}
+
+/** create-todo を裏で実行する(agenda カードは todo を表示しないため、events 系の楽観行/差分レンズには
+ *  乗せない — 成功/失敗は aria-live(#live)とバナーだけで伝える最小実装)。 */
+async function createTodoFor(title: string, details: TodoCreateDetails): Promise<void> {
+	try {
+		const args: Record<string, unknown> = { title };
+		if (details.notes !== "") args.notes = details.notes;
+		if (details.due !== null) {
+			args.due = details.due;
+			args.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		}
+		if (details.recurrence !== undefined) args.recurrence = details.recurrence;
+		if (details.priority !== null) args.priority = details.priority;
+		const result = await app.callServerTool({ name: "create-todo", arguments: args });
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		liveEl.textContent = `「${title}」をリマインダーに追加しました`;
+	} catch (e) {
+		showBanner(`「${title}」の追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`, () => void createTodoFor(title, details));
+	}
+}
+
+// =============================================================================
+// C4(設計05 §5): 「場所または会議」統合トリガ行 + セミモーダル(カード内 CSS オーバーレイ)。
+// =============================================================================
+// WKWebView サンドボックス(全通信遮断)とは無関係の純粋な DOM/CSS モーダル(設計05 §5 冒頭コメント)。
+// position:fixed で #root の外(page 全体)を覆う — fullscreen 中の #root.fullscreen-scroll は
+// 内部スクロールコンテナなので、position:absolute だと入力欄をスクロールしたときにモーダルも
+// 一緒に流れてしまう(モック .frame は静的デモ用の相対配置だったが、実装は実際にスクロールする
+// コンテナを持つため fixed の方が iOS シートの体感に近い・要出典コメント)。
+
+/** 「場所または会議」統合トリガ行。tap/focus でセミモーダルを開く(§5)。 */
+function buildLocationTriggerRow(d: SheetDraft): HTMLElement {
+	const row = el("div", "f-row location-trigger");
+	row.tabIndex = 0;
+	row.setAttribute("role", "button");
+	row.setAttribute("aria-haspopup", "dialog");
+	const label = el("span", "f-label");
+	label.textContent = "場所";
+	const value = el("span", "f-value");
+	const iconWrap = el("span", "lt-icon");
+	iconWrap.appendChild(createIcon(d.locationValue !== null ? locationPickerIconName(d.locationValue) : "map-pin"));
+	const text = el("span", d.locationValue !== null ? "val" : "placeholder");
+	text.textContent = d.locationValue !== null ? locationPickerLabel(d.locationValue) : "場所または会議";
+	value.appendChild(iconWrap);
+	value.appendChild(text);
+	if (d.locationValue !== null) {
+		const clear = document.createElement("button");
+		clear.type = "button";
+		clear.className = "lt-clear";
+		clear.setAttribute("aria-label", "場所または会議をクリア");
+		clear.appendChild(createIcon("x"));
+		clear.addEventListener("click", (e) => {
+			e.stopPropagation();
+			d.locationValue = null;
+			renderAll();
+		});
+		value.appendChild(clear);
+	}
+	row.appendChild(label);
+	row.appendChild(value);
+	const open = (): void => {
+		d.locationPickerOpen = true;
+		ensureKnownLocationsLoaded(d);
+		renderAll();
+	};
+	row.addEventListener("click", open);
+	row.addEventListener("focus", open);
+	return row;
+}
+
+/** list-known-locations(C5)を1回だけ取得してキャッシュする(knownLocationsLoading で二重 fetch を防ぐ)。
+ *  calendarId は省略する(§3「走査範囲の既定」: 省略時は owner 配下の全コレクション横断が候補として
+ *  最も有用 — vevent 作成中でも過去の vtodo proximity 由来の場所を候補に含められる)。 */
+function ensureKnownLocationsLoaded(d: SheetDraft): void {
+	if (d.knownLocations !== null || d.knownLocationsLoading) return;
+	d.knownLocationsLoading = true;
+	void app
+		.callServerTool({ name: "list-known-locations", arguments: {} })
+		.then((result) => {
+			d.knownLocationsLoading = false;
+			if (result.isError) return;
+			const sc = result.structuredContent as { locations?: KnownLocationView[] } | undefined;
+			d.knownLocations = sc?.locations ?? [];
+			if (d.locationPickerOpen) renderAll();
+		})
+		.catch(() => {
+			// 静かに無視(既知の場所セクションは空のまま=候補ゼロとして表示。C5 は補助候補であり
+			// フォーム全体を失敗させる理由にはならない)。
+			d.knownLocationsLoading = false;
+		});
+}
+
+/** セミモーダルの背景ディマー(タップで閉じる)。 */
+function buildLocationDimmer(d: SheetDraft): HTMLElement {
+	const dimmer = el("div", "loc-dimmer");
+	dimmer.addEventListener("click", () => {
+		d.locationPickerOpen = false;
+		renderAll();
+	});
+	return dimmer;
+}
+
+/** セミモーダル本体(§5 の並び: 1.検索欄→2.ビデオ通話→3.既知の場所(C5)→4.検索候補(C6・スタブ))。 */
+function buildLocationSemimodal(d: SheetDraft): HTMLElement {
+	const modal = el("div", "loc-semimodal");
+	modal.setAttribute("role", "dialog");
+	modal.setAttribute("aria-label", "場所または会議");
+	modal.appendChild(el("div", "loc-grabber"));
+
+	const header = el("div", "loc-sm-header");
+	const title = el("span", "loc-sm-title");
+	title.textContent = "場所または会議";
+	const done = document.createElement("button");
+	done.type = "button";
+	done.className = "loc-sm-done";
+	done.textContent = "完了";
+	done.addEventListener("click", () => {
+		d.locationPickerOpen = false;
+		renderAll();
+	});
+	header.appendChild(title);
+	header.appendChild(done);
+	modal.appendChild(header);
+
+	const body = el("div", "loc-sm-body");
+
+	// 1. 多相検索欄。【C6 未実装】geocode ツールが無いため入力は受け付けるだけで何も検索しない
+	// (死に UI にしないため「検索候補」セクションは常時スタブ表示に留める。将来ここへ
+	// debounce + `list-known-locations`/geocode 呼び出しの絞り込みを差し込む)。
+	const search = el("div", "loc-sm-search");
+	search.appendChild(createIcon("search"));
+	const searchInput = document.createElement("input");
+	searchInput.type = "text";
+	searchInput.placeholder = "場所またはビデオ通話を入力";
+	searchInput.setAttribute("aria-label", "場所またはビデオ通話を検索");
+	search.appendChild(searchInput);
+	body.appendChild(search);
+
+	// 2. ビデオ通話 provider チップ。
+	const confSection = el("div", "loc-sm-section");
+	const confTitle = el("p", "loc-sm-section-title");
+	confTitle.textContent = "ビデオ通話";
+	confSection.appendChild(confTitle);
+	const chipRow = el("div", "loc-chip-row");
+	for (const provider of CONFERENCE_PROVIDERS) {
+		const chip = document.createElement("button");
+		chip.type = "button";
+		chip.className = "loc-chip";
+		chip.textContent = provider === "Google Meet" ? "Meet" : provider;
+		chip.setAttribute("aria-pressed", String(d.conferenceProviderDraft === provider));
+		chip.addEventListener("click", () => {
+			// 【暫定裁定(タスク指示・モック原案からの上書き)】モックは Meet/Zoom/FaceTime を
+			// 選択即確定にしていたが、caldav は provider ごとの Join URL 自動生成を持たない
+			// (会議 = URL 直入れ or 参照 URL と併存時は DESCRIPTION ブロック・設計05 §1-c)ため、
+			// 「その他URL」と同じく全チップで URL 入力を必須にする1経路へ統一した。
+			d.conferenceProviderDraft = provider;
+			renderAll();
+		});
+		chipRow.appendChild(chip);
+	}
+	confSection.appendChild(chipRow);
+	if (d.conferenceProviderDraft !== null) {
+		const urlRow = el("div", "loc-chip-url-row");
+		urlRow.appendChild(createIcon("link"));
+		const urlInput = document.createElement("input");
+		urlInput.type = "url";
+		urlInput.placeholder = "https://...";
+		urlInput.value = d.conferenceUrlDraft;
+		urlInput.setAttribute("aria-label", "会議の Join URL");
+		urlInput.addEventListener("input", () => {
+			d.conferenceUrlDraft = urlInput.value;
+		});
+		const confirm = (): void => {
+			const url = urlInput.value.trim();
+			if (url === "") return;
+			d.locationValue = { kind: "conference", provider: d.conferenceProviderDraft, url };
+			d.conferenceProviderDraft = null;
+			d.conferenceUrlDraft = "";
+			d.locationPickerOpen = false;
+			renderAll();
+		};
+		urlInput.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") confirm();
+		});
+		urlRow.appendChild(urlInput);
+		const confirmBtn = document.createElement("button");
+		confirmBtn.type = "button";
+		confirmBtn.className = "loc-chip-url-confirm";
+		confirmBtn.textContent = "確定";
+		confirmBtn.addEventListener("click", confirm);
+		urlRow.appendChild(confirmBtn);
+		confSection.appendChild(urlRow);
+	}
+	body.appendChild(confSection);
+
+	// 3. 既知の場所(C5)。
+	const knownSection = el("div", "loc-sm-section");
+	const knownTitle = el("p", "loc-sm-section-title");
+	knownTitle.textContent = "既知の場所";
+	knownSection.appendChild(knownTitle);
+	const knownList = el("div", "loc-place-list");
+	if (d.knownLocations === null) {
+		const loading = el("p", "loc-sm-empty");
+		loading.textContent = "読み込み中…";
+		knownList.appendChild(loading);
+	} else if (d.knownLocations.length === 0) {
+		const empty = el("p", "loc-sm-empty");
+		empty.textContent = "まだありません";
+		knownList.appendChild(empty);
+	} else {
+		for (const loc of d.knownLocations) {
+			const item = document.createElement("button");
+			item.type = "button";
+			item.className = "loc-place-item";
+			item.appendChild(createIcon("map-pin"));
+			const text = el("span", "loc-pi-text");
+			const t = el("div", "loc-pi-title");
+			t.textContent = loc.title;
+			text.appendChild(t);
+			if (loc.address !== null) {
+				const sub = el("div", "loc-pi-sub");
+				sub.textContent = loc.address;
+				text.appendChild(sub);
+			}
+			item.appendChild(text);
+			item.addEventListener("click", () => {
+				d.locationValue = knownLocationToPickerValue(loc);
+				d.locationPickerOpen = false;
+				renderAll();
+			});
+			knownList.appendChild(item);
+		}
+	}
+	knownSection.appendChild(knownList);
+	body.appendChild(knownSection);
+
+	// 4. 検索候補(C6・未実装のためスタブ)。geocode ツールが無いのでダミー結果は出さない
+	// (死に UI を作らない・タスク指示)。
+	const suggestSection = el("div", "loc-sm-section");
+	const suggestTitle = el("p", "loc-sm-section-title");
+	suggestTitle.textContent = "検索候補";
+	suggestSection.appendChild(suggestTitle);
+	const suggestNote = el("p", "loc-sm-empty");
+	suggestNote.textContent = "地名検索は今後対応予定です(C6)";
+	suggestSection.appendChild(suggestNote);
+	body.appendChild(suggestSection);
+
+	modal.appendChild(body);
+	return modal;
+}
+
+// --- FAB(+)= fullscreen 作成フォームを開く(C3: 設計05 §4)-------------------------------------
+// 【vevent 作成 = fullscreen 詳細フォーム(inline quick-add は DTSTART 必須で API 契約上不成立・
+// 設計05 §4 裁定)】旧実装はここで startDraft() だけを呼び「末尾にドラフト行を生やして inline 選択」
+// していたが、その体験は廃止した。ただし内部的には startDraft()(draft を1件作る)→
+// openCreateSheet()(sheetState.create=true で作成モード詳細ページへ即座に遷移)という**既存の2関数を
+// そのまま流用**する(最小破壊: draft 変数・startDraft/openCreateSheet・commitSelection の draft 分岐は
+// 一切削除しない)。この2つの呼び出しは同一 tick 内の同期呼び出しなので、startDraft() が一瞬 renderAll()
+// して一覧末尾にドラフト行を描いても、直後の openCreateSheet() が sheetState を立てて再度 renderAll()
+// する — ブラウザは最終状態しかペイントしないため、ユーザーにはドラフト行は一切見えず fullscreen
+// フォームだけが開く(旧「FAB→ドラフト行→ⓘ→詳細ページ」の3手を1手に自動化したのと等価)。
 quickAddFab.addEventListener("click", (e) => {
 	e.stopPropagation();
 	commitSelection();
 	draft = null;
 	selectedId = null;
-	startDraft();
+
+	const openForm = (): void => {
+		startDraft();
+		openCreateSheet();
+	};
+	// 昇格を試みる(拒否/未対応ホストでも openForm 自体は行う — 作成フォームは #root 内のカード内
+	// ページ遷移として inline でも成立するため、fullscreen はあくまで「全件が見える文脈」の付加価値。
+	// todos-entry.ts の畳み昇格と違い、ここでは lastFoldActive 条件を課さない(FAB を押した時点で
+	// 常に作成フォームへ入る合意 — 設計05 §4「vevent 作成 = fullscreen 詳細フォーム」)。
+	if (canRequestFullscreen(hostAvailableDisplayModes)) {
+		app
+			.requestDisplayMode({ mode: "fullscreen" })
+			.then(() => {
+				applyHostContext();
+				openForm();
+			})
+			.catch(() => openForm());
+	} else {
+		openForm();
+	}
 });
 
 // --- グローバルクリック: 選択解除(確定)/ スワイプ露出畳み ----------------------------------------

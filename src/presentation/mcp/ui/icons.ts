@@ -99,6 +99,16 @@ const ICONS: Record<string, IconShape[]> = {
 		{ tag: "path", attrs: { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" } },
 		{ tag: "path", attrs: { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" } },
 	],
+	// C4(設計 05 §5): 場所/会議セミモーダルの検索欄アイコン(旧モックの絵文字 🔍 を置換)。lucide "search"。
+	search: [
+		{ tag: "circle", attrs: { cx: "11", cy: "11", r: "8" } },
+		{ tag: "path", attrs: { d: "m21 21-4.35-4.35" } },
+	],
+	// C4: 「場所または会議」行のクリア × ボタン(旧モックの絵文字 ×)。lucide "x"。
+	x: [
+		{ tag: "path", attrs: { d: "M18 6 6 18" } },
+		{ tag: "path", attrs: { d: "m6 6 12 12" } },
+	],
 };
 
 /**
