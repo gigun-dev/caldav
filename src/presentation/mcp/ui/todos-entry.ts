@@ -1655,14 +1655,31 @@ function commitSelection(): boolean {
 
 /** FAB(+)で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へフォーカスする
  *  (iOS の新規行と同じ体感)。draft は due/優先度/繰り返し等を持たない最小の {title,notes}(構造化
- *  フィールドは作成モード詳細ページで編集する)。 */
-function startDraft(): void {
+ *  フィールドは作成モード詳細ページで編集する)。
+ *  @param focusDelayMs フォーカス(=キーボード出現)を遅らせる ms。既定 0(即フォーカス)。
+ *    【2026-07-18 実機動画の解析: fullscreen 昇格ズームの「中心が右上へ流れる」ブレ対策】
+ *    折り畳み中の + は fullscreen へ昇格してから追加するが、即フォーカスするとキーボードの
+ *    せり上がりがホストのズーム遷移と同時に走り、遷移の基準矩形が飛行中に動いて spring が
+ *    再ターゲット=最大化の中心軸がズレて見える。昇格経路だけフォーカスを遷移完了後
+ *    (~450ms: iOS の cover/zoom 遷移は ~0.35-0.4s・余裕をみた値・1定数で可逆)まで遅らせ、
+ *    「ズームが終わってからキーボードが上がる」順序に直列化する。inline のままの追加(畳み無し)は
+ *    従来どおり即フォーカス(遷移が無いので競合しない)。 */
+function startDraft(focusDelayMs = 0): void {
 	draft = { id: `draft:${Math.random().toString(36).slice(2)}`, title: "", notes: "" };
 	selectedId = draft.id;
 	closeSwipe();
 	renderAll();
 	// renderRow が selTitleInput をセットするので、renderAll 後にフォーカスできる(選択行と同じ流儀)。
-	if (selTitleInput !== null) selTitleInput.focus();
+	if (focusDelayMs <= 0) {
+		if (selTitleInput !== null) selTitleInput.focus();
+		return;
+	}
+	setTimeout(() => {
+		// 遅延中にユーザーが別操作(選択解除・別行選択)をしたら奪わない(selectedId が draft のままの
+		// ときだけフォーカスする)。draft は startDraft 呼び出しごとに新 id なのでクロージャで捕まえる。
+		const draftId = draft?.id ?? null;
+		if (draftId !== null && selectedId === draftId && selTitleInput !== null) selTitleInput.focus();
+	}, focusDelayMs);
 }
 
 /** ドラフト行での Enter = 「確定して追加モードを終える」(= 完了ボタン header-done と同一挙動)。
@@ -4189,7 +4206,7 @@ quickAddFab.addEventListener("click", (e) => {
 			.requestDisplayMode({ mode: "fullscreen" })
 			.then(() => {
 				applyHostContext(); // 昇格結果(displayMode=fullscreen)を反映してから
-				startDraft(); //         畳まれない全件表示の末尾にドラフトを生やす
+				startDraft(450); //      畳まれない全件表示の末尾にドラフトを生やす(focus はズーム遷移後・関数コメント参照)
 			})
 			.catch(() => startDraft()); // 拒否/失敗は inline のまま追加(フォールバック)
 	} else {
