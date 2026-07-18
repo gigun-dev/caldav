@@ -1159,19 +1159,30 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		if (committingStartedAt === null) return;
 		elm.style.animationDelay = `-${Date.now() - committingStartedAt}ms`;
 	};
-	let tagText: string | null = null;
+	// 【2026-07-18 実機 FB「完了も追加もテキスト不要」(ユーザー裁定)】旧実装はここで tagText に
+	// "完了"/"追加"/"編集済み"等/sync 時は「同期(...)」を積み、meta 右端の .tag span へ描いていた
+	// (直下のコメント群参照)。実機で「テキストの意味が薄い(チェック円の塗り・リング等の非テキスト
+	// 演出で状態は十分伝わる)」との FB を受け、becoming の視覚テキストタグは全廃する。
+	// 【何を残すか】(1) チェック円の塗り/リング・becoming-* クラス(li の CSS 演出)はそのまま維持。
+	// (2) editPlan(due/priority のインライン旧→新差分表示・「他N件」)はタグとは別物(値そのものの
+	// 提示で「テキストラベル」ではない)なので維持。(3) announceBecoming の aria-live 音声通知は
+	// a11y として維持(視覚が無くても状態変化をスクリーンリーダーに伝える必要は消えない)。
+	// planEdit の EditPlan.tag フィールド自体はもう画面に出さないが、「何が変わったか」の要約文言
+	// 生成ロジックとして構造は残す(死んでも害は無い経緯記録・将来 aria-live 文言に転用しうる)。
 	let editPlan: EditPlan | null = null;
 	// v2.1 A-4: どの要素へ animation-delay resume を適用するか(circle=done/undo の ring-pulse+pop、
 	// row=add の inflight シマー、tag=edit の opacity pulse)。renderRow 内で対象要素を作る箇所が
-	// それぞれ離れているため、ここではフラグだけ立てて後段(check/circle 生成部・末尾の tagEl 生成部)で
-	// applyAnimResume を呼ぶ。
+	// それぞれ離れているため、ここではフラグだけ立てて後段(check/circle 生成部)で applyAnimResume を
+	// 呼ぶ。resumeTag(tag=edit)は 2026-07-18 のテキストタグ全廃で対象要素(tagEl)が無くなり死コード化
+	// した(上の "edited" 分岐コメント参照)。
 	let resumeCircle = false;
 	let resumeRow = false;
 	let resumeTag = false;
 	if (aff !== undefined) {
-		// sync(E-2 スライス④): システム起因の変化はラベルを中立の「同期(...)」にする。
-		// form(左バー/リング/破線)は user 起因と同一語彙を使い、区別はラベルだけに集約する。
-		const isSync = aff.sync === true;
+		// 【2026-07-18 テキストタグ全廃】sync(E-2 スライス④)由来かどうかで文言を「同期(...)」と
+		// 出し分けていたのは表示テキストの分岐だけだったため、テキストタグ全廃に伴い isSync 変数
+		// (aff.sync)自体もこの描画分岐からは不要になった(aff.sync は announceBecoming 側の
+		// aria-live 文言でまだ読む — そちらは視覚ではなく a11y なので維持)。
 		if (aff.kind === "completed") {
 			li.classList.add("becoming-done");
 			// ring-pulse(0→35%→0 の脈動 + circle の軽いポップ): committing 中だけ乗せる。満了後は
@@ -1183,7 +1194,8 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 				li.classList.add("committing");
 				resumeCircle = true;
 			}
-			tagText = isSync ? "同期(完了)" : "完了";
+			// isSync(同期由来か)は今はテキストタグの出し分けにしか使っていなかった(廃止済み)。
+			// 変数自体は announceBecoming 側で別途 sync 判定するため、ここでは何もしない。
 		} else if (aff.kind === "reopened") {
 			// 【> 2026-07-17 実機 FB3: undo(再開)は「元に戻すだけ」— 特殊 state / 演出を外す】
 			// 旧実装はここで becoming-undone(reopened 専用の逆再生リング演出)+ committing ring-pulse +
@@ -1196,7 +1208,6 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			// sync 由来の外部再開も同様に無装飾(区別を見せない — ラベルは aria のみ)。
 		} else if (aff.kind === "added") {
 			li.classList.add("becoming-in");
-			tagText = isSync ? "同期(追加)" : "追加";
 			// in-flight シマー: 仮行(quick-add optimistic row)かつ committing 中だけ .inflight を足す
 			// (色は増やさず動きだけ)。2026-07-16 ドクトリン v2 で「無限ループ」を「寿命1周」に是正
 			// (todos-app.ts の @keyframes wake-sweep コメント参照)。committing が寿命切れになったら
@@ -1208,8 +1219,14 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		} else if (aff.kind === "edited") {
 			li.classList.add("becoming-edit");
 			editPlan = planEdit(aff);
-			tagText = isSync ? "同期(編集)" : editPlan.tag;
-			// opacity pulse ×1: becoming タグ自体を committing 中だけ脈動させる(手応え)。
+			// 【2026-07-18 テキストタグ全廃に伴う死コード化】旧実装はここで committing 中だけ
+			// becoming タグ([.tag] span = 廃止済み)を opacity pulse させていた(todos-app.ts の
+			// `li.becoming-edit.committing .tag { animation: opacity-pulse ... }` 参照)。タグ要素
+			// (tagEl)自体を描かなくなったため、この "committing" クラス付与と resumeTag は今は
+			// pulse の対象を持たない死コードになった。editPlan のインライン旧→新 diff(due/pri)は
+			// テキストタグではなく値そのものの提示なので pulse を新設して肩代わりさせる必然性は無く、
+			// 「削るほどの害も無い」ため CSS 側も含め経緯記録として残置する(消すのは事実として誤りの
+			// ときだけ、のコメント規律)。
 			if (committing) {
 				li.classList.add("committing");
 				resumeTag = true;
@@ -1459,24 +1476,17 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		prox.setAttribute("aria-label", badge.aria);
 		meta.appendChild(prox);
 	}
-	// becoming マイクロラベル(通常は meta 右端。margin-left:auto で押し出す)。読み上げ対象の
-	// テキスト(装飾の form は支援技術に届かないので、操作直後の要約は #live にも流す)。
-	// 【2026-07-15 実機フィードバック: due 無しタスクの完了/再開でラベルが2段目に落ち上下がずれる】
-	// meta に他の中身(due/⟳/📍/差分)が無い行では、ラベルのためだけに空の meta 行が生まれ、
-	// タイトル(1行目)とラベル(2行目)が段違いになり円のセンタリングも狂って見えた。そこで当時は
-	// 「meta が実質空ならラベルを rowMain 直下、そうでなければ meta 内」の二枝で応急対処していた。
-	// 【2026-07-16 v2.1 修正C で撤回: 常に rowMain 直下】meta に中身がある行(due 有り等)では
-	// 上の応急対処でもタグが meta(最終行)に乗ったままで、S-E の .row-main{align-items:flex-start}
-	// により行の下端に落ちる実機 FB(「完了が下に寄る」)が残っていた。二枝を廃し、タグは常に
-	// rowMain 直下(タイトル1行目と同じ高さ)に置く。meta には一切入れない — todos-app.ts の
-	// `.row-main > .tag` に align-self:flex-start + 縦補正を足して1行目に揃える(該当 CSS 参照)。
-	let tagEl: HTMLElement | null = null;
-	if (tagText !== null) {
-		tagEl = document.createElement("span");
-		tagEl.className = "tag";
-		tagEl.textContent = tagText;
-		if (resumeTag) applyAnimResume(tagEl);
-	}
+	// 【2026-07-18 becoming マイクロラベル(旧 tagEl = meta 右端 or rowMain 直下の [.tag] span)を全廃】
+	// ユーザー裁定「完了も追加もテキスト不要」により、"完了"/"追加"/"編集済み"等/「同期(...)」の
+	// テキストタグそのものを描かなくなった(tagText 変数ごと削除済み・上の各 aff.kind 分岐参照)。
+	// 【旧コメント(2026-07-15/16 のレイアウト調整史・財産として残す)】旧実装はここでタグの配置を
+	// 「meta に中身が無ければ rowMain 直下、あれば meta 内」の二枝→「常に rowMain 直下」(v2.1 修正C)
+	// と調整していた。タグ自体が無くなった今はこのレイアウト分岐の対象も消えたため、当時の
+	// `.row-main > .tag` / `.meta .tag` の位置調整 CSS(todos-app.ts)は死コード化している(削除は
+	// せず経緯記録として残置。CSS 側にも同旨コメントを添える)。
+	// resumeTag(committing 中の pulse resume 用フラグ)は上の "edited" 分岐コメントの通りいま死
+	// コード化しているが、resumeCircle/resumeRow と対称の設計を保つため宣言自体は残す(TS は
+	// noUnusedLocals 無効のためビルドにも影響しない)。
 	// C0-a(> 2026-07-17 実機 FB2 / A-3): 完了行が退場猶予中(約3秒)なら、タイトルのテキストだけをグレーに
 	// 薄れさせて自然退場に向かわせる。旧実装(C0)はここで「取り消す」テキストボタンを tag スロットへ出して
 	// いたが、実機で文字が上に偏る崩れが出たうえベスプラ(Todoist の完了フェードアウト)に合わないため廃止。
@@ -1497,7 +1507,7 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	if (meta.childElementCount > 0 || sel) head.appendChild(meta);
 
 	rowMain.appendChild(head);
-	if (tagEl !== null) rowMain.appendChild(tagEl);
+	// 【2026-07-18】旧 `if (tagEl !== null) rowMain.appendChild(tagEl)` は tagEl 全廃に伴い削除。
 
 	// --- trailing: 選択中の行だけ info ボタン(詳細シートを開く)。非選択行には何も出さない(モック要件1)---
 	if (sel) {
@@ -3157,6 +3167,24 @@ function applyStructuredContent(sc: unknown): void {
 	// in-flight の楽観トグル/仮行が失われないのは、この重ね直しがあるため(一貫性の要)。
 	serverAffectedBase = combinedAffected;
 	serverGhostsBase = combinedGhosts;
+	// 【2026-07-18 実機 FB「done にして時間が経過しても消えないタスクがある」原因(a)】
+	// scheduleDoneExit は従来 toggleTask(カード内タップの楽観ステップ)からしか呼ばれておらず、
+	// 「affected:completed」が自分の楽観経路を通らずに届く経路(他クライアントでの完了 = sync 由来の
+	// syncDiffToAffected("completed")、または将来ここを通りうる mutate 応答の affected)は退場タイマーが
+	// 一切仕込まれず、無期限に sticky 表示(mergeCompletedBase による in-place 合成行)として残り続けていた。
+	// これが「消えるものと残留するものが混在する」の正体 — 退場するかどうかが「誰が完了させたか」という
+	// 表示に無関係な経路差で決まっていた。
+	// 【なぜここで一括処理してよいか】combinedAffected の kind==="completed" は常に「今回の応答で
+	// 未完了→完了へ遷移した」ことを意味する差分(applyToggleConfirmed 経由の自分の操作 or
+	// computeSyncDiff が検出した外部の操作)であり、includeCompleted:true ビューで最初から完了として
+	// 返ってきた行(=遷移ではない)はここに現れない(computeSyncDiff は「遷移」だけを diff として拾う)。
+	// よって全 kind==="completed" に一律 scheduleDoneExit を仕込んでも「意図的に開いた完了フィルタ表示」を
+	// 誤って退場させることはない。scheduleDoneExit は冪等(exitTimers.has/retiredDoneIds.has で二重仕込み
+	// を防止)なので、自分の楽観トグルで既にタイマー済みの id を再度渡しても無害(タイマーが延長も
+	// リセットもされない)。
+	for (const a of combinedAffected) {
+		if (a.kind === "completed") scheduleDoneExit(a.id);
+	}
 	// 削除された id は位置記憶 / sticky から追い出す(2026-07-14 並び順安定性)。これをしないと、
 	// 削除で消えた行が stickyData の last-known データを頼りに「幽霊住人」として復活してしまう
 	// (ghost の becoming-gone は1描画で消えるが、位置記憶が残っていると次描画で sticky 経路が拾う)。

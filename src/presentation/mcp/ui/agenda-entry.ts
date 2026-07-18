@@ -764,7 +764,32 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 			head.appendChild(notesPreview);
 		}
 		// 選択はタップされた occurrence 行だけ(合成キー)。id だと系列全行が同時選択になる(§7.1)。
-		head.addEventListener("click", () => setSelected(key));
+		//
+		// 【2026-07-18 実機 FB2: 行タップ = 詳細閲覧へ(vtodo のインライン編集モードと分岐)】
+		// 旧実装は todos v3 の選択モデル(タップ→タイトル input 化のインライン編集)をそのまま踏襲していたが、
+		// ユーザー FB「vtodo は一覧タップで編集に変わるが、vevent の一覧タップは詳細閲覧への遷移が Theory
+		// (過去実装の vevent 詳細へのフル遷移は mcp-app としてとても綺麗)」を受け、**永続化済み(非ドラフト)
+		// イベント行だけ** タップの意味を「選択してインライン編集」から「詳細ページ(buildDetailPage)へ
+		// フル遷移」へ変える。iOS カレンダーも同じベスプラ(行タップ=詳細閲覧、編集は詳細内の「編集」)。
+		// ドラフト行(FAB で生やした未送信の新規行)は既存どおり setSelected でインライン編集のままにする
+		// — ドラフトはまだ id を持たず openSheet できない(isOptimisticId ガード)うえ、タイトルをその場で
+		// 打ち込む「作成モード」の Theory はタップ=閲覧と別物(iOS リマインダー/カレンダーの新規行も
+		// その場で打ち込む)。
+		if (isDraft) {
+			head.addEventListener("click", () => setSelected(key));
+		} else {
+			head.addEventListener("click", () => {
+				// 他行(主にドラフト行)でインライン編集が進行中なら、詳細ページへ移る前に確定させる
+				// (todos には無い遷移だが、agenda はここで selectedId を経由せず直接 sheetState へ飛ぶため、
+				// commitSelection を挟まないと打ちかけのドラフト/編集が握り潰される)。
+				commitSelection();
+				selectedId = null;
+				// 最新の display 行を引き直す(id ではなく合成キーで — §7.1。タップ直後に楽観更新等で
+				// events が差し替わっていても、開いた occurrence 行がすり替わらないようにする)。
+				const latest = events?.find((t) => rowKey(t) === key) ?? ev;
+				openSheet(latest);
+			});
+		}
 	}
 
 	// --- meta 行: 繰り返し ⟳ / 🎥参加 / 📍場所 / 🔗参照 URL / 跨ぎ日〜M/D / becoming ラベル(右端)-------
@@ -895,6 +920,16 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	if (tagEl !== null) rowMain.appendChild(tagEl);
 
 	// --- trailing: 選択中の行だけ ⓘ(詳細)+ 確定ボタン(todos v3 と同一)---------------------------
+	// 【2026-07-18 ⓘ の扱い(FB2 対応の判断メモ)】上の head クリック変更で、非ドラフト行は selectedId に
+	// 一切乗らなくなった(sel=true になる経路は setSelected の唯一の呼び出し元がドラフト行に限定された
+	// ため、実質「ドラフト行専用」に狭まった)。よってこの trailing ブロック自体が **非ドラフト行では
+	// もう描画されない**(sel が常に false)。ⓘ ボタンの「非 draft 分岐」(下の commitSelection→openSheet)
+	// は事実上到達不能になったが、削除はしない — (1) 到達不能であって「間違った実装」ではない
+	// (今後 selectedId の使い道が増えて非ドラフト行が sel になる経路が復活しても安全に動く保険として
+	// 機能は正しいまま残る)、(2) todos 側の同型コード(ⓘ=常時選択経路)との構造対称性を保つほうが
+	// 差分レビューしやすい、という判断。ドラフト分岐(isDraft→openCreateSheet)は「作成モード詳細」への
+	// 唯一の入口として現役のまま維持する(head タップでは開けない=タイトル未確定の draft はサーバー id を
+	// 持たず openSheet の isOptimisticId ガードに弾かれるため)。
 	if (sel) {
 		const info = document.createElement("button");
 		info.type = "button";
@@ -913,6 +948,7 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 			selectedId = null;
 			// 最新行の引き直しも合成キーで(id だと系列の「先頭 occurrence」にすり替わり、
 			// 詳細ページの開始日時がタップした日と別の日になる — §7.1)。
+			// 【上記メモのとおり2026-07-18時点でこの分岐には到達しない(sel は draft でしか true にならない)】
 			const latest = events?.find((t) => rowKey(t) === key) ?? ev;
 			openSheet(latest);
 		});
