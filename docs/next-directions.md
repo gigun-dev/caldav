@@ -109,8 +109,14 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > - **分担確定**: swift-mcp-app 側タスク(実機検証・C6/C7・M2 残論点ほか)は Claude Desktop セッション+
 >   同リポ正典(next-directions 2026-07-22 棚卸し節)に全面移管。caldav 本体はこのセッション系で進める。
 >   iOS 検証は Simulator のカレンダー/リマインダーへのアカウント追加でも可(実機必須ではない)。
-> - **次**: ③ 日タイムライン(現在時刻赤線・重なり解決・終日チップ帯)→ agenda echo pin は済 → 確認カード起票。
->   判断待ち: save ボタン文言統一 / IAD 次段 / メモリ→docs 移送(コンテキストの git 管理化)。
+> - **③ 日タイムライン(2a019f0)**: モック v7 を先行作成(v6 に日ビュー描写が無かったため=図が正)。
+>   重なり解決は day-timeline.ts 純関数(colCount=クラスタ内同時最大重なり・13 tests)。レンジは選択日
+>   1日分へ都度差し替え・赤線タイマーは stopNowLineTimer 集約+visibilitychange 連携。month 突入カーソルは
+>   選択日を含む月(day→month の飛び戻り排除)。**②③とも残: 実機/Simulator 目視**。
+> - **memory→docs 移送(5406ff1・#30 第一弾)**: Simulator 検証経路→ios-device-verification スキル・
+>   journal 方針→本ファイル。重複/陳腐化 memory 4件削除。残る候補: chrome-devtools 検証手順(D1 座標含む
+>   ため git 化は要判断)。
+> - **次**: 確認カード(human-in-the-loop)起票・設計。判断待ち: save ボタン文言統一 / IAD 次段。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:

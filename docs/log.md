@@ -948,3 +948,8 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - swift-mcp-app へ Simulator 検証メモ追記(f695420)— ただし Desktop セッションの未コミット docs 更新(+61行)が
   同乗した(コミットメッセージと内容が不一致。実害なし・以後 swift リポへの書き込みは控える)。
 - memory 追加: ios-simulator-caldav-verification(Simulator のカレンダーへのアカウント追加で標準アプリ検証可)。
+- #26 日タイムライン(2a019f0): Plan が「日ビューはモック未合意」を検出 → artisan がモック v7 を先行作成
+  してから実装(図が正の規律)。裁定: selectedDayKey 共有・1日レンジ都度差し替え・colCount=同時最大重なり・
+  タイマー停止集約。レビュー指摘1件(day→month の月カーソル)を SendMessage 追修正で反映。
+- #30 第一弾(5406ff1): memory 4件削除・2件を docs/skill へ移送。subagent 運用 memory に「本質=設計と
+  実装のコンテキスト分離(main=Fable はオーケストレーションに徹する)」をユーザー明言として追記。
