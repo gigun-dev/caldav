@@ -146,13 +146,21 @@ const getCurrentTimeInputShape = {
 // --- 相対レンジ enum(時刻グラウンディングの往復削減。list-events-expanded / get-freebusy 共通)---
 // 【なぜ相対レンジ enum を足すか】絶対 ISO 範囲だけだと「今日の予定」を引くのに get-current-time で
 // now を得てから境界を自前計算する 2 往復が要る。サーバー権威の now で境界を計算して返せば1発で済む
-// (詳細は application/time/relative-range.ts 冒頭コメント。this-week は WKST 問題で除外)。
+// (詳細は application/time/relative-range.ts 冒頭コメント)。
 // 【range description に「事前 get-current-time 不要」を明記する理由】get-current-time は存置するが、
 // モデルが相対レンジで足りる場面でも従来どおり2往復してしまわないよう、1発で済むことを語彙で伝える。
+// 【2026-07-22 this-week/next-week/this-month 追加】「今週の予定」のような自然言語表現に対応する
+// 語彙が無く、モデルが get-current-time を先行呼びする2往復が実運用で再発したため追加(週は月曜
+// 始まり固定。application/time/relative-range.ts 冒頭コメント参照)。
 const RANGE_DESCRIPTION =
-	'相対レンジ。"today"/"tomorrow"/"next-7-days"/"next-30-days" のいずれか。指定時は timeMin/timeMax 不要・' +
-	"timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する)。get-current-time の事前呼び出しは不要。";
-const rangeEnumField = z.enum(["today", "tomorrow", "next-7-days", "next-30-days"]).optional().describe(RANGE_DESCRIPTION);
+	'相対レンジ。"today"/"tomorrow"/"next-7-days"/"next-30-days"/"this-week"/"next-week"/"this-month" のいずれか。' +
+	"指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。" +
+	"this-week/next-week は月曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。" +
+	"get-current-time の事前呼び出しは不要。";
+const rangeEnumField = z
+	.enum(["today", "tomorrow", "next-7-days", "next-30-days", "this-week", "next-week", "this-month"])
+	.optional()
+	.describe(RANGE_DESCRIPTION);
 
 // --- list-events-expanded ----------------------------------------------------
 
@@ -242,7 +250,7 @@ function resolveRequestRange(input: {
 	// 絶対指定: timeMin/timeMax は両方必須(従来契約。片方欠落はエラー)。
 	if (timeMin === undefined || timeMax === undefined) {
 		throw new RangeError(
-			"timeMin と timeMax(絶対範囲)の両方が必要です。または range(相対レンジ: today/tomorrow/next-7-days/next-30-days)を指定してください。",
+			"timeMin と timeMax(絶対範囲)の両方が必要です。または range(相対レンジ: today/tomorrow/next-7-days/next-30-days/this-week/next-week/this-month)を指定してください。",
 		);
 	}
 	const zone = resolveTimeZone(timeZone);
@@ -1334,7 +1342,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			description:
 				"指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。" +
 				"calendarId 省略時は全カレンダーを横断する。範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: " +
-				'today/tomorrow/next-7-days/next-30-days)で指定する。range を使えば「今日の予定」を事前 get-current-time なしで1発で引ける。' +
+				'today/tomorrow/next-7-days/next-30-days/this-week/next-week/this-month)で指定する。range を使えば「今日の予定」' +
+					'「今週の予定」「来週」「今月」なども事前 get-current-time なしで1発で引ける。' +
 				"応答の calendarId が null の場合は全コレクション横断の結果であることを示す(単一コレクション指定時のみその ID を echo する)。",
 			inputSchema: listEventsExpandedInputShape,
 			_meta: {
@@ -1375,7 +1384,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			title: "Get free/busy",
 			description:
 				"指定期間の busy 区間(RFC 4791 §7.10 の FBTYPE 導出済み)を返す。calendarId 省略時は全カレンダーを横断して再 coalesce する。" +
-				"範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: today/tomorrow/next-7-days/next-30-days)で指定する。" +
+				"範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: today/tomorrow/next-7-days/next-30-days/" +
+				"this-week/next-week/this-month)で指定する。「今週」「来週」「今月」も range で1発で引ける。" +
 				"range を使えば事前 get-current-time なしで「今日の空き時間」を1発で引ける。",
 			inputSchema: getFreeBusyInputShape,
 		},

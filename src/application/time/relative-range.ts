@@ -15,13 +15,22 @@
 // 広がり曖昧さ(「来週」は月曜起点か? 今日から7日か?)をサーバーが暗黙に埋めることになり、
 // SUDO モデリングの「入力の曖昧さをサーバーの暗黙解釈で埋めない」方針に反する。(2) enum なら
 // 各キーワードの境界定義をコード+テストで一意に固定でき、モデルにも description で明示できる。
-// 初期語彙は today / tomorrow / next-7-days / next-30-days の4つだけに絞る。
+// 初期語彙は today / tomorrow / next-7-days / next-30-days の4つだけに絞った。
 //
-// 【なぜ this-week を入れないか(Why not this-week)】
-// 「週」の起点は WKST(週の始まり: 日曜 or 月曜)に依存し、ロケール/カレンダー設定で割れる。
-// サーバーが勝手に月曜起点(or 日曜起点)と決めるとユーザーの期待と静かにズレる。RFC 5545 の
-// RRULE は WKST を明示要求するのと同じ問題で、「週」は曖昧さを内包するため初期語彙から外す。
-// 需要が出たら wkst を明示引数に取る形で別途足す(今は素朴に保つ)。
+// 【2026-07-22 this-week/next-week/this-month 追加(main 裁定済み・下の旧 Why not は事実として
+//  誤りになったため更新)】
+// bb1277c の初期語彙には「今週」「来週」「今月」に対応する語彙が無く、モデルが get-current-time を
+// 先行呼びする 2 往復が実運用スクリーンショットで再発した。旧コメントは「週の起点(WKST)は
+// ロケール依存で一意に決められない」として this-week を除外していたが、この禁を尊重しつつ
+// **サーバーが週の起点を月曜固定と明示的に決め切る**ことで解消する(RFC 5545 の RRULE のように
+// WKST を呼び出し側に選ばせる汎用性は今は要らない・自然言語「今週」に対応する1語彙で足りる)。
+// 【なぜ月曜始まりか(Why 月曜・Why not 日曜=iOS agenda グリッドとの不一致)】
+// この MCP サーバーの主要言語文脈は日本語("今週の予定" のような自然言語呼び出し)で、日本の
+// 慣行では週は月曜始まり(ISO 8601 の週定義とも一致)。一方 iOS のカレンダー月グリッド表示
+// (agenda UI)は日曜始まりで表示される場合があるが、これは「グリッドの列配置」という UI 表示の
+// 慣行であって「今週とはいつからいつまでか」という自然言語の意味とは別問題。両者が一致しなくても
+// 実害は無い(this-week は「今週の予定を1発で引く」ための時刻グラウンディング用途であり、
+// UI のグリッド列とは独立)。
 //
 // 【この層(application/time)に置く理由】
 // DAV 専用にせず MCP / REST / メール等の複数入口から呼べるべき純粋なユースケース補助
@@ -32,8 +41,18 @@
 
 import { localFieldsToEpochMillis } from "../../domain/ical/timezone/instant";
 
-/** 受け付ける相対レンジのキーワード(初期語彙4つ。this-week は WKST 問題で除外・上記参照)。 */
-export type RelativeRangeKeyword = "today" | "tomorrow" | "next-7-days" | "next-30-days";
+/**
+ * 受け付ける相対レンジのキーワード。初期語彙4つ(today/tomorrow/next-7-days/next-30-days)+
+ * 2026-07-22 追加の this-week/next-week/this-month(週の起点は月曜固定・上記コメント参照)。
+ */
+export type RelativeRangeKeyword =
+	| "today"
+	| "tomorrow"
+	| "next-7-days"
+	| "next-30-days"
+	| "this-week"
+	| "next-week"
+	| "this-month";
 
 /** resolveRelativeRange の返り値。epoch ミリ秒(呼び出し側が epochToIso で offset ISO 化する)。 */
 export interface ResolvedRange {
@@ -69,6 +88,9 @@ function localYmdAt(nowMillis: number, ianaTimeZone: string): { year: number; mo
  *   tomorrow     = [明日0時,   明後日0時)
  *   next-7-days  = [今日0時,   7日後0時)
  *   next-30-days = [今日0時,   30日後0時)
+ *   this-week    = [今週月曜0時, 翌週月曜0時)   … 今日を含む週(月曜始まり。上記コメント参照)
+ *   next-week    = [翌週月曜0時, 翌々週月曜0時)
+ *   this-month   = [当月1日0時,  翌月1日0時)
  * 終端排他にするのは list-occurrences / compute-free-busy の既存展開ロジックが
  * rangeEndMillis を排他境界(半開区間)として扱うのと整合させるため(境界ちょうどに始まる
  * occurrence を二重に拾わない)。
@@ -92,6 +114,38 @@ export function resolveRelativeRange(
 ): ResolvedRange {
 	const { year, month, day } = localYmdAt(nowMillis, ianaTimeZone);
 
+	const atMidnight = (dayOffset: number): number =>
+		// day + offset を localFieldsToEpochMillis に渡す(月末超えは Date.UTC が桁上げ正規化)。
+		// これが「壁時計のカレンダー日加算」の実体 — ミリ秒加算をしないので DST 安全。
+		localFieldsToEpochMillis({ year, month, day: day + dayOffset, hour: 0, minute: 0, second: 0 }, ianaTimeZone);
+
+	if (keyword === "this-week" || keyword === "next-week") {
+		// 【月曜起点の求め方(Why not Date のローカル曜日メソッド)】
+		// 「Y-M-D の曜日」はカレンダー計算であって瞬間(epoch)に依存しない値なので、ランタイム TZ
+		// 非依存の原則(instant.ts 冒頭コメント)を守るために Date.UTC(year, month-1, day) を UTC の
+		// カレンダー日として構築して getUTCDay() で曜日を取る(0=日 ... 6=土。ローカル TZ 依存の
+		// new Date(y,m,d) や getDay() は使わない — wrangler dev のローカル TZ に化ける事故を避ける)。
+		const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+		// daysSinceMonday: 月曜=0, 火=1, ..., 日=6 になるよう日曜(0)を6に回す変換。
+		const daysSinceMonday = (weekday + 6) % 7;
+		const thisWeekMondayOffset = -daysSinceMonday;
+		const weekShift = keyword === "next-week" ? 7 : 0;
+		return {
+			timeMinMillis: atMidnight(thisWeekMondayOffset + weekShift),
+			timeMaxMillis: atMidnight(thisWeekMondayOffset + weekShift + 7),
+		};
+	}
+
+	if (keyword === "this-month") {
+		// day を 1 に固定して月を +0/+1 する(day オフセット方式ではなく month フィールド方式。
+		// 月によって日数が28〜31と不揃いなため「day+N」では表現できない。localFieldsToEpochMillis
+		// 内部の Date.UTC が month=13 のような桁上げも year+1・month=1 へ正規化してくれるので、
+		// 12月の this-month(翌月=翌年1月)も自然に処理できる)。
+		const atMonthStart = (monthOffset: number): number =>
+			localFieldsToEpochMillis({ year, month: month + monthOffset, day: 1, hour: 0, minute: 0, second: 0 }, ianaTimeZone);
+		return { timeMinMillis: atMonthStart(0), timeMaxMillis: atMonthStart(1) };
+	}
+
 	// startDayOffset / endDayOffset: 「今日のローカル日」からの日数オフセット([start, end))。
 	// 壁時計 00:00 を作るため hour/minute/second は常に 0。
 	let startDayOffset: number;
@@ -114,11 +168,6 @@ export function resolveRelativeRange(
 			endDayOffset = 30;
 			break;
 	}
-
-	const atMidnight = (dayOffset: number): number =>
-		// day + offset を localFieldsToEpochMillis に渡す(月末超えは Date.UTC が桁上げ正規化)。
-		// これが「壁時計のカレンダー日加算」の実体 — ミリ秒加算をしないので DST 安全。
-		localFieldsToEpochMillis({ year, month, day: day + dayOffset, hour: 0, minute: 0, second: 0 }, ianaTimeZone);
 
 	return {
 		timeMinMillis: atMidnight(startDayOffset),

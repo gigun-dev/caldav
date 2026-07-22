@@ -4,6 +4,8 @@
 //
 // What(このテストが保証する仕様):
 //   - today/tomorrow/next-7-days/next-30-days の境界が「当該 TZ のローカル午前0時・終端排他」
+//   - this-week/next-week は月曜始まり([今週|翌週]月曜0時, その7日後0時)
+//   - this-month は当月1日0時〜翌月1日0時(月をまたぐ日数の不揃いを month フィールド加算で吸収)
 //   - DST 遷移をまたぐ日でも日跨ぎが 24h 固定でなく壁時計で正しい(春23h/秋25h の日を跨ぐ)
 //   - 月跨ぎ・年跨ぎの日加算が桁上がりで正しく処理される
 // now を固定注入し、境界 epoch を epochToIso(表示 TZ)で壁時計に戻して検証する。
@@ -47,6 +49,46 @@ describe("resolveRelativeRange", () => {
 			expect(min).toBe("2026-07-16T00:00:00+09:00");
 			// 7/16 + 30 日 = 8/15。day フィールドに +30 を渡し localFieldsToEpochMillis 内の桁上げで月跨ぎ処理。
 			expect(max).toBe("2026-08-15T00:00:00+09:00");
+		});
+
+		// 2026-07-16 は木曜(python3 -c "import datetime; datetime.date(2026,7,16).strftime('%A')" で確認)。
+		// 月曜始まりなので今週の月曜は 7/13、来週の月曜は 7/20。
+		it("this-week = [今週月曜0時, 翌週月曜0時)(木曜起点)", () => {
+			const { min, max } = isoRange("this-week", "Asia/Tokyo", now);
+			expect(min).toBe("2026-07-13T00:00:00+09:00");
+			expect(max).toBe("2026-07-20T00:00:00+09:00");
+		});
+
+		it("next-week = [翌週月曜0時, 翌々週月曜0時)", () => {
+			const { min, max } = isoRange("next-week", "Asia/Tokyo", now);
+			expect(min).toBe("2026-07-20T00:00:00+09:00");
+			expect(max).toBe("2026-07-27T00:00:00+09:00");
+		});
+
+		it("this-month = [当月1日0時, 翌月1日0時)", () => {
+			const { min, max } = isoRange("this-month", "Asia/Tokyo", now);
+			expect(min).toBe("2026-07-01T00:00:00+09:00");
+			expect(max).toBe("2026-08-01T00:00:00+09:00");
+		});
+	});
+
+	describe("this-week の月曜起点そのものが週内の各曜日で一致すること", () => {
+		// 月曜(境界のズレが最も起きやすい起点そのもの)と日曜(週の最終日)の両方で
+		// 同じ週の同じ月曜0時に解決されることを確認する(曜日→月曜オフセット変換の境界値)。
+		it("月曜起点: this-week の開始は当日そのもの", () => {
+			// 2026-07-13 は月曜(7/16 木曜の3日前)。
+			const now = Date.parse("2026-07-13T05:00:00Z"); // = 14:00 JST(現地も 7/13 月曜)。
+			const { min, max } = isoRange("this-week", "Asia/Tokyo", now);
+			expect(min).toBe("2026-07-13T00:00:00+09:00");
+			expect(max).toBe("2026-07-20T00:00:00+09:00");
+		});
+
+		it("日曜起点: this-week は前の月曜まで遡る(週の最終日)", () => {
+			// 2026-07-19 は日曜(7/13 月曜始まりの週の最終日)。
+			const now = Date.parse("2026-07-19T05:00:00Z"); // = 14:00 JST。
+			const { min, max } = isoRange("this-week", "Asia/Tokyo", now);
+			expect(min).toBe("2026-07-13T00:00:00+09:00");
+			expect(max).toBe("2026-07-20T00:00:00+09:00");
 		});
 	});
 
@@ -93,6 +135,14 @@ describe("resolveRelativeRange", () => {
 			expect(min).toBe("2026-03-05T00:00:00-08:00");
 			expect(max).toBe("2026-03-12T00:00:00-07:00");
 		});
+
+		it("this-week が春の DST 切替(3/8)を内包しても両端は現地0時", () => {
+			// 2026-03-05 は木曜(python3 で確認)。今週の月曜=3/2、翌週月曜=3/9。3/8 の切替を週の途中に含む。
+			const now = Date.parse("2026-03-05T20:00:00Z");
+			const { min, max } = isoRange("this-week", "America/Los_Angeles", now);
+			expect(min).toBe("2026-03-02T00:00:00-08:00");
+			expect(max).toBe("2026-03-09T00:00:00-07:00");
+		});
 	});
 
 	describe("年跨ぎ・月末跨ぎの日加算", () => {
@@ -112,6 +162,24 @@ describe("resolveRelativeRange", () => {
 			const now = Date.parse("2026-01-20T12:00:00Z");
 			const { max } = isoRange("next-30-days", "UTC", now);
 			expect(max).toBe("2026-02-19T00:00:00Z");
+		});
+
+		it("this-month が12月起点だと翌月=翌年1月に桁上げされる", () => {
+			// 2026-12-31 は木曜(python3 で確認)。this-month の終端は month+1=13 → localFieldsToEpochMillis
+			// 内部の Date.UTC が year+1・month=1 に正規化する(day オフセット方式ではなく month フィールド
+			// 方式を選んだ理由そのもの — 月の日数が不揃いなため day+N では表現できない)。
+			const now = Date.parse("2026-12-31T12:00:00Z");
+			const { min, max } = isoRange("this-month", "UTC", now);
+			expect(min).toBe("2026-12-01T00:00:00Z");
+			expect(max).toBe("2027-01-01T00:00:00Z");
+		});
+
+		it("next-week が年跨ぎでも翌年へ正しく桁上げされる(12/31起点)", () => {
+			// 2026-12-31 は木曜。今週の月曜=12/28、来週の月曜=2027-01-04(年跨ぎ)。
+			const now = Date.parse("2026-12-31T12:00:00Z");
+			const { min, max } = isoRange("next-week", "UTC", now);
+			expect(min).toBe("2027-01-04T00:00:00Z");
+			expect(max).toBe("2027-01-11T00:00:00Z");
 		});
 	});
 });
