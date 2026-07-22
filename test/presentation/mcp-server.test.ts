@@ -28,7 +28,7 @@ import { createMcpApp } from "../../src/presentation/mcp/server";
 // S1(docs/modeling/14): delete-* はトークン必須化されたので、既存の delete 挙動テストは免除トークン
 // (kind:"card")を confirmToken に添えて実行する(確認フロー自体の e2e は下の describe「S1 確認カード」で別途検証)。
 import { signConfirmToken } from "../../src/presentation/mcp/confirm-token";
-import { StaticBearerAuth, IcaljsRRuleIterator } from "../../src/infrastructure";
+import { StaticBearerAuth, IcaljsRRuleIterator, NoopTelemetryAdapter } from "../../src/infrastructure";
 import { AppleColor, CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,
@@ -104,6 +104,9 @@ beforeEach(() => {
 			// S1(docs/modeling/14): 確認トークン署名鍵。テストは固定値で十分(propose→confirm の e2e が
 			// この鍵で署名したトークンを同じ鍵で検証する。CONFIRM_SECRET の実値は本番 secret)。
 			confirmSecret: CONFIRM_SECRET,
+			// 観測基盤 v1: ツール振る舞いテストなので計測は no-op(AE マッピングの検証は
+			// analytics-engine-telemetry.test.ts がフェイク dataset を注入して単体で行う)。
+			telemetry: new NoopTelemetryAdapter(),
 		})),
 	);
 });
@@ -1498,5 +1501,52 @@ describe("/mcp", () => {
 			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).toBeNull();
 		});
 	});
+});
 
+// 観測基盤 v1: TelemetryPort.record() が例外を投げても tool call 自体は成功すること
+// (fire-and-forget 契約 — application/ports/telemetry.ts の TelemetryPort コメント参照)。
+// 独自の throwing TelemetryPort を注入した createMcpApp インスタンスで確認する
+// (上の describe("/mcp") の beforeEach とは独立させ、他テストへ影響しない専用アプリにする)。
+describe("観測基盤 v1: telemetry 失敗が tool call を壊さない", () => {
+	it("TelemetryPort.record が同期的に throw しても tool call は成功する", async () => {
+		const collections = new FakeCalendarCollectionRepository();
+		const resources = new FakeCalendarObjectResourceRepository();
+		const uow = new FakeCollectionUnitOfWork(resources, collections);
+		const throwingTelemetry = {
+			record: () => {
+				throw new Error("telemetry backend unavailable (simulated)");
+			},
+		};
+		const app = new Hono<{ Bindings: CloudflareBindings }>().route(
+			"/mcp",
+			createMcpApp(() => ({
+				auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+				collectionRepo: collections,
+				resourceRepo: resources,
+				iterator: recurrenceIterator,
+				uow,
+				confirmSecret: CONFIRM_SECRET,
+				telemetry: throwingTelemetry,
+			})),
+		);
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					accept: "application/json, text/event-stream",
+					authorization: `Bearer ${MCP_TOKEN}`,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "get-current-time", arguments: {} },
+				}),
+			}),
+			ENV,
+		);
+		const rpc = await jsonRpcResult(res);
+		expect(rpc.result.isError).toBeFalsy();
+	});
 });

@@ -32,6 +32,9 @@ import type { CollectionId, PrincipalPath, PrincipalRef, ResourceUri } from "../
 // G-5: MCP 入口の認証ポート(AuthenticationPort / AuthContext / AuthResult)。
 // 契約の詳細は authentication.ts のコメントを参照(このファイルは既存の書式に合わせ re-export のみ)。
 export * from "./authentication";
+// 観測基盤 v1: MCP ツール呼び出しの計測ポート(TelemetryPort / TelemetryEvent)。
+// 契約の詳細は telemetry.ts のコメントを参照。
+export * from "./telemetry";
 import type { ComponentKind } from "../../domain/caldav";
 import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 

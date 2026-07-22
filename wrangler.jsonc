@@ -37,6 +37,19 @@
       "migrations_dir": "migrations"
     }
   ],
+  // 観測基盤 v1(2026-07-23): MCP ツール呼び出しの計測イベント(TelemetryEvent)を書く
+  // Workers Analytics Engine データセット。binding 名 "TELEMETRY" は presentation/mcp/server.ts
+  // の McpAppDeps.telemetry(TelemetryPort)を組み立てる app.ts が読む(infrastructure/telemetry/
+  // analytics-engine-telemetry.ts が実装)。dataset 名は "caldav_mcp_events"(AE 側でクエリする
+  // FROM 句に使う識別子。プロジェクト名の慣習に合わせ "caldav_" プレフィックス + 何のイベントか)。
+  // AE は D1 と違い migrations 相当の仕組みが無く、dataset は初回 writeDataPoint 時に暗黙作成
+  // される(Cloudflare 側の仕様)ので、ここでの追加だけでよく別途プロビジョニング操作は不要。
+  "analytics_engine_datasets": [
+    {
+      "binding": "TELEMETRY",
+      "dataset": "caldav_mcp_events"
+    }
+  ],
   "kv_namespaces": [
     {
       // "OAUTH_KV" は @cloudflare/workers-oauth-provider がライブラリ内部でハードコードして
