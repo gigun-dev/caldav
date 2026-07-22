@@ -65,7 +65,14 @@ import {
 	type CollectionUnitOfWork,
 	type PrincipalRepository,
 } from "./application/ports";
-import { createD1Repositories, IcaljsRRuleIterator, OAuthPropsAuth, type OAuthPrincipalProps } from "./infrastructure";
+import {
+	AnalyticsEngineTelemetryAdapter,
+	createD1Repositories,
+	IcaljsRRuleIterator,
+	NoopTelemetryAdapter,
+	OAuthPropsAuth,
+	type OAuthPrincipalProps,
+} from "./infrastructure";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
 import { createMcpApp } from "./presentation/mcp/server";
@@ -866,6 +873,17 @@ export const mcpApiApp = new Hono<{ Bindings: CloudflareBindings }>().route(
 			// S1(docs/modeling/14 確認カード): 破壊的操作の確認トークン署名鍵。secret 未設定
 			// (空文字)でも型は満たすが、propose-* がランタイムで弾く(server.ts のガード)。
 			confirmSecret: env.CONFIRM_SECRET ?? "",
+			// 観測基盤 v1(2026-07-23): env.TELEMETRY(analytics_engine_datasets binding、
+			// wrangler.jsonc)があれば AE アダプタ、無ければ no-op を選ぶ。「無ければ no-op」に
+			// している理由: bun test の env(`as unknown as CloudflareBindings` キャスト)には
+			// AE バインディングの実体が無く undefined になる(wrangler dev/本番では常に注入
+			// される)。ここで無条件に AnalyticsEngineTelemetryAdapter を new すると、
+			// dataset フィールドが undefined のインスタンスができてしまい、record() 呼び出し時に
+			// 初めて壊れる(AE アダプタの try/catch で握りつぶされるので実害は無いが、
+			// 「バインディング未接続」を型で分かるようにしたい)。OSS キット配布時に AE を
+			// 使わない利用者は env.TELEMETRY を bind しなければ自然に no-op へ落ちる
+			// (infrastructure/telemetry/noop-telemetry.ts 冒頭コメント参照)。
+			telemetry: env.TELEMETRY !== undefined ? new AnalyticsEngineTelemetryAdapter(env.TELEMETRY) : new NoopTelemetryAdapter(),
 		};
 	}),
 );

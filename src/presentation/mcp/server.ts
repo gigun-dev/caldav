@@ -60,8 +60,11 @@ import { CONFIRM_APP_HTML, CONFIRM_UI_URI } from "./ui/confirm-app";
 // トークン発行に引き続き使うので残す。
 import { CARD_TOKEN_TTL_MS, PROPOSE_TOKEN_TTL_MS, signConfirmToken } from "./confirm-token";
 
-import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
+import type { AuthenticationPort, CollectionUnitOfWork, TelemetryPort } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
+// 観測基盤 v1: host 推定 / argsDigest 要約 / _meta からの sessionId 読み取り(純関数群)。
+// 判定ロジックを1関数ずつに隔離する狙いは telemetry-support.ts 冒頭コメント参照。
+import { classifyHost, readSessionId, summarizeArgsDigest } from "./telemetry-support";
 // Task 型は findTaskById 廃止(2026-07-14 レイテンシ改善)で presentation から直接参照しなくなった
 // (before/removed は UC が返す。差分整形は todos-diff.ts が Task を受ける)。ここでは型 import しない。
 import type { CreateTodoRecurrenceInput, Event } from "../../application/usecases";
@@ -163,6 +166,9 @@ export interface McpAppDeps {
 	// = §7「トークン検証は UC 呼び出しの手前」)。空文字は propose-* が実行時に弾く(空鍵で誰でも
 	// 通る事故を防ぐ。§ の MCP_TOKEN と同じガード思想)。
 	readonly confirmSecret: string;
+	// 観測基盤 v1: 1 tool call = 1 イベントの計測ポート。実装アダプタ(AE / no-op)の選択は
+	// コンポジションルート(app.ts)が担う(env.TELEMETRY の有無で切り替え — app.ts コメント参照)。
+	readonly telemetry: TelemetryPort;
 }
 
 // --- get-current-time -------------------------------------------------------
@@ -1252,7 +1258,16 @@ function icsPreview(rawIcs: string, dateProp: "DTSTART" | "DUE"): { title: strin
 // scopes: この呼び出しに許可された OAuth scope 集合(R-6。2026-07-15 追加)。
 // **undefined = full access(grandfather / 静的 Bearer 相当)**(AuthResult.scopes の契約 —
 // application/ports/authentication.ts)。write ツール実行時に allowsWrite(scopes) で強制する。
-function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: readonly string[] | undefined, requestColo?: string): McpServer {
+// requestUserAgent: 観測基盤 v1(2026-07-23 追加)。Authorization ヘッダと同じくリクエストの
+// HTTP ヘッダなので、colo と同じ「呼び出し元(handleMcpRequest)で読んで束ねて渡す」形にする
+// (buildMcpServer / registerTool ラッパーは Hono Context を知らない設計を保つ)。
+function buildMcpServer(
+	deps: McpAppDeps,
+	principal: PrincipalRef,
+	scopes: readonly string[] | undefined,
+	requestColo?: string,
+	requestUserAgent?: string,
+): McpServer {
 	const server = new McpServer({ name: "caldav-mcp", version: "1.0.0" });
 
 	// --- ツール別レイテンシ計測(2026-07-14 追加。POST /mcp wall p95≈1164ms 対策の効果測定用)-----
@@ -1290,13 +1305,82 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					"このトークンは読み取り専用です。コネクタを再接続して書き込み権限(claudedav:write)を許可してください。",
 				);
 			}
+			// --- 観測基盤 v1(2026-07-23): 1 tool call = 1 イベント ------------------------
+			// requestId はサーバー自前採番(crypto.randomUUID)。args[0] がツールの入力引数、
+			// args[1] が SDK の RequestHandlerExtra(_meta/sessionId 等を運ぶ)という契約は
+			// @modelcontextprotocol/sdk の registerTool ハンドラシグネチャに依る(protocol.d.ts の
+			// RequestHandlerExtra 型定義で確認済み)。ここでは型を緩めて受けている(このラッパーの
+			// クラス冒頭コメント参照)ので、args[1] も unknown から局所的に narrow する。
+			const requestId = crypto.randomUUID();
+			const toolArgs = args[0];
+			const extra = args[1] as { _meta?: Record<string, unknown> } | undefined;
+			const argsDigest = summarizeArgsDigest(toolArgs);
+			const sessionId = readSessionId(extra?._meta);
+			const host = classifyHost(requestUserAgent);
 			const startedAtMs = Date.now();
+			let ok = true;
+			// errKind: 例外なら例外クラス名、cb が isError:true な結果を返しただけなら例外は
+			// 飛ばないので固定マーカー "ToolError" にする(toolError() ヘルパーの返り値は
+			// 判別可能なエラー型を持たないため、メッセージ文字列を解析して種別を作るのは
+			// 過剰かつメッセージにユーザー入力がエコーされている可能性があり避けたい —
+			// TelemetryEvent.errKind コメントの「メッセージ本文は載せない」規律と対称)。
+			let errKind: string | undefined;
 			try {
-				return await cb(...args);
+				const result = await cb(...args);
+				if (typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true) {
+					ok = false;
+					errKind = "ToolError";
+				}
+				return result;
+			} catch (error) {
+				ok = false;
+				errKind = error instanceof Error ? error.constructor.name : "UnknownError";
+				throw error;
 			} finally {
-				// 1行 JSON(mcpTool 名 + ms + colo)。タスク内容等の個人データは決して載せない。
+				const ms = Date.now() - startedAtMs;
+				// 1行 JSON(mcpTool 名 + ms + colo + ok/errKind + requestId)。タスク内容等の
+				// 個人データは決して載せない(argsDigest は要約のみ・summarizeArgsDigest 参照)。
 				// colo は「実行場所 × ツール別レイテンシ」の分解用(buildMcpServer 冒頭コメント参照)。
-				console.log(JSON.stringify({ mcpTool: name, ms: Date.now() - startedAtMs, ...(requestColo !== undefined ? { colo: requestColo } : {}) }));
+				console.log(
+					JSON.stringify({
+						mcpTool: name,
+						ms,
+						ok,
+						...(errKind !== undefined ? { errKind } : {}),
+						...(requestColo !== undefined ? { colo: requestColo } : {}),
+						requestId,
+						host,
+						...(sessionId !== undefined ? { sessionId } : {}),
+						...(argsDigest !== undefined ? { argsDigest } : {}),
+					}),
+				);
+				// TelemetryPort.record は fire-and-forget(await しない・戻り値なし — ポートの
+				// 契約どおり)。AE アダプタは内部で writeDataPoint の失敗を握りつぶす設計だが
+				// (analytics-engine-telemetry.ts)、ここは「アダプタの実装がその規律を守っている」
+				// ことに依存せず、呼び出し側(この finally ブロック)でも念のため try/catch する。
+				// 【why】finally ブロック内で例外を投げると、try ブロックの return 値や catch で
+				// 再送出した例外を**上書きしてしまう**(JS の仕様: finally の例外が優先される)。
+				// つまり telemetry アダプタの実装が万一 throw する不具合を仕込むと、正常に完了した
+				// はずの tool call のレスポンスが握りつぶされて 500/未処理例外に化ける
+				// (「計測が本処理を壊してはならない」という仕様要件そのものの落とし穴)。
+				// この try/catch はまさにその「もし record が投げたら」を吸収する最後の砦。
+				try {
+					deps.telemetry.record({
+						requestId,
+						principal: String(principal),
+						host,
+						mcpTool: name,
+						ok,
+						errKind,
+						ms,
+						colo: requestColo,
+						argsDigest,
+						sessionId,
+					});
+				} catch {
+					// 意図的に無視。計測の計測をログに出し始めるとノイズが増えるだけで実害が薄い
+					// (同一イベントは console.log 側の構造化ログに既に出ている)。
+				}
 			}
 		})) as typeof server.registerTool;
 
@@ -3259,7 +3343,9 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 		const cf = (c.req.raw as { cf?: { colo?: string } }).cf;
 		// R-6: 認証で解決した scope 集合を buildMcpServer へ束ねる(write ツール強制の材料)。
 		// authResult.scopes は undefined(grandfather/静的 Bearer=full access)か、同意 scope 配列。
-		const server = buildMcpServer(deps, authResult.principal, authResult.scopes, cf?.colo);
+		// 観測基盤 v1(2026-07-23): User-Agent を host 推定(classifyHost)の材料として渡す。
+		// undefined を許容する(ヘッダ無しのクライアントは classifyHost が "unknown" に落とす)。
+		const server = buildMcpServer(deps, authResult.principal, authResult.scopes, cf?.colo, c.req.header("user-agent"));
 		const transport = new StreamableHTTPTransport();
 		await server.connect(transport);
 		const response = await transport.handleRequest(c);
