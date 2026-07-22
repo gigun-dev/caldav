@@ -62,6 +62,31 @@
   > 原則の明文化は docs/modeling/15 に集約(#36・作業中)。
   > **swift-mcp-app への申し送り(#34)**: R4 許可ゲート(annotations 駆動 per-tool 許可)・
   > fullscreen でキーボードが勝手に閉じる・スクロール過剰発火・safeAreaInsets の正道申告。
+  > 責務分界(ユーザー裁定): **ホストは仕様の正道のみ実装し、カードを甘やかす補正魔法
+  > (自動スクロール・キーボード連動)を持たない** — 持つと汎用 MCP ホストでなく
+  > 「caldav カード専用ビューア」に堕ちる。カード側はホストのスクロール挙動を一切前提にしない。
+  > **2026-07-23 更新: R1 実装・deploy(0616e5f)。** 全23ツールへ annotations 付与
+  > (read=readOnlyHint / create=非破壊 / update=destructiveHint:true は R3 まで正直申告 /
+  > delete=destructive+idempotent / 全部 openWorldHint:false)。delete 系の confirmToken 強制を
+  > 撤去(フィールドは optional 残置で無視・カード経路は無改修で動く)。propose-delete-* は
+  > [deprecated] 誘導付き猶予残置 — 撤去は別スライス。#28 クローズ。
+  > **R2(ソフトデリート)は RFC 適合性検証待ち**(ユーザー懸念を受け architect が docs/rfc/
+  > 原文で検証中: 4918 DELETE 意味論・4791 UID 一意性と partial unique index・6578 restore=created
+  > 報告の正当性・CTag/ETag・Nextcloud/Apple CalendarServer の先行事例)。結果が出るまで着手しない。
+  > **2026-07-23 更新: R2 RFC 検証完了(docs/rfc/ 原文)— 準拠・進めてよい。** 要点:
+  > 4918 §9.6 の DELETE 義務は「URI→リソースのマッピング除去」でありデータ破棄ではない
+  > (deleted_at フィルタを全 DAV 読み取り経路に一貫適用すれば準拠。soft-delete 済み URI は
+  > unmapped なので If-None-Match:* PUT は成功させる)。4791 の UID 一意性は「stored / in use」
+  > 空間の話で partial unique index 案は適合。6578 §3.5.1 は再マップを「changed として報告・
+  > removed と報告してはならない(MUST NOT)」と明文 — restore=sync_changes 'created' 案は
+  > 既存 changesSince の後勝ち fold と噛み合い自動で準拠。ETag は ICS 決定的導出により
+  > restore 後も同値で問題なし(7232 上正当)。trash を DAV に露出せず MCP-only にするのは
+  > Nextcloud(独自 DAV 拡張)等と比べてもプロトコル純度的に正攻法。
+  > **修正必須1点**: restore の前提条件に URI 空きだけでなく **UID 空き**を加える(soft-delete 後の
+  > 同 UID 再利用は合法なので、restore で可視 UID 重複が生じ得る → 拒否 or 別採番)。
+  > **iOS 実機検証項目**: 同一 URI の changed 再出現の再取得挙動・同一 ETag 再出現のキャッシュ
+  > スキップ(問題時は SEQUENCE/DTSTAMP で ETag を変える逃げ道)・restore 後の再スキャン発火。
+  > 物理 purge(30日 TTL)は sync_changes を書かない。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
