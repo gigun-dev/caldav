@@ -153,6 +153,10 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 
 - **iCalendar ドメイン層**(RFC 5545): 構造層 + 値型コーデック + 意味論レンズ + 不変条件 I1〜I10。ロスレス往復。
   VJOURNAL(J-1)・ical-tasks/9253 読み取りアクセサ(J-3)・VTODO 書き込み経路(builder/patch/stamp。
+  【journal 方針(2026-07 決定・memory から移送)】journal コレクションは人間向けでなく agentic
+  インフラ。provisioning は既定 provision に入れず「agentic 機能の初回使用時に遅延 get-or-create」
+  (除去可能性優先)。J-1 は RFC 確定で素直に・J-3(ical-tasks/9253)は原文スナップショット後に
+  string 型で。安定度で3層(RFC 確定/draft/独自)に分けて疎結合に保つ。
   location・RRULE 全置換/除去・孤立 VTIMEZONE 掃除込み)。
 - **CalDAV リソース層**: 3集約 + put-preconditions R1〜R7 + If ヘッダ(sync-token 条件)サブセット。
 - **意味計算(G)✅**: TZ 解決層 / RecurrenceExpansion(ical.js port&adapter)/ occurrence 索引 +
