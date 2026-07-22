@@ -106,6 +106,17 @@
   > 現状は position invariant で無期限残留+完了済みセクションとの二重表示の匂い)。
   > K2(update-calendar+実色+コレクション詳細ページ)・K3(todos 切替の横断1クエリ化)は
   > #38 参照。テストコレクション重複2件の掃除も未了。
+  > **2026-07-23 更新: 並列3本すべて完了・deploy。** K1 冪等性(4f464be: 同名重複ガードは
+  > MCP 入口限定 opt-in — iOS/iCloud の同名リスト正当作成を壊さない責務分界。日本語
+  > displayName は FNV-1a 安定 slug へ)・観測基盤 v1(91cfaa3: TelemetryPort+AE 併用、
+  > イベント {requestId,principal,host,ok,errKind,ms,argsDigest}。AE は index1=mcpTool・
+  > 保持3ヶ月・SQL 遡及可)・#40 done 行の iOS 準拠移動(1087c2e: C0-a′ 2相状態機械 =
+  > 猶予3秒→退場アニメ 240ms→完了済みセクションへ移動。undo は楽観キャンセル・二重表示排除)。
+  > **R2 本番スモーク済み**: migration 0004 適用(partial index 存在)・既存 141 行全生存を
+  > D1 読み取りで確認。delete→list-deleted→restore の一巡 E2E は未実施(Inspector 検証項目)。
+  > **次の候補**: K2/K3(#38)・propose-delete 撤去スライス・purge cron 配線・
+  > IAD 再計測(claude.ai トラフィック待ち)・実機確認(キーボード維持/C4 編集/リスト選択/
+  > done 行移動/safeAreaInsets 実測ログ)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

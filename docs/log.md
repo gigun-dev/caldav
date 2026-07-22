@@ -1005,3 +1005,11 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   14 は Why not 資料化。
 - 途中、バグ修正コミットに docs/modeling/14(別エージェント作業中)を git add -A で巻き込み、
   reset して対象パス明示で作り直した(教訓: 並行エージェント作業中は add -A を使わない)。
+
+## 2026-07-23(続き2・並列3本完了)
+
+- K1 冪等性(4f464be)・観測基盤 v1(91cfaa3)・#40 done 行 iOS 準拠移動(1087c2e)を
+  worktree 並列実装 → 直列マージで deploy。R2(b587ef0)は migration 0004 の本番適用と
+  既存 141 行全生存を D1 読み取りでスモーク確認。
+- セッション上限で 2 エージェントが途中終了 → SendMessage で transcript 再開・完走
+  (再開プロトコルが機能した記録)。
