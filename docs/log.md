@@ -975,3 +975,11 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   token採取・固定resource IDを除去した`mcp-inspector-verify` project skillへ昇格した。
 - SessionStartのmarkerが224行目まで後退していたため、先頭29行・2.7KBの最新サマリへ短縮。
   履歴と詳細はmarker後をオンデマンド参照する。残りは本番`CONFIRM_SECRET`設定とInspector/実カードE2E。
+
+## 2026-07-23: S1 着地(Codex 引き継ぎ)+ #32
+- Codex が S1 の main review を継続・裁定(正典頭に記録)。本セッションで S1 をコミット(bc2b1ef・
+  ハーネス共通化/AGENTS.md symlink/mcp-inspector-verify スキルも同梱)。
+- #32 日曜始まり化(3500f6c)。DST 境界の期待値は実測で確定(implementer 報告)。
+- CONFIRM_SECRET の本番設定は権限クラス(secret-store write)によりユーザー実行待ち。設定前 push は
+  delete 系全拒否で壊れるため push 保留中。swift-mcp-app セッションの棚卸し共有あり(caldav 続行に支障なし・
+  fullscreen 方針仮説は P4-DM 現行設計と一致)。

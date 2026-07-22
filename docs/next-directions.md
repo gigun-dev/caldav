@@ -21,6 +21,10 @@
 - **S1の残り**: `CONFIRM_SECRET` を値を表示せず本番へ設定し、Inspector/実カードで
   propose → card → delete と既存todos/agenda内deleteを確認してからdeployする。
   その後 #32(日曜始まり)、月/日ビュー目視、IAD再計測、確認カードS2/S3へ進む。
+  > **2026-07-23 更新:** S1 コミット済み(bc2b1ef)・~~#32 日曜始まり~~ ✅(3500f6c)。
+  > **push は CONFIRM_SECRET の本番設定待ち**(未設定 deploy は delete 系が安全側全拒否で壊れる。
+  > secret put は権限クラス上ユーザー実行: `openssl rand -base64 48 | tr -d '\n' | bunx wrangler secret put CONFIRM_SECRET`)。
+  > 設定後: push(deploy)→ mcp-inspector-verify で propose→card→delete E2E + カード内削除回帰 → IAD 再計測。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
