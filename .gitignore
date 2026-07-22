@@ -43,3 +43,6 @@ cloudflared/*.json
 # MCP Apps カード JS の自動生成物(2026-07-17 非コミット化)。entry(*-entry.ts)から
 # wrangler build hook / CI の生成ステップが毎ビルドで再生成する。詳細は scripts/build-ui-bundle.ts。
 src/presentation/mcp/ui/*-bundle.ts
+
+# 本番 secrets の控え(wrangler secret bulk 用・絶対にコミットしない)
+.secrets.prod.json
