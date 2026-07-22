@@ -758,6 +758,31 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* ゴースト行は row-main 直下の row-head を減光する(2026-07-14 UI フィードバック対応で .texts 廃止)。 */
   li.becoming-gone .row-head { opacity: 0.45; padding: 6px 0; }
 
+  /* row-retiring: C0-a′(2026-07-23 iOS リマインダー準拠の完了退場・todos-entry.ts 冒頭コメント参照)の
+   * 退場アニメ(高さ collapse + fade)。完了は「消える」のではなく「完了済みセクションへ移る」ので、
+   * becoming-gone(破線ボックスで恒久的に減光したまま残る削除ゴースト)とは違い、このクラスは
+   * COMPLETED_RETIRE_ANIM_MS(todos-entry.ts)の一瞬だけ効き、アニメが尽きたら行自体が DOM から
+   * 消えて completedSummary 側に現れる(入れ替わりの中継アニメ)。li.becoming-in.inflight の
+   * wake-sweep と同じ「新規挿入要素に animation を直付けすると自動再生される」技法を使う
+   * (renderAll が #root を毎回作り直す全消し設計と相性が良い唯一の CSS アニメ手法・同コメント参照)。
+   * max-height は 2 行(タイトル+meta)+notes アイコン等が乗っても収まる余裕を持たせた概算値
+   * (実測ではなく概算で十分 — collapse の目的は「畳まれつつある」体感で、厳密な高さ一致は不要)。 */
+  li.row-retiring {
+    animation: row-collapse 240ms ease-out forwards;
+    overflow: hidden;
+  }
+  @keyframes row-collapse {
+    from { opacity: 1; max-height: 120px; }
+    to { opacity: 0; max-height: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border-bottom-width: 0; }
+  }
+  /* 【JS 側が一次防御(beginDoneExitAnimation)】prefers-reduced-motion 環境では JS がこのクラス自体を
+   * 付けずに即時退場させるため通常はここへ到達しないが、他の @keyframes(wake-sweep 等)と同じく
+   * CSS 側にも明示の停止を置く defense-in-depth(matchMedia 判定と実際の描画の間に非同期な取りこぼしが
+   * 生じても、アニメだけは確実に止まる)。 */
+  @media (prefers-reduced-motion: reduce) {
+    li.row-retiring { animation: none; }
+  }
+
   /* --- 操作結果の読み上げ(視覚非表示の aria-live)-------------------------------
    * becoming は視覚専用の表現なので、スクリーンリーダー向けには #live に
    * 「「牛乳を買う」を完了しました」等のテキストを別途流す(entry が組み立てる)。

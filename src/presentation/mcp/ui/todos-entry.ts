@@ -149,6 +149,7 @@ import { shouldSkipDestructiveRender } from "./render-gate";
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
 // 完了トグル coalesce / 楽観復活の判定(純関数コア。> 2026-07-17 実機 FB「done→undo で完了が残る」監査修正)。
 // ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
+import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
 import {
 	type RecurrenceSummary,
@@ -530,30 +531,95 @@ let sheetTitleInput: HTMLInputElement | null = null;
 // becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
 const optimisticDeletes = new Set<string>();
 
-// --- C0-a(撤去済み): 完了残骸の有界化としての「約3秒退場」機構 ------------------------------------
-// 【撤去の経緯(2026-07-23 症状A・ユーザー裁定で方針転換)】旧実装は done タップ → タイトルのグレー
-// フェード → DONE_EXIT_GRACE_MS(3000ms)後に scheduleDoneExit → retireDoneRow が行を高さ0へ畳んで
-// remove し、retiredDoneIds へ入れて二度と再合成しないという「消す」設計だった(2026-07-17 設計05 §4)。
-// これが2つの実機バグを生んだ:
-//   (1) 「完了済み(1件)」を開いて見ている最中でも退場タイマーは容赦なく満了し、見ている行がその場で
-//       消える → 唯一のメンバーなら <details> セクションごと消滅する(「一瞬表示された後に消える」)。
-//       いったん completedOpen 中は退場を保留するパッチ(heldDoneExitOnCloseIds)も検討したが、
-//   (2) より根本的に「完了は行を消す操作ではなく、完了済みセクションへ移す状態遷移である」という
-//       原則のほうが正しい向きだった、とユーザー裁定で判明した。操作の結果が画面から黙って消えるのは
-//       体験として最悪 — 完了済みセクションに残留することで「完了した」というフィードバックになり、
-//       行を再タップして un-complete する undo の入口にもなる(soft delete 路線 = 「可視のまま可逆」
-//       という削除まわりの既存原則と統一される。ghost 行を出さない delete とは対照的に、complete は
-//       むしろ積極的に「移った先」を見せる)。
-// 【Why not: completedOpen 保留パッチで済ませなかったか】(1)への対症療法としては動いたはずだが、
-// そもそも「有界化のために消す」という設計方針自体が soft-delete 原則と矛盾していた。表示件数の
-// 有界化(inline カードが maxHeight を突き破る実害)は別の関心であり、B(server 常時計算の
-// completedSummary = 総件数 + 直近 COMPLETED_RECENT_MAX 件 + 「他 n件」)がその役目を引き継ぐ。
-// よって「消す」タイマー機構は保留パッチで延命せず丸ごと撤去し、完了行は常に completed セクションの
-// メンバーとして残り続ける(タップ由来・モデル発 complete-todo push 由来を問わない)。
-// 【撤去に伴い消えた仕組み】DONE_EXIT_GRACE_MS / exitTimers / graceStartAt / retiredDoneIds /
-// heldDoneExitIds / scheduleDoneExit / cancelDoneExit / resumeHeldDoneExit / retireDoneRow /
-// cssEscapeId(この関数専用だった)。renderRow のグレーフェード表示(inGrace 判定)・退場済み除外
-// フィルタ(retiredDoneIds.has)もすべて撤去済み — 完了行は他の行と同じ経路でずっと描画され続ける。
+// --- C0-a′: iOS リマインダー準拠の完了退場(猶予 → 完了済みセクションへ移動)---------------------
+// 【旧 C0-a の経緯(2026-07-23 症状A・撤去)】旧実装は done タップ → タイトルのグレーフェード →
+// DONE_EXIT_GRACE_MS(3000ms)後に scheduleDoneExit → retireDoneRow が行を高さ0へ畳んで remove し、
+// retiredDoneIds へ入れて二度と再合成しないという「消す」設計だった(2026-07-17 設計05 §4)。これが
+// 「完了済み(1件)」を開いて見ている最中でも退場タイマーが容赦なく満了し、唯一のメンバーなら
+// <details> セクションごと消滅する実機バグ(症状A)を生んだため、いったん退場機構ごと丸ごと撤去し
+// 「完了は消す操作ではなく状態遷移」= 完了行を due セクションにその場で無期限残留させる設計にした。
+// 【今回の再裁定(2026-07-23・ユーザー)】completedSummary(server 常時計算の有界サマリ)が退場先を
+// 常時可視にしたことで、「消える」ではなく「完了済みセクションへ移動する」なら安全に退場を再導入
+// できる、という判断。iOS リマインダーも「チェック→短い猶予(undo 可)→完了済みへ移動」という体験。
+// 旧 C0-a との決定的な違い: 退場した行は消滅せず、completedSummary の <details> に必ず現れる
+// (退場先が常に見えているので、「セクションごと消える」という旧バグの前提条件そのものが成立しない)。
+// 旧撤去で消えた識別子(DONE_EXIT_GRACE_MS / retiredDoneIds / heldDoneExitIds / resumeHeldDoneExit /
+// cssEscapeId)は再利用せず、下記を新設(意味が「消す」から「移す」へ変わったため命名も変える)。
+//
+// 【二段階構成(退場アニメを持たせるため)】
+//   1. 猶予フェーズ(retiringDoneIds・COMPLETED_RETIRE_GRACE_MS=3000ms): done 確定直後〜満了まで。
+//      行は due セクションにその場でチェック済みのまま留まる(旧 C0-a のグレーフェードは実機 FB で
+//      「完了も追加もテキスト不要」裁定と共に既に廃止済みなので復活させない — 塗り丸だけで状態は
+//      十分伝わる)。この間に再タップ(undo)されたら cancelDoneExit で丸ごとキャンセルする。
+//   2. 退場アニメフェーズ(exitingDoneIds・COMPLETED_RETIRE_ANIM_MS=240ms): 猶予満了の瞬間、行は
+//      まだ実データ(positionMemory)上は本体セクションに居るが li.row-retiring(collapse+fade。
+//      todos-app.ts)を纏って1回だけ退場アニメを再生する。アニメが尽きた時点で初めて positionMemory/
+//      stickyData から本当に取り除く(finishDoneExit)。completedSummary 側は退場と入れ替わりに
+//      現れる必要があるため、猶予フェーズ・アニメフェーズの両方を通じて「本体側にまだ実体がある」
+//      ことを retiringDoneIds/exitingDoneIds で表し、completedSummary の描画(renderAll の
+//      sec-completed 構築部)がこれを見て同 id 行を重複表示しない(下記 isDoneRowStillInPlace)。
+//   両フェーズとも実データの書き換えは guardedRenderAll 経由でしか描画しない(render-gate.ts)ため、
+//   シート表示中に満了しても DOM 反映は保留され、シートを閉じた瞬間の pendingRenderAfterSheet flush
+//   でまとめて追いつく(仕様3)。
+const COMPLETED_RETIRE_GRACE_MS = 3000; // 旧 DONE_EXIT_GRACE_MS と同値(iOS の体感に合わせた undo 猶予)。
+const COMPLETED_RETIRE_ANIM_MS = 240; // todos-app.ts の li.row-retiring keyframes(row-collapse)と値を揃える。
+// retiringDoneIds: 猶予フェーズ中の id → setTimeout handle。undo(cancelDoneExit)はこれを clear する。
+const retiringDoneIds = new Map<string, ReturnType<typeof setTimeout>>();
+// exitingDoneIds: 退場アニメ再生中(猶予満了〜アニメ尽きるまで)の id 集合。renderRow がこれを見て
+// li.row-retiring を付ける。
+const exitingDoneIds = new Set<string>();
+/** completedSummary 側の重複排除(仕様1): 本体行がまだ画面上に実在する間(猶予中 or アニメ中)は
+ *  completedSummary.recent 側の同 id 行を出さない(renderAll の sec-completed 構築部が使う)。
+ *  判定そのもの(isDoneExitPending)は done-exit.ts の純関数へ抽出済み — ここは module state
+ *  (Map/Set の .has)から入力を組み立てるだけの薄い配線。 */
+function isDoneRowStillInPlace(id: string): boolean {
+	return isDoneExitPending({ retiring: retiringDoneIds.has(id), exiting: exitingDoneIds.has(id) });
+}
+/** done 確定(server affected kind:"completed")を受けて退場猶予を仕込む。タップ由来・モデル発
+ *  complete-todo push・外部同期 completed のいずれでも呼ばれる(applyStructuredContent 参照)。
+ *  二重スケジュール判定(shouldScheduleDoneExit)は done-exit.ts の純関数へ抽出済み。 */
+function scheduleDoneExit(id: string): void {
+	if (!shouldScheduleDoneExit({ retiring: retiringDoneIds.has(id), exiting: exitingDoneIds.has(id) })) return;
+	const timer = setTimeout(() => {
+		retiringDoneIds.delete(id);
+		beginDoneExitAnimation(id);
+	}, COMPLETED_RETIRE_GRACE_MS);
+	retiringDoneIds.set(id, timer);
+}
+/** 退場をキャンセルしその場に留める(undo)。猶予中(未発火のタイマー)・アニメ中(発火済みで
+ *  finishDoneExit 前)のどちらでも呼んでよい — アニメ中に undo が来るのは稀(猶予3秒+アニメ240ms の
+ *  間の再タップ)だが、positionMemory はアニメ完了まで書き換えていないので exitingDoneIds を倒すだけで
+ *  安全にその場へ復帰できる。 */
+function cancelDoneExit(id: string): void {
+	const timer = retiringDoneIds.get(id);
+	if (timer !== undefined) {
+		clearTimeout(timer);
+		retiringDoneIds.delete(id);
+	}
+	exitingDoneIds.delete(id);
+}
+/** 猶予満了 → 退場アニメ開始。prefers-reduced-motion では collapse+fade のフレームを経由せず
+ *  即座に退場させる(wake-sweep 等の既存 becoming アニメと同じ規律。todos-app.ts 側の @keyframes
+ *  row-collapse も defense-in-depth で reduced-motion を明示的に止めているが、そちらへ到達させない
+ *  のが一次防御)。 */
+function beginDoneExitAnimation(id: string): void {
+	if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+		finishDoneExit(id);
+		return;
+	}
+	exitingDoneIds.add(id);
+	guardedRenderAll(); // li.row-retiring を新規挿入 → CSS animation は挿入時に自動再生される(wake-sweep と同型)。
+	setTimeout(() => finishDoneExit(id), COMPLETED_RETIRE_ANIM_MS);
+}
+/** 退場アニメ尽き → 実データを本体セクションから取り除く。positionMemory から外れると
+ *  sectionizeManual の本体セクション組み立てに二度と乗らなくなり、completedSummary だけが表示
+ *  チャンネルになる。stickyData も併せて捨てる(combinedGhosts 掃除と同じ理由 = 幽霊住人化防止)。 */
+function finishDoneExit(id: string): void {
+	exitingDoneIds.delete(id);
+	positionMemory.delete(id);
+	stickyData.delete(id);
+	guardedRenderAll();
+}
 
 // --- 並び順安定性(位置記憶。2026-07-14 ユーザー確定の仕様変更)---------------------------
 // 【なぜ位置記憶を持つか】完了操作でタスクが下(完了済みセクション)へ即移動するのは違和感がある、
@@ -584,7 +650,13 @@ function resetPositionMemory(): void {
 	positionMemory.clear();
 	stickyData.clear();
 	positionSeq = 0;
-	// C0-a 撤去済み(退場タイマー/retiredDoneIds のリセットは不要になった。上部の撤去コメント参照)。
+	// C0-a′(2026-07-23 再導入分): インスタンス境界(fresh render / calendarId・view 切替)では
+	// 猶予タイマーも道連れに掃除する。掃除しないと、切替後の新しい positionMemory に対して
+	// 古い id の finishDoneExit が後から発火し(delete は no-op で実害は薄いが)無意味な
+	// guardedRenderAll が起きる — クリーン切替の意味(要件4)に反するため明示的に止める。
+	for (const timer of retiringDoneIds.values()) clearTimeout(timer);
+	retiringDoneIds.clear();
+	exitingDoneIds.clear();
 }
 /** 位置記憶に無い新規行の自然セクション(due/completed 規則)。初出時の配置と、非 manual 経路の
  *  per-item ロジックに揃える。completed は "completed"(初出時に既に完了していた行だけがここに来て
@@ -1124,6 +1196,11 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 拾うため。renderAll は #root を innerHTML で作り直すので毎描画で付け直す。
 	li.dataset.id = task.id;
 	if (task.completed) li.classList.add("done");
+	// C0-a′(2026-07-23): 退場アニメ再生中(exitingDoneIds)の本体行だけに li.row-retiring を付ける。
+	// completedSummary 側の同 id 行はこの間 isDoneRowStillInPlace で出していない(重複表示防止)ので、
+	// row-retiring は「本体側のこの1回の描画でだけ」新規挿入される — CSS animation は要素の新規挿入時に
+	// 自動再生される(li.becoming-in.inflight の wake-sweep と同じ技法。todos-app.ts 側コメント参照)。
+	if (exitingDoneIds.has(task.id)) li.classList.add("row-retiring");
 	const sel = selectedId === task.id;
 	// ドラフト行(FAB で生やす未送信の新規行)。選択状態の見た目を流用しつつ、確定文法が「create」に
 	// なる・チェック無効・ⓘ が作成モード詳細を開く、の3点だけ通常の選択行と分岐する。
@@ -2866,6 +2943,12 @@ function renderAll(): void {
 		const completedRows: TodoItem[] = [];
 		for (const snap of completedSummary.recent) {
 			if (optimisticDeletes.has(snap.id)) continue; // 楽観削除中は出さない(他セクションと同じ規律)
+			// C0-a′(2026-07-23)の重複排除: 本体側にまだ実体がある(猶予中 or 退場アニメ中)行は
+			// completedSummary 側で出さない。server はミューテーション確定と同時に completedSummary を
+			// 加算済みで返してくる契約(仕様1)なので、これをしないと「本体に残ったまま + 完了済み
+			// セクションにも同じ行」の二重表示期間が生まれる(退場が完了した瞬間に初めてこちら側へ
+			// 現れ、本体側の行と入れ替わって見える=仕様1が求める体験そのもの)。
+			if (isDoneRowStillInPlace(snap.id)) continue;
 			const merged = mergeCompletedBase(stickyData.get(snap.id), snapshotToItem(snap, true));
 			const ov = optimisticToggle.get(snap.id);
 			const row: TodoItem = ov !== undefined ? { ...merged, completed: ov.completed, status: ov.status } : merged;
@@ -3327,16 +3410,22 @@ function applyStructuredContent(sc: unknown): void {
 	// in-flight の楽観トグル/仮行が失われないのは、この重ね直しがあるため(一貫性の要)。
 	serverAffectedBase = combinedAffected;
 	serverGhostsBase = combinedGhosts;
-	// 【2026-07-18 実機 FB「done にして時間が経過しても消えないタスクがある」の原因調査・C0-a 撤去済み】
-	// combinedAffected の kind==="completed" 行に一律 scheduleDoneExit(約3秒退場タイマー)を仕込む処理が
-	// ここにあった。C0-a(約3秒退場機構)そのものを撤去した(2026-07-23・上部コメント参照)ため、この
-	// ループも丸ごと不要になった — 完了行は退場せず completed セクションのメンバーとして残り続ける。
+	// 【C0-a′(2026-07-23 iOS リマインダー準拠で再導入)】combinedAffected の kind==="completed" 行に
+	// 退場猶予(scheduleDoneExit)を仕込み、kind==="reopened" 行は猶予/退場アニメを打ち消す
+	// (cancelDoneExit)。applyStructuredContent が ontoolresult(モデル発 complete-todo push を含む)/
+	// fetchLatest / mutation 成功のすべての経路の唯一の入口であることを利用し、タップ由来・モデル発
+	// push・外部同期(sync:true)を区別せず同じ規律で扱う(冒頭 C0-a′ コメント参照)。
+	for (const a of combinedAffected) {
+		if (a.kind === "completed") scheduleDoneExit(a.id);
+		else if (a.kind === "reopened") cancelDoneExit(a.id);
+	}
 	// 削除された id は位置記憶 / sticky から追い出す(2026-07-14 並び順安定性)。これをしないと、
 	// 削除で消えた行が stickyData の last-known データを頼りに「幽霊住人」として復活してしまう
 	// (ghost の becoming-gone は1描画で消えるが、位置記憶が残っていると次描画で sticky 経路が拾う)。
 	for (const g of combinedGhosts) {
 		positionMemory.delete(g.id);
 		stickyData.delete(g.id);
+		cancelDoneExit(g.id); // 削除された行に対する退場猶予/退場アニメが後から発火しないよう道連れに止める。
 	}
 	rebuildDisplay(combinedAffected, combinedGhosts);
 	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
@@ -3664,9 +3753,14 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	// 望みの最終状態を desiredToggle に記録し、送信ループ(flushToggle)がそれを confirm まで追送する。
 	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
 	desiredToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
-	// C0-a 撤去済み(2026-07-23): 完了したら約3秒の undo 猶予後に退場するタイマーをここで仕込んでいたが、
-	// 退場機構そのものの撤去(上部コメント参照)に伴い不要になった。完了行は completed セクションへ
-	// 移るだけで、タップして戻せば(nextCompleted=false)undo になる — タイマーは要らない。
+	// C0-a′(2026-07-23 再導入): 未完了へ戻すタップ(undo)は、猶予/退場アニメ中の id を「サーバー確定
+	// (kind:"reopened")を待たず」即座にキャンセルする。applyStructuredContent 経由のキャンセルだけに
+	// 頼ると、往復の間に猶予タイマーが先に満了して1描画だけ退場アニメが再生されてから巻き戻る
+	// (「undo したのに一瞬消えかけた」という見た目のちらつき)実害が出るため、楽観段階で先に止める。
+	// 完了させる側(nextCompleted=true)は逆に、まだ server affected が来ていないのでここではまだ
+	// スケジュールしない(退場は必ず server 確定 kind:"completed" を根拠にする。applyStructuredContent
+	// 冒頭 C0-a′ コメント参照)。
+	if (!nextCompleted) cancelDoneExit(task.id);
 	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了タイマーを仕込む
 	clearBanner();
 	rebuildFromConfirmed();
