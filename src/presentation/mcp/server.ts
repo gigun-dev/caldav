@@ -48,6 +48,11 @@ import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
 // E-3 スライス S2: list-events-expanded が描画するアジェンダカードの ui:// URI と HTML 本体
 // (agenda-app.ts → agenda-bundle.ts 自動生成を経由)。todos と同じく server.ts から ui/ への import は許可。
 import { AGENDA_APP_HTML, AGENDA_UI_URI } from "./ui/agenda-app";
+// S1(docs/modeling/14 確認カード): 破壊的操作の human-in-the-loop 確認カード(ui://)。
+import { CONFIRM_APP_HTML, CONFIRM_UI_URI } from "./ui/confirm-app";
+// S1: 確認トークンの生成/検証(HMAC-SHA256・canonical JSON・TTL)。層は presentation/mcp に閉じる
+// (application 層の UC シグネチャに confirmToken を持ち込まない — docs/modeling/14 §7)。
+import { CARD_TOKEN_TTL_MS, PROPOSE_TOKEN_TTL_MS, signConfirmToken, verifyConfirmToken } from "./confirm-token";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
@@ -135,6 +140,12 @@ export interface McpAppDeps {
 	// 4依存)を合成するために必要。既存3ツールは uow を使わない(読み取り専用)ため、
 	// この依存追加は create-todo/list-todos の追加に伴う最小限の拡張。
 	readonly uow: CollectionUnitOfWork;
+	// S1(docs/modeling/14 確認カード): 破壊的操作の確認トークンを HMAC 署名/検証する Workers secret
+	// (CONFIRM_SECRET)。トークンの生成(propose-delete-*)と検証(delete-* の実行前ガード)は
+	// どちらも presentation/mcp に閉じる(application 層の UC シグネチャに confirmToken を持ち込まない
+	// = §7「トークン検証は UC 呼び出しの手前」)。空文字は propose-* が実行時に弾く(空鍵で誰でも
+	// 通る事故を防ぐ。§ の MCP_TOKEN と同じガード思想)。
+	readonly confirmSecret: string;
 }
 
 // --- get-current-time -------------------------------------------------------
@@ -338,6 +349,34 @@ export function slugifyForCollectionId(displayName: string): string {
 	return isDegenerate ? crypto.randomUUID() : slug;
 }
 
+// S1(docs/modeling/14): confirmToken は「確認カードで承認済み」を証明するトークン(§4 Tier A)。
+// モデルはこのトークンを知り得ない(propose-delete-* が _meta にだけ載せる)ので、モデルが
+// confirmToken 無しで直接叩くと拒否される。カード発の削除は免除トークンを渡す(getCardToken 参照)。
+// delete-calendar / delete-todo / delete-event の3つの入力 shape で共有するため、最初に使う
+// delete-calendar より前に定義する(const の TDZ を避ける — 使用箇所より前に置く必要がある)。
+const confirmTokenField = z
+	.string()
+	.optional()
+	.describe(
+		"確認トークン。破壊的操作の承認証跡(propose-* が確認カードの _meta に載せて発行する)。" +
+			"通常モデルはこれを直接指定せず、propose-* → 確認カードのユーザータップ経由でのみ設定される。",
+	);
+
+// --- propose-delete-*(S1・docs/modeling/14 確認カードの入り口)の入力 shape --------------------
+// 副作用なし。対象を読んで確認カードを開くためのトークン + プレビューを _meta に返す。入力は本体
+// delete-* の同定情報だけ(confirmToken は取らない — トークンはここで発行する側)。
+const proposeDeleteTodoInputShape = {
+	id: z.string().describe("削除確認するリマインダー(VTODO)の UID。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
+};
+const proposeDeleteEventInputShape = {
+	id: z.string().describe("削除確認する予定(VEVENT)の UID。"),
+	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "calendar"。'),
+};
+const proposeDeleteCalendarInputShape = {
+	id: z.string().describe("削除確認するカレンダー/リマインダーリストのコレクション ID。"),
+};
+
 // --- delete-calendar(検証運用の動機: 作ったリストを消すツールが無く D1 直で消したことがあった。
 // list-calendars/create-calendar の対を埋める) ---------------------------------------------
 // 【非空コレクション既定拒否の安全装置】force を明示しない限り中身が1件でもあれば拒否する
@@ -352,6 +391,8 @@ const deleteCalendarInputShape = {
 			"true を指定すると、中身(予定/リマインダー)が1件以上あるコレクションでも削除する" +
 				"(配下のリソースも一緒に削除される)。省略時(既定 false)は非空コレクションを拒否する。",
 		),
+	// S1(docs/modeling/14): 確認トークン(§4 Tier A)。confirmTokenField 定義箇所コメント参照。
+	confirmToken: confirmTokenField,
 }
 
 // --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
@@ -656,6 +697,7 @@ const deleteTodoInputShape = {
 	id: z.string().describe("削除対象の VTODO UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "tasks"。'),
 	timeZone: mutateTimeZoneField,
+	confirmToken: confirmTokenField,
 };
 
 // move-todo の入力(UI 詳細シート「リスト ›」からのコレクション間移動)。move-todo.ts 冒頭コメント
@@ -835,6 +877,8 @@ const updateEventInputShape = {
 const deleteEventInputShape = {
 	id: z.string().describe("削除対象の VEVENT UID。"),
 	calendarId: z.string().optional().describe('対象コレクション ID。省略時は "calendar"。'),
+	// S1(docs/modeling/14): 確認トークン(§4 Tier A)。confirmTokenField 定義箇所コメント参照。
+	confirmToken: confirmTokenField,
 };
 
 // C5(設計 05 §3・§5・§6): list-known-locations の入力。
@@ -979,6 +1023,112 @@ function toolError(message: string) {
 		content: [{ type: "text" as const, text: message }],
 		isError: true,
 	};
+}
+
+// =============================================================================
+// S1(docs/modeling/14 確認カード): propose-delete-* のプレビュー生成 + delete-* のトークン検証
+// =============================================================================
+
+// Tier A(確認必須)の delete ツール名。propose-delete-* が発行する「対象特定トークン」の
+// payload.tool と、delete-* 側の検証で照合するキー。
+type DeleteToolName = "delete-todo" | "delete-event" | "delete-calendar";
+
+/**
+ * propose-delete-* が署名する「対象を特定した」確認トークンの論理ペイロード。delete-* 側は
+ * このペイロードが自分の (tool, id, calendarId) と一致するトークンだけを受理する(別対象へ流用させない)。
+ * 【なぜ tool も含めるか】delete-todo 用に発行したトークンで delete-event を叩く、のような
+ * ツール間流用を防ぐ(id 空間はツールごとに別・混同されると別リソースを消しかねない)。
+ */
+function deleteProposePayload(tool: DeleteToolName, id: string, calendarId: string | undefined): Record<string, unknown> {
+	// calendarId は undefined のときキーごと省く(canonicalJson の undefined 省略と揃え、署名側/検証側で
+	// 「calendarId 省略」の表現を1つに固定する — {calendarId: undefined} と {} を同一視させる)。
+	return calendarId !== undefined ? { kind: "delete", tool, id, calendarId } : { kind: "delete", tool, id };
+}
+
+/**
+ * delete-* 実行前のトークン検証(§4 Tier A のハード強制)。confirmToken が無い/不正/別対象/失効なら
+ * 拒否メッセージ(string)を返し、受理できるなら null を返す(呼び出し側は null のときだけ UC を実行)。
+ *
+ * 受理するトークンは2種類(docs/modeling/14 §6 項目5 の設計判断):
+ *   (A) propose-delete-* が発行した「対象特定トークン」(payload.kind==="delete" かつ tool/id/calendarId 一致)。
+ *   (B) 既存 todos/agenda カードが持つ「免除トークン」(payload.kind==="card")。カード内の swipe/詳細
+ *       ページ削除は既にユーザーの明示操作なので確認カードを二重に挟まない。カードは list/refresh/mutate
+ *       応答の _meta.confirm.cardToken でこの免除トークンを受け取り、delete 時に confirmToken として返す
+ *       (詳細な採択理由・ボツ案は下の getCardToken 定義箇所コメント参照)。
+ * どちらも「モデルは _meta を読めない=トークンを知り得ない」ことで、確認済み実行が必ずユーザーの
+ * タップを経由することを担保する(§2)。
+ */
+async function verifyDeleteConfirmation(
+	secret: string,
+	confirmToken: string | undefined,
+	tool: DeleteToolName,
+	id: string,
+	calendarId: string | undefined,
+): Promise<string | null> {
+	// secret 未設定は確認機構が成立しない(propose も署名できない)。安全側=削除を通さない
+	// (空鍵で誰でも通る事故を防ぐ)。運用者向けの明示メッセージにする。
+	if (secret === "") {
+		return "サーバーの確認トークン鍵(CONFIRM_SECRET)が未設定のため、削除を実行できません。管理者に設定を依頼してください。";
+	}
+	if (confirmToken === undefined || confirmToken === "") {
+		// Tier A の誘導: モデルが直接 delete-* を叩いた(propose を経ていない)ケース。propose を促す。
+		return `この操作には確認が必要です。まず propose-${tool}(id 等を渡す)を呼び、ユーザーが確認カードで承認してから実行してください。`;
+	}
+	const v = await verifyConfirmToken(secret, confirmToken);
+	if (!v.ok) {
+		if (v.reason === "expired") return "確認トークンの有効期限が切れています。もう一度 propose-* から確認し直してください。";
+		return "確認トークンが不正です。propose-* が発行したトークンを使ってください。";
+	}
+	const p = v.payload;
+	// (B) 免除トークン(カード発の削除)。対象特定はしない(カード操作自体がユーザーの明示確認)。
+	if (p.kind === "card") return null;
+	// (A) 対象特定トークン。tool/id/calendarId が完全一致するときだけ受理。
+	if (
+		p.kind === "delete" &&
+		p.tool === tool &&
+		p.id === id &&
+		(p.calendarId ?? undefined) === (calendarId ?? undefined)
+	) {
+		return null;
+	}
+	// 署名は正しいが対象が違う(別 id/別ツール用に発行されたトークンの流用)。黙って通さない。
+	return "確認トークンがこの削除対象と一致しません。この対象に対する propose-* を呼び直してください。";
+}
+
+// --- propose-delete-* のプレビュー生成(表示専用の best-effort な ICS 覗き見)---------------------
+// 【なぜ presentation で ICS を覗くのか(層の割り切り)】確認カードのプレビュー(タイトル/日時)は
+// 「表示専用」であって、削除の権威的な読み取り・実行は application 層の delete-* UC が行う。ここは
+// 「対象を見つけて短い表示文字列を作る」だけの best-effort なので、重い DTO 展開(recurrence 展開等)を
+// 呼ばず、リソースの rawIcs から SUMMARY と日時プロパティを素朴に拾う。取れなければ degrade(無題/日時なし)。
+function decodeIcsText(raw: string): string {
+	// RFC 5545 TEXT の最小 unescape(\\ \, \; \n)。表示用なので厳密さより堅牢さ優先。
+	return raw.replace(/\\n/gi, " ").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+}
+function formatIcsDate(raw: string): string {
+	// "YYYYMMDD" / "YYYYMMDDTHHMMSSZ?" を "YYYY-MM-DD" / "YYYY-MM-DD HH:MM" へ。合致しなければ生値を返す。
+	const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/.exec(raw.trim());
+	if (m === null) return raw.trim();
+	const date = `${m[1]}-${m[2]}-${m[3]}`;
+	return m[4] !== undefined ? `${date} ${m[4]}:${m[5]}` : date;
+}
+/** rawIcs から表示用プレビュー(title + 日時)を作る。dateProp は VEVENT なら "DTSTART"・VTODO なら "DUE"。 */
+function icsPreview(rawIcs: string, dateProp: "DTSTART" | "DUE"): { title: string; subtitle?: string } {
+	// 折り返し行(次行が空白/タブ始まり)を畳んでから走査する(RFC 5545 line folding)。
+	const unfolded = rawIcs.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+	let title = "";
+	let subtitle: string | undefined;
+	for (const line of unfolded.split(/\r?\n/)) {
+		// プロパティ名は ";"(パラメータ付き)か ":"(値直結)で終わる。SUMMARY / dateProp を先勝ちで拾う。
+		if (title === "" && (line.startsWith("SUMMARY:") || line.startsWith("SUMMARY;"))) {
+			const i = line.indexOf(":");
+			if (i >= 0) title = decodeIcsText(line.slice(i + 1)).trim();
+		}
+		if (subtitle === undefined && (line.startsWith(`${dateProp}:`) || line.startsWith(`${dateProp};`))) {
+			const i = line.indexOf(":");
+			if (i >= 0) subtitle = formatIcsDate(line.slice(i + 1));
+		}
+	}
+	return { title: title === "" ? "(無題)" : title, subtitle };
 }
 
 /**
@@ -1186,6 +1336,256 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				},
 			],
 		}),
+	);
+
+	// --- confirm ui:// リソース(S1・docs/modeling/14 確認カード)------------------------
+	// propose-delete-* が _meta.ui.resourceUri で参照する「削除の確認」カードの HTML 本体を登録する
+	// (todos/agenda カードと対称。自己完結バンドルなので CSP 許可は不要)。旧・静的 URI エイリアスは
+	// 作らない(このカードは今回新規追加で「旧 URI を掴んだホスト」が存在しないため — content-address
+	// URI だけで足りる)。
+	registerAppResource(
+		server,
+		"Delete Confirmation",
+		CONFIRM_UI_URI,
+		{
+			title: "削除の確認",
+			description: "破壊的操作(削除)の前にユーザーへ確認を求める汎用カード(propose-delete-* が開く)",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async () => ({
+			contents: [
+				{
+					uri: CONFIRM_UI_URI,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: CONFIRM_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
+	// --- S1 免除トークン(カード発の削除)の遅延生成 ---------------------------------------
+	// 【設計判断(docs/modeling/14 §6 項目5): カード発の削除に「免除トークン」を配る】
+	// 既存の todos/agenda カードは、swipe / 詳細ページから delete-todo / delete-event を
+	// callServerTool で直接叩く(propose を経ない)。これはユーザーがカード上で明示操作した結果なので
+	// 確認カードを二重に挟むのは過剰。だが delete-* がトークン必須化されると、この直接経路が壊れる。
+	// そこで list/refresh/mutate 応答の _meta.confirm.cardToken に「免除トークン」(payload.kind:"card")を
+	// 載せ、カードは delete 時にそれを confirmToken として返す。
+	// 【なぜ _meta 経由か(モデルに漏れない)】_meta は MCP Apps がカード iframe にだけ渡す UI 専用
+	// チャネルで、モデルの content には入らない(§2)。ゆえに免除トークンをモデルは読めず、モデルが
+	// delete-* を直接叩いても免除トークンを持てない = ハード強制は破れない。
+	// 【なぜ「対象特定」しない緩いトークンか】カード操作(swipe 等)はユーザーの明示確認そのものなので、
+	// 対象1件ごとに propose を挟ませる必要がない。免除トークンは「このカードがユーザーの手で操作されている」
+	// ことだけを証明すれば十分(§6 項目5 の「最小・可逆・_meta 経由でモデルに漏れない」を満たす)。
+	// 【ボツ案(Why not)】(a) カード自身にトークンを署名させる → ブラウザに secret を置けない(却下)。
+	//   (b) delete-* に「カード由来」を示す平文フラグを足す → モデルも同じ引数を渡せてしまい強制が空洞化(却下)。
+	//   (c) list 応答で対象ごとに個別トークンを配る → 件数分のトークンで重く、swipe 以外の経路(詳細ページで
+	//       別 id を消す等)に追従しづらい(却下)。カード単位の1トークンが最小。
+	// 【TTL】カードは開きっぱなしにされ得るので propose の5分では足りない。免除トークンの安全性は TTL では
+	//   なく _meta 秘匿 + HMAC に依存する(モデルは読めない)ため、TTL は defense-in-depth に留めて 12h に
+	//   する(CARD_TOKEN_TTL_MS)。カードは focus/mutation のたびに再取得し新トークンを受け取るので通常更新される。
+	// 【遅延生成】1リクエストで複数のカード応答を返すことは無い(1 tools/call = 1 応答)が、署名は async なので
+	//   Promise をメモ化して同一リクエスト内で1回だけ署名する。secret 未設定時は空文字を配る(カードは
+	//   空トークンを送る → delete-* 側で「未設定」エラーになり、propose 経路と同じく安全側に倒れる)。
+	let cardTokenPromise: Promise<string> | null = null;
+	const getCardToken = (): Promise<string> => {
+		if (cardTokenPromise === null) {
+			cardTokenPromise =
+				deps.confirmSecret === ""
+					? Promise.resolve("")
+					: signConfirmToken(deps.confirmSecret, { kind: "card" }, CARD_TOKEN_TTL_MS);
+		}
+		return cardTokenPromise;
+	};
+
+	// --- propose-delete-*(S1・docs/modeling/14 §2)---------------------------------------
+	// 「副作用なし。対象を読んで確認カードを開く」ツール。結果 content にはモデル向けの短文だけを載せ、
+	// トークン + プレビューは _meta.confirm にだけ載せる(モデルは _meta を読めない=トークンを知り得ない)。
+	// 【content にプレビューを載せない理由】プレビュー(タイトル/日時)は _meta 経由でカードにだけ渡す。
+	// content に載せるとモデルのコンテキストに入るが、確認フローに必要なのはカード表示だけなので最小に保つ。
+	const CONFIRM_CONTENT_TEXT = "確認カードを表示しました。ユーザーがカードで承認するまで削除は実行されません。";
+
+	/** propose-delete-* の共通レスポンス(_meta.ui で確認カードを開き、_meta.confirm に契約を載せる)。 */
+	const proposeResponse = (confirm: Record<string, unknown>) => ({
+		content: [{ type: "text" as const, text: CONFIRM_CONTENT_TEXT }],
+		_meta: {
+			// registerAppTool が config._meta から補完する ui.resourceUri を、この結果自身にも明示して
+			// 「この propose 結果は確認カードを開く」ことをホストへ確実に伝える(todos の outputTemplate と同型)。
+			ui: { resourceUri: CONFIRM_UI_URI },
+			"ui/resourceUri": CONFIRM_UI_URI,
+			"openai/outputTemplate": CONFIRM_UI_URI,
+			confirm,
+		},
+	});
+
+	// secret 未設定なら propose 自体が署名できない(=確認フローが成立しない)。安全側で明示エラーにする
+	// (delete-* 側の verifyDeleteConfirmation の secret 空チェックと対。運用者向けメッセージ)。
+	const proposeSecretMissing = (): ReturnType<typeof toolError> =>
+		toolError("サーバーの確認トークン鍵(CONFIRM_SECRET)が未設定のため、削除確認を発行できません。管理者に設定を依頼してください。");
+
+	// propose-delete-todo / propose-delete-event は「単一リソースを読み SUMMARY + 日時をプレビューにする」
+	// が共通なので1関数に括る(dateProp と既定コレクション・見出し・tool 名だけ差し替える)。
+	const proposeDeleteResource = async (
+		tool: "delete-todo" | "delete-event",
+		id: string,
+		calendarId: string | undefined,
+		defaultCollection: string,
+		dateProp: "DTSTART" | "DUE",
+		heading: string,
+		notFoundMsg: string,
+	) => {
+		if (deps.confirmSecret === "") return proposeSecretMissing();
+		let cid: CollectionId;
+		try {
+			cid = mkCollectionId(calendarId ?? defaultCollection);
+		} catch (error) {
+			if (error instanceof InvalidIdentifierError) return toolError(error.message);
+			throw error;
+		}
+		const uri = await deps.resourceRepo.findUriByUid(principal, cid, id);
+		if (uri === null) return toolError(notFoundMsg);
+		const resource = await deps.resourceRepo.findByUri(principal, cid, uri);
+		if (resource === null) return toolError(notFoundMsg);
+		const preview = icsPreview(resource.rawIcs, dateProp);
+		const collection = await deps.collectionRepo.findById(principal, cid);
+		const token = await signConfirmToken(deps.confirmSecret, deleteProposePayload(tool, id, calendarId), PROPOSE_TOKEN_TTL_MS);
+		return proposeResponse({
+			token,
+			tool,
+			id,
+			// calendarId は「本体 delete-* が受ける形」をそのまま反映する(propose で省略 → カードも省略 →
+			// delete-* は既定コレクションへ・token payload も calendarId 無しで一致する)。
+			...(calendarId !== undefined ? { calendarId } : {}),
+			heading,
+			preview: {
+				title: preview.title,
+				...(preview.subtitle !== undefined ? { subtitle: preview.subtitle } : {}),
+				...(collection !== null ? { collection: collection.displayName } : {}),
+			},
+		});
+	};
+
+	registerAppTool(
+		server,
+		"propose-delete-todo",
+		{
+			title: "Propose delete todo",
+			description:
+				"リマインダー(VTODO)の削除確認カードを表示する(まだ削除しない)。削除は破壊的で取り消せないため、" +
+				"delete-todo を直接呼ぶ前に必ずこれを呼び、ユーザーがカードで承認してから削除が実行される。",
+			inputSchema: proposeDeleteTodoInputShape,
+			_meta: {
+				ui: { resourceUri: CONFIRM_UI_URI },
+				"openai/outputTemplate": CONFIRM_UI_URI,
+			},
+		},
+		async ({ id, calendarId }) => {
+			try {
+				return await proposeDeleteResource(
+					"delete-todo",
+					id,
+					calendarId,
+					"tasks",
+					"DUE",
+					"このリマインダーを削除しますか?",
+					"削除確認するリマインダーが見つかりません(id/コレクションを確認してください)。",
+				);
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	registerAppTool(
+		server,
+		"propose-delete-event",
+		{
+			title: "Propose delete event",
+			description:
+				"予定(VEVENT)の削除確認カードを表示する(まだ削除しない)。削除は破壊的で取り消せないため、" +
+				"delete-event を直接呼ぶ前に必ずこれを呼び、ユーザーがカードで承認してから削除が実行される。",
+			inputSchema: proposeDeleteEventInputShape,
+			_meta: {
+				ui: { resourceUri: CONFIRM_UI_URI },
+				"openai/outputTemplate": CONFIRM_UI_URI,
+			},
+		},
+		async ({ id, calendarId }) => {
+			try {
+				return await proposeDeleteResource(
+					"delete-event",
+					id,
+					calendarId,
+					"calendar",
+					"DTSTART",
+					"この予定を削除しますか?",
+					"削除確認する予定が見つかりません(id/コレクションを確認してください)。",
+				);
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	registerAppTool(
+		server,
+		"propose-delete-calendar",
+		{
+			title: "Propose delete calendar",
+			description:
+				"カレンダー/リマインダーリスト(コレクション)の削除確認カードを表示する(まだ削除しない)。" +
+				"中身がある場合は「中身ごと消える」ことをカードで警告する。delete-calendar を直接呼ぶ前に必ずこれを呼ぶ。",
+			inputSchema: proposeDeleteCalendarInputShape,
+			_meta: {
+				ui: { resourceUri: CONFIRM_UI_URI },
+				"openai/outputTemplate": CONFIRM_UI_URI,
+			},
+		},
+		async ({ id }) => {
+			try {
+				if (deps.confirmSecret === "") return proposeSecretMissing();
+				let cid: CollectionId;
+				try {
+					cid = mkCollectionId(id);
+				} catch (error) {
+					if (error instanceof InvalidIdentifierError) return toolError(error.message);
+					throw error;
+				}
+				const collection = await deps.collectionRepo.findById(principal, cid);
+				if (collection === null) return toolError("削除確認するカレンダー/リストが見つかりません。");
+				// 中身の件数を数える(> 0 なら「中身ごと削除」= force:true が必要。カードで明示警告する)。
+				const contents = await deps.resourceRepo.findAllInCollection(principal, cid);
+				const count = contents.length;
+				const token = await signConfirmToken(
+					deps.confirmSecret,
+					deleteProposePayload("delete-calendar", id, undefined),
+					PROPOSE_TOKEN_TTL_MS,
+				);
+				return proposeResponse({
+					token,
+					tool: "delete-calendar",
+					id,
+					// 中身があるときだけ force:true をカードへ渡す(delete-calendar の非空拒否を、確認済みなら通す)。
+					...(count > 0 ? { force: true } : {}),
+					heading: "このカレンダー/リストを削除しますか?",
+					preview: {
+						title: collection.displayName,
+						...(count > 0 ? { count } : {}),
+					},
+				});
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
 	);
 
 	// --- get-current-time -----------------------------------------------------
@@ -1554,8 +1954,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"中身ごと削除したい場合のみ force:true を指定する。",
 			inputSchema: deleteCalendarInputShape,
 		},
-		async ({ id, force }) => {
+		async ({ id, force, confirmToken }) => {
 			try {
+				// S1(docs/modeling/14 §4 Tier A): UC 実行前にトークン検証。calendarId は無い(コレクション
+				// そのものが対象)ので undefined を渡す(propose-delete-calendar の payload も calendarId 無し)。
+				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-calendar", id, undefined);
+				if (denied !== null) return toolError(denied);
 				const targetId = mkCollectionId(id);
 				const deleteCollection = new DeleteCollection(deps.collectionRepo, deps.resourceRepo);
 				await deleteCollection.execute({ owner: principal, collectionId: targetId, force });
@@ -1800,9 +2204,15 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 	// contract 型」(UI と共有する明示的な形)なので index signature を持たず、そのままでは
 	// 代入できない。contract 型を index signature で緩めると UI 契約の型安全が崩れるため、
 	// 境界(SDK へ渡す1点)でだけ cast して閉じた型を保つ。
-	const toTodosToolResponse = (vm: TodosViewModel) => ({
+	// S1(docs/modeling/14 §6 項目5): 全 todos カード応答に免除トークン(cardToken)を _meta.confirm へ
+	// 載せる。カードは swipe/詳細ページの delete-todo でこれを confirmToken として返す(propose を経ず
+	// カード自身が確認 UI を担う経路の免除)。_meta はモデルの content に入らないのでトークンは漏れない。
+	// async 化したのは署名(getCardToken)が Promise のため — 呼び出し側は async ハンドラ内で
+	// `return toTodosToolResponse(vm)` のまま Promise を返せば auto-await される(既存の呼び出しは無改修)。
+	const toTodosToolResponse = async (vm: TodosViewModel) => ({
 		content: [{ type: "text" as const, text: JSON.stringify(vm) }],
 		structuredContent: vm as unknown as { [key: string]: unknown },
+		_meta: { confirm: { cardToken: await getCardToken() } },
 	});
 
 	// ListTodos を同 principal・同 calendarId で実行して「操作後の確定一覧」を作り、渡された
@@ -2128,8 +2538,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, timeZone }) => {
+		async ({ id, calendarId, timeZone, confirmToken }) => {
 			try {
+				// S1(docs/modeling/14 §4 Tier A): UC 実行の手前で確認トークンを検証する(presentation に
+				// 閉じる=DeleteTodo UC のシグネチャに confirmToken を持ち込まない)。無効/欠落は propose 誘導。
+				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-todo", id, calendarId);
+				if (denied !== null) return toolError(denied);
 				// removed の title/due は「削除直前」の状態が要る(削除後は当然もう読めない)。
 				// DeleteTodo UC が If-Match 解決のため内部 read する更新前レンズを removed として返す
 				// ようになった(2026-07-14 レイテンシ改善。以前は presentation で findTaskById が別途
@@ -2220,9 +2634,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 	// ui:// 紐付けは S2 で list-events-expanded と一緒に配線する。よってここでは素の registerTool。
 	// EventsViewModel は閉じた contract 型なので SDK の structuredContent(index signature 要求)へは
 	// 境界で cast する(todos の toTodosToolResponse と同じ判断)。
-	const eventsToolResponse = (vm: Record<string, unknown>) => ({
+	// S1(docs/modeling/14 §6 項目5): agenda カード応答にも免除トークンを _meta.confirm へ載せる
+	// (toTodosToolResponse と対称。理由・ボツ案は toTodosToolResponse / getCardToken のコメント参照)。
+	const eventsToolResponse = async (vm: Record<string, unknown>) => ({
 		content: [{ type: "text" as const, text: JSON.stringify(vm) }],
 		structuredContent: vm as { [key: string]: unknown },
+		_meta: { confirm: { cardToken: await getCardToken() } },
 	});
 
 	// create/update-event が投げる「入力起因の kind タグ付きエラー」をまとめて toolError に倒す判定
@@ -2460,8 +2877,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			description: "VEVENT(予定)を削除する。常に無条件削除(ETag 条件なし — delete-event.ts 冒頭コメント参照)。",
 			inputSchema: deleteEventInputShape,
 		},
-		async ({ id, calendarId }) => {
+		async ({ id, calendarId, confirmToken }) => {
 			try {
+				// S1(docs/modeling/14 §4 Tier A): UC 実行前にトークン検証(delete-todo と対称)。
+				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-event", id, calendarId);
+				if (denied !== null) return toolError(denied);
 				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
 				const deleteEvent = new DeleteEvent(deleteCalendarObject, deps.resourceRepo);
 				const { removed } = await deleteEvent.execute({ owner: principal, eventId: id, calendarId });

@@ -863,6 +863,9 @@ export const mcpApiApp = new Hono<{ Bindings: CloudflareBindings }>().route(
 			// E-1 スライス①: create-todo が PutCalendarObject を合成するために uow も渡す
 			// (McpAppDeps 拡張。DAV 側の PUT ハンドラが repos.uow を使うのと同じ実体)。
 			uow: repos.uow,
+			// S1(docs/modeling/14 確認カード): 破壊的操作の確認トークン署名鍵。secret 未設定
+			// (空文字)でも型は満たすが、propose-* がランタイムで弾く(server.ts のガード)。
+			confirmSecret: env.CONFIRM_SECRET ?? "",
 		};
 	}),
 );

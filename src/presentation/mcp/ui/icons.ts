@@ -109,6 +109,13 @@ const ICONS: Record<string, IconShape[]> = {
 		{ tag: "path", attrs: { d: "M18 6 6 18" } },
 		{ tag: "path", attrs: { d: "m6 6 12 12" } },
 	],
+	// S1(docs/modeling/14 確認カード): 破壊的操作(削除)の見出しに添える警告三角。lucide "triangle-alert"。
+	// 削除は取り消せないので、絵文字ではなく統一グリフで「これは強い操作だ」と視覚的に前置きする。
+	"triangle-alert": [
+		{ tag: "path", attrs: { d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" } },
+		{ tag: "path", attrs: { d: "M12 9v4" } },
+		{ tag: "path", attrs: { d: "M12 17h.01" } },
+	],
 };
 
 /**

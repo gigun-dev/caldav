@@ -1,0 +1,9 @@
+Codex harness migration (manual, symlink-first)
+
+- AGENTS.md already links to CLAUDE.md.
+- Eight project skills link from .agents/skills to .claude/skills, including the sanitized MCP Inspector workflow promoted from project memory.
+- Path-scoped Claude rules are exposed as nested AGENTS.md symlinks.
+- SessionStart reuses the Claude hook script through a Codex adapter.
+- Proxyman and Xcode MCP servers are configured project-locally.
+- Claude permissions and codex@openai-codex are intentionally not migrated.
+- Claude memory/session logs are intentionally not linked; durable knowledge belongs in repository artifacts.

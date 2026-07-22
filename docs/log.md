@@ -960,3 +960,18 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   ユーザーのカレンダー設定準拠。将来は user config)。
 - 運用反省: docs 反映が月グリッド時点で止まっていたのをユーザー指摘で是正。以後「コミット/デプロイの
   区切りごとに next-directions 更新」を徹底する。
+
+## 2026-07-22(深夜): Claude Code rate limitからCodexへ引継ぎ + 確認カードS1 review
+
+- Claude Codeの停止位置をproject transcript / dirty diff / 正典から回収。確認カードS1はartisan実装完了、
+  main review開始直後、未コミット・未deployの状態だった。既存dirtyをそのまま正として保護して引き継いだ。
+- Codexで全差分をreviewし、`make check`を再実行。dependency boundary、3系統のtypecheck、
+  **843 bun tests / 28 worker testsがgreen**。確認tokenはHMAC-SHA256、5分TTL、対象・tool一致を強制。
+  既存カード用12h tokenは `_meta` 限定capabilityとして採用した。nonceは発行ごとの一意性であり、
+  ステートレスのためTTL内replayを厳密には防がない点を明記した。
+- Claude/Codex共有ハーネスを追加。`AGENTS.md→CLAUDE.md`を維持し、8 project skills、path別rules、
+  SessionStart scriptをsymlink。Codex固有adapterにProxyman/Xcode MCPとhook設定を置いた。
+- Claude memoryは丸ごと同期せず、MCP Inspector→Apps→callServerTool→D1生ICS裏取りだけを、
+  token採取・固定resource IDを除去した`mcp-inspector-verify` project skillへ昇格した。
+- SessionStartのmarkerが224行目まで後退していたため、先頭29行・2.7KBの最新サマリへ短縮。
+  履歴と詳細はmarker後をオンデマンド参照する。残りは本番`CONFIRM_SECRET`設定とInspector/実カードE2E。

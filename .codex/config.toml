@@ -1,0 +1,11 @@
+personality = "friendly"
+
+[features]
+hooks = true
+
+[mcp_servers.proxyman]
+command = "/Applications/Proxyman.app/Contents/MacOS/mcp-server"
+
+[mcp_servers.xcode]
+command = "xcrun"
+args = ["mcpbridge"]

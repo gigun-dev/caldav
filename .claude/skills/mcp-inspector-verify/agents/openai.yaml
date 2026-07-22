@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCP Inspector Verify"
+  short_description: "MCP AppsとD1保存結果を本番契約まで通して検証する"
+  default_prompt: "Use $mcp-inspector-verify to verify the CalDAV MCP App end to end."

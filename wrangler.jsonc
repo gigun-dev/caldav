@@ -10,6 +10,10 @@
   "build": { "command": "bun run build:ui" },
   "account_id": "4b00d8d779cdc4e8fbc1840248d21722",
   "compatibility_date": "2026-07-10",
+  // 【secret binding(vars ではない)】CALDAV_PASSWORD / PROXY_SHARED_SECRET / MCP_TOKEN /
+  // CONFIRM_SECRET は Wrangler secret として設定する(値は wrangler.jsonc にコミットしない)。
+  //   - 本番: `wrangler secret put CONFIRM_SECRET`(S1 確認カードのトークン署名鍵・docs/modeling/14)。
+  //   - dev/テスト: .dev.vars に置く(gitignore 対象)。型宣言は src/env.d.ts の CloudflareBindings。
   "vars": {
     // 公開してよいログイン名。パスワードとプロキシ共有鍵は Wrangler secret に置く。
     "CALDAV_USERNAME": "admin",

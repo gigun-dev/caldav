@@ -751,6 +751,16 @@ let lastFetchAt = 0;
 //       その push 直後の focus refetch を無駄打ちしない(push でも lastFetchAt を更新するため)。
 const STALE_TIME_MS = 2500;
 
+// S1(docs/modeling/14 §6 項目5): カード発の削除に使う免除トークン(server が _meta.confirm.cardToken で配る)。
+// null=未受領(初回応答前)。deleteTask がこれを confirmToken として delete-todo に渡す。
+let cardConfirmToken: string | null = null;
+/** ontoolresult の結果 _meta.confirm.cardToken を拾って cardConfirmToken を更新する(型は最小限に narrow)。 */
+function captureConfirmToken(r: unknown): void {
+	const meta = (r as { _meta?: { confirm?: { cardToken?: unknown } } } | undefined)?._meta;
+	const token = meta?.confirm?.cardToken;
+	if (typeof token === "string" && token !== "") cardConfirmToken = token;
+}
+
 // --- 診断/エラー表示 ------------------------------------------------------------
 // iOS WebView にはコンソールが無く「画面表示でしか」切り分けられない(スパイクの show()
 // の思想を継承)。役割を2つに分ける:
@@ -3420,6 +3430,11 @@ const app = new App({ name: "caldav-todos", version: "0.2.0" }, { availableDispl
 app.ontoolresult = (r) => {
 	gotResult = true;
 	clearStatus();
+	// S1(docs/modeling/14 §6 項目5): カード発の削除に使う「免除トークン」を _meta.confirm.cardToken から
+	// 拾う。list/refresh/mutate 応答のたびに最新のトークンへ更新する(トークンは _meta 経由でしか来ないので
+	// モデルには漏れない)。deleteTask がこれを confirmToken として delete-todo に渡す(propose を経ない
+	// カード自身の確認 UI=swipe/詳細ページ削除の免除。詳細は server.ts の getCardToken コメント参照)。
+	captureConfirmToken(r);
 	// list-todos だけでなく create-todo 等の mutation ツールがこの UI を開いた場合も
 	// ここに届く。mutation 応答には affected/removed が乗っており、初回描画から
 	// becoming(「いま追加された」等)を表現できる — applyStructuredContent が共通処理。
@@ -3830,6 +3845,9 @@ async function deleteTask(task: TodoItem): Promise<void> {
 		// 【2026-07-17 TZ グラウンディング】delete 応答も確定一覧(残った行)を組み直すので、
 		// 一覧の時刻付き DUE が UTC 落ちしないよう閲覧デバイスのゾーンを常時送る(refreshArgs と対称)。
 		deleteArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		// S1(docs/modeling/14 §6 項目5): 免除トークンを confirmToken として渡す(カード発の削除は
+		// ユーザーの明示操作なので propose を経ず、このトークンで delete-todo のハード強制を満たす)。
+		if (cardConfirmToken !== null) deleteArgs.confirmToken = cardConfirmToken;
 		const result = await app.callServerTool({ name: "delete-todo", arguments: deleteArgs });
 		if (result.isError) {
 			const first = result.content?.[0];

@@ -25,6 +25,9 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { createMcpApp } from "../../src/presentation/mcp/server";
+// S1(docs/modeling/14): delete-* はトークン必須化されたので、既存の delete 挙動テストは免除トークン
+// (kind:"card")を confirmToken に添えて実行する(確認フロー自体の e2e は下の describe「S1 確認カード」で別途検証)。
+import { signConfirmToken } from "../../src/presentation/mcp/confirm-token";
 import { StaticBearerAuth, IcaljsRRuleIterator } from "../../src/infrastructure";
 import { AppleColor, CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
@@ -36,6 +39,12 @@ import {
 
 const USERNAME = "test";
 const MCP_TOKEN = "mcp-secret-token";
+// S1(docs/modeling/14 確認カード): 確認トークン HMAC 署名鍵(テスト固定値)。
+const CONFIRM_SECRET = "test-confirm-secret";
+// 免除トークン(カード発の削除相当)。CONFIRM_SECRET で署名すれば server 側の同じ鍵で検証が通る。
+async function cardToken(): Promise<string> {
+	return signConfirmToken(CONFIRM_SECRET, { kind: "card" });
+}
 const OWNER = principalPath(`/dav/principals/${USERNAME}/`);
 const CALENDAR = collectionId("calendar");
 
@@ -45,6 +54,7 @@ const ENV = {
 	CALDAV_PASSWORD: "secret",
 	PROXY_SHARED_SECRET: "",
 	MCP_TOKEN,
+	CONFIRM_SECRET,
 } as unknown as CloudflareBindings;
 
 // 反復無しの単発 VEVENT(2026-07-15 10:00〜11:00 UTC)。
@@ -91,6 +101,9 @@ beforeEach(() => {
 			resourceRepo: repos.resources,
 			iterator: recurrenceIterator,
 			uow: repos.uow,
+			// S1(docs/modeling/14): 確認トークン署名鍵。テストは固定値で十分(propose→confirm の e2e が
+			// この鍵で署名したトークンを同じ鍵で検証する。CONFIRM_SECRET の実値は本番 secret)。
+			confirmSecret: CONFIRM_SECRET,
 		})),
 	);
 });
@@ -174,7 +187,9 @@ describe("/mcp", () => {
 	// 対称。visibility:["app"] でも tools/list には出る)を追加したため 18→19 に更新。
 	// 2026-07-18 C5 追記: list-known-locations(既知の場所ツール。設計 05 §3・§5・§6)を追加したため
 	// 19→20 に更新。
-	it("正しい Bearer で tools/list に20ツールが並ぶ(C5 list-known-locations 追加分)", async () => {
+	// 2026-07-22 S1 追記: propose-delete-todo/propose-delete-event/propose-delete-calendar(確認カードの
+	// 入り口。docs/modeling/14)を追加したため 20→23 に更新。
+	it("正しい Bearer で tools/list に23ツールが並ぶ(S1 propose-delete-* 追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -196,6 +211,9 @@ describe("/mcp", () => {
 			"list-known-locations",
 			"list-todos",
 			"move-todo",
+			"propose-delete-calendar",
+			"propose-delete-event",
+			"propose-delete-todo",
 			"refresh-events",
 			"refresh-todos",
 			"update-event",
@@ -615,7 +633,7 @@ describe("/mcp", () => {
 				jsonrpc: "2.0",
 				id: 1,
 				method: "tools/call",
-				params: { name: "delete-calendar", arguments: { id: "empty" } },
+				params: { name: "delete-calendar", arguments: { id: "empty", confirmToken: await cardToken() } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
@@ -629,7 +647,7 @@ describe("/mcp", () => {
 				jsonrpc: "2.0",
 				id: 1,
 				method: "tools/call",
-				params: { name: "delete-calendar", arguments: { id: CALENDAR } },
+				params: { name: "delete-calendar", arguments: { id: CALENDAR, confirmToken: await cardToken() } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
@@ -644,7 +662,7 @@ describe("/mcp", () => {
 				jsonrpc: "2.0",
 				id: 1,
 				method: "tools/call",
-				params: { name: "delete-calendar", arguments: { id: CALENDAR, force: true } },
+				params: { name: "delete-calendar", arguments: { id: CALENDAR, force: true, confirmToken: await cardToken() } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
@@ -656,7 +674,7 @@ describe("/mcp", () => {
 				jsonrpc: "2.0",
 				id: 1,
 				method: "tools/call",
-				params: { name: "delete-calendar", arguments: { id: "no-such-calendar" } },
+				params: { name: "delete-calendar", arguments: { id: "no-such-calendar", confirmToken: await cardToken() } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
@@ -945,7 +963,7 @@ describe("/mcp", () => {
 				jsonrpc: "2.0",
 				id: 5,
 				method: "tools/call",
-				params: { name: "delete-todo", arguments: { id } },
+				params: { name: "delete-todo", arguments: { id, confirmToken: await cardToken() } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
@@ -1261,7 +1279,7 @@ describe("/mcp", () => {
 			seedCalendarCollection();
 			const created = await callEvent("create-event", { title: "消す", start: "2026-07-15" });
 			const id = created.events[0].id;
-			const sc = await callEvent("delete-event", { id });
+			const sc = await callEvent("delete-event", { id, confirmToken: await cardToken() });
 			expect(sc.events).toHaveLength(0);
 			expect(sc.removed).toMatchObject([{ title: "消す" }]);
 		});
@@ -1271,6 +1289,125 @@ describe("/mcp", () => {
 			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-event", arguments: { title: "逆転", start: "2026-07-18", end: "2026-07-15" } } });
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
+		});
+	});
+
+	// =============================================================================
+	// S1(docs/modeling/14 確認カード): propose-delete-* → confirmToken → delete-* の e2e
+	// =============================================================================
+	// 何を保証するか(What):
+	//   - トークン無しの delete-* は拒否される(§4 Tier A のハード強制)。isError で propose を誘導する。
+	//   - propose-delete-* はトークン + プレビューを結果 _meta にだけ載せ、モデル向け content には
+	//     トークンを一切載せない(§2: モデルはトークンを知り得ない)。
+	//   - propose が発行したトークンを渡すと delete が実行される(確認済み経路)。
+	//   - 別対象向けに発行したトークンの流用は拒否される(対象特定の担保)。
+	describe("S1 確認カード(propose-delete-* + confirmToken)", () => {
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+		/** create-todo を1件作り、その VTODO の id(affected[0].id)を返す。 */
+		async function createTodo(title: string): Promise<string> {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "create-todo", arguments: { title } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent.affected[0].id as string;
+		}
+
+		it("トークン無しの delete-todo は拒否される(propose を誘導)", async () => {
+			seedTasksCollection();
+			const id = await createTodo("消される予定のもの");
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 2,
+				method: "tools/call",
+				params: { name: "delete-todo", arguments: { id } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("propose-delete-todo");
+			// 拒否されたのでリソースは残っている(誤って消えていない)。
+			const stillThere = await repos.resources.findUriByUid(OWNER, TASKS, id);
+			expect(stillThere).not.toBeNull();
+		});
+
+		it("propose-delete-todo はトークン + プレビューを _meta にだけ載せ、content には載せない", async () => {
+			seedTasksCollection();
+			const id = await createTodo("牛乳を買う");
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: { name: "propose-delete-todo", arguments: { id } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			// _meta にトークン + 対象情報 + プレビュー。
+			const confirm = rpc.result._meta.confirm;
+			expect(typeof confirm.token).toBe("string");
+			expect(confirm.token.length).toBeGreaterThan(0);
+			expect(confirm.tool).toBe("delete-todo");
+			expect(confirm.id).toBe(id);
+			expect(confirm.preview.title).toBe("牛乳を買う");
+			// _meta.ui.resourceUri は確認カードの URI(ホストが確認カードを開く手掛かり)。
+			expect(rpc.result._meta.ui.resourceUri).toContain("ui://caldav/confirm.");
+			// content(モデルが読む面)にはトークンが漏れていない。
+			const contentText = rpc.result.content.map((c: { text?: string }) => c.text ?? "").join(" ");
+			expect(contentText).not.toContain(confirm.token);
+			// リソースは削除されていない(propose は副作用なし)。
+			expect(await repos.resources.findUriByUid(OWNER, TASKS, id)).not.toBeNull();
+		});
+
+		it("propose のトークンを渡すと delete-todo が実行される(確認済み経路)", async () => {
+			seedTasksCollection();
+			const id = await createTodo("消していいもの");
+			const proposeRes = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 4,
+				method: "tools/call",
+				params: { name: "propose-delete-todo", arguments: { id } },
+			});
+			const token = (await jsonRpcResult(proposeRes)).result._meta.confirm.token as string;
+			const delRes = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 5,
+				method: "tools/call",
+				params: { name: "delete-todo", arguments: { id, confirmToken: token } },
+			});
+			const delRpc = await jsonRpcResult(delRes);
+			expect(delRpc.result.isError).toBeFalsy();
+			// 実際に消えている。
+			expect(await repos.resources.findUriByUid(OWNER, TASKS, id)).toBeNull();
+		});
+
+		it("別対象向けに発行したトークンの流用は拒否される(対象特定の担保)", async () => {
+			seedTasksCollection();
+			const idA = await createTodo("A");
+			const idB = await createTodo("B");
+			// A 向けの propose トークンを取得。
+			const proposeRes = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 6,
+				method: "tools/call",
+				params: { name: "propose-delete-todo", arguments: { id: idA } },
+			});
+			const tokenForA = (await jsonRpcResult(proposeRes)).result._meta.confirm.token as string;
+			// それを使って B を消そうとする → 対象不一致で拒否。
+			const delRes = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 7,
+				method: "tools/call",
+				params: { name: "delete-todo", arguments: { id: idB, confirmToken: tokenForA } },
+			});
+			const delRpc = await jsonRpcResult(delRes);
+			expect(delRpc.result.isError).toBe(true);
+			// B は残っている。
+			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).not.toBeNull();
 		});
 	});
 

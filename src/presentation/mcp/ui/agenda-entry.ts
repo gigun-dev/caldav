@@ -421,6 +421,16 @@ let connected = false;
 let lastFetchAt = 0;
 const STALE_TIME_MS = 2500;
 
+// S1(docs/modeling/14 §6 項目5): カード発の削除に使う免除トークン(server が _meta.confirm.cardToken で配る)。
+// null=未受領。deleteEvent がこれを confirmToken として delete-event に渡す(todos-entry.ts と対称)。
+let cardConfirmToken: string | null = null;
+/** ontoolresult の結果 _meta.confirm.cardToken を拾って cardConfirmToken を更新する。 */
+function captureConfirmToken(r: unknown): void {
+	const meta = (r as { _meta?: { confirm?: { cardToken?: unknown } } } | undefined)?._meta;
+	const token = meta?.confirm?.cardToken;
+	if (typeof token === "string" && token !== "") cardConfirmToken = token;
+}
+
 // --- SheetDraft(詳細ページの編集作業コピー)-----------------------------------------------
 // 構造フィールドはここに持ち、テキスト(title/notes/location/url)は input イベントでここへ同期する
 // (構造変化での再描画でテキスト入力値が失われないように。todos の SheetDraft と同じ発想)。
@@ -3065,6 +3075,9 @@ const app = new App({ name: "caldav-agenda", version: "0.1.0" }, { availableDisp
 app.ontoolresult = (r) => {
 	gotResult = true;
 	clearStatus();
+	// S1(docs/modeling/14 §6 項目5): カード発の削除に使う免除トークンを _meta.confirm.cardToken から拾う
+	// (todos-entry.ts と対称。deleteEvent がこれを confirmToken として delete-event に渡す)。
+	captureConfirmToken(r);
 	// list-events-expanded だけでなく create/update/delete-event 等の mutation ツールがこの UI を
 	// 開いた場合もここに届く(mutation 応答には affected/removed が乗る)。共通経路 applyStructuredContent。
 	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
@@ -3498,6 +3511,9 @@ async function deleteEvent(ev: EventItem): Promise<void> {
 		// 省略(server の calendarId 未指定=既定 "calendar" にフォールバック)する。
 		const targetCalendarId = ev.calendarId ?? currentCalendarId ?? undefined;
 		if (targetCalendarId !== undefined) args.calendarId = targetCalendarId;
+		// S1(docs/modeling/14 §6 項目5): 免除トークンを confirmToken として渡す(カード発の削除は
+		// ユーザーの明示操作なので propose を経ず、このトークンで delete-event のハード強制を満たす)。
+		if (cardConfirmToken !== null) args.confirmToken = cardConfirmToken;
 		const result = await app.callServerTool({ name: "delete-event", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];

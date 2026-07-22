@@ -113,6 +113,10 @@ delete-event UC 実行前に confirmToken を検証(HMAC 再計算 + TTL + paylo
    content-hash.ts` をそのまま流用)+ `propose-delete-event` / `propose-delete-todo` /
    `propose-delete-calendar` の3種 + delete 系 UC 呼び出し前のトークン検証追加。
    **`application` 層は無変更**(検証は presentation/mcp に閉じる。§8 参照)。
+   > **2026-07-22 更新:** 実装・main review・`make check`完了 ✅。843 bun tests / 28 worker
+   > tests green。ステートレスtokenはnonceにより発行ごとに異なるが、使用済み記録を持たないため
+   > TTL内replay可能という意味で「厳密なone-time」ではない。残る完了条件は本番secret設定後の
+   > Inspector/実カードE2E(propose→確認card→delete、既存todos/agenda内delete、event/calendar)。
 2. **S2**: update 系(`update-event` / `update-todo` / `move-todo`)の propose ツール +
    diff プレビュー(§7.8 の becoming/差分レンズを再利用)+ ツール description による誘導。
 3. **S3**: バッチ(`create-events` / `create-todos`)の propose + カード内チェックボックス

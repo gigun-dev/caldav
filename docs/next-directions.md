@@ -7,6 +7,25 @@
 > 第3版までの積層の生記録は git 履歴と docs/log.md にある)。
 > 時系列の詳細ログ(何をしたかの生記録)は docs/log.md に追記する(そちらは追記専用アーカイブ)。
 
+## セッション開始時の現在地(2026-07-22)
+
+- **実装・静的検証済みの dirty**: `docs/modeling/14-confirmation-card.md` の S1。確認カード、
+  `propose-delete-{todo,event,calendar}`、HMAC確認トークン、delete 3種のtoken強制、
+  既存todos/agendaカード用の免除token、`CONFIRM_SECRET` bindingとテストが未コミット。
+  Claude Code停止後にCodexでmain reviewを継続し、`make check`を再実行して843 bun tests・
+  28 worker testsを含めgreen。既存差分は破棄せず引き継いだ。
+- **review裁定**: `kind:"card"` の対象非特定・12h免除tokenは、既存カード内の明示操作を二重確認に
+  しないための限定的なcapabilityとして採用。nonceは一意な発行を保証するが使用済み状態を持たず
+  TTL内replay可能であり、厳密なone-time tokenとは呼ばない。propose toolのwrite scopeも破壊操作の
+  入口として維持する。event/calendarと実カード経路は本番前のE2E項目として残す。
+- **S1の残り**: `CONFIRM_SECRET` を値を表示せず本番へ設定し、Inspector/実カードで
+  propose → card → delete と既存todos/agenda内deleteを確認してからdeployする。
+  その後 #32(日曜始まり)、月/日ビュー目視、IAD再計測、確認カードS2/S3へ進む。
+- **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
+  `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
+
+<!-- session-head-end: ここまでが SessionStart フックで自動注入される最新サマリ。以下は履歴・詳細カタログ。 -->
+
 **現在地(2026-07-15 棚卸し)**: **E-2(todos の MCP App)クローズ ✅** — UI v3(a53f0be)の
 本番検証が全項目 PASS(ページ遷移/トーン/繰り返し chips→D1 裏取り/ドラフト行/後始末。
 v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ(クローズを覆す性質ではない)。

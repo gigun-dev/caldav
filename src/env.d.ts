@@ -14,6 +14,12 @@ declare global {
 	interface CloudflareBindings {
 		CALDAV_PASSWORD: string;
 		PROXY_SHARED_SECRET: string;
+		// S1(docs/modeling/14 確認カード): 破壊的操作(delete 系)の確認トークンを HMAC 署名する
+		// Workers secret。CALDAV_PASSWORD 等と同じ「秘密は wrangler.jsonc の vars に載せず secret 化」
+		// の既存慣行に従う(本番は `wrangler secret put CONFIRM_SECRET`・dev/テストは .dev.vars)。
+		// 型は「必須の string」にするが、未設定(空文字)は server.ts 側でランタイムに検出して
+		// propose-* をエラーにする(空鍵で誰でも通る事故を防ぐ — MCP_TOKEN と同じガード思想)。
+		CONFIRM_SECRET: string;
 		// iOS 実機検証用のキャプチャログを有効化するゲート(var)。"1" で有効。
 		// 検証時のみ有効化する。通常は 0(または未設定)。旧名 CAPTURE_LOG(2026-07-11 改名)。
 		// vars なので worker-configuration.d.ts が本来の source of truth だが、

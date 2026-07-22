@@ -153,6 +153,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// 2026-07-15 追記: move-todo(VTODO のコレクション間移動)を追加。
 		// 2026-07-15 E-3 S1/S2 追記: create/update/delete-event + refresh-events(アジェンダ app ツール)を追加。
 		// 2026-07-18 C5 追記: list-known-locations(既知の場所ツール・設計 05)を追加。
+		// 2026-07-22 S1 追記: propose-delete-todo/event/calendar(確認カードの入り口・docs/modeling/14)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
@@ -170,6 +171,9 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"list-known-locations",
 			"list-todos",
 			"move-todo",
+			"propose-delete-calendar",
+			"propose-delete-event",
+			"propose-delete-todo",
 			"refresh-events",
 			"refresh-todos",
 			"update-event",

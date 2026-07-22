@@ -46,6 +46,13 @@ export const TARGETS = [
 		out: join(UI_DIR, "agenda-bundle.ts"),
 		constName: "AGENDA_BUNDLE_JS",
 	},
+	// S1(docs/modeling/14 確認カード): 破壊的操作の human-in-the-loop 確認カード。todos/agenda と
+	// 同じ生成規律で confirm-entry.ts → confirm-bundle.ts を出力する(TARGETS は配列なので1行足すだけ)。
+	{
+		entry: join(UI_DIR, "confirm-entry.ts"),
+		out: join(UI_DIR, "confirm-bundle.ts"),
+		constName: "CONFIRM_BUNDLE_JS",
+	},
 ] as const;
 
 // generateBundleFileContent: 「エントリから *-bundle.ts の完全な中身(banner + body)を作る」
