@@ -142,6 +142,8 @@ import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fo
 // 安全先頭(safe top)規約の共有カーネル(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)。
 // agenda-entry.ts と同じ純関数を使う(HostContext.safeAreaInsets → CSS 変数 px 値の決定だけを担う)。
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
+// 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+import { shouldSkipDestructiveRender } from "./render-gate";
 // C2(設計 05 §2): proximity バッジ文言の生成を純関数に隔離(mcp-location-view.test.ts で境界固定)。
 // 型(StructuredLocationView / ProximityAlarmView)も location-view.ts の写経を共有する。
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
@@ -501,6 +503,10 @@ let sheetState: { id: string; page: "detail" | "list"; create?: boolean } | null
 //   ここに持ち、テキスト入力(title/notes/location)は input イベントでここへ同期する — 構造変化での
 //   シート再描画(メニュー選択等)でテキスト入力値が失われないようにするため。null=シート閉。
 let sheetDraft: SheetDraft | null = null;
+// pendingRenderAfterSheet: 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント)。
+// guardedRenderAll がシート表示中の renderAll() を抑止したとき true になり、シートを閉じた瞬間
+// (setSheetState(null))に1回だけ flush される。agenda-entry.ts と同型。
+let pendingRenderAfterSheet = false;
 // list-calendars の結果キャッシュ(リスト移動ページで列挙)。初回ナビゲーション時に遅延取得する
 //   (シートを開くたびに毎回叩かない。移動が起きればサーバー vm が来るのでキャッシュ鮮度は実害小)。
 let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[] }> | null = null;
@@ -1801,6 +1807,35 @@ function makeSheetDraft(task: TodoItem): SheetDraft {
 	};
 }
 
+/**
+ * 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+ * sheetState を null にする「シートを閉じる」代入は必ずこれを経由させる(直接 `sheetState = null` と
+ * 書かない)。閉じた瞬間、抑止中に来た再描画要求(pendingRenderAfterSheet)があれば1回だけ flush する。
+ * agenda-entry.ts の同名関数と同型(sheetState を開く代入はこの関数を経由しない — 理由も同じ)。
+ */
+function setSheetState(next: null): void {
+	sheetState = next;
+	if (pendingRenderAfterSheet) {
+		pendingRenderAfterSheet = false;
+		renderAll();
+	}
+}
+
+/**
+ * 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+ * hostcontextchanged / ontoolresult push / visibilitychange・focus・pageshow の maybeRefetch など、
+ * 「本来 DOM 構造までは壊さなくてよい」再描画要求はこれ経由で renderAll() を呼ぶ。シート表示中は
+ * 破壊的 renderAll() を抑止し、抑止した事実だけ pendingRenderAfterSheet に積む
+ * (setSheetState(null) が閉じた瞬間に1回 flush する)。agenda-entry.ts の同名関数と同型。
+ */
+function guardedRenderAll(): void {
+	if (shouldSkipDestructiveRender(sheetState)) {
+		pendingRenderAfterSheet = true;
+		return;
+	}
+	renderAll();
+}
+
 /** 詳細ページを開く(既存タスクの ⓘ から)。draft を初期化し detail ページへ遷移する。 */
 function openSheet(task: TodoItem): void {
 	// 仮行(create 未確定)はサーバー id が無いので詳細編集できない。開かない(no-op)。
@@ -1830,7 +1865,7 @@ function openCreateSheet(): void {
 
 /** 詳細/リスト選択ページを閉じて一覧ページへ戻る(「‹ 戻る」= 破棄 / 保存後 / 移動後)。 */
 function closeSheet(): void {
-	sheetState = null;
+	setSheetState(null);
 	sheetDraft = null;
 	quickAddFab.hidden = false;
 	renderAll();
@@ -2011,7 +2046,7 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 				draft.title = d.title;
 				draft.notes = d.notes;
 			}
-			sheetState = null;
+			setSheetState(null);
 			sheetDraft = null;
 			selectedId = draft?.id ?? null;
 			quickAddFab.hidden = false;
@@ -2045,7 +2080,7 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 			// 作成モードの「保存」= create-todo に全フィールドを渡す(既存 optimisticRows 経路 + 詳細フィールド)。
 			const title = d.title.trim();
 			const details = collectCreateDetails(d);
-			sheetState = null;
+			setSheetState(null);
 			sheetDraft = null;
 			selectedId = null;
 			draft = null; // ドラフトは消費(作成 or 空破棄)
@@ -3417,7 +3452,12 @@ app.ontoolresult = (r) => {
 	// のシグネチャは同期だが中身は async(callServerTool を挟みうる)なので void で発火だけする
 	// — ontoolresult 自体の戻り値をホストが待つ契約は無い(fire-and-forget は他の非同期処理
 	// (toggleTask 等)と同じ扱い)。
-	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
+	// 【2026-07-23 guardedRenderAll 化】ホスト push はシート表示中にも届きうる。ingestStructuredContent
+	// 自体(state 更新・applyStructuredContent の副作用)は常に実行し、DOM を全消しする最後の
+	// renderAll だけ抑止する(render-gate.ts 冒頭コメント参照。iOS fullscreen でフォーカス中の入力から
+	// キーボードが閉じる実害の根治)。カード自身が起点の保存/作成フローは事前に closeSheet 等で
+	// sheetState を null にしてから callServerTool するため、この抑止に巻き込まれない。
+	void ingestStructuredContent(r?.structuredContent).then(() => guardedRenderAll());
 };
 // C1: host-context-changed の購読(設計04 §5 C1・SDK フック調査結果)。
 // 【SDK フック確認】node_modules/@modelcontextprotocol/ext-apps の app.d.ts に
@@ -3426,12 +3466,16 @@ app.ontoolresult = (r) => {
 // 不要— SDK が host-context-changed 受信のたびに内部 _hostContext へ merge した後にこのハンドラを
 // 呼ぶ(app.d.ts:723-727)ので、applyHostContext() を呼び直すだけで追従できる。ハンドラは
 // connect 前に登録する(ontoolresult と同じ理由・SDK 推奨)。
+// 【2026-07-23 guardedRenderAll 化】キーボード出現 → ホストが containerDimensions 再送 →
+// このハンドラ発火、という経路が iOS fullscreen キーボード折れの直接原因だった(render-gate.ts
+// 冒頭コメント参照)。applyHostContext()(CSS 変数更新のみ・DOM 構造は壊さない)は常に実行し、
+// DOM を全消しする renderAll だけ抑止する。
 app.addEventListener("hostcontextchanged", () => {
 	applyHostContext();
 	// maxHeight/displayMode の変化は畳み判定に直接効くため、値の反映だけでなく再描画まで行う
 	// (sheetState 中の詳細/リスト選択ページはこの再描画では畳み対象外 = renderAll 内の早期
 	// return で自然にスキップされる)。
-	renderAll();
+	guardedRenderAll();
 });
 
 showStatus("接続中…");
@@ -4522,8 +4566,11 @@ const maybeRefetch = (): void => {
 	if (Date.now() - lastFetchAt < STALE_TIME_MS) return;
 	// 自動 refetch の失敗は握りつぶす(ユーザー起点でないのでバナーは出さない=既存データ維持)。
 	// fetchLatest が成功すれば markUpdated 経由で lastFetchAt が進み、次の連打も抑止される。
+	// 【2026-07-23 guardedRenderAll 化】visibilitychange/focus/pageshow はユーザーがシート内入力に
+	// フォーカスしたまま(例: 他アプリ切替→戻る)発火しうるため、fetchLatest 自体(state 更新)は
+	// 常に実行し、DOM を全消しする renderAll だけ抑止する(render-gate.ts 冒頭コメント参照)。
 	void fetchLatest()
-		.then(() => renderAll())
+		.then(() => guardedRenderAll())
 		.catch(() => {
 			// 静かに無視。次の focus で再挑戦されるし、既存の一覧はそのまま残す。
 		});

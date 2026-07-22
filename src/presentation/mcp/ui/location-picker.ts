@@ -86,6 +86,98 @@ export function locationPickerToCreateArgs(value: LocationPickerValue | null): L
 	return { conference };
 }
 
+/**
+ * 既存イベントの C1 派生3スロット(structuredLocation / conference)→ セミモーダルの初期選択値。
+ * 【2026-07-23 追加(編集詳細への C4 移植)】locationPickerToCreateArgs の逆写像(read 側)。
+ *
+ * 【出し分けの判断】
+ *   - structuredLocation は geo(lat/lon)が必須(structuredLocationInputSchema)なので、C1 側で
+ *     geo が null(GEO 無しの構造化場所・想定される混在データ)のときは LocationPickerValue の
+ *     "place" では表現できない。この場合は場所側を諦め、下の会議判定へフォールする(親への
+ *     報告事項: geo 無し構造化場所は編集トリガ行では「未選択」に見える degrade。既存の
+ *     location(LOCATION テキスト)自体は失われない — update-event 側で location フィールドは
+ *     このセミモーダルと独立に扱われる)。
+ *   - conference は source==="description"(= conference 入力欄が書いた DESCRIPTION の
+ *     「ビデオ通話」ブロック由来)のときだけ拾う。source==="url" は既存の url フィールド
+ *     (参照 URL)がたまたま http(s) だったのを読み取り側が会議として分類しただけで、
+ *     conference フィールドとして書き込んだものではない(structured-location.ts 冒頭コメント
+ *     参照)。ここを "conference" として拾ってしまうと、URL 行にも同じ値が出たまま
+ *     トリガ行にも複製表示され、かつ保存時に conference:{...} を新規に書き込んでしまい
+ *     「読んだだけなのに書いた」事故になる。汎用 URL と会議 URL を別プロパティに保つという
+ *     タスクの要請から、source==="url" はここでは無視し url フィールド(呼び出し側の別行)に
+ *     委ねる。
+ */
+export function structuredToLocationPickerValue(
+	structured: { title: string | null; address: string | null; geo: { lat: number; lon: number } | null; radiusMeters: number | null } | null,
+	conference: { url: string; source: "url" | "description" } | null,
+): LocationPickerValue | null {
+	if (structured !== null && structured.geo !== null && structured.title !== null) {
+		return {
+			kind: "place",
+			title: structured.title,
+			address: structured.address,
+			lat: structured.geo.lat,
+			lon: structured.geo.lon,
+			radius: structured.radiusMeters,
+		};
+	}
+	if (conference !== null && conference.source === "description") {
+		return { kind: "conference", provider: null, url: conference.url };
+	}
+	return null;
+}
+
+/** 直前の初期値と現在の選択値を比較する(locationPickerToUpdateArgs の変更検出に使う内部ヘルパー)。 */
+function sameLocationPickerValue(a: LocationPickerValue | null, b: LocationPickerValue | null): boolean {
+	if (a === null || b === null) return a === b;
+	if (a.kind !== b.kind) return false;
+	if (a.kind === "place" && b.kind === "place") {
+		return a.title === b.title && a.address === b.address && a.lat === b.lat && a.lon === b.lon && a.radius === b.radius;
+	}
+	if (a.kind === "conference" && b.kind === "conference") {
+		return a.provider === b.provider && a.url === b.url;
+	}
+	return false;
+}
+
+/** update-event へ渡す structuredLocation / conference の三値パッチ(server.ts の update-event 契約に
+ *  合わせた write 側)。キー自体が無い=変更なし・null=対応スロットのみ除去・オブジェクト=設定。 */
+export interface LocationConferenceUpdateArgs {
+	structuredLocation?: LocationConferenceArgs["structuredLocation"] | null;
+	conference?: LocationConferenceArgs["conference"] | null;
+}
+
+/**
+ * トリガ行の初期値(prev)と現在の選択値(next)を比較し、update-event の structuredLocation /
+ * conference パッチへ変換する。
+ * 【なぜ「置換元スロットも一緒に null にするか」】LocationPickerValue は排他的単一選択(冒頭コメント
+ * 参照)なので、"place" → "conference" のように種別が変わったときは、旧種別のスロットを明示的に
+ * null で除去しないと、update-event が「省略=変更しない」と解釈して古いデータが残ってしまう
+ * (例: 場所を消して会議に差し替えたつもりが、構造化場所が温存されたまま会議も追加された状態になる)。
+ */
+export function locationPickerToUpdateArgs(
+	next: LocationPickerValue | null,
+	prev: LocationPickerValue | null,
+): LocationConferenceUpdateArgs {
+	if (sameLocationPickerValue(next, prev)) return {};
+	const args: LocationConferenceUpdateArgs = {};
+	if (next === null) {
+		// クリア: 元が場所だったか会議だったかで除去対象のスロットを出し分ける。
+		if (prev?.kind === "place") args.structuredLocation = null;
+		if (prev?.kind === "conference") args.conference = null;
+		return args;
+	}
+	const created = locationPickerToCreateArgs(next);
+	if (created.structuredLocation !== undefined) {
+		args.structuredLocation = created.structuredLocation;
+		if (prev?.kind === "conference") args.conference = null; // 種別が変わった → 旧スロットを除去
+	} else if (created.conference !== undefined) {
+		args.conference = created.conference;
+		if (prev?.kind === "place") args.structuredLocation = null;
+	}
+	return args;
+}
+
 /** 「場所または会議」行に出すアイコン名(createIcon のキー)。未選択は呼び出し側が既定(map-pin)を使う。 */
 export function locationPickerIconName(value: LocationPickerValue): "map-pin" | "video" {
 	return value.kind === "place" ? "map-pin" : "video";

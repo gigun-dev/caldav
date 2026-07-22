@@ -73,7 +73,10 @@ import {
 	locationPickerIconName,
 	locationPickerLabel,
 	locationPickerToCreateArgs,
+	locationPickerToUpdateArgs,
+	structuredToLocationPickerValue,
 	type KnownLocationView,
+	type LocationConferenceUpdateArgs,
 	type LocationPickerValue,
 } from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
@@ -82,6 +85,8 @@ import { WEEKDAYS, localDateKey, localMidnightIso, wallDatePart, wallTimePart, d
 // HostContext.safeAreaInsets → CSS 変数へ落とす px 値の決定(フォールバック込み)だけを担う純関数。
 // 実際に CSS 変数を当てる(setProperty)のは applyHostContext 側(todos-entry.ts と共通の分担)。
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
+// 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+import { shouldSkipDestructiveRender } from "./render-gate";
 // 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
 // bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
 import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
@@ -379,6 +384,10 @@ let swipeId: string | null = null;
 // すり替わると開始日時の表示・差分計算が別の日のものになる)。
 let sheetState: { key: string; page: "detail"; create?: boolean } | null = null;
 let sheetDraft: SheetDraft | null = null;
+// pendingRenderAfterSheet: 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント)。
+// guardedRenderAll がシート表示中の renderAll() を抑止したとき true になり、シートを閉じた瞬間
+// (setSheetState(null))に1回だけ flush される。抑止せず即描画した通常経路では触らない。
+let pendingRenderAfterSheet = false;
 // 選択行のタイトル/メモ入力への参照(commitSelection が renderAll 前の DOM 値を読むため renderRow がセット)。
 let selTitleInput: HTMLInputElement | null = null;
 let selMemoInput: HTMLInputElement | null = null;
@@ -510,6 +519,12 @@ interface SheetDraft {
 	todoHasDue: boolean;
 	// PRIORITY(iOS 準拠: 1=高 5=中 9=低)。null=なし。
 	todoPriority: number | null;
+	// 2026-07-23 追加: リマインダー作成のリスト(コレクション)選択。null=未選択=create-todo の
+	// calendarId を省略してサーバー既定("tasks")に委ねる(従来どおりの挙動を「選ばなかった」ときの
+	// 既定として保つ)。値ありは選択中コレクションの id。
+	todoListCalendarId: string | null;
+	// 「リスト」行の選択肢を展開表示中か(valueRow + buildSingleChoiceExpand と同じ開閉パターン)。
+	todoListOpen: boolean;
 }
 
 // --- 診断/エラー表示(todos と同じ2分割: status=接続フェーズ / banner=操作失敗)------------------
@@ -1776,12 +1791,15 @@ function dayGoToday(): void {
 
 /** 赤線更新タイマーを(張り直して)起動する。既存タイマーは stopNowLineTimer で必ず一度止めるので冪等。
  *  【60 秒間隔の Why】赤線は「分」精度で足りる(秒まで動かしても知覚差はほぼ無い)。setInterval の
- *  コールバックは day ビューのときだけ renderAll する(他ビューに切り替わった直後の 1 発を無害化)。 */
+ *  コールバックは day ビューのときだけ renderAll する(他ビューに切り替わった直後の 1 発を無害化)。
+ *  【2026-07-23 guardedRenderAll 化】シート表示中にこの 60 秒 tick が破壊的 renderAll を打つと
+ *  iOS fullscreen でフォーカス中の入力からキーボードが閉じる実害があった(render-gate.ts 冒頭参照)。
+ *  赤線はシートを閉じれば直後の flush か次の tick で自然に追いつくため、抑止して失うものは無い。 */
 function startNowLineTimer(): void {
 	stopNowLineTimer();
 	// setInterval の戻り値はブラウザでは number(Node 型定義混入で unknown 経由の cast)。
 	nowLineTimer = setInterval(() => {
-		if (agendaViewMode === "day") renderAll();
+		if (agendaViewMode === "day") guardedRenderAll();
 	}, 60_000) as unknown as number;
 }
 
@@ -2028,6 +2046,11 @@ interface UpdateEventChanges {
 	// alarms は三値(undefined=変更なし / null=全除去 / number[]=全置換)。
 	alarms?: number[] | null;
 	travelMinutes?: number | null;
+	// C4(設計05 §5・2026-07-23 編集への移植): 「場所または会議」トリガ行の確定値の三値パッチ。
+	// server.ts の update-event structuredLocation/conference と同じ契約(省略=変更なし・
+	// null=対応スロットのみ除去・オブジェクト=設定)。locationPickerToUpdateArgs が変換を担う。
+	structuredLocation?: LocationConferenceUpdateArgs["structuredLocation"];
+	conference?: LocationConferenceUpdateArgs["conference"];
 }
 
 /** setSelected: 行を選択(前の選択があれば確定 auto-save してから切替)。key は rowKey(§7.1)。 */
@@ -2274,9 +2297,13 @@ function makeSheetDraft(ev: EventItem): SheetDraft {
 		travelMinutes: ev.travelMinutes,
 		travelOpen: false,
 		// C3 作成モードの既定値。編集モード(openSheet)で作った SheetDraft でも同居するが、
-		// buildDetailPage(編集用)はこれらのフィールドを一切読まないので無害(未使用のまま)。
+		// formKind/todoHasDue 等の作成専用フィールドは buildDetailPage(編集用)が一切読まないので
+		// 無害(未使用のまま)。
 		formKind: "event",
-		locationValue: null,
+		// 2026-07-23: 編集詳細への C4 移植で locationValue も編集モードで意味を持つようになった
+		// (以前は create 専用で常に null 初期化していた)。structuredToLocationPickerValue が
+		// ev.structuredLocation/ev.conference から初期選択値を逆算する(判断は関数側コメント参照)。
+		locationValue: structuredToLocationPickerValue(ev.structuredLocation, ev.conference),
 		locationPickerOpen: false,
 		knownLocations: null,
 		knownLocationsLoading: false,
@@ -2284,7 +2311,42 @@ function makeSheetDraft(ev: EventItem): SheetDraft {
 		conferenceUrlDraft: "",
 		todoHasDue: true,
 		todoPriority: null,
+		todoListCalendarId: null,
+		todoListOpen: false,
 	};
+}
+
+/**
+ * 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+ * sheetState を null にする「シートを閉じる」代入は必ずこれを経由させる(直接 `sheetState = null` と
+ * 書かない)。閉じた瞬間、抑止中に来た再描画要求(pendingRenderAfterSheet)があれば1回だけ flush する。
+ * 【sheetState を開く代入(非 null)はこの関数を経由しない】flush が要るのは「閉じた」ときだけで、
+ * 開く代入は素の直接代入のままにして差分を最小にした(open 側まで一律この関数を通す一貫性より、
+ * 「閉じるときだけ特別」という非対称を素直にコードへ表す方が読み手に伝わると判断)。
+ */
+function setSheetState(next: null): void {
+	sheetState = next;
+	if (pendingRenderAfterSheet) {
+		pendingRenderAfterSheet = false;
+		renderAll();
+	}
+}
+
+/**
+ * 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
+ * hostcontextchanged / 60秒赤線タイマー / ontoolresult push / visibilitychange・focus・pageshow の
+ * maybeRefetch など、「本来 DOM 構造までは壊さなくてよい」再描画要求はこれ経由で renderAll() を呼ぶ。
+ * シート表示中は破壊的 renderAll() を抑止し、抑止した事実だけ pendingRenderAfterSheet に積む
+ * (setSheetState(null) が閉じた瞬間に1回 flush する)。ユーザー起点の保存/キャンセル/削除等
+ * 既存の renderAll() 直呼び出し(この関数を経由しない)はそのまま — シートを開閉する操作自体は
+ * 抑止対象ではない(抑止したいのは「シートを開いたまま裏で来る」再描画だけ)。
+ */
+function guardedRenderAll(): void {
+	if (shouldSkipDestructiveRender(sheetState)) {
+		pendingRenderAfterSheet = true;
+		return;
+	}
+	renderAll();
 }
 
 /** 詳細ページを開く(既存イベントの ⓘ から)。 */
@@ -2309,7 +2371,7 @@ function openCreateSheet(): void {
 
 /** 詳細ページを閉じて一覧へ戻る。 */
 function closeSheet(): void {
-	sheetState = null;
+	setSheetState(null);
 	sheetDraft = null;
 	quickAddFab.hidden = false;
 	renderAll();
@@ -2490,6 +2552,36 @@ function buildSingleChoiceExpand(
 	return expand;
 }
 
+/** URL 行(汎用参照 URL・空=除去)。トグルは付けず常に入力欄を出す(空なら除去に写像)。
+ *  create/edit 共有ヘルパー(2026-07-23 追加)。
+ *  【なぜ作成側にも足したか(タスク指示の判断事項)】会議 Join URL(conference.url)とは別プロパティの
+ *  汎用参照 URL(url フィールド・§3.8.4.6)を編集ページは元々プレーン text で持っていたが、作成側
+ *  (appendEventCreateFields)には対応する入力行が無かった(createEventFor 自体は details.url を
+ *  送信する実装済みで、UI 側の書き忘れだった)。会議とは独立に「お知らせページ」等の参照 URL を
+ *  作成時にも入れたい需要は編集時と対称にあるはずなので、この機会に両側へ同じ行を追加して非対称を
+ *  解消した(セミモーダル内へ吸収する案もあったが、conference.url とは意味も保存先も別プロパティの
+ *  ため統合すると「会議か参照か」の区別をユーザーに強いる UI になり判断コストが増える — 既存の
+ *  独立行のままが素直、という判断)。 */
+function buildUrlRow(d: SheetDraft): HTMLElement {
+	const row = el("div", "f-row");
+	const label = el("span", "f-label");
+	label.textContent = "URL";
+	const value = el("span", "f-value");
+	const input = document.createElement("input");
+	input.className = "url-input";
+	input.type = "text";
+	input.value = d.url ?? "";
+	input.placeholder = "https://…";
+	input.setAttribute("aria-label", "URL");
+	input.addEventListener("input", () => {
+		d.url = input.value === "" ? null : input.value;
+	});
+	value.appendChild(input);
+	row.appendChild(label);
+	row.appendChild(value);
+	return row;
+}
+
 /** 詳細ページ本体(モック C)。d は sheetDraft(この関数がそれを直接読み書きする)。 */
 function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 	const isCreate = sheetState?.create === true;
@@ -2510,7 +2602,7 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 				draft.title = d.title;
 				draft.notes = d.notes;
 			}
-			sheetState = null;
+			setSheetState(null);
 			sheetDraft = null;
 			selectedId = draft !== null ? rowKey({ id: draft.id }) : null;
 			quickAddFab.hidden = false;
@@ -2533,7 +2625,7 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 		if (isCreate) {
 			const title = d.title.trim();
 			const details = collectCreateDetails(d);
-			sheetState = null;
+			setSheetState(null);
 			sheetDraft = null;
 			selectedId = null;
 			draft = null;
@@ -2763,61 +2855,23 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 		);
 	}
 
-	// --- 場所(トグル + 展開内 text input。OFF=除去)---------------------------------------------
-	{
-		const row = el("div", "f-row");
-		const label = el("span", "f-label");
-		label.textContent = "場所";
-		const value = el("span", "f-value");
-		if (d.location === null) {
-			const ph = el("span", "placeholder");
-			ph.textContent = "なし";
-			value.appendChild(ph);
-		}
-		row.appendChild(label);
-		row.appendChild(value);
-		row.appendChild(
-			makeSwitch(d.location !== null, "場所", () => {
-				d.location = d.location === null ? "" : null;
-				renderAll();
-			}),
-		);
-		body.appendChild(row);
-		if (d.location !== null) {
-			const expand = el("div", "f-expand");
-			const input = document.createElement("input");
-			input.type = "text";
-			input.value = d.location;
-			input.placeholder = "場所";
-			input.setAttribute("aria-label", "場所");
-			input.addEventListener("input", () => {
-				d.location = input.value;
-			});
-			expand.appendChild(input);
-			body.appendChild(expand);
-		}
-	}
+	// --- 場所または会議(C4 統合トリガ行。2026-07-23 編集への移植 — 旧プレーン text+トグルを置換) ----
+	// 【旧実装からの変更点(Why not 履歴として残す)】このカードは元々「場所」をプレーン LOCATION
+	// text のトグル入力、URL をプレーン text 入力の2行に分けており、CONFERENCE(会議)の編集手段が
+	// 無かった。作成モード(buildCreatePage/appendEventCreateFields)には既にこの統合トリガ+
+	// セミモーダル(buildLocationTriggerRow/buildLocationSemimodal)があったが、当時は
+	// 「update-event の契約(location/url 独立フィールド)を壊しかねない」という理由で編集側への
+	// 波及を避け、作成専用の経路として分離していた(このコメントのすぐ下、旧位置は buildCreatePage
+	// 直前のコメント参照)。2026-07-23 時点で update-event が structuredLocation/conference の
+	// 三値パッチ契約(server.ts:927-943)に対応済みであることを確認し、編集側にも同じトリガ行+
+	// セミモーダルを移植した(locationPickerToUpdateArgs が create 用の locationPickerToCreateArgs
+	// と対称の write 変換を担う・makeSheetDraft の structuredToLocationPickerValue が read 側)。
+	// 行を丸ごと共有ヘルパー化はせず buildLocationTriggerRow(d) をそのまま呼ぶだけ(SheetDraft を
+	// 直接読み書きする設計なので create/edit で完全に同じ関数を使い回せる — 重複コードは生まれない)。
+	body.appendChild(buildLocationTriggerRow(d));
 
-	// --- URL 行(テキスト入力・空=除去)。トグルは付けず常に入力欄を出す(空なら除去に写像)----------------
-	{
-		const row = el("div", "f-row");
-		const label = el("span", "f-label");
-		label.textContent = "URL";
-		const value = el("span", "f-value");
-		const input = document.createElement("input");
-		input.className = "url-input";
-		input.type = "text";
-		input.value = d.url ?? "";
-		input.placeholder = "https://…";
-		input.setAttribute("aria-label", "URL");
-		input.addEventListener("input", () => {
-			d.url = input.value === "" ? null : input.value;
-		});
-		value.appendChild(input);
-		row.appendChild(label);
-		row.appendChild(value);
-		body.appendChild(row);
-	}
+	// --- URL 行(汎用参照 URL・会議 Join URL とは別プロパティ)。create/edit 共有ヘルパー buildUrlRow。
+	body.appendChild(buildUrlRow(d));
 
 	// --- リスト行(読み取り専用。move-event 未実装のため今回は › を省略。起票)-----------------------------
 	// 【起票】イベントのコレクション移動(move-event)は未実装。todos は move-todo でリスト選択ページを
@@ -2836,6 +2890,13 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 	}
 
 	page.appendChild(body);
+
+	// --- C4: 場所/会議セミモーダル(2026-07-23 編集への移植・buildCreatePage と同じカード内オーバーレイ)---
+	if (d.locationPickerOpen) {
+		page.appendChild(buildLocationDimmer(d));
+		page.appendChild(buildLocationSemimodal(d));
+	}
+
 	return page;
 }
 
@@ -2879,10 +2940,19 @@ function collectSheetChanges(ev: EventItem, d: SheetDraft): UpdateEventChanges {
 	const curLoc = ev.location === null || ev.location.trim() === "" ? null : ev.location;
 	if (nextLoc !== curLoc) changes.location = nextLoc;
 
-	// URL(空=除去)。
+	// URL(空=除去。会議 Join URL とは別プロパティ — 下の locationValue 差分とは独立に扱う)。
 	const nextUrl = d.url === null || d.url.trim() === "" ? null : d.url;
 	const curUrl = ev.url === null || ev.url.trim() === "" ? null : ev.url;
 	if (nextUrl !== curUrl) changes.url = nextUrl;
+
+	// 場所または会議(C4・2026-07-23 編集への移植)。makeSheetDraft が仕込んだ初期値(ev 由来)と
+	// 現在の d.locationValue を比較し、変わっていれば structuredLocation/conference の三値パッチを
+	// 積む。ev から都度再計算する(SheetDraft に「初期値」を別途持たせない)ことで、d.locationValue
+	// 自身が「作業中の値」の唯一の真実になる(todos の他フィールドと同じ流儀)。
+	const initialLocationValue = structuredToLocationPickerValue(ev.structuredLocation, ev.conference);
+	const locChanges = locationPickerToUpdateArgs(d.locationValue, initialLocationValue);
+	if (locChanges.structuredLocation !== undefined) changes.structuredLocation = locChanges.structuredLocation;
+	if (locChanges.conference !== undefined) changes.conference = locChanges.conference;
 
 	// 通知(alarms)。配列内容が変わったら全置換 / 空なら null(全除去)。
 	const nextAlarms = d.alarms.slice(0, 2);
@@ -3137,16 +3207,25 @@ app.ontoolresult = (r) => {
 	captureConfirmToken(r);
 	// list-events-expanded だけでなく create/update/delete-event 等の mutation ツールがこの UI を
 	// 開いた場合もここに届く(mutation 応答には affected/removed が乗る)。共通経路 applyStructuredContent。
-	void ingestStructuredContent(r?.structuredContent).then(() => renderAll());
+	// 【2026-07-23 guardedRenderAll 化】ホスト push はシート表示中にも届きうる。ingestStructuredContent
+	// 自体(state 更新・applyStructuredContent の副作用)は常に実行し、DOM を全消しする最後の
+	// renderAll だけ抑止する(render-gate.ts 冒頭コメント参照。iOS fullscreen でフォーカス中の入力から
+	// キーボードが閉じる実害の根治)。カード自身が起点の保存/作成フローは事前に closeSheet 等で
+	// sheetState を null にしてから callServerTool するため、この抑止に巻き込まれない。
+	void ingestStructuredContent(r?.structuredContent).then(() => guardedRenderAll());
 };
 // C1: host-context-changed の購読(設計04 §5 C1)。SDK が host-context-changed 受信のたびに内部
 // _hostContext へ merge した後にこのハンドラを呼ぶ(app.d.ts:723-727)ので、applyHostContext() を
 // 呼び直すだけで追従できる。maxHeight/displayMode の変化は畳み判定に直接効くため再描画まで行う
 // (詳細ページ表示中は renderAll 内の早期 return で畳み対象外になる)。connect 前に登録する
 // (ontoolresult と同じ理由・登録前に来た通知を取りこぼさない・SDK 推奨。todos-entry.ts:3012 と同じ)。
+// 【2026-07-23 guardedRenderAll 化】キーボード出現 → ホストが containerDimensions 再送 →
+// このハンドラ発火、という経路が iOS fullscreen キーボード折れの直接原因だった(render-gate.ts
+// 冒頭コメント参照)。applyHostContext()(CSS 変数更新のみ・DOM 構造は壊さない)は常に実行し、
+// DOM を全消しする renderAll だけ抑止する。
 app.addEventListener("hostcontextchanged", () => {
 	applyHostContext();
-	renderAll();
+	guardedRenderAll();
 });
 
 showStatus("接続中…");
@@ -3693,6 +3772,17 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 		if (changes.alarms !== undefined) args.alarms = changes.alarms;
 		if (changes.travelMinutes !== undefined) args.travelMinutes = changes.travelMinutes;
 		if (changes.recurrence !== undefined) args.recurrence = changes.recurrence;
+		// C4(2026-07-23 編集への移植): structuredLocation/conference は3値(undefined=変更なし・
+		// null=除去・オブジェクト=設定)なので null も明示的に送る必要がある(location/url と同型の
+		// 判定)。楽観プレビュー(overrides)には積まない — カード行のインライン表示は agendaInlineBadge
+		// が ev.structuredLocation/ev.conference の再取得後の値を読む前提の作りで、詳細ページの
+		// 保存直後に旧 EventItem を書き換えるための専用 override フィールドをまだ持たない
+		// (title/url 等と違い、値の形が LocationPickerValue で EventItem のフィールドと非対称なため
+		// 素朴な上書きにならない)。保存後の自動 refresh で確定表示に揃うため実害は小さいと判断
+		// (親への報告事項: 楽観プレビューが欲しければ OptimisticEdit へ structuredLocation/conference
+		// も追加する拡張の余地あり)。
+		if (changes.structuredLocation !== undefined) args.structuredLocation = changes.structuredLocation;
+		if (changes.conference !== undefined) args.conference = changes.conference;
 		// 時刻付き start/end は timeZone 必須(update-event が DTSTART;TZID + VTIMEZONE を組む)。
 		const timedStart = changes.start !== undefined && changes.start.includes("T");
 		const timedEnd = changes.end !== undefined && changes.end !== null && changes.end.includes("T");
@@ -3863,6 +3953,15 @@ async function createEventFor(optimisticId: string, title: string, details: Crea
 // 重複するが、いずれも valueRow/buildRecurExpand/buildSingleChoiceExpand/makeSwitch という既存の
 // 共有ヘルパー(ロジックはここに1つしか無い)を呼ぶだけの「行の並べ方」の重複であり、判断ロジック自体
 // の二重管理にはならない(親への報告事項: 望むなら次のリファクタで両関数からの共通抽出も可能)。
+//
+// 【2026-07-23 追記: 契約対応が済んだ; 場所/会議(C4)は編集へ移植した】update-event が
+// structuredLocation/conference の三値パッチ(server.ts:927-943)に対応済みであることを確認できた
+// ため、上記「場所/URL 行を C4 へ置き換える」変更だけは buildDetailPage 側にも移植した
+// (buildLocationTriggerRow/buildLocationSemimodal/buildUrlRow を create/edit 双方から呼ぶ形。
+// makeSheetDraft の structuredToLocationPickerValue が read 側・locationPickerToUpdateArgs が
+// write 側)。この関数コメントが説明する「別関数に切り出した理由」自体は
+// 予定/リマインダー セグメント(formKind 分岐)がまだ編集モードに存在しない非対称のぶんだけ残る
+// ので、buildCreatePage と buildDetailPage の分離自体は維持している(全面統合はしていない)。
 
 /** C3: FAB から開く fullscreen 作成フォーム(旧ドラフト行モデルの後継)。 */
 function buildCreatePage(d: SheetDraft): HTMLElement {
@@ -3887,7 +3986,7 @@ function buildCreatePage(d: SheetDraft): HTMLElement {
 	submit.addEventListener("click", () => {
 		const title = d.title.trim();
 		if (title === "") return;
-		sheetState = null;
+		setSheetState(null);
 		sheetDraft = null;
 		selectedId = null;
 		draft = null;
@@ -3962,6 +4061,9 @@ function buildCreatePage(d: SheetDraft): HTMLElement {
 function appendEventCreateFields(body: HTMLElement, d: SheetDraft): void {
 	// 場所または会議(C4 トリガ行)。
 	body.appendChild(buildLocationTriggerRow(d));
+
+	// URL(汎用参照 URL・2026-07-23 追加。buildUrlRow のコメント参照 — 編集ページとの非対称解消)。
+	body.appendChild(buildUrlRow(d));
 
 	// 終日
 	{
@@ -4216,19 +4318,66 @@ function appendTodoCreateFields(body: HTMLElement, d: SheetDraft): void {
 		);
 		if (d.recurOpen) body.appendChild(buildRecurExpand(d));
 	}
-	// リスト(読み取り専用の degrade。todos カードのような複数リスト選択 UI は持たず、
-	// create-todo の calendarId を省略してサーバー既定 "tasks" に委ねる — 暫定判断・親へ報告)。
-	{
-		const row = el("div", "f-row");
-		const label = el("span", "f-label");
-		label.textContent = "リスト";
-		const value = el("span", "f-value");
-		const val = el("span", "muted");
-		val.textContent = "タスク";
-		value.appendChild(val);
-		row.appendChild(label);
-		row.appendChild(value);
-		body.appendChild(row);
+	// リスト(2026-07-23 選択可能化。旧実装は「タスク」固定表示の読み取り専用 degrade だった —
+	// 直前の Why not 履歴として残す: calendarsCache は既に components 情報を持っていたが VTODO
+	// 判定に未使用のまま放置していた「暫定判断・親へ報告」項目。todos-entry.ts の
+	// collection-picker-v5(buildListPickerPage/リスト移動メニュー)と同じ
+	// `components.includes("VTODO")` フィルタで選択肢を作る。
+	// 【なぜ todos の buildListPickerPage(専用フルスクリーンページ)を丸ごと持ち込まなかったか】
+	// このカードは既に agenda の作成 fullscreen フォーム内なので、リスト選択のためにもう1段
+	// ページ遷移を重ねると「作成フォーム→フルスクリーン→リスト選択ページ→戻る→作成フォーム」と
+	// 深くなりすぎる。同じフォーム内には既に valueRow+buildSingleChoiceExpand という
+	// 「行タップでインライン展開」idiom があり(通知/予備の通知/移動時間で使用)、リストの選択肢も
+	// 数件程度(多くて数十)なのでこの idiom で足りると判断した(完全新規の UI を増やさない)。
+	// 行を開いた瞬間に一度だけ calendarsCache を取得する(todos-entry.ts の openListMenu と同じ
+	// 「メニューを開くまで遅延取得」方式。ensureCalendars は取得中/取得済みなら早期 return するので
+	// 毎描画呼んでも無害)。
+	if (d.todoListOpen) void ensureCalendars().then(() => renderAll());
+	const lists = calendarsCache?.filter((c) => c.components.includes("VTODO")) ?? null;
+	const currentListLabel = lists?.find((c) => c.id === d.todoListCalendarId)?.displayName ?? "タスク";
+	body.appendChild(
+		valueRow("リスト", currentListLabel, d.todoListOpen, d.todoListCalendarId === null, () => {
+			d.todoListOpen = !d.todoListOpen;
+			renderAll();
+		}),
+	);
+	if (d.todoListOpen) {
+		const expand = el("div", "f-expand");
+		const chips = el("div", "chips");
+		if (lists === null) {
+			// calendarsCache 未取得(直上の ensureCalendars が in-flight)。ボタンではなく素の案内文で
+			// 「タップできる選択肢がまだ無い」ことを示す(死んだボタンを出さない)。
+			const loading = el("span", "muted");
+			loading.textContent = "読み込み中…";
+			expand.appendChild(loading);
+		} else {
+			// 「タスク(既定)」= calendarId 省略でサーバー既定 "tasks" に委ねる選択肢を常に先頭に置く
+			// (list-calendars がどんな id/displayName で "tasks" を返すかに依存しない、常に安全な既定)。
+			const defaultBtn = document.createElement("button");
+			defaultBtn.type = "button";
+			defaultBtn.textContent = "タスク(既定)";
+			defaultBtn.setAttribute("aria-pressed", String(d.todoListCalendarId === null));
+			defaultBtn.addEventListener("click", () => {
+				d.todoListCalendarId = null;
+				d.todoListOpen = false;
+				renderAll();
+			});
+			chips.appendChild(defaultBtn);
+			for (const c of lists) {
+				const b = document.createElement("button");
+				b.type = "button";
+				b.textContent = c.displayName;
+				b.setAttribute("aria-pressed", String(d.todoListCalendarId === c.id));
+				b.addEventListener("click", () => {
+					d.todoListCalendarId = c.id;
+					d.todoListOpen = false;
+					renderAll();
+				});
+				chips.appendChild(b);
+			}
+		}
+		expand.appendChild(chips);
+		body.appendChild(expand);
 	}
 	// 優先順位(iOS 準拠: 1=高 5=中 9=低)。
 	{
@@ -4267,6 +4416,9 @@ interface TodoCreateDetails {
 	due: string | null;
 	recurrence?: RecurArgs;
 	priority: number | null;
+	// 2026-07-23 追加: 「リスト」行(buildTodoListRow 相当のインライン実装)で選んだ保存先コレクション。
+	// undefined = 未選択(従来どおり calendarId を省略してサーバー既定 "tasks" に委ねる)。
+	calendarId?: string;
 }
 function collectTodoCreateDetails(d: SheetDraft): TodoCreateDetails {
 	let recurrence: RecurArgs | undefined;
@@ -4277,12 +4429,14 @@ function collectTodoCreateDetails(d: SheetDraft): TodoCreateDetails {
 			recurrence = args;
 		}
 	}
-	return {
+	const details: TodoCreateDetails = {
 		notes: d.notes.trim(),
 		due: d.todoHasDue ? `${d.startDate}T${d.startTime}:00` : null,
 		recurrence,
 		priority: d.todoPriority,
 	};
+	if (d.todoListCalendarId !== null) details.calendarId = d.todoListCalendarId;
+	return details;
 }
 
 /** create-todo を裏で実行する(agenda カードは todo を表示しないため、events 系の楽観行/差分レンズには
@@ -4297,6 +4451,8 @@ async function createTodoFor(title: string, details: TodoCreateDetails): Promise
 		}
 		if (details.recurrence !== undefined) args.recurrence = details.recurrence;
 		if (details.priority !== null) args.priority = details.priority;
+		// 2026-07-23 追加: リスト選択(未選択=省略でサーバー既定 "tasks")。
+		if (details.calendarId !== undefined) args.calendarId = details.calendarId;
 		const result = await app.callServerTool({ name: "create-todo", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -4357,6 +4513,63 @@ function buildLocationTriggerRow(d: SheetDraft): HTMLElement {
 	return row;
 }
 
+// knownListEl: 現在マウント中のセミモーダルが持つ「既知の場所」リストコンテナへの DOM 参照。
+// 【なぜモジュール変数で持つか】selTitleInput/selMemoInput と同じ規約(renderRow/build 系が描画のたびに
+// 更新し、非同期コールバックが renderAll を経由せずその DOM を直接触るための橋渡し)。SheetDraft
+// (データモデル)に DOM 参照を混ぜたくないので、ここに分離する。null = セミモーダル未マウント。
+// 【stale 参照について】buildLocationSemimodal が呼ばれるたびに最新のコンテナへ上書きされる。
+// d.locationPickerOpen が false になった後にセミモーダルが #root から外れても、この変数は明示的には
+// null に戻さない(次に buildLocationSemimodal が呼ばれれば上書きされるため実害が無い。下の
+// ensureKnownLocationsLoaded 側は d.locationPickerOpen を見てから使うので、外れた古いノードへ
+// 書き込む可能性はあるが、画面に見えない detached ノードへの書き込みは無害 — 二重の安全弁として
+// d.locationPickerOpen 判定を残す)。
+let knownListEl: HTMLElement | null = null;
+
+/** 既知の場所リスト(C5)の中身だけを container の子として組み立て直す(in-place 差し替え)。
+ *  buildLocationSemimodal の初回構築と、ensureKnownLocationsLoaded の fetch 完了コールバック
+ *  (targeted update)の両方から呼ばれる単一の組み立てロジック(重複させない)。 */
+function renderKnownLocationsList(container: HTMLElement, d: SheetDraft): void {
+	container.innerHTML = "";
+	if (d.knownLocations === null) {
+		const loading = el("p", "loc-sm-empty");
+		loading.textContent = "読み込み中…";
+		container.appendChild(loading);
+		return;
+	}
+	if (d.knownLocations.length === 0) {
+		const empty = el("p", "loc-sm-empty");
+		empty.textContent = "まだありません";
+		container.appendChild(empty);
+		return;
+	}
+	for (const loc of d.knownLocations) {
+		const item = document.createElement("button");
+		item.type = "button";
+		item.className = "loc-place-item";
+		item.appendChild(createIcon("map-pin"));
+		const text = el("span", "loc-pi-text");
+		const t = el("div", "loc-pi-title");
+		t.textContent = loc.title;
+		text.appendChild(t);
+		if (loc.address !== null) {
+			const sub = el("div", "loc-pi-sub");
+			sub.textContent = loc.address;
+			text.appendChild(sub);
+		}
+		item.appendChild(text);
+		item.addEventListener("click", () => {
+			// 既知の場所を選ぶ操作はセミモーダル自体を閉じる(=シートの構造が変わる)ので、
+			// ここは通常どおり renderAll() でよい(フォーカス中の input を破壊する経路ではない —
+			// このクリック自体がユーザー操作の起点であり、ボタン押下でキーボードが開いている
+			// 前提が無い)。
+			d.locationValue = knownLocationToPickerValue(loc);
+			d.locationPickerOpen = false;
+			renderAll();
+		});
+		container.appendChild(item);
+	}
+}
+
 /** list-known-locations(C5)を1回だけ取得してキャッシュする(knownLocationsLoading で二重 fetch を防ぐ)。
  *  calendarId は省略する(§3「走査範囲の既定」: 省略時は owner 配下の全コレクション横断が候補として
  *  最も有用 — vevent 作成中でも過去の vtodo proximity 由来の場所を候補に含められる)。 */
@@ -4370,7 +4583,14 @@ function ensureKnownLocationsLoaded(d: SheetDraft): void {
 			if (result.isError) return;
 			const sc = result.structuredContent as { locations?: KnownLocationView[] } | undefined;
 			d.knownLocations = sc?.locations ?? [];
-			if (d.locationPickerOpen) renderAll();
+			// 【2026-07-23 targeted update(render-gate.ts と同じ問題クラスの個別解)】ここで renderAll()
+			// を呼ぶと、セミモーダルが表示中(フォーム全体が open のまま)なら Join URL 等の text input が
+			// フォーカスされている可能性があり、#root 全消しで iOS のソフトキーボードが閉じる実害があった。
+			// knownListEl(このコンテナだけの DOM 参照)が生きていれば renderKnownLocationsList で
+			// その子だけを差し替える。knownListEl が無ければ(セミモーダル未構築 = ありえないが防御的に)
+			// 諦める(次にセミモーダルが開かれたときに ensureKnownLocationsLoaded の早期 return を
+			// knownLocations!==null が満たすので、その時点の構築で最新値が反映される)。
+			if (d.locationPickerOpen && knownListEl !== null) renderKnownLocationsList(knownListEl, d);
 		})
 		.catch(() => {
 			// 静かに無視(既知の場所セクションは空のまま=候補ゼロとして表示。C5 は補助候補であり
@@ -4483,43 +4703,22 @@ function buildLocationSemimodal(d: SheetDraft): HTMLElement {
 	body.appendChild(confSection);
 
 	// 3. 既知の場所(C5)。
+	// 【2026-07-23 targeted update 化(コーディネーター指示・render-gate.ts と同じ問題クラスの個別解)】
+	// list-known-locations の fetch 完了時に renderAll()(#root 全消し)を呼ぶと、このセミモーダル内の
+	// Join URL 等の text input がフォーカス中でも丸ごと作り直され、iOS はフォーカス要素が DOM から
+	// 消えた瞬間にソフトキーボードを閉じてしまう(render-gate.ts が対処した「シート表示中の破壊的
+	// 再描画」と全く同じ実害)。ここは guardedRenderAll で「スキップ」しても意味が無い
+	// (既知ロケーション一覧そのものが更新されなくなる=表示すべき情報が永久に欠ける)ので、
+	// knownListEl(このコンテナの DOM 参照。下の renderAll と無関係に生き続ける)の子だけを
+	// renderKnownLocationsList で差し替える in-place 更新にした。フォーカス中の他の input には
+	// 一切触れない(この関数はコンテナの中身だけを innerHTML="" → 再構築する)。
+	const knownList = el("div", "loc-place-list");
+	knownListEl = knownList;
+	renderKnownLocationsList(knownList, d);
 	const knownSection = el("div", "loc-sm-section");
 	const knownTitle = el("p", "loc-sm-section-title");
 	knownTitle.textContent = "既知の場所";
 	knownSection.appendChild(knownTitle);
-	const knownList = el("div", "loc-place-list");
-	if (d.knownLocations === null) {
-		const loading = el("p", "loc-sm-empty");
-		loading.textContent = "読み込み中…";
-		knownList.appendChild(loading);
-	} else if (d.knownLocations.length === 0) {
-		const empty = el("p", "loc-sm-empty");
-		empty.textContent = "まだありません";
-		knownList.appendChild(empty);
-	} else {
-		for (const loc of d.knownLocations) {
-			const item = document.createElement("button");
-			item.type = "button";
-			item.className = "loc-place-item";
-			item.appendChild(createIcon("map-pin"));
-			const text = el("span", "loc-pi-text");
-			const t = el("div", "loc-pi-title");
-			t.textContent = loc.title;
-			text.appendChild(t);
-			if (loc.address !== null) {
-				const sub = el("div", "loc-pi-sub");
-				sub.textContent = loc.address;
-				text.appendChild(sub);
-			}
-			item.appendChild(text);
-			item.addEventListener("click", () => {
-				d.locationValue = knownLocationToPickerValue(loc);
-				d.locationPickerOpen = false;
-				renderAll();
-			});
-			knownList.appendChild(item);
-		}
-	}
 	knownSection.appendChild(knownList);
 	body.appendChild(knownSection);
 
@@ -4620,12 +4819,16 @@ document.addEventListener("click", (e) => {
 });
 
 // --- 自動 refetch(refetchOnWindowFocus 相当。todos と同じ3イベント冗長張り + staleTime 間引き)----------
+// 【2026-07-23 guardedRenderAll 化】visibilitychange/focus/pageshow はユーザーがシート内入力に
+// フォーカスしたまま(例: 他アプリ切替→戻る、ソフトキーボード出現に伴うホスト側イベント)発火しうる
+// ため、fetchLatest 自体(state 更新)は常に実行し、DOM を全消しする renderAll だけ抑止する
+// (render-gate.ts 冒頭コメント参照)。
 const maybeRefetch = (): void => {
 	if (!connected) return;
 	if (pendingIds.size > 0) return;
 	if (Date.now() - lastFetchAt < STALE_TIME_MS) return;
 	void fetchLatest()
-		.then(() => renderAll())
+		.then(() => guardedRenderAll())
 		.catch(() => {
 			// 静かに無視(ユーザー起点でないのでバナーは出さない。既存の一覧は残す)。
 		});
@@ -4635,9 +4838,10 @@ document.addEventListener("visibilitychange", () => {
 		maybeRefetch();
 		// 日ビューの赤線: hidden 中に止めていたタイマーを再開し、経過分を即時反映する(復帰時に古い
 		// 位置のまま次の 60 秒を待たない。main 裁定 item 5: visibilitychange に相乗り)。
+		// guardedRenderAll 化(2026-07-23): 直上の maybeRefetch と同じ理由(render-gate.ts 参照)。
 		if (agendaViewMode === "day") {
 			startNowLineTimer();
-			renderAll();
+			guardedRenderAll();
 		}
 	} else {
 		// バックグラウンドでは無駄な 60 秒タイマーを止める(全停止経路の 1 つ)。
