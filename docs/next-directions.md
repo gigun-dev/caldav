@@ -25,6 +25,19 @@
   > **push は CONFIRM_SECRET の本番設定待ち**(未設定 deploy は delete 系が安全側全拒否で壊れる。
   > secret put は権限クラス上ユーザー実行: `openssl rand -base64 48 | tr -d '\n' | bunx wrangler secret put CONFIRM_SECRET`)。
   > 設定後: push(deploy)→ mcp-inspector-verify で propose→card→delete E2E + カード内削除回帰 → IAD 再計測。
+  > **2026-07-23 更新: S1 本番 E2E 完了 ✅(deploy 2a9ced5 済み・mcp-inspector-verify 実施)。**
+  > 層別の事実: [tool response] ①propose-delete-todo はトークン+プレビューを _meta.confirm のみに載せ
+  > content は短文だけ ✅ ③トークン無し delete-todo は「まず propose を呼べ」エラーで拒否 ✅。
+  > [App UI] ②確認カード描画(⚠️見出し・対象プレビュー・destructive 赤ボタン)→「削除する」タップ →
+  > 「✓ 削除しました」遷移 ✅(スクリーンショット取得)。[D1 raw] 対象 VTODO の物理削除を SELECT で裏取り ✅。
+  > 検証データ2件とも正規経路(確認カード承認)で後始末済み・残ゼロ。CONFIRM_SECRET は
+  > .secrets.prod.json 控え + wrangler secret bulk で設定(secrets.required ガード 2a9ced5 で以後の
+  > 設定漏れ deploy は失敗する)。**未検証のまま残る層**: ④カード内 swipe 削除の UI 経路(todos 詳細に
+  > 削除ボタンは無く swipe のみ・browser では touch swipe 再現不可 — 免除トークンのサーバー契約は
+  > mcp-server.test.ts で検証済み。Simulator/実機の検証項目へ)・claude.ai / swift-mcp-app ホストでの
+  > _meta.confirm 受け渡し(SEP-1865 loose passthrough 想定・実ホストで要確認)。
+  > 副産物: OAuth 同意パスワードは検証用につき Claude 自動入力可(ユーザー許可・memory 記録)。
+  > 次: 確認カード S2(update diff プレビュー)/S3(バッチ部分承認)・IAD 再計測(トラフィック待ち)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

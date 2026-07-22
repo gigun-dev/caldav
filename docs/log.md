@@ -983,3 +983,7 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - CONFIRM_SECRET の本番設定は権限クラス(secret-store write)によりユーザー実行待ち。設定前 push は
   delete 系全拒否で壊れるため push 保留中。swift-mcp-app セッションの棚卸し共有あり(caldav 続行に支障なし・
   fullscreen 方針仮説は P4-DM 現行設計と一致)。
+- CONFIRM_SECRET 本番設定(.secrets.prod.json 控え + wrangler secret bulk・ユーザー実行)→ push
+  (〜2a9ced5・secrets.required 検証込みで build success)→ mcp-inspector-verify で S1 本番 E2E:
+  ①_meta 分離 ✅ ②カード描画→削除実行→「削除しました」✅ ③トークン無し拒否 ✅ D1 裏取り ✅
+  後始末=正規経路で残ゼロ。④swipe UI 経路と実ホスト _meta 受け渡しは Simulator/実機項目へ申し送り。
