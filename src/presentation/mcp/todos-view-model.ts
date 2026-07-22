@@ -140,4 +140,34 @@ export interface TodosViewModel {
 	 * 「他にも○件あります」バナーを出す拡張の土台として additive に確保しておく。
 	 */
 	otherTodoCollections?: { id: string; displayName: string }[];
+	/**
+	 * 【2026-07-23 症状B対策・ユーザー裁定で追加】完了済みタスクの有界サマリ。
+	 * buildTodosViewModel(server.ts)は includeCompleted の値に関係なく **常に** このフィールドへ
+	 * 値を設定する(total=0 でも {total:0, recent:[]} を必ず載せる)。TS 型としては optional に
+	 * しているのは affected/removed/otherTodoCollections と同じ「既存テストフィクスチャ/旧応答は
+	 * このフィールド無しでも壊れない」後方互換の規律のためで、実運用の応答では省略されない
+	 * (UI 側は無ければ completed セクションを描かないだけの安全な degrade で足りる)。
+	 *
+	 * 【なぜ includeCompleted から独立させたか(症状B: 「削除依頼したら完了済み111件が出現」)】
+	 * 旧設計は「カードの完了済み表示 = view.includeCompleted:true の push が来たときだけ、その
+	 * push が運んできた全件」だった。モデルが削除対象を探すために list-todos(includeCompleted:true)
+	 * を叩くと、その push は正当な意図(view echo・needsViewReconcile の契約どおり)なのに、
+	 * カードの完了済みセクションが D4(反復完了スナップショット無期限累積)の全件表示に化けてしまい、
+	 * ユーザーには「削除したら関係ない大量の完了済みが出てきた」ように見えた。
+	 * 【なぜ push 拒否ではなくサーバー側の常時サマリで直すか(Why not）】includeCompleted:true の
+	 * 受理そのものを拒む修正も考えられたが、それはモデルの正当なユースケース(削除対象を探す・
+	 * 完了履歴を尋ねられて答える等)を破壊する。真因は「カードの表示件数がサーバー応答の生の件数に
+	 * 直結してしまうこと」であって受理そのものではないので、サーバーが常に「カード向けの有界な
+	 * サマリ」を計算して渡し、カードはそれだけを見る形に直した。これで includeCompleted:true の
+	 * push が来てもカードの completed 描画は変わらない(総件数+直近5件という同じ形のまま)。
+	 * 【recent の並び順】completedAt 降順(新しい順)。undo(un-complete)導線とフィードバックが目的
+	 * なので、履歴を遡って見せる必要はない(遡った履歴閲覧は includeCompleted:true の
+	 * テキスト/structuredContent 側でモデルが担う——recent はカードの「直近の結果」専用)。
+	 * 【D1 コスト】ListTodos の内部実装(findVTodosInCollection)は component_kind="VTODO" だけを
+	 * SQL 側で絞り、STATUS(完了/未完了)は元々メモリ側でフィルタしている(list-todos.ts 冒頭
+	 * コメント参照)ため、buildTodosViewModel は「常に includeCompleted:true 相当で1回読み、
+	 * メモリで tasks 用(未完了 or 全件)と completedSummary 用(完了のみ)に分ける」実装にした。
+	 * 追加の D1 SELECT は発生しない(1 回の全件読みを2用途に再利用するだけ)。
+	 */
+	completedSummary?: { total: number; recent: TaskSnapshot[] };
 }

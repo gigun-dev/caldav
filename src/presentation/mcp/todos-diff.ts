@@ -78,6 +78,36 @@ export function snapshotFromTask(task: Task): TaskSnapshot {
 }
 
 /**
+ * completedSummary(2026-07-23 症状B対策)を tasks の全件から計算する純関数。
+ * buildTodosViewModel(server.ts)が includeCompleted の値に関係なく常に呼ぶ — 呼び出し側の
+ * コメント(なぜ includeCompleted から独立させたか・D1 コスト)は todos-view-model.ts の
+ * completedSummary JSDoc に集約してあるので、ここでは計算ロジックだけに専念する。
+ *
+ * 【なぜ純関数として切り出すか】D1 を叩かず tasks 配列だけで完結する決定ロジックなので、
+ * toggle-coalesce.ts / todos-diff.ts の既存関数と同じ規律で「境界(D1・principal)を持たない
+ * 純関数はテストしやすい形に抽出する」に従う。特に「直近5件に mutate 直後の完了行が確実に
+ * 入ること」(complete-todo の affected 合成との整合)は、この関数を Task フィクスチャで
+ * 単体テストするだけで確実に固定できる(D1/principal を用意する統合テストが要らない)。
+ *
+ * @param tasks ListTodos が includeCompleted:true 相当で返した全件(未完了+完了)。
+ * @param max completedSummary.recent に載せる最大件数(呼び出し側の COMPLETED_RECENT_MAX)。
+ * @returns total = 完了済みの総数。recent = completedAt 降順(新しい順)で先頭 max 件のスナップショット。
+ */
+export function buildCompletedSummary(tasks: Task[], max: number): { total: number; recent: TaskSnapshot[] } {
+	const completed = tasks.filter((t) => t.completed);
+	// completedAt 降順(新しい順)。ISO 文字列の辞書順=時刻順(同一形式前提。formatDueDisplay と同じ
+	// 前提を踏襲)。completedAt が同値(まれ・同時刻完了)なら id でタイブレークして結果を決定的にする
+	// (ListTodos の sortOrder タイブレークと同じ流儀)。
+	completed.sort((a, b) => {
+		const ca = a.completedAt ?? "";
+		const cb = b.completedAt ?? "";
+		if (ca !== cb) return ca < cb ? 1 : -1;
+		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+	});
+	return { total: completed.length, recent: completed.slice(0, max).map(snapshotFromTask) };
+}
+
+/**
  * update-todo の「変更されたフィールド」から edited の changes 配列を作る。
  *
  * 【変更フィールドの判定方針(素朴判定・server.ts の呼び出し側と対)】

@@ -152,10 +152,15 @@ export {
 } from "./create-todo";
 
 // MCP list-todos(方向性 E-1 スライス①)
+// filterTasksByWindow/TaskWindowFilter(2026-07-23 症状B再発対策で抽出。list-todos.ts の JSDoc
+// 参照)は presentation/mcp/server.ts の buildTodosViewModel が completedSummary と tasks を
+// 同じ1回の D1 読みから導出するために export している(STATUS/DUE 窓判定の単一情報源)。
 export {
+	filterTasksByWindow,
 	ListTodos,
 	type ListTodosInput,
 	type ListTodosOutput,
+	type TaskWindowFilter,
 } from "./list-todos";
 
 // todoId(UID) → リソース解決の共有ヘルパー(E-1 スライス②-b。Update/Complete/DeleteTodo 共通)

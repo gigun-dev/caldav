@@ -22,7 +22,7 @@
 import type { CollectionId, PrincipalRef } from "../../domain/caldav";
 import { collectionId as mkCollectionId } from "../../domain/caldav";
 import { zoneResolverFor } from "../../domain/ical/recurrence";
-import { calDateStartEpochMillis, calDateTimeToEpochMillis } from "../../domain/ical/timezone";
+import { calDateStartEpochMillis } from "../../domain/ical/timezone";
 import type { CalendarObjectResourceRepository } from "../ports";
 import { taskFromVTodo, type Task } from "./task-dto";
 
@@ -63,22 +63,95 @@ function parseOffsetIso(s: string): number {
 	return Date.parse(s);
 }
 
+/**
+ * "YYYY-MM-DD"(Task.due の終日形。formatCalDateAsIso 出力と同形)を CalDate へ戻す。
+ * サーバー自身が taskFromVTodo で生成した形式なので構文検証はせず素朴に split する
+ * (外部入力ではなく自己生成データの往復なので、cal-date.ts の厳格パーサを持ち込む必要が無い)。
+ */
+function parseAllDayDue(due: string): { year: number; month: number; day: number } {
+	const [year, month, day] = due.split("-").map(Number);
+	return { year, month, day };
+}
+
+/**
+ * 【2026-07-23 症状B再発対策で抽出】ListTodos.execute の「STATUS(完了) + DUE 窓」フィルタを
+ * Task[] 段階の純関数として export する。
+ *
+ * 【なぜ抽出したか(経緯)】completedSummary(症状B対策・todos-view-model.ts の completedSummary
+ * JSDoc 参照)は buildTodosViewModel(presentation/mcp/server.ts)が「due 非フィルタの全完了済み」
+ * から計算する必要がある。しかし当初の実装は ListTodos.execute を dueBefore/dueAfter 込みで
+ * 1回呼ぶだけだったため、モデルが「今週のタスク」等 due 窓付きで list-todos を叩くと、その
+ * 応答の completedSummary.total が due 窓で痩せてしまい(症状Bの「どんな view の push でも
+ * サマリは不変」という治療原則が再発)、コーディネーターの指摘で修正が必要になった。
+ * 【なぜ SQL 側 dueBefore/dueAfter を追加せず Task[] 段階の純関数にしたか】
+ *   (1) D1 SELECT を1回に保つ制約(IAD レイテンシ事情)がある以上、buildTodosViewModel は
+ *       「includeCompleted:true・due 無し」で1回 execute して得た全件(allTasks)を
+ *       completedSummary と tasks の両方の元にしたい。
+ *   (2) due 窓判定のロジック(offset ISO パース・終日/時刻付きの epoch 変換規則)を presentation
+ *       に複製すると、ここ(application)と presentation の2箇所で判定がズレる事故リスクを
+ *       抱える(single source of truth 違反)。よって判定そのものを export し、
+ *       buildTodosViewModel はこの関数を呼ぶだけにする(依存方向は presentation→application で
+ *       層規律に反しない)。
+ *   (3) ListTodos.execute 自身もこの関数を内部で使うようリファクタした(下記)。UC 自身の
+ *       出力と、presentation が同じ関数で再現する出力が構造的に一致することを保証する
+ *       (2箇所で「同じつもりのロジック」が経年でズレる事故を型ではなく構造で防ぐ)。
+ * 【Task[] 段階で判定して原本(vtodo/CalDate)の再解析を避けた理由】taskFromVTodo が既に due を
+ * 「終日は 'YYYY-MM-DD' / 時刻付きは epochToIsoLocal 由来の offset 付き絶対 ISO(オフセット込みで
+ * 一意な瞬間を表す)」に整形済み(task-dto.ts の formatDue 参照)。時刻付きは Date.parse するだけで
+ * 元の判定と同じ epoch millis が得られる(表示ゾーンが変わっても instant は不変なため)。終日は
+ * 元の判定と同じ計算(calDateStartEpochMillis + 呼び出し時の timeZone)を再現するため、
+ * "YYYY-MM-DD" を CalDate へ戻してから同じ domain 関数に通す(このリパースだけが「複製」だが、
+ * epoch 計算そのもの=判定の核はここでも同じ domain 関数を呼ぶので実質的な重複ロジックではない)。
+ */
+export interface TaskWindowFilter {
+	includeCompleted?: boolean;
+	dueBefore?: string;
+	dueAfter?: string;
+	timeZone?: string;
+}
+
+export function filterTasksByWindow(tasks: Task[], filter: TaskWindowFilter): Task[] {
+	const includeCompleted = filter.includeCompleted ?? false;
+	const timeZone = filter.timeZone ?? "UTC";
+	const dueBeforeMillis = filter.dueBefore !== undefined ? parseOffsetIso(filter.dueBefore) : undefined;
+	const dueAfterMillis = filter.dueAfter !== undefined ? parseOffsetIso(filter.dueAfter) : undefined;
+
+	return tasks.filter((task) => {
+		if (!includeCompleted && task.completed) return false;
+
+		if (dueBeforeMillis !== undefined || dueAfterMillis !== undefined) {
+			// due 無しは「期限が無い」= scheduled ではないので、dueBefore/dueAfter が
+			// 指定されている以上は対象外にする(仕様の指示どおり。元実装と同じ規則)。
+			if (task.due === null) return false;
+			const dueMillis = task.isAllDay
+				? calDateStartEpochMillis(parseAllDayDue(task.due), timeZone)
+				: Date.parse(task.due); // 時刻付きは offset 込みの絶対 ISO なので Date.parse で足りる。
+			if (dueBeforeMillis !== undefined && !(dueMillis < dueBeforeMillis)) return false;
+			if (dueAfterMillis !== undefined && !(dueMillis > dueAfterMillis)) return false;
+		}
+
+		return true;
+	});
+}
+
 export class ListTodos {
 	constructor(private readonly resourceRepo: CalendarObjectResourceRepository) {}
 
 	async execute(input: ListTodosInput): Promise<ListTodosOutput> {
-		const includeCompleted = input.includeCompleted ?? false;
 		const timeZone = input.timeZone ?? "UTC";
 		const collectionId: CollectionId = mkCollectionId(input.calendarId ?? "tasks");
-
-		const dueBeforeMillis = input.dueBefore !== undefined ? parseOffsetIso(input.dueBefore) : undefined;
-		const dueAfterMillis = input.dueAfter !== undefined ? parseOffsetIso(input.dueAfter) : undefined;
 
 		// 2026-07-14: component_kind="VTODO" の絞り込みを SQL 側に押し出した(ファイル冒頭コメント)。
 		// findAllInCollection → メモリで componentKind==="VTODO" を判定、から置き換え。
 		const resources = await this.resourceRepo.findVTodosInCollection(input.owner, collectionId);
 
-		const tasks: Task[] = [];
+		// 【2026-07-23 リファクタ】STATUS(完了)・DUE 窓のフィルタはもうこのループの中で行わない —
+		// ここでは resource → Task の変換だけを行い(全件・無条件)、フィルタは下の
+		// filterTasksByWindow(export 済みの純関数)にまとめて委譲する。ループ内で直接 continue して
+		// いた旧実装と比べて中間配列が1つ増えるが、単一コレクション分の全 VTODO 件数は小さく
+		// (D1 の1 SELECT 分)実害は無い。見返りとして「STATUS/DUE 窓の判定ロジックが1箇所だけに
+		// 存在する」という不変条件が手に入る(buildTodosViewModel が同じ関数を呼べる・ズレない)。
+		const allTasks: Task[] = [];
 		for (const resource of resources) {
 			// master(RECURRENCE-ID 無し)を1件として扱う。反復展開はしない方針(ファイル冒頭)。
 			// todos() は同一 UID の master + オーバーライドを返しうるが、VTODO はこの実装では
@@ -86,25 +159,11 @@ export class ListTodos {
 			// 「反復 VTODO の展開自体をスコープ外にしている」と同じ前提)ので先頭要素を master とみなす。
 			const vtodo = resource.payload.todos()[0];
 			if (vtodo === undefined) continue;
-
-			if (!includeCompleted && vtodo.status === "COMPLETED") continue;
-
 			const zoneOf = zoneResolverFor(resource.payload);
-
-			if (dueBeforeMillis !== undefined || dueAfterMillis !== undefined) {
-				const due = vtodo.due;
-				// due 無しは「期限が無い」= scheduled ではないので、dueBefore/dueAfter が
-				// 指定されている以上は対象外にする(仕様の指示どおり)。
-				if (due === undefined) continue;
-				const dueMillis = "kind" in due
-					? calDateTimeToEpochMillis(due, { zoneOf, floatingTimeZone: timeZone })
-					: calDateStartEpochMillis(due, timeZone);
-				if (dueBeforeMillis !== undefined && !(dueMillis < dueBeforeMillis)) continue;
-				if (dueAfterMillis !== undefined && !(dueMillis > dueAfterMillis)) continue;
-			}
-
-			tasks.push(taskFromVTodo(vtodo, zoneOf, timeZone));
+			allTasks.push(taskFromVTodo(vtodo, zoneOf, timeZone));
 		}
+
+		const tasks = filterTasksByWindow(allTasks, input);
 
 		// 既定の並び順: X-APPLE-SORT-ORDER 昇順(iOS のリマインダーアプリの並びに合わせる —
 		// スライス②-a で導入)。sortOrder が無い(サーバー生成前の古いデータ等)ものは末尾に

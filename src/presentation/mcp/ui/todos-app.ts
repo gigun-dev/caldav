@@ -878,46 +878,10 @@ export const TODOS_APP_HTML = `<!doctype html>
     cursor: pointer;
   }
 
-  /* C0-a(> 2026-07-17 実機 FB2: グレーフェード自然退場 / A-3: 対象はタイトルのみ): 完了行は done タップ
-   * の瞬間から **タイトル要素だけ** に .retiring が付き、retire-fade アニメで opacity 低下 + grayscale
-   * (彩度落ち)へゆっくり薄れる。約3秒後(A-4: DONE_EXIT_GRACE_MS)に entry(retireDoneRow)が li に
-   * .exiting を足し、max-height:0 の畳みへ連続させる(done チェック → タイトルが薄くなる → すっと畳まれる、
-   * の1つの流れ)。animation-duration / negative animation-delay は entry が JS から与える
-   * (DONE_EXIT_GRACE_MS に一致させ、要素の作り直しでも経過位置から resume させる)。
-   * 【A-3: 行全体でなくタイトルだけを退色させる理由】丸チェック(塗り青)やメタ行(due/繰り返し)まで
-   * 退色させると「もう消えた行」に見えすぎるとの実機 FB。done の記号性(青丸+取消線)は残し、テキストの
-   * 色だけを引くことで「完了して静かに退いていく」トーンにする。→ セレクタは .retiring(li 直下でなく
-   * タイトル要素=.title / .title-edit に付く)。
-   * 【旧 .undo-exit(取り消すボタン)は廃止】C0 では猶予中に .row-main > .undo-exit(accent テキスト
-   * ボタン)を出していたが、実機で文字が上に偏る崩れが出たうえベスプラに合わないため FB2 で撤去した
-   * (取り消しは塗り丸の再タップに一本化)。 */
-  @keyframes retire-fade {
-    from { opacity: 1; filter: grayscale(0); }
-    to { opacity: 0.4; filter: grayscale(1); }
-  }
-  /* .retiring はタイトル要素(.title / .title-edit)に付く(A-3)。forwards でフェード終端(薄いグレー)を
-   * .exiting の畳みが始まるまで保持する。duration/delay は entry が inline で与える。 */
-  .retiring {
-    animation: retire-fade 3000ms ease forwards;
-  }
-  /* 完了行の退場アニメ(畳み)。retire-fade の薄れに連続して li 全体を max-height:0 へ畳む(entry が実高さ→0)。 */
-  li.exiting {
-    overflow: hidden;
-    opacity: 0;
-    /* max-height は entry が inline style で 実高さ→0 に動かす。padding/margin も畳んで隙間を残さない。 */
-    padding-top: 0;
-    padding-bottom: 0;
-    margin-top: 0;
-    margin-bottom: 0;
-    min-height: 0;
-    transition: max-height 0.32s ease, opacity 0.32s ease, padding 0.32s ease, margin 0.32s ease;
-  }
-  /* prefers-reduced-motion: reduce ではフェード/畳みアニメを止める(entry も matchMedia 判定で .exiting を
-   * 付けず即 finish するが、CSS でも二重に無効化。retire-fade も止めて瞬時に静的な done 表示のまま消える)。 */
-  @media (prefers-reduced-motion: reduce) {
-    .retiring { animation: none; }
-    li.exiting { transition: none; }
-  }
+  /* C0-a(撤去済み・2026-07-23): 完了行を「タイトルだけグレーフェード → 約3秒で畳んで退場」させていた
+   * .retiring / retire-fade / li.exiting のスタイルはここに置いていたが、退場機構そのものを撤去した
+   * (todos-entry.ts 冒頭の C0-a 撤去コメント参照)ため丸ごと削除した。完了行はもう退場せず completed
+   * セクションのメンバーとして残り続けるので、退場アニメも不要になった。 */
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1 が
    * containerDimensions.maxHeight から設定する CSS 変数で、fullscreen 中はホストが sheet 実寸を

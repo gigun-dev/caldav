@@ -36,7 +36,6 @@ export function coalesceAction(sentCompleted: boolean, latestCompleted: boolean 
  *  sticky スナップショットから行を復活させて楽観状態(desired)を見せてよいかを返す。
  *  @param inConfirmed その id が confirmedTasks(サーバー確定一覧)に居るか。居るなら通常 overlay で足りる
  *    ので復活は不要(false を返す)。
- *  @param retired 退場済み(retiredDoneIds)か。退場した行は復活させない(冪等性 — 幽霊復活を防ぐ)。
  *  @param optimisticallyDeleted 楽観削除中(optimisticDeletes)か。削除中の行は復活させない。
  *  @param hasSticky sticky に last-known スナップショットがあるか。無ければ土台が無いので復活できない。
  *  @returns true = sticky を土台に楽観を復活させて表示に足す(reopen が即座に見える)。
@@ -44,15 +43,13 @@ export function coalesceAction(sentCompleted: boolean, latestCompleted: boolean 
  *  undo(楽観 reopen)は「確定行が無い」ため overlay できず見えない → 行が完了表示のまま残る、という実機
  *  バグの主因。in-flight 楽観の間だけ sticky から復活させれば undo が即座に反映される(サーバー再開の
  *  往復を待たない)。復活は optimisticToggle が生きている間だけ(settle/rollback で消えれば止まる)なので
- *  幽霊化しない。 */
-export function shouldReviveToggle(
-	inConfirmed: boolean,
-	retired: boolean,
-	optimisticallyDeleted: boolean,
-	hasSticky: boolean,
-): boolean {
+ *  幽霊化しない。
+ *  【2026-07-23: retired 引数を撤去】旧シグネチャは「退場済み(retiredDoneIds)か」を4番目の引数に取り、
+ *  退場した行は復活させない判定をしていた。C0-a(約3秒退場機構)そのものを撤去したため retiredDoneIds が
+ *  無くなり、この引数も意味を失った(完了行はもう退場しないので、退場済み判定を通す必要が無くなった)。 */
+export function shouldReviveToggle(inConfirmed: boolean, optimisticallyDeleted: boolean, hasSticky: boolean): boolean {
 	if (inConfirmed) return false; // 確定行があるので通常 overlay で足りる
-	if (retired || optimisticallyDeleted) return false; // 退場/削除中は復活させない
+	if (optimisticallyDeleted) return false; // 削除中は復活させない
 	return hasSticky; // 土台(sticky)があるときだけ復活できる
 }
 

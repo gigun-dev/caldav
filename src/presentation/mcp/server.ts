@@ -61,7 +61,7 @@ import type { CalendarCollectionRepository, CalendarObjectResourceRepository } f
 import type { CreateTodoRecurrenceInput, Event } from "../../application/usecases";
 // E-2 スライス②: mutate 系ツールが返す差分レンズ付き確定一覧の contract と、その表示用整形。
 import type { AffectedTask, TaskSnapshot, TodosViewModel } from "./todos-view-model";
-import { buildEditedChanges, snapshotFromTask } from "./todos-diff";
+import { buildCompletedSummary, buildEditedChanges, snapshotFromTask } from "./todos-diff";
 // E-3 スライス S1: event 系ツールの structuredContent 契約と表示用整形(todos 版と対称)。
 import type { AffectedEvent, EventSnapshot } from "./events-view-model";
 import { buildEventEditedChanges, snapshotFromEvent } from "./events-diff";
@@ -78,6 +78,7 @@ import {
 	DeleteTargetNotFoundError,
 	DeleteTodo,
 	DueTimeZoneRequiredError,
+	filterTasksByWindow,
 	InvalidDueError,
 	InvalidTimeZoneError,
 	ListOccurrencesAcrossOwner,
@@ -201,6 +202,13 @@ const listEventsExpandedInputShape = {
 };
 
 const DEFAULT_MAX_EVENTS = 250;
+
+// COMPLETED_RECENT_MAX: buildTodosViewModel が completedSummary.recent に載せる件数の上限
+// (2026-07-23 症状B対策・ユーザー裁定)。カードの完了済みセクションは「今の操作の結果が見える」
+// ことが目的(直後の undo とフィードバック)であり、履歴を遡る閲覧はエージェント経由
+// (list-todos includeCompleted:true のテキスト/structuredContent.tasks)の役割に切り分ける。
+// todos-entry.ts 側の COMPLETED_RECENT_MAX(UI 定数・同名で揃えている)と値を一致させること。
+const COMPLETED_RECENT_MAX = 5;
 
 // --- get-freebusy -------------------------------------------------------------
 
@@ -2261,15 +2269,48 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		// (2026-07-14 レイテンシ改善では UC の before/removed 化で presentation 側の余計な全件読みを
 		// 消すところまでに留め、SQL レベルの絞り込みは別タスクにする)。
 		const listTodos = new ListTodos(deps.resourceRepo);
-		const { tasks } = await listTodos.execute({
+		// 【2026-07-23 症状B対策・同日中にコーディネーターの再指摘で修正】
+		// 当初は ListTodos を dueBefore/dueAfter を含めて1回呼び、その結果(allTasks)から
+		// completedSummary も導いていた。だがこれだと due 窓付きの list-todos 呼び出し(例:
+		// モデルが「今週のタスク」で dueBefore/dueAfter を指定)のとき completedSummary.total が
+		// due 窓で痩せてしまい、「completedSummary はどんな view の push でも不変」という症状Bの
+		// 治療原則そのものが再発する(完了済みタスクにも due が付いていることがあるため、
+		// dueBefore/dueAfter が完了済み側の集計まで削ってしまう)。
+		// 【修正】ここでは **due 引数を渡さず** includeCompleted:true・calendarId のみで1回読み、
+		// allTasks(= コレクション内の全 VTODO・due 窓非フィルタ・完了/未完了とも全件)を得る。
+		// completedSummary はこの完全な allTasks から計算する(due 窓の影響を受けない)。
+		// tasks(応答契約どおりの絞り込み結果)は、この allTasks に対して ListTodos.execute 自身が
+		// 内部で使うのと同じ純関数 filterTasksByWindow(list-todos.ts から export)を presentation
+		// 側から呼んで導出する — due 窓判定ロジックを presentation に複製しない(単一情報源。
+		// list-todos.ts の filterTasksByWindow JSDoc に経緯を集約)。
+		// 【D1 SELECT は1回のまま】ListTodos の内部実装は component_kind="VTODO" だけを SQL で絞り、
+		// STATUS/DUE は元々メモリ側フィルタ(list-todos.ts 冒頭コメント)なので、due 引数を渡さず
+		// includeCompleted:true で呼んでも(= 単に絞り込みをしないだけなので)D1 への追加 SELECT は
+		// 発生しない。IAD レイテンシ事情(2026-07-14 レイテンシ改善の経緯)により追加ラウンドトリップは
+		// 避ける制約を守っている。
+		const { tasks: allTasks } = await listTodos.execute({
 			owner: principal,
-			includeCompleted: opts.includeCompleted,
-			dueBefore: opts.dueBefore,
-			dueAfter: opts.dueAfter,
+			includeCompleted: true,
 			calendarId: opts.calendarId,
 			timeZone: zone,
 		});
+		// tasks: 応答契約どおり「呼び出し側が指定した includeCompleted/dueBefore/dueAfter」に従って
+		// 絞る(未指定=false=未完了のみ。mutate 系が includeCompleted を渡さないのは
+		// buildTodosViewModel コメントの「確定一覧は未完了ビューに揃える」方針のまま変えない)。
+		const tasks = filterTasksByWindow(allTasks, {
+			includeCompleted: opts.includeCompleted,
+			dueBefore: opts.dueBefore,
+			dueAfter: opts.dueAfter,
+			timeZone: zone,
+		});
+		// completedSummary: 完了済みの総数 + completedAt 新しい順の直近 COMPLETED_RECENT_MAX 件。
+		// **due 窓を通していない allTasks** から計算する(上のコメントの核心)。計算ロジックは
+		// 純関数 buildCompletedSummary(todos-diff.ts)に抽出済み(D1/principal 非依存なので Task
+		// フィクスチャだけで単体テストできる — mcp-todos-diff.test.ts 参照)。symptom B の背景は
+		// todos-view-model.ts の completedSummary JSDoc に集約 — includeCompleted/dueBefore/dueAfter
+		// の値に関係なく常にこの形で載る。
 		const vm: TodosViewModel = { tasks, calendarId: opts.calendarId ?? "tasks", timeZone: zone };
+		vm.completedSummary = buildCompletedSummary(allTasks, COMPLETED_RECENT_MAX);
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;

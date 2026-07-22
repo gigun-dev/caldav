@@ -568,8 +568,14 @@ describe("/mcp", () => {
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
 			// structuredContent: 作成直後の空のリストカード(実在確認を兼ねて実際に ListTodos を
-			// 通した結果なので tasks は空配列ハードコードではない)。
-			expect(rpc.result.structuredContent).toEqual({ tasks: [], calendarId: "personal", timeZone: "UTC" });
+			// 通した結果なので tasks は空配列ハードコードではない)。completedSummary は
+			// buildTodosViewModel が常に付ける(2026-07-23 症状B対策)ので空でも {total:0,recent:[]} が載る。
+			expect(rpc.result.structuredContent).toEqual({
+				tasks: [],
+				calendarId: "personal",
+				timeZone: "UTC",
+				completedSummary: { total: 0, recent: [] },
+			});
 			// content(text)側にカレンダーのメタ情報が残る(従来の応答契約を維持)。
 			const textResult = JSON.parse(rpc.result.content[0].text);
 			expect(textResult).toEqual({
@@ -597,7 +603,13 @@ describe("/mcp", () => {
 			// マッチしないため、生成 id は crypto.randomUUID() フォールバック(UUID 形式)になる。
 			expect(textResult.id).toMatch(/^[0-9a-f-]{36}$/);
 			// structuredContent.calendarId は content 側の id(自動生成 slug/UUID)と一致する。
-			expect(rpc.result.structuredContent).toEqual({ tasks: [], calendarId: textResult.id, timeZone: "UTC" });
+			// completedSummary は常時付与(2026-07-23 症状B対策)。
+			expect(rpc.result.structuredContent).toEqual({
+				tasks: [],
+				calendarId: textResult.id,
+				timeZone: "UTC",
+				completedSummary: { total: 0, recent: [] },
+			});
 		});
 
 		it("create-calendar: 既存 id との衝突は isError(CollectionAlreadyExistsError)", async () => {
@@ -1163,6 +1175,40 @@ describe("/mcp", () => {
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
 			expect("view" in rpc.result.structuredContent).toBe(false);
+		});
+
+		// 2026-07-23 症状B再発対策(コーディネーター指摘): completedSummary は「どんな view の push
+		// でも不変」がここでの治療原則。当初の実装は buildTodosViewModel が ListTodos を
+		// dueBefore/dueAfter 込みで1回読んでいたため、due 窓を指定した list-todos 呼び出しの
+		// completedSummary.total が due 窓で痩せる再発があった(list-todos.ts の
+		// filterTasksByWindow JSDoc に経緯を集約)。ここでは「完了済みタスクの due が due 窓の
+		// 外にあっても、completedSummary.total は due 窓の有無に関係なく同じ値になる」ことを固定する。
+		it("completedSummary は dueBefore/dueAfter を指定した list-todos でも痩せない(症状B再発対策)", async () => {
+			seedTasksCollection();
+			// due 窓(2026-08-01 未満)の外側に due を持つ完了済みタスクを作る — この行が due 窓
+			// フィルタで tasks から漏れても、completedSummary.total には数えられるべき。
+			const outsideWindowDoneId = await createTodo({ title: "窓外の完了タスク", due: "2026-12-31" });
+			await completeTodo(outsideWindowDoneId);
+			// due 窓の内側に due を持つ未完了タスクも1件混ぜ、tasks 側の絞り込み自体は生きていることを
+			// 併せて確認する(due フィルタそのものを壊していないことの回帰防止)。
+			await createTodo({ title: "窓内の未完了タスク", due: "2026-07-20" });
+
+			// due 窓なし(既定)での completedSummary.total を基準値にする。
+			const baseline = await call("list-todos", { includeCompleted: true });
+			expect(baseline.completedSummary.total).toBeGreaterThanOrEqual(1);
+
+			// due 窓付き(窓外の完了タスクの due 2026-12-31 を弾く範囲)で呼んでも、
+			// completedSummary.total は基準値と同じでなければならない(due 窓で痩せない)。
+			const windowed = await call("list-todos", {
+				includeCompleted: true,
+				dueBefore: "2026-08-01T00:00:00Z",
+				dueAfter: "2026-07-01T00:00:00Z",
+			});
+			expect(windowed.completedSummary.total).toBe(baseline.completedSummary.total);
+			// tasks 側の due 窓フィルタ自体は生きている(窓外の完了タスクは tasks から漏れる)ことも
+			// 併せて確認する — completedSummary だけを別チャンネルにした設計が「tasks の due フィルタを
+			// 壊さず completedSummary だけ不変にする」という要求どおりであることの回帰防止。
+			expect(windowed.tasks.some((t: { id: string }) => t.id === outsideWindowDoneId)).toBe(false);
 		});
 	});
 

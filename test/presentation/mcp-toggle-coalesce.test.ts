@@ -7,7 +7,8 @@
 //  (1) coalesceAction: done→undo の間にサーバー確定往復が入っても、最新の望み(undo=未完了)が送った
 //      内容(完了)と食い違えば必ず補正(reopen)を追送する(= 完了で握りつぶさない)。
 //  (2) shouldReviveToggle: 完了確定で未完了ビューから脱落した id への undo(楽観 reopen)を、sticky から
-//      復活させて即座に見せる(= 確定行が無くても desired が勝つ)。退場済み/削除中は復活させない。
+//      復活させて即座に見せる(= 確定行が無くても desired が勝つ)。削除中は復活させない。
+//      【2026-07-23】retired 引数(退場済み判定)は C0-a(約3秒退場機構)撤去に伴い削除した(下記参照)。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "../../src/presentation/mcp/ui/toggle-coalesce";
@@ -46,24 +47,20 @@ describe("coalesceAction(追送判定・last-write-wins)", () => {
 });
 
 describe("shouldReviveToggle(確定 vm から脱落した行の楽観復活)", () => {
-	test("【バグ修正の核】確定に居ない + sticky あり + 退場/削除でない → 復活する(undo を即座に見せる)", () => {
-		expect(shouldReviveToggle(false, false, false, true)).toBe(true);
+	test("【バグ修正の核】確定に居ない + sticky あり + 削除中でない → 復活する(undo を即座に見せる)", () => {
+		expect(shouldReviveToggle(false, false, true)).toBe(true);
 	});
 
 	test("確定一覧に居る → 復活不要(通常 overlay で足りる)", () => {
-		expect(shouldReviveToggle(true, false, false, true)).toBe(false);
-	});
-
-	test("退場済み(retiredDoneIds)→ 復活させない(幽霊復活防止・冪等性)", () => {
-		expect(shouldReviveToggle(false, true, false, true)).toBe(false);
+		expect(shouldReviveToggle(true, false, true)).toBe(false);
 	});
 
 	test("楽観削除中(optimisticDeletes)→ 復活させない", () => {
-		expect(shouldReviveToggle(false, false, true, true)).toBe(false);
+		expect(shouldReviveToggle(false, true, true)).toBe(false);
 	});
 
 	test("sticky スナップショットが無い → 土台が無く復活できない(best-effort で見送り)", () => {
-		expect(shouldReviveToggle(false, false, false, false)).toBe(false);
+		expect(shouldReviveToggle(false, false, false)).toBe(false);
 	});
 });
 
