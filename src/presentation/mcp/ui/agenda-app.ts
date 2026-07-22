@@ -427,6 +427,12 @@ export const AGENDA_APP_HTML = `<!doctype html>
   #root.fullscreen-scroll {
     overflow-y: auto;
     max-height: var(--host-max-height, 100vh);
+    /* 2026-07-23 カード UI 原則 (b) 是正①(modeling/15 §B-3): 安全先頭(safe top)規約。
+     * entry.ts の applyHostContext が --host-safe-top/--host-safe-bottom を
+     * HostContext.safeAreaInsets から算出してここに供給する(未受信/フォールバック不要時は 0px)。
+     * todos-app.ts の同定義と同値(個々のビュー/遷移コードは inset を意識しない設計にする狙いも同じ)。 */
+    padding-top: var(--host-safe-top, 0px);
+    padding-bottom: var(--host-safe-bottom, 0px);
   }
 
   /* --- 空/スケルトン --- */
@@ -506,7 +512,10 @@ export const AGENDA_APP_HTML = `<!doctype html>
    * 余白を予約する(40px の FAB 一辺 + 16px の bottom + 8px の余裕を切り上げ。todos-app.ts と同値
    * — 不足すると FAB が最終行に重なりタップミスを誘発するので安全側に倒す)。 */
   #root.fullscreen-scroll {
-    padding-bottom: 72px;
+    /* 2026-07-23: FAB 分の固定 72px 予約 + 安全先頭規約の --host-safe-bottom を加算する(todos-app.ts
+     * と同じ calc。この宣言はカスケード順で上の padding-top を持つブロックより後ろに来るため、
+     * padding-bottom の最終値はこちらになる — padding-top は別プロパティなので上書きされない)。 */
+    padding-bottom: calc(72px + var(--host-safe-bottom, 0px));
   }
 
   /* --- ビュー切替セグメント + 月グリッド(2026-07-22 ロードマップ②・fullscreen 限定)---
@@ -560,6 +569,16 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .mv-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
   .mv-t { color: var(--muted); font-size: 12px; width: 40px; flex: none; }
   .mv-empty { color: var(--muted); font-size: 13px; padding: 14px 2px; }
+  /* 2026-07-23 カード UI 原則 (b) 是正③(modeling/15 §B-1・タスク #35): 選択日の予定リストを
+   * INLINE_PREVIEW_MAX 件で有界化した超過分の「他 n件」フッタ(entry.ts の buildDayPanel 参照)。
+   * .fold-more(inline 一覧の畳みフッタ)と見た目のトーンを揃える(accent 色=押せるテキスト)が、
+   * タップ先が requestDisplayMode ではなく enterDayMode(同一 fullscreen 内の日ビュー遷移)なので
+   * クラス自体は分ける(.fold-more は「fullscreen 昇格ボタン」の意味も帯びており、それと混同しない)。 */
+  .mv-more {
+    display: block; width: 100%; text-align: left; margin-top: 4px; padding: 8px 2px;
+    font: inherit; font-size: 13px; color: var(--accent); background: none; border: none; cursor: pointer;
+  }
+  .mv-more-count { font-weight: 600; }
 
   /* --- 日タイムライン(2026-07-22 ロードマップ③・fullscreen 限定)---
    * モック docs/modeling/ui-mockups/agenda-views-v7.html を移植。接頭辞 dv-(mv- 慣行に倣う・

@@ -53,7 +53,7 @@ import { rowKey, idOfRowKey } from "./row-key";
 import { FEEDBACK, isCommitting } from "./feedback";
 // inline 畳み(P4-DM C1+C2/C3)の畳み共有カーネル(fold.ts)。todos-entry.ts と同じ純関数を使う
 // (occurrence 行単位の畳み。見出し高は rowBottoms の累積 offset に織り込まれるので無改造で流用)。
-import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
+import { INLINE_PREVIEW_MAX, boundPreviewList, canRequestFullscreen, computeInlineFit } from "./fold";
 // C2(設計 05 §2): 場所/会議/参照 URL の「行に何を出すか」を決める純関数群(location-view.ts)。
 // 判断は純関数に隔離し(mcp-location-view.test.ts で境界を固定)、DOM 組み立てだけをここで行う。
 import {
@@ -78,6 +78,10 @@ import {
 } from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, localMidnightIso, wallDatePart, wallTimePart, dayDiff, weekdayOf, addDaysToDateKey } from "./format";
+// 安全先頭(safe top)規約の共有カーネル(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)。
+// HostContext.safeAreaInsets → CSS 変数へ落とす px 値の決定(フォールバック込み)だけを担う純関数。
+// 実際に CSS 変数を当てる(setProperty)のは applyHostContext 側(todos-entry.ts と共通の分担)。
+import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
 // 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
 // bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
 import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
@@ -137,6 +141,26 @@ let hostAvailableDisplayModes: readonly string[] | null = null;
  *  (fixed)と {maxHeight}(flexible)の union なので "maxHeight" in dims で判別する(apps.mdx 公式例)。
  *  fullscreen 時は #root に fullscreen-scroll を当て全件を内部スクロールで見せる(畳みは applyInlineFold が
  *  hostDisplayMode!=="inline" で早期 return するので既に全件表示・ここで足すのはスクロール設定だけ)。 */
+// safeAreaLogged: 実測用デバッグログ(受信した safeAreaInsets の生値)を初回の1回だけ出す
+// (applyHostContext は hostcontextchanged のたびに何度も呼ばれるため、毎回出すとログが埋もれる)。
+// 実機採寸(FULLSCREEN_SAFE_TOP_FALLBACK_PX の精度確認)が終わったらこのログごと削ってよい。
+let safeAreaLogged = false;
+
+/** ctx.safeAreaInsets → --host-safe-top / --host-safe-bottom への反映(applyHostContext の下請け)。
+ *  「いくつにすべきか」の判断は safe-area.ts の純関数に委ね、ここは setProperty するだけ(How)。 */
+function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
+	if (!safeAreaLogged) {
+		safeAreaLogged = true;
+		// 実測用: claude.ai iOS がクローム込みで申告しているか未確認(modeling/15 §B-3)。
+		// devtools の console でこの1行を見れば、申告の有無・値をそのまま確認できる。
+		console.log("[agenda] hostcontext.safeAreaInsets =", insets, "displayMode =", hostDisplayMode);
+	}
+	const top = resolveSafeTopPx(insets, hostDisplayMode);
+	const bottom = resolveSafeBottomPx(insets);
+	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
+	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
+}
+
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
 	hostDisplayMode = ctx?.displayMode ?? null;
@@ -149,6 +173,12 @@ function applyHostContext(): void {
 	} else {
 		document.documentElement.style.removeProperty("--host-max-height");
 	}
+	// --- 安全先頭(safe top)規約(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)---------
+	// ctx.safeAreaInsets を CSS 変数 --host-safe-top / --host-safe-bottom へ落とす。fullscreen
+	// コンテナの padding-top(agenda-app.ts の #root.fullscreen-scroll)がこれを一元的に読むので、
+	// 個々のビュー/遷移コード(月/日/一覧の切替・sheetState の各ページ等)は inset を一切意識しない
+	// (スクロール top=0 = 安全先頭、という前提の上で書ける)。
+	applySafeAreaVars(ctx?.safeAreaInsets);
 	// fullscreen 中だけ #root を内部スクロールコンテナにする。inline に戻ったら外す(設計04 決定2)。
 	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
 	// 【inline 復帰時は list へ強制リセット(確定済み設計判断1)】inline は高さクランプ内で月グリッドが
@@ -1454,9 +1484,16 @@ function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
 		panel.appendChild(empty);
 		return panel;
 	}
+	// 【2026-07-23 カード UI 原則 (b) 是正③(modeling/15 §B-1・タスク #35)】月ビュー下段の選択日
+	// リストは、旧実装だと選択日の予定件数に比例して無制限に伸びていた(fullscreen 内の「単一の
+	// 内部スクロールコンテナ」原則には反しないが、月グリッド自体を画面外へ押し出す=見出しの
+	// カレンダー面が実質スクロールで消える体験になっていた)。inline プレビュー(fold.ts)と同じ
+	// 「N 件 + 他 n件フッタ」の要約表示に倣って有界化し、全件は既存の日ビュー導線(enterDayMode)へ
+	// 委ねる — 「新規発明を最小に」の指示どおり、新しい遷移や UI 部品は増やさない。
+	const { visible, remaining } = boundPreviewList(evs); // 既定 INLINE_PREVIEW_MAX 件(fold.ts 参照)
 	const ul = document.createElement("ul");
 	ul.className = "mv-rows";
-	for (const ev of evs) {
+	for (const ev of visible) {
 		const li = document.createElement("li");
 		const dot = el("span", "mv-dot");
 		dot.style.background = eventDotColor(ev);
@@ -1466,6 +1503,26 @@ function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
 		ul.appendChild(li);
 	}
 	panel.appendChild(ul);
+	if (remaining > 0) {
+		// 「他 n件」フッタ(buildActionRow の .fold-more と同じ語彙・クラス名は流用しない — こちらは
+		// 一覧の inline 畳みではなく月ビュー下段専用のため .mv-more という別クラスにする。タップ先が
+		// fullscreen 昇格(buildActionRow)ではなく enterDayMode(同じ fullscreen 内でのビュー遷移)な
+		// ので、押せる/押せないの死にボタン判定[canRequestFullscreen]は不要 — 月ビューはそもそも
+		// fullscreen 限定機能で、常にタップ可能)。
+		const more = document.createElement("button");
+		more.type = "button";
+		more.className = "mv-more";
+		more.appendChild(document.createTextNode("他 "));
+		const count = el("span", "mv-more-count");
+		count.textContent = `${remaining}件`;
+		more.appendChild(count);
+		more.setAttribute("aria-label", `他 ${remaining}件の予定。日ビューで全件を見る`);
+		more.addEventListener("click", (e) => {
+			e.stopPropagation();
+			enterDayMode(); // 全件は日ビュー(既存の日タイムライン導線)に委ねる。新規 UI を増やさない。
+		});
+		panel.appendChild(more);
+	}
 	return panel;
 }
 

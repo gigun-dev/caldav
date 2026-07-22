@@ -890,6 +890,15 @@ export const TODOS_APP_HTML = `<!doctype html>
   #root.fullscreen-scroll {
     overflow-y: auto;
     max-height: var(--host-max-height, 100vh);
+    /* 2026-07-23 カード UI 原則 (b) 是正①(modeling/15 §B-3): 安全先頭(safe top)規約。
+     * entry.ts の applyHostContext が --host-safe-top/--host-safe-bottom を
+     * HostContext.safeAreaInsets から算出してここに供給する(未受信/フォールバック不要時は 0px)。
+     * fullscreen コンテナ(この内部スクロールコンテナ)の padding だけに一元適用することで、
+     * 個々のビュー/遷移コード(sheetState の各ページ等)は inset を一切意識せず
+     * 「スクロール top=0 = 安全先頭」という前提の上で書ける(entry.ts コメント参照)。
+     * env(safe-area-inset-*) は iframe 内で機能しないため使わない(modeling/15 §B-3/§B-4)。 */
+    padding-top: var(--host-safe-top, 0px);
+    padding-bottom: var(--host-safe-bottom, 0px);
   }
   /* スケルトン: 接続〜初回 tool-result の間に出す「行の影」3本。テキストの点滅より
    * 「リストが来る場所」を予告できるので体感が安定する。shimmer は opacity パルスで
@@ -1011,7 +1020,11 @@ export const TODOS_APP_HTML = `<!doctype html>
    * 切り上げて 72px とした(厳密な誤差より安全側に倒す — 予約が少し多くても最終行が窮屈に
    * 見える程度で実害が小さいが、不足すると FAB が最終行に重なってタップミスを誘発する)。 */
   #root.fullscreen-scroll {
-    padding-bottom: 72px;
+    /* 2026-07-23: FAB 分の固定 72px 予約 + 安全先頭規約の --host-safe-bottom を加算する(calc)。
+     * この宣言はカスケード順で上の #root.fullscreen-scroll(padding-top/--host-safe-top を持つ方)
+     * より後ろに来るため、padding-bottom はここが最終的な値になる(padding-top は上のブロックの
+     * ものがそのまま生きる — 別プロパティなので上書きし合わない)。 */
+    padding-bottom: calc(72px + var(--host-safe-bottom, 0px));
   }
 
   /* --- 優先度インライン記号(E-2 スライス③: タイトル前に表示)-----------------------

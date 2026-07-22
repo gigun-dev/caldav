@@ -172,3 +172,21 @@ export function canRequestFullscreen(availableDisplayModes: readonly string[] | 
 	if (availableDisplayModes === null) return false;
 	return availableDisplayModes.includes("fullscreen");
 }
+
+// --- カード UI 原則 (b) 是正③(2026-07-23・docs/modeling/15 §B-1・タスク #35) --------------------
+// 【何のためにあるか】inline プレビューの「N 件 + 他 n件」だけでなく、agenda 月ビュー下段
+// (buildDayPanel の選択日リスト)のような「fullscreen 内の要約セクション」でも同じ有界化の語彙が
+// 必要になった(旧実装は選択日の予定件数に比例して無制限に伸びていた)。computeInlineFit は
+// maxHeight という物理制約前提の関数なので流用できない(月ビュー下段はカレンダーグリッドの下に
+// 続くだけの通常フロー要素で、独立した maxHeight クランプ対象ではない)。「先頭 N 件 + 超過数」を
+// 返すだけの、DOM/物理制約に一切依存しない最小の純関数として切り出す(fold.ts に置くのは
+// INLINE_PREVIEW_MAX という同じ「プレビューは高々 N 件」という方針定数を再利用するため)。
+
+/** 先頭 N 件(既定 INLINE_PREVIEW_MAX)だけを可視化し、残りは件数だけを返す(DOM 非依存の純関数)。
+ *  呼び出し側は remaining>0 のとき「他 n件」フッタを出し、タップで全件を見せるビュー(fullscreen
+ *  内の別ページ等)へ遷移させる — このプロダクトでは agenda の月ビュー下段(enterDayMode への
+ *  遷移)がその実例(agenda-entry.ts の buildDayPanel 参照)。 */
+export function boundPreviewList<T>(items: readonly T[], max: number = INLINE_PREVIEW_MAX): { visible: T[]; remaining: number } {
+	const visible = items.slice(0, max);
+	return { visible, remaining: items.length - visible.length };
+}

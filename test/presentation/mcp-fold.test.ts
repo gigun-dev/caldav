@@ -24,7 +24,7 @@
 // applyInlineFold 側の実挙動は純関数レベルでは検証できないので、合成規則を式として明示するに留める)。
 // =============================================================================
 import { describe, expect, test } from "bun:test";
-import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "../../src/presentation/mcp/ui/fold";
+import { INLINE_PREVIEW_MAX, boundPreviewList, canRequestFullscreen, computeInlineFit } from "../../src/presentation/mcp/ui/fold";
 
 describe("computeInlineFit", () => {
 	test("maxHeight 未送信(Infinity)は不活性(本アプリの現状=退行ゼロ)", () => {
@@ -108,6 +108,32 @@ describe("INLINE_PREVIEW_MAX(C0-b・inline プレビュー上限)", () => {
 	test("端末の maxHeight が小さく N 件未満しか収まらない場合は computeInlineFit のフィット件数が勝つ", () => {
 		// 安全クランプ: N=5 でも小さい maxHeight で 3 件しか収まらないなら 3 件(min が拾う)。
 		expect(clampPreview(3)).toBe(3);
+	});
+});
+
+describe("boundPreviewList(カード UI 原則 (b) 是正③・2026-07-23・agenda 月ビュー下段の有界化)", () => {
+	test("既定の N(INLINE_PREVIEW_MAX)以下なら全件可視・remaining=0", () => {
+		const items = [1, 2, 3];
+		expect(boundPreviewList(items)).toEqual({ visible: [1, 2, 3], remaining: 0 });
+	});
+
+	test("既定の N を超えると先頭 N 件だけ可視・残りは件数のみ", () => {
+		const items = [1, 2, 3, 4, 5, 6, 7];
+		expect(boundPreviewList(items)).toEqual({ visible: [1, 2, 3, 4, 5], remaining: 2 });
+		expect(INLINE_PREVIEW_MAX).toBe(5); // このテストが暗黙依存する定数値を明示的にも固定する
+	});
+
+	test("ちょうど N 件は remaining=0(境界の等号)", () => {
+		const items = [1, 2, 3, 4, 5];
+		expect(boundPreviewList(items)).toEqual({ visible: [1, 2, 3, 4, 5], remaining: 0 });
+	});
+
+	test("max を明示指定すると既定 N を無視してそちらに従う", () => {
+		expect(boundPreviewList([1, 2, 3, 4], 2)).toEqual({ visible: [1, 2], remaining: 2 });
+	});
+
+	test("空配列は visible=[] remaining=0", () => {
+		expect(boundPreviewList([])).toEqual({ visible: [], remaining: 0 });
 	});
 });
 

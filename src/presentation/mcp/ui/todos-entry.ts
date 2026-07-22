@@ -139,6 +139,9 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
 import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
+// 安全先頭(safe top)規約の共有カーネル(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)。
+// agenda-entry.ts と同じ純関数を使う(HostContext.safeAreaInsets → CSS 変数 px 値の決定だけを担う)。
+import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
 // C2(設計 05 §2): proximity バッジ文言の生成を純関数に隔離(mcp-location-view.test.ts で境界固定)。
 // 型(StructuredLocationView / ProximityAlarmView)も location-view.ts の写経を共有する。
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
@@ -282,6 +285,28 @@ let hostAvailableDisplayModes: readonly string[] | null = null;
  *  C3 追加: fullscreen 時は root に overflow-y:auto を当て全件を内部スクロールで見せる
  *  (畳み自体は applyInlineFold が hostDisplayMode!=="inline" で早期 return するので既に全件表示
  *  になっている — ここで足すのはスクロール可能にするコンテナ設定だけ)。 */
+// safeAreaLogged: 実測用デバッグログ(受信した safeAreaInsets の生値)を初回の1回だけ出す
+// (applyHostContext は hostcontextchanged のたびに何度も呼ばれるため、毎回出すとログが埋もれる)。
+// 実機採寸(FULLSCREEN_SAFE_TOP_FALLBACK_PX の精度確認)が終わったらこのログごと削ってよい。
+// agenda-entry.ts と同名の意図的な重複(モジュール変数はバンドル単位で閉じており共有できないため。
+// 判断ロジック自体は safe-area.ts の純関数に集約済みなので二重管理の実害は無い)。
+let safeAreaLogged = false;
+
+/** ctx.safeAreaInsets → --host-safe-top / --host-safe-bottom への反映(applyHostContext の下請け)。
+ *  「いくつにすべきか」の判断は safe-area.ts の純関数に委ね、ここは setProperty するだけ(How)。
+ *  agenda-entry.ts の同名関数と設計は完全同型(2026-07-23 カード UI 原則 (b) 是正①)。 */
+function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
+	if (!safeAreaLogged) {
+		safeAreaLogged = true;
+		// 実測用: claude.ai iOS がクローム込みで申告しているか未確認(modeling/15 §B-3)。
+		console.log("[todos] hostcontext.safeAreaInsets =", insets, "displayMode =", hostDisplayMode);
+	}
+	const top = resolveSafeTopPx(insets, hostDisplayMode);
+	const bottom = resolveSafeBottomPx(insets);
+	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
+	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
+}
+
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
 	hostDisplayMode = ctx?.displayMode ?? null;
@@ -294,6 +319,10 @@ function applyHostContext(): void {
 	} else {
 		document.documentElement.style.removeProperty("--host-max-height");
 	}
+	// --- 安全先頭(safe top)規約(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)---------
+	// agenda-entry.ts と同じ分担(判断は safe-area.ts・反映はここ)。fullscreen コンテナの
+	// padding-top(todos-app.ts の #root.fullscreen-scroll)がこれを一元的に読む。
+	applySafeAreaVars(ctx?.safeAreaInsets);
 	// C3: fullscreen 中だけ root を内部スクロールコンテナにする。inline に戻ったら外す
 	// (todos-app.ts 冒頭コメントの「内部スクロールコンテナを作らない方針」は inline 限定の方針で、
 	// fullscreen は sheet 1枚だけなので二重スクロール問題が構造的に起きない・設計04 決定2)。
@@ -479,6 +508,12 @@ let calendarsCache: Array<{ id: string; displayName: string; components: readonl
 //   選択行の描画時にセットする(renderAll は #root を innerHTML で作り直すので、再描画前に値を捕まえる)。
 let selTitleInput: HTMLInputElement | null = null;
 let selMemoInput: HTMLInputElement | null = null;
+// sheetTitleInput: 作成モード詳細ページ(sheetState.create===true)のタイトル input への参照。
+//   2026-07-23 カード UI 原則 (b) 是正②: ⊕ の fullscreen 昇格後にフォーカスを合わせる対象を
+//   「一覧末尾のドラフト行」から「作成ビュー(詳細ページ)そのもの」へ移したため、selTitleInput
+//   (一覧行の input)とは別に持つ(ページが差し替わると DOM ノードごと作り直されるので、
+//   buildDetailPage が create モードのときだけ都度セットし直す)。
+let sheetTitleInput: HTMLInputElement | null = null;
 // optimisticDeletes(E-2 スライス⑤・楽観削除): delete-todo 送信中の行 id。rebuildDisplay が
 // 表示から即除去する(楽観適用)。成功で確定 vm に置き換わり、失敗でこの Set から抜いて行が復活する。
 // 【becoming-gone を1描画見せてから消す演出は省略した(判断)】仕様が許容する省略。楽観削除で
@@ -1569,48 +1604,48 @@ function commitSelection(): boolean {
 	return false;
 }
 
-/** FAB(+)で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へフォーカスする
+/** FAB(+)で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へ即フォーカスする
  *  (iOS の新規行と同じ体感)。draft は due/優先度/繰り返し等を持たない最小の {title,notes}(構造化
  *  フィールドは作成モード詳細ページで編集する)。
- *  @param focusDelayMs フォーカス(=キーボード出現)を遅らせる ms。既定 0(即フォーカス)。
- *    【2026-07-18 実機動画の解析: fullscreen 昇格ズームの「中心が右上へ流れる」ブレ対策】
- *    折り畳み中の + は fullscreen へ昇格してから追加するが、即フォーカスするとキーボードの
- *    せり上がりがホストのズーム遷移と同時に走り、遷移の基準矩形が飛行中に動いて spring が
- *    再ターゲット=最大化の中心軸がズレて見える。昇格経路だけフォーカスを遷移完了後
- *    (~450ms: iOS の cover/zoom 遷移は ~0.35-0.4s・余裕をみた値・1定数で可逆)まで遅らせ、
- *    「ズームが終わってからキーボードが上がる」順序に直列化する。inline のままの追加(畳み無し)は
- *    従来どおり即フォーカス(遷移が無いので競合しない)。 */
-function startDraft(focusDelayMs = 0): void {
+ *  【2026-07-23 カード UI 原則 (b) 是正② で focusDelayMs 引数を撤去】旧実装は fullscreen 昇格経路
+ *  だけ startDraft(450) で遅延フォーカス + scrollIntoView していたが、その経路自体を
+ *  triggerQuickAdd() 側で「昇格 → openCreateSheet() へ直行(safe top の作成ビューへ遷移)」に
+ *  作り替えたため、startDraft はもう遅延を必要としない(常に inline の末尾ドラフト行を即フォーカス
+ *  する用途だけが残った。inline はカード全高が常に見えるので scrollIntoView も不要 — 下記
+ *  focusDraftTitle 参照)。 */
+function startDraft(): void {
 	draft = { id: `draft:${Math.random().toString(36).slice(2)}`, title: "", notes: "" };
 	selectedId = draft.id;
 	closeSwipe();
 	renderAll();
 	// renderRow が selTitleInput をセットするので、renderAll 後にフォーカスできる(選択行と同じ流儀)。
-	if (focusDelayMs <= 0) {
-		focusDraftTitle();
-		return;
-	}
-	setTimeout(() => {
-		// 遅延中にユーザーが別操作(選択解除・別行選択)をしたら奪わない(selectedId が draft のままの
-		// ときだけフォーカスする)。draft は startDraft 呼び出しごとに新 id なのでクロージャで捕まえる。
-		const draftId = draft?.id ?? null;
-		if (draftId !== null && selectedId === draftId) focusDraftTitle();
-	}, focusDelayMs);
+	focusDraftTitle();
 }
 
-/** ドラフト行のタイトル input へフォーカスし、行を可視域へスクロールする(startDraft の下請け)。
- *  【なぜ scrollIntoView が要るか(2026-07-18 実機FB「全画面だとスクロールが一切発火しない」)】
- *  ドラフト行は一覧の**末尾**に生えるので、fullscreen(全件表示・内部スクロール #root.fullscreen-scroll)
- *  ではタスクが多いと画面外の下にいる。WKWebView はプログラム的 focus() では caret への自動スクロールが
- *  走らない(ユーザー操作起点の focus と挙動が違う)ため、明示的に scrollIntoView する。
- *  block:"center" なのは、末尾行ゆえ "nearest" だと画面最下端=直後にせり上がるキーボードの裏に
- *  来るため(中央なら実機のどのキーボード高さでも隠れない)。inline(内部スクロール無効・カード全高が
- *  常に見える)では scrollIntoView は実質 no-op で無害 — inline のカード下端可視化はホスト側
- *  InlineCardKeyboardAvoider の責務(責務分界: カードは自分の中を、ホストは会話の中のカードを動かす)。 */
+/** ドラフト行のタイトル input へフォーカスする(startDraft の下請け)。
+ *  【2026-07-23 scrollIntoView 撤去(カード UI 原則 (b) §B-3 是正②)】旧実装は fullscreen 内部
+ *  スクロール(#root.fullscreen-scroll)で末尾のドラフト行を追わせるため scrollIntoView していたが、
+ *  プログラム的スクロールはホスト WebView 差(claude.ai iOS は追従なし・swift-mcp-app は過剰発火)で
+ *  UX 成立条件にできない(modeling/15 §B-1・B-4)。startDraft の呼び出し元は現在「inline のまま
+ *  末尾に生やす」経路(fullscreen 昇格を試みない/拒否時のフォールバック)だけになり、inline は
+ *  カード全高が常に見える(内部スクロール無効)ため、そもそも見えない行にフォーカスすることが無い
+ *  — scrollIntoView は不要になった(fullscreen 昇格経路は triggerQuickAdd が openCreateSheet() の
+ *  「安全先頭に置いた作成ビュー」へ直行するので、こちらも scrollIntoView を要らない設計にした)。 */
 function focusDraftTitle(): void {
 	if (selTitleInput === null) return;
 	selTitleInput.focus();
-	selTitleInput.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+/** 作成モード詳細ページ(fullscreen 昇格 → openCreateSheet の遷移先)のタイトル input へフォーカスする。
+ *  【2026-07-23 新設(カード UI 原則 (b) 是正②)】旧・遅延フォーカス(~450ms)の対象を「一覧末尾の
+ *  ドラフト行」から「作成ビュー(詳細ページ)そのもの」へ移した。詳細ページは #root を丸ごと差し替える
+ *  単一ページ遷移なので、遷移直後は scrollTop=0(=safe top)が保証されており、対象へスクロールを
+ *  追わせる必要が最初から無い(B-3 の「スクロール位置 top=0 が安全先頭」という前提そのもの)。
+ *  450ms 遅延自体は残す(旧 startDraft の JSDoc が記録していたとおり、fullscreen 昇格ズーム遷移との
+ *  直列化が目的でホスト差分吸収ではないため — triggerQuickAdd 参照)。 */
+function focusSheetTitle(): void {
+	if (sheetTitleInput === null) return;
+	sheetTitleInput.focus();
 }
 
 /** ドラフト行での Enter = 「確定して追加モードを終える」(= 完了ボタン header-done と同一挙動)。
@@ -2041,6 +2076,10 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 		d.title = titleInput.value;
 	});
 	body.appendChild(titleInput);
+	// 2026-07-23 カード UI 原則 (b) 是正②: 作成モードの詳細ページ(⊕ の fullscreen 昇格後の遷移先)
+	// は「安全先頭に置いた作成ビュー」そのものなので、ここへフォーカスを合わせれば足りる
+	// (旧: 一覧末尾のドラフト行 + scrollIntoView)。sheetTitleInput 宣言側のコメント参照。
+	if (isCreate) sheetTitleInput = titleInput;
 
 	// --- メモ textarea(枠なし)-------------------------------------------------------------------
 	const notesInput = document.createElement("textarea");
@@ -4221,15 +4260,34 @@ function triggerQuickAdd(): void {
 	// 統一する方が単純(iOS リマインダーも新規追加は全件の見える文脈・agenda と挙動も揃う)。
 	// 旧・畳み時の破綻理由(top-N 窓の外へソートされる/追加後に畳みへ飲まれる)は常時昇格でも
 	// 引き続き回避される(lastFoldActive はこの判定から外れたが、畳み描画自体の記録として残す)。
-	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから startDraft する。
+	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから作成ビューへ直行する。
 	// 昇格不可(ホストが fullscreen 非対応=canRequestFullscreen false)や拒否/失敗のときは inline の
 	// まま追加へフォールバックする(この経路でも draft 行は section 外の ul なので畳み対象外=消えはしない)。
+	//
+	// 【2026-07-23 カード UI 原則 (b) 是正②: agenda の triggerCreateEvent 型へ統一】
+	// 旧実装は昇格後も「一覧末尾にドラフト行を生やして選択状態にする」(startDraft(450))ままで、
+	// scrollIntoView(+450ms 遅延 focus)がその行を fullscreen の内部スクロールコンテナ内で追わせて
+	// いた。しかしプログラム的スクロールはホスト WebView 差(claude.ai iOS は追従なし・swift-mcp-app
+	// は過剰発火)で UX 成立条件にできない(modeling/15 §B-1・B-4)。agenda-entry.ts の
+	// triggerCreateEvent(vevent 作成)はそもそも一覧行を経由せず openCreateSheet() で「作成ビューへの
+	// 単一ページ遷移」に直行しており、遷移直後は #root を差し替えるため scrollTop=0(=安全先頭)が
+	// 保証される。todos 側もこれに揃え、昇格後は startDraft()(draft オブジェクトの生成のみ・
+	// renderAll は list 骨格のまま一瞬走るが直後の openCreateSheet() の renderAll で上書きされ
+	// ユーザーには見えない — agenda 側コメントと同じ「同一 tick 内の同期呼び出し」の理屈)→
+	// openCreateSheet() で作成ビューへ即遷移する形に変える。450ms 遅延 focus 自体は撤去しない
+	// (ズーム遷移との直列化が目的でホスト差分吸収ではないため。startDraft 旧 JSDoc の記録を
+	// focusSheetTitle 側へ引き継いだ)。
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
 			.then(() => {
 				applyHostContext(); // 昇格結果(displayMode=fullscreen)を反映してから
-				startDraft(450); //      畳まれない全件表示の末尾にドラフトを生やす(focus はズーム遷移後・関数コメント参照)
+				startDraft();
+				openCreateSheet(); // 安全先頭に置いた作成ビューへ直行(scrollIntoView 不要)
+				setTimeout(() => {
+					// 遅延中にユーザーが別操作(戻る等で作成モードを抜ける)をしたら奪わない。
+					if (sheetState?.create === true) focusSheetTitle();
+				}, 450);
 			})
 			.catch(() => startDraft()); // 拒否/失敗は inline のまま追加(フォールバック)
 	} else {
