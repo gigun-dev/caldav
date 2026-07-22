@@ -87,6 +87,25 @@
   > **iOS 実機検証項目**: 同一 URI の changed 再出現の再取得挙動・同一 ETag 再出現のキャッシュ
   > スキップ(問題時は SEQUENCE/DTSTAMP で ETag を変える逃げ道)・restore 後の再スキャン発火。
   > 物理 purge(30日 TTL)は sync_changes を書かない。
+  > **2026-07-23 更新: UI 是正3件 deploy(ce7d5aa)+ R2 マージ deploy(b587ef0)。**
+  > ce7d5aa: ①agenda 編集詳細へ C4(構造化場所/会議)移植+汎用 URL 欄を作成/編集両方に新設
+  > ②リマインダー作成のリスト選択(VTODO コレクションフィルタ)③iOS fullscreen キーボード落ち
+  > バグ修正 — 根因はシート表示中の破壊的 renderAll(render-gate.ts で抑止+閉時追いつき、
+  > 既知ロケーション読込のみ targeted in-place 更新)。swift-mcp のキーボード問題も同根の
+  > 可能性が高く、deploy 後の再現確認待ち(#34)。
+  > b587ef0(R2): migration 0004(deleted_at+UID partial unique・URI は PK 全一意+ゴースト
+  > rename の非対称構成=前方互換のための意図)・restore-deleted / list-deleted ツール・
+  > 30日 purge メソッド(cron 配線は別スライス)。**本番スモーク未実施**(deploy-verify 要:
+  > migration 0004 の適用確認・既存データの生存確認・delete→list-deleted→restore の一巡)。
+  > **並列進行中(worktree)**: K1 コレクション冪等性(displayName 重複ガード+日本語 slug 安定化)・
+  > 観測基盤 v1(イベントスキーマ {requestId,principal,host,ok,errKind,ms,argsDigest}+
+  > Analytics Engine 併用・TelemetryPort 化。設計は architect 報告 2026-07-23 が正:
+  > 真実源はサーバー・クラッシュは端末 Sentry・相関は _meta["gigun.dev/session"]+自前 requestId)。
+  > **次スライス起票済み**: 完了行の残留仕様を iOS 準拠へ(チェック→猶予→完了済みセクションへ
+  > 「移動」— 退場先が completedSummary で常時可視になった今なら安全に復活できる。
+  > 現状は position invariant で無期限残留+完了済みセクションとの二重表示の匂い)。
+  > K2(update-calendar+実色+コレクション詳細ページ)・K3(todos 切替の横断1クエリ化)は
+  > #38 参照。テストコレクション重複2件の掃除も未了。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
