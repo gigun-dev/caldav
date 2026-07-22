@@ -935,3 +935,16 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   残して落ちたが完結・整合していたため S0 として単独コミット、S1-S3 は再起動して完遂。UX 設計も 529 後に再起動で完遂。
 - **[別リポ] swift-mcp-app**: 前セッションの HOLB 修正が並行コミット cd8be4b で clobber されていたのを、設計+レビュー
   記録から cd8be4b の上へ再適用し単一コミット 91f801b 化(build/test green・未 push)。
+
+## 2026-07-22(夜): echo pin 根治 → 月グリッド → 分担整理
+
+- 棚卸し: swift-mcp-app 正典(e0bf866)と task リストを同期。swift 系タスクは Desktop セッションへ全面移管。
+- レイテンシ並列化(e569c96)の効果実測: NRT/KIX 2303→325〜351ms。IAD は横ばい(min 763・距離要因)。
+- #27 echo pin 根治(56cbb73): server は全横断時 calendarId:null を正直 echo・カードは照会応答(range 有)のみ
+  currentCalendarId 採用。mutate 応答の作成先 echo による再 pin 経路をレビューで検出し遮断。mutate は行由来
+  ev.calendarId 優先の3段フォールバック。
+- #25 月グリッド(36a8b8d): Plan(sonnet)→ main 裁定(inline 復帰は list リセット・listRange 退避方式)→
+  artisan 実装 → main レビュー → deploy。format.ts に月算術純関数+9 tests。
+- swift-mcp-app へ Simulator 検証メモ追記(f695420)— ただし Desktop セッションの未コミット docs 更新(+61行)が
+  同乗した(コミットメッセージと内容が不一致。実害なし・以後 swift リポへの書き込みは控える)。
+- memory 追加: ios-simulator-caldav-verification(Simulator のカレンダーへのアカウント追加で標準アプリ検証可)。

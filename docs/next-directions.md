@@ -92,6 +92,25 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 >   buildTodosViewModel へ timeZone スレッド。**楽観/悲観の現状ネットサマリは modeling/12 §7.8 冒頭に記録済み(9008b9f)**。
 > - **[別リポ] swift-mcp-app HOLB 修正 91f801b**: 本セッションで再適用・単一コミット化(clobber からの復旧)。push は
 >   ユーザー判断(remote 未設定)。残: S4=host の easeOut(0.3s)縮小アニメ意匠(任意)。
+>
+> **2026-07-22 更新(レイテンシ実測 ✅ + echo pin 根治 + 月グリッド着地・分担確定)**:
+> - **レイテンシ並列化の効果を observability で確認**: 日本経由(NRT/KIX)は list-events-expanded が
+>   **2303ms → 325〜351ms(約6.5倍)**。IAD(D1 最遠)は p50 横ばい(min は 763 まで低下=並列化自体は有効・
+>   残りは距離×往復)。次段(案2 横断1クエリ化 / 案3 D1 read replication)は日本利用で実害小につき判断待ち。
+> - **agenda echo pin 根治(56cbb73)**: 全横断なのに応答が `calendarId:"calendar"` を固定 echo →カードが
+>   currentCalendarId に保存→focus refetch が単一へ collapse。対処=全横断時は正直に null echo(単一指定時のみ
+>   echo・calendarIds は additive echo)+カード側は「range を名乗る照会応答」のときだけ currentCalendarId を
+>   採用(mutate の作成先 echo による再 pin 経路もレビューで検出し遮断)。mutate 系は行由来 ev.calendarId 優先。
+> - **② fullscreen ビュー切替+月グリッド(36a8b8d)**: モック agenda-views-v6 準拠。セグメント「リスト|月|日
+>   (日=disabled・③で実装)」を fullscreen のみ挿入。6週42セル固定・コレクション色ドット・選択日リスト連動。
+>   月算術は ui/format.ts の純関数+bun:test(月/年またぎ・うるう年)。レンジは listRange 退避方式
+>   (月ビュー中は currentRange を 42 セル分絶対レンジへ差し替え・inline 復帰で list へ強制リセット)。
+>   **残: 実機/Simulator 目視**(セル比率・選択日パネルの収まり・月送り refetch 体感)。
+> - **分担確定**: swift-mcp-app 側タスク(実機検証・C6/C7・M2 残論点ほか)は Claude Desktop セッション+
+>   同リポ正典(next-directions 2026-07-22 棚卸し節)に全面移管。caldav 本体はこのセッション系で進める。
+>   iOS 検証は Simulator のカレンダー/リマインダーへのアカウント追加でも可(実機必須ではない)。
+> - **次**: ③ 日タイムライン(現在時刻赤線・重なり解決・終日チップ帯)→ agenda echo pin は済 → 確認カード起票。
+>   判断待ち: save ボタン文言統一 / IAD 次段 / メモリ→docs 移送(コンテキストの git 管理化)。
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。
 
 **次の優先順位(2026-07-15 確定)**:
