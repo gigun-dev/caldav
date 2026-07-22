@@ -69,9 +69,105 @@ function localDateKeyUtc(d: Date): string {
 	return `${y}-${m}-${day}`;
 }
 
+/** "YYYY-MM-DD" の曜日インデックス(0=日 … 6=土)。その日付のローカル深夜の getDay を取る。
+ *  カレンダー上の曜日は世界共通(壁日付の曜日はゾーンに依らず一意)なのでゾーン換算は不要 —
+ *  new Date(y,m-1,d) はローカル深夜だが、getDay はその「壁日付」の曜日を返すので実行環境の TZ に
+ *  依らず安定する。範囲外は 0(防御。呼び出し側で "YYYY-MM-DD" 前提)。 */
+export function weekdayIndexOf(dateKey: string): number {
+	const [y, m, d] = dateKey.split("-").map(Number);
+	return new Date(y ?? 0, (m ?? 1) - 1, d ?? 1).getDay();
+}
+
 /** "YYYY-MM-DD" の曜日1文字(その日付のローカル深夜から取る。カレンダー上の曜日は世界共通なので
  *  ゾーン換算は不要)。範囲外は ""(防御)。 */
 export function weekdayOf(dateKey: string): string {
+	return WEEKDAYS[weekdayIndexOf(dateKey)] ?? "";
+}
+
+// =============================================================================
+// 月グリッド計算(agenda 月ビュー用・2026-07-22 ロードマップ②)
+// =============================================================================
+// 【なぜ純関数として format.ts に置くか(main 裁定・確定済み設計判断3)】
+//   月ビューのグリッド(月初・addMonths・42 セル列挙)は「月またぎ・年またぎ・うるう年」で壊れ
+//   やすい日付算術の塊で、DOM を組む前に単体テストで固めておきたい。DOM/App を知らない純粋な
+//   Date/文字列演算だけなのでこのファイル(共有カーネル)へ集約し、bun:test で境界を機械的に固定
+//   する(mcp-ui-month-grid.test.ts)。entry 側は結果の date キー列/YearMonth を受け取って描画と
+//   レンジ算出に使うだけにする(How は entry・What はテスト、の書き分け方針どおり)。
+//
+// 【日曜始まりにした理由】iOS カレンダーの既定(地域設定で月曜始まりもあるが、まずは iOS US 既定の
+//   日曜始まりに合わせる)。モック agenda-views-v6.html の renderGrid が `start.setDate(1 - getDay())`
+//   で日曜始まりにしているのと同じ規約(index=0 が日曜)。月曜始まりは将来 locale 対応で足す(起票)。
+
+/** 年月(month は 1-12。JS Date の 0-11 とは意図的にずらす — "YYYY-MM" の表示や算術と桁を揃え、
+ *  呼び出し側での ±1 混乱を減らすため)。 */
+export interface YearMonth {
+	year: number;
+	month: number; // 1-12
+}
+
+/** "YYYY-MM-DD" が属する YearMonth を取り出す(月ビューの初期カーソル = 今日の年月に使う)。 */
+export function yearMonthOf(dateKey: string): YearMonth {
+	const [y, m] = dateKey.split("-").map(Number);
+	return { year: y ?? 0, month: m ?? 1 };
+}
+
+/** YearMonth に月を加減する(delta は負可)。年またぎは正しく桁上げ/桁下げする。
+ *  【実装】0-11 系へ一旦落として new Date で正規化…ではなく、month-1+delta を 12 で割った商/剰余で
+ *  手計算する(new Date は「日」も持つため月末日の繰り上がり等の副作用が混じりやすい — 月だけを
+ *  動かしたいこの用途では純粋な整数演算の方が安全で意図が明確)。剰余の負数対策で ((r % 12) + 12) % 12。 */
+export function addMonths(ym: YearMonth, delta: number): YearMonth {
+	const zeroBased = ym.month - 1 + delta; // 0-11 系の通し月
+	const year = ym.year + Math.floor(zeroBased / 12);
+	const month = ((zeroBased % 12) + 12) % 12; // 負の剰余を 0-11 に正規化
+	return { year, month: month + 1 };
+}
+
+/** YearMonth の月初 "YYYY-MM-DD"。 */
+export function firstDayKeyOf(ym: YearMonth): string {
+	return `${ym.year}-${String(ym.month).padStart(2, "0")}-01`;
+}
+
+/** 月グリッド(日曜始まり・6週=42セル固定)の日付キー列を左上→右下の順で列挙する。
+ *  月初の曜日ぶんだけ前月にはみ出した日曜から始め、常に 42 個返す(末尾は翌月にはみ出す)。
+ *  6週固定にする理由: セル数が月によって 28〜42 で変動するとグリッドの高さが毎月跳ねて落ち着かない
+ *  (iOS カレンダーも 6 週固定)。UTC 基準の addDaysToDateKey で足すので DST/TZ に依らず安定。 */
+export function monthGridDays(ym: YearMonth): string[] {
+	const firstKey = firstDayKeyOf(ym);
+	const leading = weekdayIndexOf(firstKey); // 月初が日曜なら 0・土曜なら 6
+	const start = addDaysToDateKey(firstKey, -leading); // グリッド左上(直前の日曜)
+	const days: string[] = [];
+	for (let i = 0; i < 42; i++) days.push(addDaysToDateKey(start, i));
+	return days;
+}
+
+/** 月グリッドが実際にカバーする範囲を「絶対 timeMin/timeMax」の offset ISO で返す(確定済み設計判断2:
+ *  月ビュー突入時に currentRange をこの 42 セル分へ差し替えて refresh-events する)。
+ *  from = グリッド左上(日曜)のローカル深夜 / to = グリッド右下の翌日のローカル深夜(排他終端で
+ *  最終セルの当日を丸ごと含める)。offset は「その日付のローカル offset」を Date から引く(DST 境界を
+ *  跨いでも各端の当日 offset を使う)。実行環境(ブラウザ)のローカル TZ = 閲覧デバイスの TZ。 */
+export function monthGridRange(ym: YearMonth): { from: string; to: string } {
+	const days = monthGridDays(ym);
+	const firstCell = days[0] ?? firstDayKeyOf(ym);
+	const lastCell = days[days.length - 1] ?? firstCell;
+	return {
+		from: localMidnightIso(firstCell),
+		to: localMidnightIso(addDaysToDateKey(lastCell, 1)),
+	};
+}
+
+/** "YYYY-MM-DD" のローカル深夜(00:00:00)を offset 付き ISO8601 にする(server の timeMin/timeMax が
+ *  offset ISO を要求するため。parseIsoToEpoch は Z / ±HH:MM を受理する)。offset は new Date の
+ *  getTimezoneOffset(その日付のローカル offset・分)から組む — 実行環境が閲覧デバイスなので
+ *  「デバイスの壁時計 00:00」を正しく絶対時刻へ写せる。
+ *  【テストしない Why】返り値は実行環境の TZ に依存するため決定的テストに向かない(月グリッドの
+ *  日付キー算術は monthGridDays/addMonths でテスト済み)。ここは薄い offset 整形だけに留める。 */
+export function localMidnightIso(dateKey: string): string {
 	const [y, m, d] = dateKey.split("-").map(Number);
-	return WEEKDAYS[new Date(y ?? 0, (m ?? 1) - 1, d ?? 1).getDay()] ?? "";
+	const dt = new Date(y ?? 0, (m ?? 1) - 1, d ?? 1, 0, 0, 0);
+	const offMin = -dt.getTimezoneOffset(); // JST なら +540(getTimezoneOffset は符号が逆)
+	const sign = offMin >= 0 ? "+" : "-";
+	const abs = Math.abs(offMin);
+	const oh = String(Math.floor(abs / 60)).padStart(2, "0");
+	const om = String(abs % 60).padStart(2, "0");
+	return `${dateKey}T00:00:00${sign}${oh}:${om}`;
 }

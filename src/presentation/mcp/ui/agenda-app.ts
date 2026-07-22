@@ -509,6 +509,58 @@ export const AGENDA_APP_HTML = `<!doctype html>
     padding-bottom: 72px;
   }
 
+  /* --- ビュー切替セグメント + 月グリッド(2026-07-22 ロードマップ②・fullscreen 限定)---
+   * モック docs/modeling/ui-mockups/agenda-views-v6.html を移植。
+   * 【接頭辞 mv- を付ける理由(実装指示: 衝突するなら month 用に接頭辞)】この UI には既に C3 作成
+   * フォームの .segment(予定|リマインダー・aria-selected 駆動)がある。ビュー切替セグメント
+   * (リスト|月|日・aria-pressed 駆動)は見た目こそ同じ segmented control 語彙だが、状態属性
+   * (selected vs pressed)も文脈(作成シート vs 一覧/月ビュー)も別物なので、CSS の取り違えを
+   * 避けるため .view-seg / .mv-* という独立クラス系にする(視覚言語は C3 .segment と揃える —
+   * surface 地・角丸・押下トークンは共通変数を使う)。 */
+  /* ビュー切替セグメント(リスト|月|日)。#root 先頭に fullscreen 時だけ entry が挿入する。 */
+  .view-seg { display: flex; background: var(--surface); border-radius: 9px; padding: 2px; margin-bottom: 12px; }
+  .view-seg button { flex: 1; border: none; background: none; font: inherit; font-size: 13px; padding: 6px 0; border-radius: 7px; color: var(--fg); cursor: pointer; }
+  .view-seg button[aria-pressed="true"] { background: var(--bg); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+  .view-seg button:disabled { color: var(--muted); cursor: default; }
+
+  /* 月ナビ(前月/今日/次月 + 年月見出し)。 */
+  .mv-nav { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 8px; }
+  .mv-nav .mv-ym { font-size: 15px; font-weight: 700; }
+  .mv-nav-btns { display: flex; align-items: center; gap: 2px; }
+  .mv-nav button { border: none; background: none; color: var(--accent); font: inherit; padding: 6px; cursor: pointer; display: flex; align-items: center; }
+  .mv-nav .mv-today-btn { font-size: 13px; padding: 4px 8px; }
+
+  /* 曜日ヘッダ + 42 セルグリッド(7 列)。 */
+  .mv-dow, .mv-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .mv-dow span { text-align: center; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+  .mv-dow .mv-sun { color: var(--danger); }
+  .mv-cell {
+    position: relative; aspect-ratio: 1 / 1.05; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px; border: none; background: none;
+    font: inherit; font-size: 14px; color: var(--fg); cursor: pointer; border-radius: 10px;
+  }
+  .mv-cell.out { color: var(--muted); opacity: 0.45; } /* 前後月にはみ出したセル(減光) */
+  .mv-cell.sun { color: var(--danger); }
+  .mv-cell.sun.out { color: var(--danger); }
+  .mv-num { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
+  .mv-cell.today .mv-num { border: 1.5px solid var(--accent); font-weight: 700; color: var(--accent); }
+  .mv-cell.selected .mv-num { background: var(--accent); color: #fff; font-weight: 700; }
+  /* 予定ドット(コレクション色)。最大3個(それ以上はノイズ・モックと同じ)。高さ 4px 固定で
+   * ドットの有無で数字行がずれないようにする。 */
+  .mv-evdots { display: flex; gap: 2px; height: 4px; }
+  .mv-evdots i { width: 4px; height: 4px; border-radius: 50%; }
+
+  /* 選択日の予定リスト(下段連動・セバスチャン式)。日見出し + 行(ドット + 時刻 + タイトル)。 */
+  .mv-day-head {
+    font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 4px;
+    padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  ul.mv-rows { margin: 0; padding: 0; list-style: none; }
+  ul.mv-rows li { padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .mv-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .mv-t { color: var(--muted); font-size: 12px; width: 40px; flex: none; }
+  .mv-empty { color: var(--muted); font-size: 13px; padding: 14px 2px; }
+
   /* --- 詳細ページ(モック C。todos v3 と同一部品)--- */
   .page-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-hair); }
   .link { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: 13px; border: none; background: none; cursor: pointer; padding: 4px 2px; }

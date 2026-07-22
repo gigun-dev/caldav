@@ -78,6 +78,9 @@ import {
 } from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
 import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf, addDaysToDateKey } from "./format";
+// 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
+// bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
+import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
 import {
 	type RecurrenceSummary,
@@ -145,6 +148,21 @@ function applyHostContext(): void {
 	}
 	// fullscreen 中だけ #root を内部スクロールコンテナにする。inline に戻ったら外す(設計04 決定2)。
 	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
+	// 【inline 復帰時は list へ強制リセット(確定済み設計判断1)】inline は高さクランプ内で月グリッドが
+	// 潰れるため list 一択。fullscreen で月ビューにしたまま inline へ縮んだら、agendaViewMode を list へ
+	// 戻し、月ビューで差し替えていた currentRange を退避してあった listRange へ復元して取り直す
+	// (selectedDayKey=今日・monthCursor=今月も戻す)。connect 直後(まだ list)は agendaViewMode!=="list"
+	// が false なので no-op(初回描画の refetch を二重に走らせない)。
+	if (hostDisplayMode !== "fullscreen" && agendaViewMode !== "list") {
+		agendaViewMode = "list";
+		const todayKey = localDateKey(new Date());
+		monthCursor = yearMonthOf(todayKey);
+		selectedDayKey = todayKey;
+		currentRange = listRange; // 月レンジ → 退避してあった list レンジへ復元(null=既定へ委ねる)
+		// refetch は非同期(refetchForRange が終わり次第 renderAll)。呼び出し元(hostcontextchanged)も
+		// 直後に renderAll するので、まず list 骨格を出し、確定データが追いついたら差し替わる。
+		void refetchForRange();
+	}
 }
 
 // =============================================================================
@@ -348,6 +366,23 @@ let currentTimeZone: string | null = null;
 // currentRange: この一覧の期間(list-events-expanded/refresh-events が echo する range)。focus refetch /
 // mutation 後の再取得へ引き継ぐ(引き継がないと再取得のたびに既定期間へ落ちて一覧が変わる)。null=未受領。
 let currentRange: { from: string; to: string } | null = null;
+
+// --- ビュー切替 + 月グリッド(2026-07-22 ロードマップ②・fullscreen 限定)-----------------------
+// agendaViewMode: 一覧(list)/ 月グリッド(month)/ 日タイムライン(day・後続タスク③で実装・当面 disabled)。
+//   fullscreen のときだけ #root 先頭にセグメントを出して切り替える。inline は list 一択に強制する
+//   (applyHostContext の inline 復帰リセット。確定済み設計判断1)。
+type AgendaViewMode = "list" | "month";
+let agendaViewMode: AgendaViewMode = "list";
+// monthCursor: 月ビューで表示中の年月(1-12)。既定は今月。月送り/今日で更新し、そのたびに
+// currentRange を月グリッド 42 セル分へ差し替えて refetch する(確定済み設計判断2)。
+let monthCursor: YearMonth = yearMonthOf(localDateKey(new Date()));
+// selectedDayKey: 月グリッドで選択中の日("YYYY-MM-DD")。下段の「選択日の予定リスト」がこれに連動する。
+// 既定は今日。セルタップで更新。inline 復帰で今日へリセット(確定済み設計判断1)。
+let selectedDayKey: string = localDateKey(new Date());
+// listRange: 月ビュー突入時に退避する list 用の currentRange(確定済み設計判断2 の「listRange 退避方式」)。
+// 月ビュー中は currentRange を月レンジへ差し替えるため、list へ戻るときに元の期間を復元する。
+// null = まだ list レンジを受領していない(初回応答前に月へ入った等)→ 復元時は素の既定へ委ねる。
+let listRange: { from: string; to: string } | null = null;
 
 // --- 表示カレンダーフィルタ(2026-07-22 collection-picker-v5)---------------------------------
 // list-calendars の結果キャッシュ(VEVENT を含むコレクションだけをフィルタメニューに列挙)。
@@ -1148,6 +1183,16 @@ function renderAll(): void {
 	selMemoInput = null;
 	// 系列集約(§7.1)のパス内状態をリセット(この描画パスで最初に出会った可視行だけが装飾を得る)。
 	seenAffectedIds.clear();
+	// ビュー切替セグメント(リスト|月|日)は fullscreen のときだけ #root 先頭に出す(2026-07-22 ②)。
+	// inline は高さクランプ内で月グリッドが潰れるため list 一択(applyHostContext が inline 復帰で
+	// agendaViewMode を list へ強制リセットするので、ここは表示制御だけで足りる。確定済み設計判断1)。
+	if (hostDisplayMode === "fullscreen") root.appendChild(buildViewSegment());
+	// 月ビュー(fullscreen かつ month)。list の日セクション/畳み(applyInlineFold)とは別経路で
+	// 描き切って早期 return する(月グリッド + 選択日リストは独立した描画単位)。
+	if (hostDisplayMode === "fullscreen" && agendaViewMode === "month") {
+		renderMonthView();
+		return;
+	}
 	// 全カレンダー OFF(フィルタで全部消した)のときは一覧を空扱いにする(サーバーは呼んでいない。
 	// refetchFiltered が空 Set のとき allCalendarsHidden を立てる。上のコメント参照)。draft はそのまま。
 	const baseEvents = allCalendarsHidden ? [] : (events ?? []);
@@ -1221,6 +1266,245 @@ function renderAll(): void {
 	// insertBefore ではなく、ドラフトを含めた全ての appendChild が終わったこの時点で
 	// applyInlineFold が root.appendChild するだけでよくなった(todos-entry.ts と同じ単純化)。
 	applyInlineFold();
+}
+
+// =============================================================================
+// ビュー切替セグメント + 月グリッド(2026-07-22 ロードマップ②・fullscreen 限定)
+// =============================================================================
+// モック docs/modeling/ui-mockups/agenda-views-v6.html の「セバスチャン式(上=月グリッド・
+// 下=選択日リスト)」を移植。純粋な日付算術は format.ts(bun:test 済み)に隔離し、ここは DOM 組み立てと
+// 状態遷移(monthCursor / selectedDayKey / currentRange 差し替え)だけを担う(How はここ・What はテスト)。
+
+/** ビュー切替セグメント(リスト|月|日)。fullscreen の #root 先頭に置く。「日」は後続タスク③まで disabled。 */
+function buildViewSegment(): HTMLElement {
+	const seg = el("div", "view-seg");
+	const mkBtn = (label: string, mode: AgendaViewMode): HTMLButtonElement => {
+		const b = document.createElement("button");
+		b.type = "button";
+		b.textContent = label;
+		b.setAttribute("aria-pressed", String(agendaViewMode === mode));
+		b.addEventListener("click", (e) => {
+			e.stopPropagation(); // document click(選択解除)へ巻き込まない
+			if (agendaViewMode === mode) return; // 同一モードの再タップは no-op(無駄な refetch を避ける)
+			if (mode === "month") enterMonthMode();
+			else exitToListMode();
+		});
+		return b;
+	};
+	seg.appendChild(mkBtn("リスト", "list"));
+	seg.appendChild(mkBtn("月", "month"));
+	// 「日」(day タイムライン)は③で実装予定。枠だけ置いて disabled(押せないことを色で示す)。
+	const dayBtn = document.createElement("button");
+	dayBtn.type = "button";
+	dayBtn.textContent = "日";
+	dayBtn.disabled = true;
+	dayBtn.title = "③で追加予定";
+	seg.appendChild(dayBtn);
+	return seg;
+}
+
+/** 表示中の events を「開始日(wallDatePart)」でグルーピングする(月グリッドのドット / 選択日リスト用)。
+ *  複数日イベントは開始日にだけ置く(list の sectionizeByDay と同じ規約)。 */
+function groupEventsByDay(items: EventItem[]): Map<string, EventItem[]> {
+	const byDay = new Map<string, EventItem[]>();
+	for (const ev of items) {
+		const key = wallDatePart(ev.start);
+		const bucket = byDay.get(key);
+		if (bucket === undefined) byDay.set(key, [ev]);
+		else bucket.push(ev);
+	}
+	return byDay;
+}
+
+/** 予定ドットの色 = 由来コレクション色(calendar-colors.ts)。由来不明(calendarId 無し)は accent へ degrade。 */
+function eventDotColor(ev: EventItem): string {
+	return ev.calendarId !== undefined ? colorForCalendarId(ev.calendarId) : "var(--accent)";
+}
+
+/** 月ビュー本体を #root に描く(月ナビ + 曜日ヘッダ + 42 セルグリッド + 選択日リスト)。
+ *  events は list と同じサーバー確定一覧をそのまま使う(表示フィルタ visibleCalendarIds は
+ *  月ビューでも同じ集合 — サーバー側の絞り込み応答をそのまま groupBy する。仕様どおり)。 */
+function renderMonthView(): void {
+	// 全カレンダー OFF のときは list と同様に空扱い(サーバーは呼んでいない・renderAll の baseEvents と同型)。
+	const baseEvents = allCalendarsHidden ? [] : (events ?? []);
+	const todayKey = localDateKey(new Date());
+	const byDay = groupEventsByDay(baseEvents);
+
+	// --- 月ナビ(年月見出し + 今日 / 前月 / 次月)---
+	const nav = el("div", "mv-nav");
+	const ym = el("span", "mv-ym");
+	ym.textContent = `${monthCursor.year}年${monthCursor.month}月`;
+	nav.appendChild(ym);
+	const navBtns = el("div", "mv-nav-btns");
+	const todayBtn = document.createElement("button");
+	todayBtn.type = "button";
+	todayBtn.className = "mv-today-btn";
+	todayBtn.textContent = "今日";
+	todayBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		// 今日 = 今月へ戻し、選択日も今日へ(月送りとは違い選択日まで戻すのがモックの挙動)。
+		selectedDayKey = todayKey;
+		setMonthCursor(yearMonthOf(todayKey));
+	});
+	const prevBtn = document.createElement("button");
+	prevBtn.type = "button";
+	prevBtn.setAttribute("aria-label", "前の月");
+	prevBtn.appendChild(createIcon("chevron-left"));
+	prevBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		setMonthCursor(addMonths(monthCursor, -1));
+	});
+	const nextBtn = document.createElement("button");
+	nextBtn.type = "button";
+	nextBtn.setAttribute("aria-label", "次の月");
+	nextBtn.appendChild(createIcon("chevron-right"));
+	nextBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		setMonthCursor(addMonths(monthCursor, 1));
+	});
+	navBtns.append(todayBtn, prevBtn, nextBtn);
+	nav.appendChild(navBtns);
+	root.appendChild(nav);
+
+	// --- 曜日ヘッダ(日曜始まり。日曜は danger 色)---
+	const dow = el("div", "mv-dow");
+	WEEKDAYS.forEach((w, i) => {
+		const span = document.createElement("span");
+		if (i === 0) span.className = "mv-sun";
+		span.textContent = w;
+		dow.appendChild(span);
+	});
+	root.appendChild(dow);
+
+	// --- 42 セルグリッド ---
+	const grid = el("div", "mv-grid");
+	const cursorPrefix = `${monthCursor.year}-${String(monthCursor.month).padStart(2, "0")}`; // "YYYY-MM"
+	for (const dayKey of monthGridDays(monthCursor)) {
+		const cell = document.createElement("button");
+		cell.type = "button";
+		const classes = ["mv-cell"];
+		if (dayKey.slice(0, 7) !== cursorPrefix) classes.push("out"); // 前後月にはみ出したセル
+		if (weekdayIndexOf(dayKey) === 0) classes.push("sun");
+		if (dayKey === todayKey) classes.push("today");
+		if (dayKey === selectedDayKey) classes.push("selected");
+		cell.className = classes.join(" ");
+		cell.dataset.k = dayKey;
+		const num = el("span", "mv-num");
+		num.textContent = String(Number(dayKey.slice(8, 10))); // 日(前ゼロを外す)
+		cell.appendChild(num);
+		// 予定ドット(コレクション色)。最大3個(それ以上はノイズ・「ある」ことが伝わればよい・モック準拠)。
+		const dots = el("span", "mv-evdots");
+		for (const ev of (byDay.get(dayKey) ?? []).slice(0, 3)) {
+			const i = document.createElement("i");
+			i.style.background = eventDotColor(ev);
+			dots.appendChild(i);
+		}
+		cell.appendChild(dots);
+		cell.addEventListener("click", (e) => {
+			e.stopPropagation();
+			selectedDayKey = dayKey; // 選択日を切り替え → 下段リストが連動(再描画)。月送りはしない。
+			renderAll();
+		});
+		grid.appendChild(cell);
+	}
+	root.appendChild(grid);
+
+	// --- 選択日の予定リスト(下段連動)---
+	root.appendChild(buildDayPanel(byDay));
+}
+
+/** 選択日(selectedDayKey)の予定リスト(下段)。開始時刻昇順・終日は先頭。空は「予定はありません」。 */
+function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
+	const panel = el("div", "mv-day-panel");
+	const head = el("div", "mv-day-head");
+	const [, m, d] = selectedDayKey.split("-").map(Number);
+	head.textContent = `${m}月${d}日(${weekdayOf(selectedDayKey)})`;
+	panel.appendChild(head);
+	// startEpoch(list と共有)で開始時刻昇順に整列(終日はその日の深夜=先頭)。
+	const evs = (byDay.get(selectedDayKey) ?? []).slice().sort((a, b) => {
+		const de = startEpoch(a) - startEpoch(b);
+		if (de !== 0 && !Number.isNaN(de)) return de;
+		return a.title.localeCompare(b.title, "ja");
+	});
+	if (evs.length === 0) {
+		const empty = el("p", "mv-empty");
+		empty.textContent = "予定はありません";
+		panel.appendChild(empty);
+		return panel;
+	}
+	const ul = document.createElement("ul");
+	ul.className = "mv-rows";
+	for (const ev of evs) {
+		const li = document.createElement("li");
+		const dot = el("span", "mv-dot");
+		dot.style.background = eventDotColor(ev);
+		const t = el("span", "mv-t");
+		t.textContent = ev.isAllDay || !ev.start.includes("T") ? "終日" : wallTimePart(ev.start);
+		li.append(dot, t, document.createTextNode(ev.title));
+		ul.appendChild(li);
+	}
+	panel.appendChild(ul);
+	return panel;
+}
+
+// =============================================================================
+// ビュー遷移 + レンジ差し替え(確定済み設計判断2「listRange 退避方式」)
+// =============================================================================
+// 月ビュー突入時に list 用の currentRange を listRange へ退避し、currentRange を月グリッド 42 セル分の
+// 絶対 timeMin/timeMax へ差し替えて refetch する。月送り/今日で monthCursor 更新 → 同様に差し替えて
+// 再 refetch。list 復帰時に listRange を復元して refetch(必要なら)。
+// 【不変条件(確定済み設計判断4)】refreshArgs() を呼ぶ全経路(fetchLatest / ingestStructuredContent /
+// maybeRefetch)は currentRange を読む。月ビュー中は currentRange が月レンジなので、これらは自然に
+// 月レンジで照会する(echo pin 修正 56cbb73 の「range を名乗る応答だけ currentCalendarId を採る」不変も
+// applyStructuredContent 側でそのまま維持される — 本変更は currentRange の中身を変えるだけ)。
+
+/** 月ビューへ入る。list レンジを退避し、今月・今日基準の月レンジへ差し替えて refetch する。
+ *  【月ビュー再突入時に今月/今日へ寄せる判断(親への報告論点)】確定済み設計判断1は「inline 復帰時の
+ *  list 強制リセット」だけを規定し、月ビュー再突入時の初期カーソルは未規定。前回の月位置を引き継ぐより
+ *  「常に今月・今日から」の方が予測可能なのでそう寄せた(要合意なら容易に変更可)。 */
+function enterMonthMode(): void {
+	agendaViewMode = "month";
+	const todayKey = localDateKey(new Date());
+	monthCursor = yearMonthOf(todayKey);
+	selectedDayKey = todayKey;
+	listRange = currentRange; // list 用レンジを退避(復帰時に戻す)
+	currentRange = monthGridRange(monthCursor); // 月グリッド 42 セル分の絶対レンジへ差し替え
+	renderAll(); // まず現データで月グリッドを見せる(refetch は非同期で追いつく = 体感の空白を作らない)
+	void refetchForRange();
+}
+
+/** list ビューへ戻る。退避してあった list レンジを復元して refetch する(null なら server 既定へ委ねる)。 */
+function exitToListMode(): void {
+	agendaViewMode = "list";
+	currentRange = listRange; // 退避レンジを復元(null=未受領なら refreshArgs が range を省いて既定へ)
+	renderAll();
+	void refetchForRange();
+}
+
+/** 月カーソルを差し替えて(月送り/今日)、月レンジを再計算し refetch する。 */
+function setMonthCursor(next: YearMonth): void {
+	monthCursor = next;
+	currentRange = monthGridRange(next);
+	renderAll();
+	void refetchForRange();
+}
+
+/** currentRange 差し替え後の一覧取り直し(月ビュー / list 復帰の共通経路)。refetchFiltered と同型の
+ *  degrade(失敗はバナー + 再試行)。全カレンダー OFF のときはサーバーを呼ばず現状のまま(空表示)。 */
+async function refetchForRange(): Promise<void> {
+	// 全 OFF(空 Set)はサーバーを呼ばない(refetchFiltered と同じ理由 — calendarIds:[] を全横断と誤解されるため)。
+	// この場合 events は空のまま月グリッドもドット無しで描かれる(renderMonthView の baseEvents=[] 経路)。
+	if (allCalendarsHidden) {
+		renderAll();
+		return;
+	}
+	clearBanner();
+	try {
+		await fetchLatest();
+		renderAll();
+	} catch (e) {
+		showBanner(`表示範囲の取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`, () => void refetchForRange());
+	}
 }
 
 // アクション行(.action-row = 旧フッタ要約行 .fold-more + ⊕ 追加ボタン)の実高さ(margin 込み)の
