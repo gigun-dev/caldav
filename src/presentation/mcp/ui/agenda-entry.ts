@@ -77,10 +77,13 @@ import {
 	type LocationPickerValue,
 } from "./location-picker";
 // 共有カーネル(docs/modeling/12 §4)。日付/時刻整形は todos と同一ロジック。
-import { WEEKDAYS, localDateKey, wallDatePart, wallTimePart, dayDiff, weekdayOf, addDaysToDateKey } from "./format";
+import { WEEKDAYS, localDateKey, localMidnightIso, wallDatePart, wallTimePart, dayDiff, weekdayOf, addDaysToDateKey } from "./format";
 // 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
 // bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
 import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
+// 日ビュー(2026-07-22 ロードマップ③)の重なりレイアウト純関数。DOM 非依存・bun:test 済み
+// (mcp-ui-day-timeline.test.ts)。renderDayView は結果を left%/width%/top/height へ写すだけ。
+import { DAY_MIN, type TimedBlock, type LaidOutBlock, layoutOverlaps, nowLineTopMin } from "./day-timeline";
 // 共有カーネル。recurrence 整形 + プリセット写像は todos と同一(二重管理を避ける)。
 import {
 	type RecurrenceSummary,
@@ -154,11 +157,13 @@ function applyHostContext(): void {
 	// (selectedDayKey=今日・monthCursor=今月も戻す)。connect 直後(まだ list)は agendaViewMode!=="list"
 	// が false なので no-op(初回描画の refetch を二重に走らせない)。
 	if (hostDisplayMode !== "fullscreen" && agendaViewMode !== "list") {
+		// day ビューから縮んだときは赤線タイマーも止める(!=="list" が day もカバー・main 裁定 item 5)。
+		stopNowLineTimer();
 		agendaViewMode = "list";
 		const todayKey = localDateKey(new Date());
 		monthCursor = yearMonthOf(todayKey);
 		selectedDayKey = todayKey;
-		currentRange = listRange; // 月レンジ → 退避してあった list レンジへ復元(null=既定へ委ねる)
+		currentRange = listRange; // 月/日レンジ → 退避してあった list レンジへ復元(null=既定へ委ねる)
 		// refetch は非同期(refetchForRange が終わり次第 renderAll)。呼び出し元(hostcontextchanged)も
 		// 直後に renderAll するので、まず list 骨格を出し、確定データが追いついたら差し替わる。
 		void refetchForRange();
@@ -368,11 +373,16 @@ let currentTimeZone: string | null = null;
 let currentRange: { from: string; to: string } | null = null;
 
 // --- ビュー切替 + 月グリッド(2026-07-22 ロードマップ②・fullscreen 限定)-----------------------
-// agendaViewMode: 一覧(list)/ 月グリッド(month)/ 日タイムライン(day・後続タスク③で実装・当面 disabled)。
+// agendaViewMode: 一覧(list)/ 月グリッド(month)/ 日タイムライン(day・2026-07-22 ③)。
 //   fullscreen のときだけ #root 先頭にセグメントを出して切り替える。inline は list 一択に強制する
-//   (applyHostContext の inline 復帰リセット。確定済み設計判断1)。
-type AgendaViewMode = "list" | "month";
+//   (applyHostContext の inline 復帰リセット。確定済み設計判断1。!=="list" 条件が day もそのままカバーする)。
+type AgendaViewMode = "list" | "month" | "day";
 let agendaViewMode: AgendaViewMode = "list";
+// nowLineTimer: 日ビューの現在時刻赤線を 60 秒ごとに再計算する setInterval のハンドル(null=停止中)。
+// 【stopNowLineTimer に集約する Why(main 裁定 item 5)】赤線タイマーは day 以外のビューでは無駄なので、
+// 全遷移経路(exitToListMode / enterMonthMode / applyHostContext の inline 復帰リセット / visibilitychange
+// hidden)で必ず停止する。停止漏れを 1 箇所に閉じ込めるため start/stopNowLineTimer ヘルパー経由に統一する。
+let nowLineTimer: number | null = null;
 // monthCursor: 月ビューで表示中の年月(1-12)。既定は今月。月送り/今日で更新し、そのたびに
 // currentRange を月グリッド 42 セル分へ差し替えて refetch する(確定済み設計判断2)。
 let monthCursor: YearMonth = yearMonthOf(localDateKey(new Date()));
@@ -1193,6 +1203,12 @@ function renderAll(): void {
 		renderMonthView();
 		return;
 	}
+	// 日ビュー(fullscreen かつ day・2026-07-22 ③)。終日チップ帯 + 時刻軸タイムラインを描き切って
+	// 早期 return する(list の日セクション/畳みとも月グリッドとも別経路の独立描画単位)。
+	if (hostDisplayMode === "fullscreen" && agendaViewMode === "day") {
+		renderDayView();
+		return;
+	}
 	// 全カレンダー OFF(フィルタで全部消した)のときは一覧を空扱いにする(サーバーは呼んでいない。
 	// refetchFiltered が空 Set のとき allCalendarsHidden を立てる。上のコメント参照)。draft はそのまま。
 	const baseEvents = allCalendarsHidden ? [] : (events ?? []);
@@ -1287,19 +1303,15 @@ function buildViewSegment(): HTMLElement {
 			e.stopPropagation(); // document click(選択解除)へ巻き込まない
 			if (agendaViewMode === mode) return; // 同一モードの再タップは no-op(無駄な refetch を避ける)
 			if (mode === "month") enterMonthMode();
+			else if (mode === "day") enterDayMode();
 			else exitToListMode();
 		});
 		return b;
 	};
 	seg.appendChild(mkBtn("リスト", "list"));
 	seg.appendChild(mkBtn("月", "month"));
-	// 「日」(day タイムライン)は③で実装予定。枠だけ置いて disabled(押せないことを色で示す)。
-	const dayBtn = document.createElement("button");
-	dayBtn.type = "button";
-	dayBtn.textContent = "日";
-	dayBtn.disabled = true;
-	dayBtn.title = "③で追加予定";
-	seg.appendChild(dayBtn);
+	// 「日」(day タイムライン・2026-07-22 ③)。②では disabled だった枠を有効化した(mkBtn で配線)。
+	seg.appendChild(mkBtn("日", "day"));
 	return seg;
 }
 
@@ -1448,6 +1460,173 @@ function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
 }
 
 // =============================================================================
+// 日タイムライン(2026-07-22 ロードマップ③・fullscreen 限定)
+// =============================================================================
+// モック docs/modeling/ui-mockups/agenda-views-v7.html を移植。重なり列分割の純関数(layoutOverlaps)は
+// day-timeline.ts(bun:test 済み)に隔離し、ここは「イベント → 日内分レンジへの写像」+ DOM 組み立て
+// (絶対配置・時刻目盛・赤線)だけを担う(How はここ・What はテスト)。
+
+/** 時刻軸の 1 時間あたりの高さ(px)。分 → px は min/60*HOUR_PX。CSS(--dv-hour)と同値に保つ
+ *  (二重管理だが、DOM 側は絶対配置で px を直接使うため定数で持つ。値を変えたら CSS も揃える)。 */
+const DV_HOUR_PX = 48;
+
+/** "HH:MM" → 日内分(0-1440)。壊れた入力は 0(防御。呼び出し側は wallTimePart 由来で常に整形済み)。 */
+function hhmmToMin(hhmm: string): number {
+	const [h, m] = hhmm.split(":").map(Number);
+	return (h ?? 0) * 60 + (m ?? 0);
+}
+
+/** 選択日に「時刻付きで」交差するイベントを日内分レンジ(TimedBlock)へ写す。多日跨ぎは端を day-clamp
+ *  相当に寄せる(前日から継続=0 分開始 / 翌日へ継続=1440 分終了)。layoutOverlaps 側でも clamp するが、
+ *  ここで先に日境界へ寄せておくことで「別日の壁時計 HH:MM」が誤って混ざらないようにする。
+ *  戻り値は {block, ev} の対 — layoutOverlaps は key しか返さないので、描画で ev(色/タイトル)へ引き戻す。 */
+function dayTimedBlocks(evs: EventItem[], dayKey: string): Array<{ block: TimedBlock; ev: EventItem }> {
+	const out: Array<{ block: TimedBlock; ev: EventItem }> = [];
+	for (const ev of evs) {
+		if (ev.isAllDay || !ev.start.includes("T")) continue; // 終日は別帯(dayAllDayEvents)
+		const startDay = wallDatePart(ev.start);
+		const endDay = ev.end !== null && ev.end.includes("T") ? wallDatePart(ev.end) : startDay;
+		// この日に時刻帯として交差するか("YYYY-MM-DD" は辞書順=日付順で比較できる)。
+		if (startDay > dayKey || endDay < dayKey) continue;
+		// 前日から継続なら 0 分開始、当日開始なら壁時計 HH:MM。
+		const startMin = startDay < dayKey ? 0 : hhmmToMin(wallTimePart(ev.start));
+		// end 無しは 0 分(start と同値 → layoutOverlaps が最小幅 clamp)。翌日へ継続は 1440 分終了。
+		let endMin: number;
+		if (ev.end === null || !ev.end.includes("T")) {
+			endMin = startMin;
+		} else if (endDay > dayKey) {
+			endMin = DAY_MIN;
+		} else {
+			endMin = hhmmToMin(wallTimePart(ev.end));
+		}
+		// 前日から継続してこの日の 00:00 ちょうどで終わる予定は当日に属さない(endMin=0 の見かけ上の点を作らない)。
+		if (startDay < dayKey && endMin === 0) continue;
+		out.push({ block: { key: rowKey(ev), startMin, endMin }, ev });
+	}
+	return out;
+}
+
+/** 選択日に「終日で」交差するイベント(終日チップ帯用)。終日の DTEND は排他終端なので
+ *  [start, end) に dayKey が入るかで判定(end 無しは単日)。allDayLastVisibleDay と同じ規約。 */
+function dayAllDayEvents(evs: EventItem[], dayKey: string): EventItem[] {
+	return evs.filter((ev) => {
+		if (!ev.isAllDay && ev.start.includes("T")) return false;
+		const startDay = wallDatePart(ev.start);
+		// 排他終端(DTEND の日)。終日 end 無し・時刻無しは単日 → 翌日を排他終端にする。
+		const endExcl = ev.end !== null && ev.isAllDay ? wallDatePart(ev.end) : addDaysToDateKey(startDay, 1);
+		return startDay <= dayKey && dayKey < endExcl;
+	});
+}
+
+/** 日ビュー本体を #root に描く(日ナビ + 終日チップ帯 + 時刻軸タイムライン + 赤線)。
+ *  events は list/month と同じサーバー確定一覧をそのまま使う(表示フィルタは同じ集合)。 */
+function renderDayView(): void {
+	const baseEvents = allCalendarsHidden ? [] : (events ?? []);
+
+	// --- 日ナビ(日見出し + 今日 / 前日 / 翌日)。月ナビ(.mv-nav)と同じ視覚言語を .dv- で再現 ---
+	const nav = el("div", "dv-nav");
+	const head = el("span", "dv-dh");
+	const [, m, d] = selectedDayKey.split("-").map(Number);
+	head.textContent = `${m}月${d}日(${weekdayOf(selectedDayKey)})`;
+	nav.appendChild(head);
+	const navBtns = el("div", "dv-nav-btns");
+	const todayBtn = document.createElement("button");
+	todayBtn.type = "button";
+	todayBtn.className = "dv-today-btn";
+	todayBtn.textContent = "今日";
+	todayBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		dayGoToday();
+	});
+	const prevBtn = document.createElement("button");
+	prevBtn.type = "button";
+	prevBtn.setAttribute("aria-label", "前の日");
+	prevBtn.appendChild(createIcon("chevron-left"));
+	prevBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		shiftDay(-1);
+	});
+	const nextBtn = document.createElement("button");
+	nextBtn.type = "button";
+	nextBtn.setAttribute("aria-label", "次の日");
+	nextBtn.appendChild(createIcon("chevron-right"));
+	nextBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		shiftDay(1);
+	});
+	navBtns.append(todayBtn, prevBtn, nextBtn);
+	nav.appendChild(navBtns);
+	root.appendChild(nav);
+
+	// --- 終日イベントのチップ帯(色ドット + タイトル・横並び折返し)---
+	const allDay = dayAllDayEvents(baseEvents, selectedDayKey);
+	if (allDay.length > 0) {
+		const band = el("div", "dv-allday");
+		for (const ev of allDay) {
+			const chip = el("span", "dv-chip");
+			const dot = document.createElement("i");
+			dot.style.background = eventDotColor(ev);
+			chip.appendChild(dot);
+			chip.appendChild(document.createTextNode(ev.title));
+			band.appendChild(chip);
+		}
+		root.appendChild(band);
+	}
+
+	// --- 時刻軸タイムライン(0-23 時目盛 + 予定ブロック + 赤線)---
+	const timeline = el("div", "dv-timeline");
+	timeline.style.height = `${24 * DV_HOUR_PX}px`;
+	// 時刻ラベル + 横罫(0-23 時)。position:absolute で top を積む(高さ一定 = 目盛が毎回同位置)。
+	for (let h = 0; h < 24; h++) {
+		const label = el("span", "dv-hour-label");
+		label.style.top = `${h * DV_HOUR_PX}px`;
+		label.textContent = `${h}:00`;
+		timeline.appendChild(label);
+		const line = el("div", "dv-hour-line");
+		line.style.top = `${h * DV_HOUR_PX}px`;
+		timeline.appendChild(line);
+	}
+	// 予定ブロック領域(左ガターの右)。layoutOverlaps の結果を left%/width%/top/height へ写す。
+	const blocksArea = el("div", "dv-blocks");
+	const pairs = dayTimedBlocks(baseEvents, selectedDayKey);
+	const evByKey = new Map<string, EventItem>();
+	for (const p of pairs) evByKey.set(p.block.key, p.ev);
+	const laid: LaidOutBlock[] = layoutOverlaps(pairs.map((p) => p.block));
+	for (const b of laid) {
+		const ev = evByKey.get(b.key);
+		if (ev === undefined) continue; // 論理的に起こらない(key は pairs 由来)
+		const block = el("div", "dv-block");
+		block.style.top = `${(b.startMin / 60) * DV_HOUR_PX}px`;
+		block.style.height = `${((b.endMin - b.startMin) / 60) * DV_HOUR_PX}px`;
+		// 等幅列分割: 左 = col/colCount・幅 = 1/colCount(1px の隙間で隣ブロックと分ける)。
+		block.style.left = `calc(${(b.col / b.colCount) * 100}% + 1px)`;
+		block.style.width = `calc(${100 / b.colCount}% - 2px)`;
+		block.style.background = eventDotColor(ev);
+		const title = el("div", "dv-bt");
+		title.textContent = ev.title;
+		block.appendChild(title);
+		// 開始時刻(小さく)。行の錨は時刻軸そのものだが、ブロック内にも開始を出すと走査が速い(iOS 準拠)。
+		const sub = el("div", "dv-bs");
+		sub.textContent = wallTimePart(ev.start) === "" ? "" : wallTimePart(ev.start);
+		block.appendChild(sub);
+		blocksArea.appendChild(block);
+	}
+	timeline.appendChild(blocksArea);
+
+	// --- 現在時刻の赤線 + 左端ドット(今日のみ・nowLineTopMin が null なら出さない)---
+	// 【transition を付けない Why(main 裁定 item 5)】これは位置更新でありアニメではない。60 秒ごとに
+	// 別位置へ跳ぶのが正しい(補間アニメを入れると「線がぬるっと動く」誤った表現になる)。
+	const topMin = nowLineTopMin(new Date(), selectedDayKey);
+	if (topMin !== null) {
+		const nowLine = el("div", "dv-nowline");
+		nowLine.style.top = `${(topMin / 60) * DV_HOUR_PX}px`;
+		nowLine.setAttribute("aria-hidden", "true");
+		timeline.appendChild(nowLine);
+	}
+	root.appendChild(timeline);
+}
+
+// =============================================================================
 // ビュー遷移 + レンジ差し替え(確定済み設計判断2「listRange 退避方式」)
 // =============================================================================
 // 月ビュー突入時に list 用の currentRange を listRange へ退避し、currentRange を月グリッド 42 セル分の
@@ -1458,27 +1637,93 @@ function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
 // 月レンジで照会する(echo pin 修正 56cbb73 の「range を名乗る応答だけ currentCalendarId を採る」不変も
 // applyStructuredContent 側でそのまま維持される — 本変更は currentRange の中身を変えるだけ)。
 
-/** 月ビューへ入る。list レンジを退避し、今月・今日基準の月レンジへ差し替えて refetch する。
- *  【月ビュー再突入時に今月/今日へ寄せる判断(親への報告論点)】確定済み設計判断1は「inline 復帰時の
- *  list 強制リセット」だけを規定し、月ビュー再突入時の初期カーソルは未規定。前回の月位置を引き継ぐより
- *  「常に今月・今日から」の方が予測可能なのでそう寄せた(要合意なら容易に変更可)。 */
+/** 月ビューへ入る。list レンジを退避し、選択日を含む月の月レンジへ差し替えて refetch する。
+ *  【初期カーソル = 選択日を含む月・選択日は保持(2026-07-22 論点1 裁定)】day で 8/15 を見ていて
+ *  「月」に切り替えたら 8 月が出るのが自然(iOS 準拠・selectedDayKey は月/日ビュー共有)。selectedDayKey は
+ *  inline 復帰時に今日へリセットされる既存仕様(applyHostContext)があるため、list からの月ビュー突入は
+ *  従来どおり「今月・今日」になり、既定の予測可能性は壊れない(list 中は selectedDayKey=今日のまま)。
+ *  【ボツ: 常に今月・今日へリセット(旧実装)】どのビューから来ても monthCursor=今月/selectedDayKey=今日へ
+ *  寄せていたが、day→month で見ていた月が飛ぶ違和感(8 月を見ていたのに 7 月へ戻る)を招くため裁定で撤回。 */
 function enterMonthMode(): void {
+	// day ビューから月へ来たときは赤線タイマーを止める(main 裁定 item 5: 全遷移経路で必ず停止)。
+	stopNowLineTimer();
+	// listRange の退避は list からの遷移時のみ(main 裁定 item 2)。month↔day 間の遷移で
+	// 月/日レンジを listRange に上書きすると、list 復帰時に list 用でないレンジを復元してしまう。
+	if (agendaViewMode === "list") listRange = currentRange;
 	agendaViewMode = "month";
-	const todayKey = localDateKey(new Date());
-	monthCursor = yearMonthOf(todayKey);
-	selectedDayKey = todayKey;
-	listRange = currentRange; // list 用レンジを退避(復帰時に戻す)
+	// selectedDayKey は保持(day/month 共有)。monthCursor はその選択日を含む月へ寄せる(上のコメント参照)。
+	monthCursor = yearMonthOf(selectedDayKey);
 	currentRange = monthGridRange(monthCursor); // 月グリッド 42 セル分の絶対レンジへ差し替え
 	renderAll(); // まず現データで月グリッドを見せる(refetch は非同期で追いつく = 体感の空白を作らない)
 	void refetchForRange();
 }
 
+/** 日ビューへ入る(2026-07-22 ③)。表示日 selectedDayKey は月ビューと共有する(main 裁定 item 2)—
+ *  月から入れば月グリッドで選んだ日、list から入れば既定(今日)を引き継ぐ(ここでは touch しない)。
+ *  currentRange はその 1 日分へ差し替え(月境界跨ぎの空欄バグ回避 = 月レンジのまま日を描くと選択日が
+ *  月レンジ端の隣月だったとき refetch 済みデータに漏れが出る)。赤線タイマーを起動する。 */
+function enterDayMode(): void {
+	// listRange の退避は list からの遷移時のみ(main 裁定 item 2)。month→day では上書きしない。
+	if (agendaViewMode === "list") listRange = currentRange;
+	agendaViewMode = "day";
+	currentRange = dayRange(selectedDayKey); // 選択日 1 日分の絶対レンジ(localMidnightIso 〜 翌日深夜)
+	startNowLineTimer(); // 60 秒ごとに赤線を再計算(今日以外は nowLineTopMin が null で線が出ないだけ)
+	renderAll(); // まず現データで描く(refetch は非同期で追いつく)
+	void refetchForRange();
+}
+
 /** list ビューへ戻る。退避してあった list レンジを復元して refetch する(null なら server 既定へ委ねる)。 */
 function exitToListMode(): void {
+	// month/day いずれから戻っても赤線タイマーを止める(main 裁定 item 5)。
+	stopNowLineTimer();
 	agendaViewMode = "list";
 	currentRange = listRange; // 退避レンジを復元(null=未受領なら refreshArgs が range を省いて既定へ)
 	renderAll();
 	void refetchForRange();
+}
+
+/** "YYYY-MM-DD" 1 日分の絶対レンジ(from=その日の深夜・to=翌日の深夜。排他終端で当日を丸ごと含める)。
+ *  月ビューの monthGridRange と同じ localMidnightIso 整形を使う(server の timeMin/timeMax は offset ISO)。 */
+function dayRange(dayKey: string): { from: string; to: string } {
+	return { from: localMidnightIso(dayKey), to: localMidnightIso(addDaysToDateKey(dayKey, 1)) };
+}
+
+/** 日送り(±1 日)。selectedDayKey を進め、currentRange を新しい日の 1 日分へ差し替えて refetch する。
+ *  赤線タイマーは張り直す(今日 → 隣日で線の要否が変わるが、startNowLineTimer は冪等なので安全)。 */
+function shiftDay(delta: number): void {
+	selectedDayKey = addDaysToDateKey(selectedDayKey, delta);
+	currentRange = dayRange(selectedDayKey);
+	startNowLineTimer();
+	renderAll();
+	void refetchForRange();
+}
+
+/** 「今日」ボタン: 表示日を今日へ戻して 1 日レンジを取り直す(月ビューの todayBtn と同じ挙動)。 */
+function dayGoToday(): void {
+	selectedDayKey = localDateKey(new Date());
+	currentRange = dayRange(selectedDayKey);
+	startNowLineTimer();
+	renderAll();
+	void refetchForRange();
+}
+
+/** 赤線更新タイマーを(張り直して)起動する。既存タイマーは stopNowLineTimer で必ず一度止めるので冪等。
+ *  【60 秒間隔の Why】赤線は「分」精度で足りる(秒まで動かしても知覚差はほぼ無い)。setInterval の
+ *  コールバックは day ビューのときだけ renderAll する(他ビューに切り替わった直後の 1 発を無害化)。 */
+function startNowLineTimer(): void {
+	stopNowLineTimer();
+	// setInterval の戻り値はブラウザでは number(Node 型定義混入で unknown 経由の cast)。
+	nowLineTimer = setInterval(() => {
+		if (agendaViewMode === "day") renderAll();
+	}, 60_000) as unknown as number;
+}
+
+/** 赤線更新タイマーを停止する(全遷移経路の停止漏れをここ 1 箇所に閉じ込める・main 裁定 item 5)。 */
+function stopNowLineTimer(): void {
+	if (nowLineTimer !== null) {
+		clearInterval(nowLineTimer);
+		nowLineTimer = null;
+	}
 }
 
 /** 月カーソルを差し替えて(月送り/今日)、月レンジを再計算し refetch する。 */
@@ -4307,7 +4552,18 @@ const maybeRefetch = (): void => {
 		});
 };
 document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState === "visible") maybeRefetch();
+	if (document.visibilityState === "visible") {
+		maybeRefetch();
+		// 日ビューの赤線: hidden 中に止めていたタイマーを再開し、経過分を即時反映する(復帰時に古い
+		// 位置のまま次の 60 秒を待たない。main 裁定 item 5: visibilitychange に相乗り)。
+		if (agendaViewMode === "day") {
+			startNowLineTimer();
+			renderAll();
+		}
+	} else {
+		// バックグラウンドでは無駄な 60 秒タイマーを止める(全停止経路の 1 つ)。
+		stopNowLineTimer();
+	}
 });
 window.addEventListener("focus", maybeRefetch);
 window.addEventListener("pageshow", maybeRefetch);

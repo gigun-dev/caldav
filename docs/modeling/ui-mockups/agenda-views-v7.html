@@ -1,0 +1,236 @@
+<!doctype html>
+<!-- agenda fullscreen ビュー切替 + 日タイムライン インタラクティブモック v7(2026-07-22)
+     ロードマップ③(ユーザー合意: ①コレクション選択 → ②ビュー切替+月 → ③日タイムライン)。
+     v6(②月グリッド)の文法・変数・トーンを踏襲。図が正 = このモックが実装(day-timeline.ts /
+     renderDayView)の先行仕様。iOS カレンダー日ビュー準拠の最小仕様:
+     - fullscreen 前提(inline はリスト一択のまま — 高さクランプ内でタイムラインは潰れる。v6 と同じ理由)。
+     - ヘッダ下にセグメント(リスト | 月 | 日)。②で disabled だった「日」を有効化(このモックの主役)。
+     - 日ナビ(前日/今日/翌日 + "7月22日(火)" 見出し)。表示日は月ビューの選択日と共有(実装では
+       selectedDayKey)。
+     - 終日イベントのチップ帯(色ドット + タイトル・横並び折返し)を時刻軸の上に置く。
+     - 時刻軸タイムライン(0-23 時目盛・左に時刻ラベル)。予定ブロックは絶対配置・コレクション色。
+     - 重なりはクラスタ(相互重なり連結成分)単位の等幅列分割。列数 colCount は「同時刻の最大重なり数」で
+       統一する(main 裁定 — greedy が使った列数ではない)。0分イベントは最小幅へ clamp。
+     - 今日のみ現在時刻の赤線 + 左端ドット(今日以外は出さない)。
+     - 色は①の決定的パレット(カレンダー id → 色)と同じ語彙。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --danger: #ff3b30;
+    --now: #ff3b30;
+    --radius: var(--border-radius-md, 8px);
+    /* タイムラインの目盛高さ(1 時間 = 48px)。分 → px は min/60*48 = min*0.8。実装(HOUR_PX)と同値。 */
+    --hour: 48px;
+    /* 時刻ラベルの左ガター幅。ブロックはこの右側に絶対配置する。 */
+    --gutter: 44px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    display: flex; justify-content: center; padding: 24px; }
+  .phone { width: 380px; }
+  .phone-label { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; min-height: 640px; }
+  .lucide-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .app-title { font-size: 16px; font-weight: 700; }
+  .updated { font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .dots { display: flex; }
+  .dots .d { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg); }
+  .dots .d + .d { margin-left: -5px; }
+
+  /* セグメント(v6 と同型) */
+  .segment { display: flex; background: var(--surface); border-radius: 9px; padding: 2px; margin-bottom: 12px; }
+  .segment button { flex: 1; border: none; background: none; font: inherit; font-size: 13px;
+    padding: 6px 0; border-radius: 7px; color: var(--fg); cursor: pointer; }
+  .segment button[aria-pressed="true"] { background: var(--bg); font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .segment button:disabled { color: var(--muted); cursor: default; }
+
+  /* 日ナビ(前日/今日/翌日 + 日見出し)。月ナビ(v6 .month-nav)と同じ視覚言語。 */
+  .day-nav { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 8px; }
+  .day-nav .dh { font-size: 15px; font-weight: 700; }
+  .day-nav .nav-btns { display: flex; align-items: center; gap: 2px; }
+  .day-nav button { border: none; background: none; color: var(--accent); font: inherit;
+    padding: 6px; cursor: pointer; display: flex; }
+  .day-nav .today-btn { font-size: 13px; padding: 4px 8px; }
+
+  /* 終日イベントのチップ帯(色ドット + タイトル・横並び折返し)。 */
+  .allday { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 2px 8px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .allday:empty { display: none; }
+  .allday .chip { display: inline-flex; align-items: center; gap: 5px; background: var(--surface);
+    border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+  .allday .chip i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  /* 時刻軸タイムライン。position:relative の枠に、時刻ラベル/横罫/予定ブロック/現在線を絶対配置する。
+     高さ = 24 時間分(24 * --hour)。カード内は内部スクロールで全時間を見る想定。 */
+  .timeline { position: relative; height: calc(24 * var(--hour)); margin-top: 4px; }
+  .hour-label { position: absolute; left: 0; width: var(--gutter); text-align: right;
+    padding-right: 6px; font-size: 10px; color: var(--muted); transform: translateY(-6px); }
+  .hour-line { position: absolute; left: var(--gutter); right: 0; height: 0;
+    border-top: 1px solid var(--border); }
+  /* 予定ブロックを載せる領域(左ガターの右)。 */
+  .blocks { position: absolute; left: var(--gutter); right: 0; top: 0; bottom: 0; }
+  .block { position: absolute; border-radius: 6px; padding: 2px 6px; overflow: hidden;
+    color: #fff; font-size: 11px; line-height: 1.25; box-shadow: 0 0 0 1px var(--bg) inset; }
+  .block .bt { font-weight: 600; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+  .block .bs { opacity: .85; font-size: 10px; }
+
+  /* 現在時刻の赤線 + 左端ドット(今日のみ)。位置更新でありアニメではないので transition なし。 */
+  .nowline { position: absolute; left: var(--gutter); right: 0; height: 0;
+    border-top: 2px solid var(--now); z-index: 3; }
+  .nowline::before { content: ""; position: absolute; left: -4px; top: -4px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--now); }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="phone-label">agenda fullscreen — セグメント切替 + 日タイムライン(iOS 日ビュー準拠)</div>
+  <div class="card">
+    <header class="bar">
+      <span><span class="app-title">カレンダー</span><span class="updated">12:34</span></span>
+      <span class="dots"><span class="d" style="background:#007aff"></span><span class="d" style="background:#ff9500"></span></span>
+    </header>
+    <div class="segment">
+      <button id="seg-list" aria-pressed="false">リスト</button>
+      <button id="seg-month" aria-pressed="false">月</button>
+      <button id="seg-day" aria-pressed="true">日</button>
+    </div>
+
+    <div id="view-day">
+      <div class="day-nav">
+        <span class="dh" id="dh">7月22日(火)</span>
+        <span class="nav-btns">
+          <button class="today-btn" id="nav-today">今日</button>
+          <button id="nav-prev"><svg class="lucide-icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+          <button id="nav-next"><svg class="lucide-icon" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="allday" id="allday"></div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ダミーデータ: 色は①のパレット(カレンダー id → 決定的割当)と同じ語彙。時刻は分(0-1440)。
+// 重なりの見本を仕込む: 10:00-11:30 と 10:30-12:00(部分重複=2列)、14:00-15:00 と 14:00-15:00(完全重複=2列)。
+const DAY = {
+  "2026-07-22": {
+    allday: [{ s: "海の日(振)", c: "#ff9500" }],
+    timed: [
+      { s: "朝会", c: "#007aff", start: 540, end: 570 },           // 9:00-9:30
+      { s: "設計レビュー", c: "#007aff", start: 600, end: 690 },   // 10:00-11:30
+      { s: "1on1", c: "#ff9500", start: 630, end: 720 },           // 10:30-12:00(↑と部分重複)
+      { s: "ランチ", c: "#34c759", start: 720, end: 780 },         // 12:00-13:00
+      { s: "面談A", c: "#007aff", start: 840, end: 900 },          // 14:00-15:00(完全重複)
+      { s: "面談B", c: "#ff9500", start: 840, end: 900 },          // 14:00-15:00(完全重複)
+      { s: "退勤", c: "#34c759", start: 1080, end: 1080 },         // 18:00 点(0分 → 最小幅)
+    ],
+  },
+};
+const TODAY = "2026-07-22";
+const HOUR_PX = 48;      // --hour と同値
+const MIN_BLOCK = 20;    // 0分 clamp(day-timeline.ts の MIN_BLOCK_MIN と同値)
+let day = TODAY;
+const $ = (id) => document.getElementById(id);
+
+// --- day-timeline.ts layoutOverlaps の JS 版(モック用の縮約。実装の正はテスト済み .ts)---
+function normalize(b) {
+  let s = Math.max(0, Math.min(1440, b.start));
+  let e = Math.max(0, Math.min(1440, b.end));
+  if (e < s) e = s;
+  if (e - s < MIN_BLOCK) { e = Math.min(1440, s + MIN_BLOCK); if (e - s < MIN_BLOCK) s = Math.max(0, e - MIN_BLOCK); }
+  return { ...b, start: s, end: e };
+}
+function layout(blocks) {
+  const norm = blocks.map(normalize).map((b, i) => ({ ...b, i }));
+  norm.sort((a, c) => a.start - c.start || a.end - c.end || a.i - c.i);
+  // クラスタ割当
+  let cid = -1, cend = -Infinity; const cluster = [];
+  for (const b of norm) { if (b.start >= cend) { cid++; cend = b.end; } else cend = Math.max(cend, b.end); cluster.push(cid); }
+  // クラスタごとの同時刻最大重なり
+  const colCount = {};
+  const groups = {};
+  norm.forEach((b, k) => { (groups[cluster[k]] ??= []).push(b); });
+  for (const c in groups) {
+    const ev = [];
+    for (const b of groups[c]) { ev.push({ t: b.start, d: 1 }); ev.push({ t: b.end, d: -1 }); }
+    ev.sort((a, z) => a.t - z.t || a.d - z.d);
+    let cur = 0, max = 0; for (const e of ev) { cur += e.d; if (cur > max) max = cur; }
+    colCount[c] = Math.max(1, max);
+  }
+  // 貪欲な列割当
+  const ends = []; const out = [];
+  norm.forEach((b, k) => {
+    let col = ends.findIndex((e) => e <= b.start);
+    if (col === -1) { col = ends.length; ends.push(b.end); } else ends[col] = b.end;
+    out.push({ ...b, col, colCount: colCount[cluster[k]] });
+  });
+  return out;
+}
+
+function render() {
+  const [y, m, d] = day.split("-").map(Number);
+  const dow = "日月火水木金土"[new Date(y, m - 1, d).getDay()];
+  $("dh").textContent = `${m}月${d}日(${dow})`;
+  const data = DAY[day] ?? { allday: [], timed: [] };
+
+  // 終日チップ帯
+  $("allday").innerHTML = data.allday.map((a) =>
+    `<span class="chip"><i style="background:${a.c}"></i>${a.s}</span>`).join("");
+
+  // タイムライン(目盛 + ブロック + 現在線)
+  const tl = $("timeline");
+  let html = "";
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="hour-label" style="top:${h * HOUR_PX}px">${h}:00</div>`;
+    html += `<div class="hour-line" style="top:${h * HOUR_PX}px"></div>`;
+  }
+  html += `<div class="blocks">`;
+  for (const b of layout(data.timed)) {
+    const top = b.start / 60 * HOUR_PX;
+    const height = (b.end - b.start) / 60 * HOUR_PX;
+    const left = `calc(${(b.col / b.colCount) * 100}% + 1px)`;
+    const width = `calc(${100 / b.colCount}% - 2px)`;
+    const hm = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+    html += `<div class="block" style="top:${top}px;height:${height}px;left:${left};width:${width};background:${b.c}">`
+      + `<div class="bt">${b.s}</div><div class="bs">${hm(b.start)}</div></div>`;
+  }
+  html += `</div>`;
+
+  // 現在線(今日のみ)。now = 実時刻の分(モックは固定 12:34 を使わず実 now)。
+  if (day === TODAY) {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    html += `<div class="nowline" style="top:${nowMin / 60 * HOUR_PX}px"></div>`;
+  }
+  tl.innerHTML = html;
+}
+
+function shift(delta) {
+  const dt = new Date(day + "T00:00:00"); dt.setDate(dt.getDate() + delta);
+  day = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  render();
+}
+$("nav-prev").addEventListener("click", () => shift(-1));
+$("nav-next").addEventListener("click", () => shift(1));
+$("nav-today").addEventListener("click", () => { day = TODAY; render(); });
+render();
+</script>
+</body>
+</html>

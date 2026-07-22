@@ -561,6 +561,37 @@ export const AGENDA_APP_HTML = `<!doctype html>
   .mv-t { color: var(--muted); font-size: 12px; width: 40px; flex: none; }
   .mv-empty { color: var(--muted); font-size: 13px; padding: 14px 2px; }
 
+  /* --- 日タイムライン(2026-07-22 ロードマップ③・fullscreen 限定)---
+   * モック docs/modeling/ui-mockups/agenda-views-v7.html を移植。接頭辞 dv-(mv- 慣行に倣う・
+   * .segment / .mv- と取り違えない独立クラス系)。--dv-hour は entry の DV_HOUR_PX と同値に保つ
+   * (絶対配置の px は entry が直接持つので二重管理だが、値を変えたら両方揃える)。 */
+  :root { --dv-hour: 48px; --dv-gutter: 44px; }
+  /* 日ナビ(前日/今日/翌日 + 日見出し)。月ナビ(.mv-nav)と同型。 */
+  .dv-nav { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 8px; }
+  .dv-nav .dv-dh { font-size: 15px; font-weight: 700; }
+  .dv-nav-btns { display: flex; align-items: center; gap: 2px; }
+  .dv-nav button { border: none; background: none; color: var(--accent); font: inherit; padding: 6px; cursor: pointer; display: flex; align-items: center; }
+  .dv-nav .dv-today-btn { font-size: 13px; padding: 4px 8px; }
+
+  /* 終日イベントのチップ帯(色ドット + タイトル・横並び折返し)。 */
+  .dv-allday { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 2px 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .dv-chip { display: inline-flex; align-items: center; gap: 5px; background: var(--surface); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+  .dv-chip i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  /* 時刻軸タイムライン。position:relative の枠へ時刻ラベル/横罫/予定ブロック/現在線を絶対配置する。
+   * 高さは entry が 24*DV_HOUR_PX を inline で与える(#root.fullscreen-scroll の内部スクロールで全時間を見る)。 */
+  .dv-timeline { position: relative; margin-top: 4px; }
+  .dv-hour-label { position: absolute; left: 0; width: var(--dv-gutter); text-align: right; padding-right: 6px; font-size: 10px; color: var(--muted); transform: translateY(-6px); }
+  .dv-hour-line { position: absolute; left: var(--dv-gutter); right: 0; height: 0; border-top: 1px solid var(--border-hair); }
+  .dv-blocks { position: absolute; left: var(--dv-gutter); right: 0; top: 0; bottom: 0; }
+  .dv-block { position: absolute; border-radius: 6px; padding: 2px 6px; overflow: hidden; color: #fff; font-size: 11px; line-height: 1.25; box-shadow: 0 0 0 1px var(--bg) inset; }
+  .dv-bt { font-weight: 600; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+  .dv-bs { opacity: 0.85; font-size: 10px; }
+
+  /* 現在時刻の赤線 + 左端ドット(今日のみ)。位置更新でありアニメではないので transition なし(entry コメント参照)。 */
+  .dv-nowline { position: absolute; left: var(--dv-gutter); right: 0; height: 0; border-top: 2px solid var(--now); z-index: 3; }
+  .dv-nowline::before { content: ""; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--now); }
+
   /* --- 詳細ページ(モック C。todos v3 と同一部品)--- */
   .page-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-hair); }
   .link { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: 13px; border: none; background: none; cursor: pointer; padding: 4px 2px; }
