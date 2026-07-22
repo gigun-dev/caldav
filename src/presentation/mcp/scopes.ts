@@ -46,6 +46,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
 	"refresh-todos",
 	// C5(設計 05): 既知の場所ツールも list-* の照会系(read)。
 	"list-known-locations",
+	// R2(docs/modeling/15 §A-3): ゴミ箱一覧は読み取り専用。復元(restore-deleted)は mutation
+	// なので safe default で write 扱いになる(ここには入れない)。
+	"list-deleted",
 ]);
 
 /** ツール名が write(mutation)系かどうか。READ_ONLY_TOOLS に無いものは全て write 扱い(safe default)。 */

@@ -231,7 +231,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["complete-todo", "create-calendar", "create-event", "create-events", "create-todo", "create-todos", "delete-calendar", "delete-event", "delete-todo", "get-current-time", "get-freebusy", "list-calendars", "list-events-expanded", "list-known-locations", "list-todos", "move-todo", "propose-delete-calendar", "propose-delete-event", "propose-delete-todo", "refresh-events", "refresh-todos", "update-event", "update-todo"]);
+		expect(toolNames).toEqual(["complete-todo", "create-calendar", "create-event", "create-events", "create-todo", "create-todos", "delete-calendar", "delete-event", "delete-todo", "get-current-time", "get-freebusy", "list-calendars", "list-deleted", "list-events-expanded", "list-known-locations", "list-todos", "move-todo", "propose-delete-calendar", "propose-delete-event", "propose-delete-todo", "refresh-events", "refresh-todos", "restore-deleted", "update-event", "update-todo"]);
 	});
 
 	it("(e) 静的 Bearer 経路: MCP_TOKEN でも OAuth を経由せず /mcp の tools/list が通る", async () => {
@@ -259,7 +259,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			result?: { tools?: Array<{ name: string }> };
 		};
 		const toolNames = (rpcResponse.result?.tools ?? []).map((tool) => tool.name).sort();
-		expect(toolNames).toEqual(["complete-todo", "create-calendar", "create-event", "create-events", "create-todo", "create-todos", "delete-calendar", "delete-event", "delete-todo", "get-current-time", "get-freebusy", "list-calendars", "list-events-expanded", "list-known-locations", "list-todos", "move-todo", "propose-delete-calendar", "propose-delete-event", "propose-delete-todo", "refresh-events", "refresh-todos", "update-event", "update-todo"]);
+		expect(toolNames).toEqual(["complete-todo", "create-calendar", "create-event", "create-events", "create-todo", "create-todos", "delete-calendar", "delete-event", "delete-todo", "get-current-time", "get-freebusy", "list-calendars", "list-deleted", "list-events-expanded", "list-known-locations", "list-todos", "move-todo", "propose-delete-calendar", "propose-delete-event", "propose-delete-todo", "refresh-events", "refresh-todos", "restore-deleted", "update-event", "update-todo"]);
 	});
 
 	// --- R-6: read/write scope 分離のツール別強制 ---------------------------------

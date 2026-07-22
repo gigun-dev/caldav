@@ -65,6 +65,10 @@ function countingRepo(real: FakeCalendarObjectResourceRepository): {
 			calls += 1;
 			return real.findByOwnerTimeRange(o, k, s, e, cids);
 		},
+		// R2: ゴミ箱系はこのデコレータの関心外(素通し)。
+		listDeleted: (o) => real.listDeleted(o),
+		findDeletedByUri: (o, c, u) => real.findDeletedByUri(o, c, u),
+		purgeDeletedBefore: (cutoff) => real.purgeDeletedBefore(cutoff),
 	};
 	return { repo, ownerTimeRangeCalls: () => calls };
 }
