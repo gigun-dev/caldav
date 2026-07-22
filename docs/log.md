@@ -987,3 +987,21 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   (〜2a9ced5・secrets.required 検証込みで build success)→ mcp-inspector-verify で S1 本番 E2E:
   ①_meta 分離 ✅ ②カード描画→削除実行→「削除しました」✅ ③トークン無し拒否 ✅ D1 裏取り ✅
   後始末=正規経路で残ゼロ。④swipe UI 経路と実ホスト _meta 受け渡しは Simulator/実機項目へ申し送り。
+
+## 2026-07-23(続き・完了済みバグ2件 + HITL 方向転換 + カード UI 原則)
+
+- ユーザー報告のバグ2件(完了済み展開で消える/削除後111件)を Explore 根因調査 →
+  implementer 実装で修正・deploy(aab68b6)。裁定の要点: 3秒退場機構は撤去(完了=完了済み
+  セクションへの状態遷移・可視のまま可逆)、カードの完了済み表示は server 常時計算の
+  completedSummary(総件数+直近5件、view/due 窓非依存)へ乗り換え。due 窓判定は
+  filterTasksByWindow として application 層へ抽出。
+- HITL 方向転換(architect 一次資料調査+ユーザー裁定): 確認 UI はホスト責務(MCP spec 明文・
+  claude.ai per-tool 許可あり)。S2/S3 中止・S1 は R1 で降格→撤去。サーバー責務は
+  annotations 申告+可逆性(R2 ソフトデリート/R3 version+revert)。R4(許可ゲート)は
+  swift-mcp-app 申し送り。
+- カード UI 原則 (b) 採用(ユーザー承認): inline 有界高・内部スクロール禁止/fullscreen 単一
+  スクロールコンテナ/プログラム的スクロールを UX 成立条件にしない・視線誘導は「対象を
+  安全先頭に置く遷移」(safeAreaInsets → --host-safe-top 一元適用)。正典 docs/modeling/15 新設・
+  14 は Why not 資料化。
+- 途中、バグ修正コミットに docs/modeling/14(別エージェント作業中)を git add -A で巻き込み、
+  reset して対象パス明示で作り直した(教訓: 並行エージェント作業中は add -A を使わない)。

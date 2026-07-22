@@ -38,6 +38,30 @@
   > _meta.confirm 受け渡し(SEP-1865 loose passthrough 想定・実ホストで要確認)。
   > 副産物: OAuth 同意パスワードは検証用につき Claude 自動入力可(ユーザー許可・memory 記録)。
   > 次: 確認カード S2(update diff プレビュー)/S3(バッチ部分承認)・IAD 再計測(トラフィック待ち)。
+  > **2026-07-23 更新: HITL 方向転換(ユーザー裁定+architect 一次資料調査)。S2/S3 は中止。**
+  > MCP spec 明文で確認 UI はホスト責務(claude.ai は per-tool 許可済み=S1 は二重確認)。
+  > サーバー責務は annotations 申告(現状未付与=未履行義務)+可逆性。スライス:
+  > R1=annotations 付与+confirmToken optional 降格(propose-delete-* は猶予後撤去)→
+  > R2=ソフトデリート(deleted_at+restore・sync_changes 'deleted' 不変で iOS 見え方同一)→
+  > R3=object_versions+revert。R4=swift-mcp-app 側許可ゲート(Desktop セッションへ申し送り)。
+  > 正典は docs/modeling/15(新設)・14 は Why not として保存。
+  > **2026-07-23 更新: todos カード完了済みバグ2件修正・deploy(aab68b6)。**
+  > ①3秒退場機構を完全撤去 — 完了は「完了済みセクションへ移す状態遷移」で可視のまま可逆
+  > (un-complete が undo 入口)。②カードの完了済み表示は server 常時計算の completedSummary
+  > (総件数+直近5件+他 n件、includeCompleted / due 窓に非依存・D1 SELECT 1回のまま)へ乗り換え
+  > — includeCompleted:true 照会 push で「完了済み111件」に化ける現象を構造的に解消。
+  > due 窓判定は filterTasksByWindow として application 層へ抽出(UC と presentation で単一情報源)。
+  > D4 完了スナップショットの無期限累積(111件の真因)の保持ポリシーは未着手の設計事項。
+  > **2026-07-23 更新: カード UI 原則 (b) 採用(ユーザー承認・architect 調査)。**
+  > inline=有界高・内部スクロール禁止・深いナビ禁止(OpenAI Apps SDK ガイドラインと一致)/
+  > fullscreen=単一スクロールコンテナ許容/プログラム的スクロールを UX 成立条件にしない —
+  > 視線誘導は「対象を安全先頭に置く遷移」。安全先頭= HostContext.safeAreaInsets.top
+  > (仕様に存在・claude.ai の申告は未実測・iframe 内 env() は不可)→ CSS 変数 --host-safe-top に
+  > 一元適用+未申告時はモバイル fullscreen 限定フォールバック。残作業(#35): safe-area 変数/
+  > todos ⊕ の scrollIntoView 撤去(作成ビュー先頭表示へ統一)/agenda 月ビュー下段有界化。
+  > 原則の明文化は docs/modeling/15 に集約(#36・作業中)。
+  > **swift-mcp-app への申し送り(#34)**: R4 許可ゲート(annotations 駆動 per-tool 許可)・
+  > fullscreen でキーボードが勝手に閉じる・スクロール過剰発火・safeAreaInsets の正道申告。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

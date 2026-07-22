@@ -1,10 +1,19 @@
 # 14. 書き込み前 human-in-the-loop「確認カード」設計
 
-> 位置づけ: 破壊的操作(delete 系・recurrence:null 系 update)の確認フローの**設計の正**。
-> 実装が図と乖離したら先にこちらを直す(CLAUDE.md)。2026-07-22 に Fable architect が調査・
-> 設計し、main レビュー済み(承認済み・実装は S1 から着手)。E-2/E-3 で確立した MCP Apps の
-> 契約・機構(content-hash 化 ui://・callServerTool・共有カーネル)を最大限流用し、新規発明を
-> 最小にするのが本設計の基本姿勢(12・13 と同じ姿勢)。
+> **2026-07-23 方向転換:** 本文書が定めるサーバー側確認強制(§4 Tier A の「サーバー側で
+> トークン検証をハード強制」= S1)は方向転換により**凍結**する。S1 実装(`confirm-token.ts` /
+> `propose-delete-*` 3種 / delete 系 UC 手前のトークン検証)は**撤去予定**。理由は
+> MCP spec の User Interaction Model 上、確認 UI の提示責務はホスト(Applications)側にあり、
+> サーバー側でのトークン強制はホストの確認機構(例: claude.ai の per-tool 許可)との
+> **二重確認**になるため。新しい正典は **docs/modeling/15-hitl-and-card-ui-principles.md**。
+> 本文書は以後書き換えず、**「なぜサーバー側確認強制を採らないことにしたか」の Why not 資料**
+> として全文保存する(§5 ボツ案・§3 根拠は転換後も参照価値がある)。
+>
+> 位置づけ(凍結前の記述・履歴として保持): 破壊的操作(delete 系・recurrence:null 系
+> update)の確認フローの**設計の正**。実装が図と乖離したら先にこちらを直す(CLAUDE.md)。
+> 2026-07-22 に Fable architect が調査・設計し、main レビュー済み(承認済み・実装は S1 から
+> 着手)。E-2/E-3 で確立した MCP Apps の契約・機構(content-hash 化 ui://・callServerTool・
+> 共有カーネル)を最大限流用し、新規発明を最小にするのが本設計の基本姿勢(12・13 と同じ姿勢)。
 
 ## §1 このドキュメントが生まれた経緯(Why)
 
