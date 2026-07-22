@@ -264,6 +264,8 @@ describe("/mcp", () => {
 		expect(events[0].summary).toBe("MCP Test Event");
 		expect(events[0].isAllDay).toBe(false);
 		expect(events[0].start).toBe("2026-07-15T10:00:00Z");
+		// echo 契約(2026-07-22 agenda echo pin バグ修正): calendarId を単数指定した場合はその値をそのまま echo する。
+		expect(rpc.result.structuredContent.calendarId).toBe("calendar");
 	});
 
 	it("list-events-expanded: calendarId 省略で全コレクション横断", async () => {
@@ -279,6 +281,12 @@ describe("/mcp", () => {
 		});
 		const rpc = await jsonRpcResult(res);
 		expect(rpc.result.structuredContent.events).toHaveLength(1);
+		// echo 契約: 全コレクション横断(calendarId/calendarIds どちらも未指定)のときは、旧実装のような
+		// 架空の "calendar" 固定 echo をやめて正直に null を返す(agenda echo pin バグの根本原因だった —
+		// これを "calendar" と偽装すると agenda-entry.ts の currentCalendarId に保存され、以降の
+		// focus refetch が全横断のつもりが単一コレクション "calendar" だけへ collapse していた)。
+		expect(rpc.result.structuredContent.calendarId).toBeNull();
+		expect(rpc.result.structuredContent.calendarIds).toBeUndefined();
 	});
 
 	// calendarIds(2026-07-22 agenda カード表示フィルタ): 複数コレクションを明示指定して、その集合だけを
@@ -308,6 +316,10 @@ describe("/mcp", () => {
 		const both = await call({ calendarIds: ["calendar", "work"] });
 		expect(both.events).toHaveLength(2);
 		expect(new Set(both.events.map((e: { calendarId: string }) => e.calendarId))).toEqual(new Set(["calendar", "work"]));
+		// echo 契約: calendarIds 指定時は指定した集合をそのまま additive に echo する(単数 calendarId の
+		// echo とは別枠。calendarId 側は複数横断を表す単一 ID が無いので null のまま)。
+		expect(both.calendarIds).toEqual(["calendar", "work"]);
+		expect(both.calendarId).toBeNull();
 
 		// 片方だけ指定 → 1件(その集合だけに絞られる)。
 		const onlyWork = await call({ calendarIds: ["work"] });

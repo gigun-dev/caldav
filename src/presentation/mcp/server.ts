@@ -1273,15 +1273,26 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				});
 
 				// range echo(EventsViewModel.range)。mutate 応答は range を名乗らない(判別シグナル)ので
-				// range を載せるのは照会系のここだけ。calendarId は作成先の既定(全コレクション横断は "calendar")。
+				// range を載せるのは照会系のここだけ。
 				// 【from/to を実際に使った範囲(解決後)にする】従来は入力の timeMin/timeMax をそのまま
 				// エコーしていたが、range 指定時は入力に timeMin/timeMax が無い。常に「実際に展開した範囲」を
 				// offset ISO で返すよう解決後の epoch から作る(絶対指定でも同じ値になり一貫する)。
 				const resolvedMinIso = epochToIso(rangeStartMillis, zone);
 				const resolvedMaxIso = epochToIso(rangeEndMillis, zone);
+				// 【2026-07-22 echo pin バグ修正: calendarId 固定 echo をやめて正直にする】
+				// 旧実装は calendarId 未指定(=全コレクション横断)でも `calendarId ?? "calendar"` で
+				// "calendar" という架空の単一 ID を返していた。これを agenda-entry.ts の
+				// applyStructuredContent が currentCalendarId に保存し、以降の focus refetch
+				// (refreshArgs)が「currentCalendarId 非 null なら calendarId を送る」ため、
+				// 初回は全横断だったはずの一覧が2回目以降 `calendarId:"calendar"` という単一
+				// (存在しない)コレクションへ収束(collapse)してしまっていた(agenda echo pin 問題)。
+				// 対処: 単一指定時のみその値を echo し、全横断時は正直に null を返す(架空 ID を
+				// 作らない)。calendarIds(複数指定)は additive に指定時のみ echo する
+				// (既存の calendarId 単一 echo と衝突しないよう両方 undefined/null 許容の後方互換形)。
 				const result = {
 					events,
-					calendarId: calendarId ?? "calendar",
+					calendarId: calendarId ?? null,
+					...(calendarIds !== undefined ? { calendarIds } : {}),
 					timeZone: zone,
 					range: { from: resolvedMinIso, to: resolvedMaxIso },
 					// resolvedRange(2026-07-16 時刻グラウンディング): モデル/ユーザーが「サーバーが今を何時と
@@ -1314,7 +1325,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			description:
 				"指定期間の VEVENT を反復展開済み(RRULE/RDATE を個々の occurrence に展開)の平坦な一覧として返す。" +
 				"calendarId 省略時は全カレンダーを横断する。範囲は timeMin/timeMax(絶対 ISO)または range(相対レンジ: " +
-				'today/tomorrow/next-7-days/next-30-days)で指定する。range を使えば「今日の予定」を事前 get-current-time なしで1発で引ける。',
+				'today/tomorrow/next-7-days/next-30-days)で指定する。range を使えば「今日の予定」を事前 get-current-time なしで1発で引ける。' +
+				"応答の calendarId が null の場合は全コレクション横断の結果であることを示す(単一コレクション指定時のみその ID を echo する)。",
 			inputSchema: listEventsExpandedInputShape,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },

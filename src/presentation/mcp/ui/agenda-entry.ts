@@ -207,7 +207,10 @@ interface AffectedEntry {
 /** 応答の structuredContent の形(冒頭コメントの契約を型に写経)。 */
 interface EventsStructuredContent {
 	events?: EventItem[];
-	calendarId?: string;
+	// 【2026-07-22 echo pin バグ修正】server.ts が全コレクション横断時に架空の "calendar" を
+	// echo していたのをやめ、正直に null を返すようにした(単一指定時のみ string を返す)。
+	// undefined(=キー自体が無い)と null(=明示的に「全横断」)を区別するため両方許容する。
+	calendarId?: string | null;
 	timeZone?: string;
 	affected?: AffectedEntry[];
 	removed?: EventSnapshot[];
@@ -2459,7 +2462,16 @@ function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean
 
 	// range は list/refresh のみ echo。値が来たときだけ更新する(mutate 応答では currentRange を保つ)。
 	if (structuredContent?.range !== undefined) currentRange = structuredContent.range;
-	if (structuredContent?.calendarId !== undefined) {
+	// 2026-07-22 mutate echo pin 再発修正: structuredContent.calendarId は create/update/delete
+	// の mutate 応答でも「実際に作成/操作した先」を正直に echo してくる(server.ts の vm 組み立て
+	// 参照)。これ自体は正しい値だが、currentCalendarId は「表示スコープが全横断か単一か」という
+	// “照会の文脈” を保持する変数であり、mutate の作成先で上書きすると、全横断表示中
+	// (currentCalendarId===null)に1件 create しただけで単一コレクションへ collapse してしまう
+	// (以降の focus refetch がその1コレクションしか見なくなる)。
+	// 上の rangeChanged 判定と同じ契約(server.ts:1275 コメント)を再利用する: 照会系(list/refresh)
+	// だけが range を名乗り、mutate 応答は range を運ばない。よって「range が来た応答のときだけ」
+	// calendarId も信頼して反映する。mutate 応答(range undefined)では触らずに直前の値を保つ。
+	if (structuredContent?.range !== undefined && structuredContent?.calendarId !== undefined) {
 		// currentCalendarId は refreshArgs の従来経路(フィルタ未適用時)のためだけに保持する。
 		// 【2026-07-22 ヘッダ見出しは不動へ】旧実装はここで appTitleEl.textContent = currentCalendarId と
 		// していたが、agenda は複数カレンダー合成ビューで見出しは「カレンダー」固定が正しい(選択内容で
@@ -2943,7 +2955,14 @@ async function deleteEvent(ev: EventItem): Promise<void> {
 	liveEl.textContent = `「${ev.title}」を削除しました`;
 	try {
 		const args: Record<string, unknown> = { id: ev.id };
-		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		// 【2026-07-22 echo pin バグ修正で currentCalendarId が null になり得るようになった】
+		// 全横断表示中(currentCalendarId===null)でも、行自体は toWireEvent が付けた由来コレクション
+		// (ev.calendarId)を持っている。全横断中に currentCalendarId を使うと id が不明で送れず、
+		// 「削除対象が複数コレクションに同名 id で存在する」曖昧さも server 側で拾えなくなるので、
+		// まず対象イベント自身の calendarId を優先し、無ければ currentCalendarId、それも無ければ
+		// 省略(server の calendarId 未指定=既定 "calendar" にフォールバック)する。
+		const targetCalendarId = ev.calendarId ?? currentCalendarId ?? undefined;
+		if (targetCalendarId !== undefined) args.calendarId = targetCalendarId;
 		const result = await app.callServerTool({ name: "delete-event", arguments: args });
 		if (result.isError) {
 			const first = result.content?.[0];
@@ -3054,7 +3073,9 @@ async function saveEdit(ev: EventItem, changes: UpdateEventChanges): Promise<voi
 
 	try {
 		const args: Record<string, unknown> = { id: ev.id };
-		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		// delete-event と同じ理由(直上コメント参照): 対象イベント自身の calendarId を優先する。
+		const targetCalendarId = ev.calendarId ?? currentCalendarId ?? undefined;
+		if (targetCalendarId !== undefined) args.calendarId = targetCalendarId;
 		if (changes.title !== undefined) args.title = changes.title;
 		if (changes.notes !== undefined) args.notes = changes.notes;
 		if (changes.start !== undefined) args.start = changes.start;
@@ -3159,6 +3180,10 @@ function enqueueCreate(title: string, details: CreateDetails): void {
 async function createEventFor(optimisticId: string, title: string, details: CreateDetails): Promise<void> {
 	try {
 		const args: Record<string, unknown> = { title, start: details.start };
+		// create は既存イベントを持たない(そもそも calendarId の由来行が無い)ので「カード上で
+		// 選択中のコレクション」= currentCalendarId をそのまま使う。全横断表示中(null)は省略して
+		// server 既定("calendar")に委ねる — 従来どおりの挙動(echo pin 修正前から null 分岐は
+		// 既にここにあった。今回 currentCalendarId が null になり得るケースが増えただけ)。
 		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
 		if (details.end !== null) args.end = details.end;
 		// 時刻付き start/end は timeZone 必須。
