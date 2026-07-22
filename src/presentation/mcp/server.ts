@@ -128,7 +128,12 @@ import type { CollectionId, ComponentKind, PrincipalRef } from "../../domain/cal
 import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } from "../../domain/caldav";
 // list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
 // 別入口で呼ぶ(CLAUDE.md 長期ビジョン「複数入口」の具体例)。
-import { CollectionAlreadyExistsError, CreateCollection, ListCollections } from "../../application/usecases";
+import {
+	CollectionAlreadyExistsError,
+	CollectionDisplayNameConflictError,
+	CreateCollection,
+	ListCollections,
+} from "../../application/usecases";
 // delete-calendar(検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機。
 // DAV DELETE 経路とは別の薄い専用 UC — delete-collection.ts 冒頭コメント参照)。
 import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } from "../../application/usecases";
@@ -354,9 +359,31 @@ const createCalendarInputShape = {
  *     残骸である可能性が高く、視認性・衝突回避の両面で uuid の方が安全側に倒せる)
  * 閾値 3 はマジックナンバーだが、"ab" 程度の短い英数字 displayName(稀)を UUID に倒しても
  * 実害が薄い一方、"1","22" のような数字化けを確実に拾える下限として選んだ。
- * 【フォールバック先が crypto.randomUUID() の理由】衝突の心配が無く create-todo.ts の
- * UID 生成と同じ発想(先頭数文字に切り詰めない — CollectionId には文字数上限が特に無いため、
- * フル UUID の方が衝突可能性がさらに低く安全)。
+ *
+ * 【2026-07-23 K1 追記: フォールバック先を crypto.randomUUID() → 安定 hash slug に変更】
+ * 元実装は degenerate 判定時に毎回 crypto.randomUUID() を引いていたため、「同じ日本語
+ * displayName で create-calendar を2回叩く」と id が毎回変わり、UC 層の id 一致チェック
+ * (CollectionAlreadyExistsError)をすり抜けて同名コレクションが複製される実害があった
+ * (create-collection.ts の displayName 重複ガード= K1 で UC 層は別途防いだが、id 側も
+ * 「同じ displayName なら同じ id 候補になる」ようにして二重防御する)。
+ *   - 採用: FNV-1a(32bit)で displayName(NFC 正規化後)をハッシュ化し、"list-" prefix +
+ *     8桁 hex を id にする(例 "list-3a91f0c2")。FNV-1a を選んだ理由は依存追加なしで数行で
+ *     実装できる決定的ハッシュだから(暗号学的な強度は不要 — 衝突耐性より「同じ入力→同じ出力」
+ *     の再現性が目的)。prefix "list-" を付けるのは、hex 文字列だけだと slugifyForCollectionId
+ *     が返す通常の英数字 slug と見分けが付きにくく、デバッグ時に「これは fallback 経由の id」と
+ *     一目で分かるようにするため。
+ *   - Why not 案1(displayName をそのまま非 ASCII 込みで id にする): CollectionId の禁止文字
+ *     ("/" 等)や URL エンコードの扱いが CalDAV クライアント(特に iOS)側でどう解釈されるか
+ *     不確実性が高く、iOS 対応を品質基準とする本リポジトリの方針(CLAUDE.md)と相性が悪いため
+ *     見送った。ASCII のみの id に倒すほうが枯れている。
+ *   - Why not 案2(transliteration ライブラリで日本語→ローマ字化): 依存追加のコストと、
+ *     ライブラリの変換結果が言語によっては安定しない(将来ライブラリ更新で同じ displayName でも
+ *     違う slug が出る)リスクがあり、「決定的で単純」を優先して見送った。
+ * 【crypto.randomUUID() を最後の手段として残す理由】hash slug は原理的に displayName が
+ * 空文字であっても "list-<hash>" という非 degenerate な文字列を返す(hash 関数はどんな入力でも
+ * 32bit 値を返すため)ので、通常経路では到達しないはず。それでも「hash slug 生成自体が何らかの
+ * 理由で空/不正になった」という将来の実装ミスに対する最終防波堤として randomUUID フォールバックを
+ * 残す(CollectionId として不正な文字列を返してしまうより、衝突の心配がない UUID の方が安全)。
  */
 // テスト(server.test.ts)から直接呼べるよう export する(この関数だけを取り出して境界値を
 // 検証したいが、registerTool 経由だと McpServer 全体の配線が要るため単体テストが書きにくい)。
@@ -366,7 +393,38 @@ export function slugifyForCollectionId(displayName: string): string {
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
 	const isDegenerate = slug.length === 0 || /^[0-9]+$/.test(slug) || slug.length < 3;
-	return isDegenerate ? crypto.randomUUID() : slug;
+	if (!isDegenerate) {
+		return slug;
+	}
+	const hashSlug = `list-${fnv1aHex(displayName.normalize("NFC"))}`;
+	// 上のコメントのとおり hashSlug は原理的に非 degenerate だが、将来の実装変更に対する
+	// 最終防波堤として空/短小チェックだけは通しておく(万一を randomUUID で救う)。
+	return hashSlug.length >= 3 ? hashSlug : crypto.randomUUID();
+}
+
+/**
+ * FNV-1a(32bit)による決定的ハッシュ。8桁 hex 文字列を返す。
+ * 【なぜ自前実装か】暗号学的ハッシュ(SHA-256 等)は Web Crypto 経由だと非同期 API
+ * (crypto.subtle.digest)になり、slugifyForCollectionId を同期関数のまま保てなくなる
+ * (呼び出し元 create-calendar ハンドラの構造を変えたくない)。FNV-1a は同期・依存ゼロ・
+ * 数行で書ける決定的ハッシュとして「同じ displayName → 同じ id 候補」という目的に対して
+ * 十分(id の衝突を完全排除する強度は求めていない — 衝突しても CollectionAlreadyExistsError /
+ * CollectionDisplayNameConflictError が二重に拾う設計なので実害は薄い)。
+ */
+function fnv1aHex(input: string): string {
+	// FNV-1a 32bit の定数(FNV offset basis / FNV prime)。アルゴリズム仕様上の固定値。
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < input.length; i++) {
+		hash ^= input.charCodeAt(i);
+		// 32bit 乗算は `* 0x01000193` だと JS の Number 精度で桁あふれするため、乗算を
+		// シフト+加算に分解する慣用手法(FNV-1a JS 実装の定石)。Math.imul でも書けるが、
+		// 追加の組み込み関数への依存を増やしたくないので素朴なビット演算のみで書いた。
+		hash +=
+			(hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+	}
+	// 符号なし32bit に変換してから hex 化(charCodeAt がサロゲートペアを分割しても、
+	// 決定的である限り本関数の目的には支障ない)。
+	return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 // =============================================================================
@@ -382,9 +440,17 @@ export function slugifyForCollectionId(displayName: string): string {
 // openWorldHint は全ツール共通で false(このサーバーは自前の D1 だけを操作し、Web 検索や外部
 // API のような「未知の open world」とはやり取りしない)。
 const READ_ONLY_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
-// create 系: 新規リソースを作るだけで既存状態を破壊しない(destructiveHint:false)。同じ入力を
-// 2回叩けば2件できる(idempotentHint:false — 冪等ではない。同じ内容の重複作成を「同じ結果」とは
-// みなさない)。
+// create 系: 新規リソースを作るだけで既存状態を破壊しない(destructiveHint:false)。
+// idempotentHint:false — 冪等ではない。同じ内容の重複作成を「同じ結果」とはみなさない。
+// 【2026-07-23 追記(K1)】create-todo 等は依然として同じ入力を2回叩けば2件できる(冪等でない
+// ことに変わりない)。一方 create-calendar だけは K1 で displayName 重複を明示的にエラー拒否
+// するようになった(CollectionDisplayNameConflictError — create-collection.ts 参照)ため、
+// 「2回叩くと2件できる」がそのまま成立しなくなった。とはいえ idempotentHint は「同じ呼び出しが
+// 同じ結果を安全に繰り返せる」ことを意味する hint であり、create-calendar の2回目呼び出しは
+// 「成功して同じものが返る」のではなく「エラーになる」ので、依然として idempotentHint:false が
+// 正しい(冪等 = no-op で同じ状態に収束、であって「エラーで弾かれる」は冪等の定義に含まれない)。
+// annotations はツール横断の共通定数のままにして、ツールごとの詳細な差分は各ツールの
+// description/コメントに書く方針を維持する。
 const CREATE_ANNOTATIONS: ToolAnnotations = {
 	readOnlyHint: false,
 	destructiveHint: false,
@@ -1962,6 +2028,12 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					displayName,
 					supportedComponents,
 					color: parsedColor,
+					// K1: MCP はエージェント(LLM)からの入口なので、同じ displayName の誤爆二重作成
+					// を拒否する(rejectDuplicateDisplayName:true)。DAV(MKCALENDAR)経路はこの UC の
+					// 既定値(false)のまま呼ぶため無改修 — iOS/iCloud が許す同名コレクション作成を
+					// 壊さない(create-collection.ts の【K1】コメント参照。2026-07-23 レビューで
+					// 「UC 無条件ガード」から opt-in に修正した経緯もそちら)。
+					rejectDuplicateDisplayName: true,
 				});
 				const result = {
 					id: collection.id,
@@ -1989,6 +2061,18 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				// toolError 流儀)/ AppleColor.parse の形式エラーもここに落ちる(Error のまま)。
 				if (error instanceof InvalidIdentifierError || error instanceof CollectionAlreadyExistsError) {
 					return toolError(error.message);
+				}
+				// K1: displayName 重複(id は別でも同名で既存)。単に拒否するだけだとモデルが同じ
+				// 入力でリトライを繰り返しかねないため、既存コレクションの id/displayName を文面に
+				// 含めて「これを使ってタスクを足せばよい」と判断できる形にする(list-todos の
+				// calendarId としてそのまま使える id を明示するのが目的)。
+				if (error instanceof CollectionDisplayNameConflictError) {
+					return toolError(
+						`同じ名前のカレンダー/リマインダーリストが既に存在します: ` +
+							`id="${error.existingCollectionId}", displayName="${error.existingDisplayName}"。` +
+							`新規作成せず、このリストに対して calendarId="${error.existingCollectionId}" で ` +
+							`create-todo/list-todos 等を呼んでください。`,
+					);
 				}
 				return toolError(error instanceof Error ? error.message : String(error));
 			}

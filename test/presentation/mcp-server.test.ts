@@ -642,8 +642,10 @@ describe("/mcp", () => {
 			const textResult = JSON.parse(rpc.result.content[0].text);
 			expect(textResult.components).toEqual(["VTODO"]);
 			// 日本語 displayName は slugifyForCollectionId の許容文字([a-z0-9])に1文字も
-			// マッチしないため、生成 id は crypto.randomUUID() フォールバック(UUID 形式)になる。
-			expect(textResult.id).toMatch(/^[0-9a-f-]{36}$/);
+			// マッチしないため、生成 id は安定 hash slug フォールバック("list-" + 8桁 hex)になる
+			// (2026-07-23 K1: 同じ displayName なら同じ id 候補になるよう randomUUID から変更した。
+			// server.ts slugifyForCollectionId コメント参照)。
+			expect(textResult.id).toMatch(/^list-[0-9a-f]{8}$/);
 			// structuredContent.calendarId は content 側の id(自動生成 slug/UUID)と一致する。
 			// completedSummary は常時付与(2026-07-23 症状B対策)。
 			expect(rpc.result.structuredContent).toEqual({

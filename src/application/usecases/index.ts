@@ -52,6 +52,8 @@ export {
 export {
 	CreateCollection,
 	CollectionAlreadyExistsError,
+	CollectionDisplayNameConflictError,
+	normalizeDisplayNameForComparison,
 	type CreateCollectionInput,
 	type CreateCollectionOutput,
 } from "./create-collection";
