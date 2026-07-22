@@ -116,6 +116,28 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 > - **memory→docs 移送(5406ff1・#30 第一弾)**: Simulator 検証経路→ios-device-verification スキル・
 >   journal 方針→本ファイル。重複/陳腐化 memory 4件削除。残る候補: chrome-devtools 検証手順(D1 座標含む
 >   ため git 化は要判断)。
+>
+> **2026-07-22 追更新(夜第2ラウンド: 文言・レイテンシ第2段・range 語彙・確認カード)**:
+> - **確定ボタン iOS 準拠(4afb38f)**: 作成モード=「追加」(todos/agenda とも)。編集は todos「完了」/
+>   agenda「保存」(イベントに完了概念が無いため)。「完了」×タスク完了のダブルミーニングを作成から排除。
+> - **IAD の正体が確定**: claude.ai コネクタは米国発 → Worker が IAD で実行される。IAD ~1259ms は
+>   「遠い外国」でなく **claude.ai 利用時に毎回払うレイテンシ**と判明し案2の優先度を上方修正。
+> - **案2 横断1クエリ化(a44f0bd)**: 実往復は 3 波(findAllByOwner → hydrate の sync_changes N+1 →
+>   time-range N 並列)だった。calendar_objects.owner でコレクション列挙自体が不要 → WHERE owner=? の
+>   **1 クエリ**へ。新 port findByOwnerTimeRange + ListOccurrences/ComputeFreeBusyAcrossOwner(単一 UC は
+>   DAV 用に不変・echo 契約不変)。**残: claude.ai 経由の実測 before/after(トラフィック待ち)**。
+>   sync-collection 系の hydrate N+1 は残置(別スライス候補)。
+> - **range 語彙拡充(b6961d1)**: 「今週の予定」で get-current-time 2往復が実運用で再発(スクショ確認)→
+>   this-week / next-week / this-month を追加・description に「相対表現は range 1発・get-current-time 不要」。
+>   **→ #32: 週始まりは月曜固定にしたがユーザーのカレンダーは日曜始まり — 日曜へ変更予定**(単一ユーザーの
+>   現在は固定・マルチユーザー(A)で user config へ昇格)。list-todos due の語彙統一は別スライスのまま。
+> - **確認カード**: 設計確定 → **modeling/14 が正(332d091)**。propose-* + _meta 限定 HMAC トークン +
+>   カード内 callServerTool(ステートレス・D1 変更ゼロ・elicitation は claude.ai 未対応で不採用)。
+>   破壊度3層(delete=必須/update・バッチ=誘導/create・complete=直接)。**S1 実装中(artisan)**:
+>   confirm-token.ts + 汎用確認カード + propose-delete 3種 + delete トークン必須化。論点=既存カード内
+>   削除(ユーザー明示操作)を二重確認にせず壊さない整合。
+> - **残タスク(2026-07-22 夜時点)**: S1 レビュー→着地 / #32 日曜始まり化 / ②③月・日ビューと
+>   S1 の実機/Simulator 目視 / IAD 実測 / 確認カード S2(update diff プレビュー)・S3(バッチ部分承認)。
 > - **次**: 確認カード(human-in-the-loop)起票・設計。判断待ち: save ボタン文言統一 / IAD 次段。
 >   **2026-07-22 追記: 設計確定 → docs/modeling/14 が正・S1 から着手。**
 **新規**: Swift コンパニオンアプリ(授業)を別リポ `caldav-companion` で開始(方向性 E §Swift 参照)。

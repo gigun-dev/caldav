@@ -953,3 +953,10 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   タイマー停止集約。レビュー指摘1件(day→month の月カーソル)を SendMessage 追修正で反映。
 - #30 第一弾(5406ff1): memory 4件削除・2件を docs/skill へ移送。subagent 運用 memory に「本質=設計と
   実装のコンテキスト分離(main=Fable はオーケストレーションに徹する)」をユーザー明言として追記。
+- 夜第2ラウンド: 確定ボタン「追加」化(4afb38f)→ IAD=claude.ai 発と確定し案2優先度上げ → 横断1クエリ化
+  (a44f0bd・3波→1クエリ・across-owner UC 新設)→ range 語彙 this-week/next-week/this-month(b6961d1・
+  「今週」の get-current-time 2往復再発をスクショで確認して対処)→ 確認カード設計を modeling/14 に正典化
+  (332d091・Fable architect)→ S1 実装を artisan に委譲(進行中)。#32 起票(週始まりを日曜へ・
+  ユーザーのカレンダー設定準拠。将来は user config)。
+- 運用反省: docs 反映が月グリッド時点で止まっていたのをユーザー指摘で是正。以後「コミット/デプロイの
+  区切りごとに next-directions 更新」を徹底する。
