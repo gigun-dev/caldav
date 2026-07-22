@@ -309,6 +309,8 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 - **タスク分解**: A-1 スキーマ + principal 複数化(**D の権限表 = current-user-privilege-set の
   実データ化を織り込む**・**R-7 の CAS 化と同時**)/ A-2 認証ミドルウェア差し替え /
   A-3 App Password 発行 + .mobileconfig / A-4 プロキシ内部認証を HMAC 署名へ(OSS 公開時までに)。
+- 週開始曜日(this-week/next-week の起点)は user 設定への昇格候補(2026-07-23 現在は日曜固定
+  ハードコード。application/time/relative-range.ts 参照)。
 
 ## 方向性 H(購読カレンダー・外部集約)【E/A の後・優先度中】
 

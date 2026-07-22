@@ -161,12 +161,13 @@ const getCurrentTimeInputShape = {
 // 【range description に「事前 get-current-time 不要」を明記する理由】get-current-time は存置するが、
 // モデルが相対レンジで足りる場面でも従来どおり2往復してしまわないよう、1発で済むことを語彙で伝える。
 // 【2026-07-22 this-week/next-week/this-month 追加】「今週の予定」のような自然言語表現に対応する
-// 語彙が無く、モデルが get-current-time を先行呼びする2往復が実運用で再発したため追加(週は月曜
-// 始まり固定。application/time/relative-range.ts 冒頭コメント参照)。
+// 語彙が無く、モデルが get-current-time を先行呼びする2往復が実運用で再発したため追加(週の起点は
+// application/time/relative-range.ts 冒頭コメント参照。2026-07-23 に月曜始まりから日曜始まりへ変更
+// — 単一ユーザーの iOS カレンダー設定に合わせた)。
 const RANGE_DESCRIPTION =
 	'相対レンジ。"today"/"tomorrow"/"next-7-days"/"next-30-days"/"this-week"/"next-week"/"this-month" のいずれか。' +
 	"指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。" +
-	"this-week/next-week は月曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。" +
+	"this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。" +
 	"get-current-time の事前呼び出しは不要。";
 const rangeEnumField = z
 	.enum(["today", "tomorrow", "next-7-days", "next-30-days", "this-week", "next-week", "this-month"])

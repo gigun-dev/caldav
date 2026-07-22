@@ -24,13 +24,16 @@
 // ロケール依存で一意に決められない」として this-week を除外していたが、この禁を尊重しつつ
 // **サーバーが週の起点を月曜固定と明示的に決め切る**ことで解消する(RFC 5545 の RRULE のように
 // WKST を呼び出し側に選ばせる汎用性は今は要らない・自然言語「今週」に対応する1語彙で足りる)。
-// 【なぜ月曜始まりか(Why 月曜・Why not 日曜=iOS agenda グリッドとの不一致)】
-// この MCP サーバーの主要言語文脈は日本語("今週の予定" のような自然言語呼び出し)で、日本の
-// 慣行では週は月曜始まり(ISO 8601 の週定義とも一致)。一方 iOS のカレンダー月グリッド表示
-// (agenda UI)は日曜始まりで表示される場合があるが、これは「グリッドの列配置」という UI 表示の
-// 慣行であって「今週とはいつからいつまでか」という自然言語の意味とは別問題。両者が一致しなくても
-// 実害は無い(this-week は「今週の予定を1発で引く」ための時刻グラウンディング用途であり、
-// UI のグリッド列とは独立)。
+//
+// 【2026-07-23 月曜始まり → 日曜始まりへ変更(b6961d1 裁定を上書き。Why not として旧判断も残す)】
+// b6961d1 は「日本語の自然言語慣行(ISO 8601 と一致)」を根拠に月曜始まりへ固定したが、この
+// サーバーは現状単一ユーザー運用であり、そのユーザーの iOS カレンダーアプリの週開始設定は
+// 日曜始まり(2026-07-22 ユーザー明言)。this-week/next-week の主用途は「そのユーザーが見ている
+// カレンダーの『今週』と一致させて予定を1発で引く」ことなので、一般的な言語慣行より実際に見る
+// 画面(iOS の月グリッドも日曜始まり)に合わせる方が実害が小さい。b6961d1 が「両者が一致しなくても
+// 実害は無い」としていた前提は、実際にユーザーから不一致の指摘を受けたことで誤りだったと判明した。
+// マルチユーザー化(方向性 A・docs/next-directions.md)では週開始曜日はユーザーごとに異なりうる
+// ため、その時点で user 設定へ昇格させる(今はまだ単一ユーザーなのでハードコードで妥当)。
 //
 // 【この層(application/time)に置く理由】
 // DAV 専用にせず MCP / REST / メール等の複数入口から呼べるべき純粋なユースケース補助
@@ -43,7 +46,8 @@ import { localFieldsToEpochMillis } from "../../domain/ical/timezone/instant";
 
 /**
  * 受け付ける相対レンジのキーワード。初期語彙4つ(today/tomorrow/next-7-days/next-30-days)+
- * 2026-07-22 追加の this-week/next-week/this-month(週の起点は月曜固定・上記コメント参照)。
+ * 2026-07-22 追加の this-week/next-week/this-month(週の起点は日曜固定・上記コメント参照。
+ * 2026-07-23 に月曜固定から変更)。
  */
 export type RelativeRangeKeyword =
 	| "today"
@@ -88,8 +92,8 @@ function localYmdAt(nowMillis: number, ianaTimeZone: string): { year: number; mo
  *   tomorrow     = [明日0時,   明後日0時)
  *   next-7-days  = [今日0時,   7日後0時)
  *   next-30-days = [今日0時,   30日後0時)
- *   this-week    = [今週月曜0時, 翌週月曜0時)   … 今日を含む週(月曜始まり。上記コメント参照)
- *   next-week    = [翌週月曜0時, 翌々週月曜0時)
+ *   this-week    = [今週日曜0時, 翌週日曜0時)   … 今日を含む週(日曜始まり。上記コメント参照)
+ *   next-week    = [翌週日曜0時, 翌々週日曜0時)
  *   this-month   = [当月1日0時,  翌月1日0時)
  * 終端排他にするのは list-occurrences / compute-free-busy の既存展開ロジックが
  * rangeEndMillis を排他境界(半開区間)として扱うのと整合させるため(境界ちょうどに始まる
@@ -120,19 +124,21 @@ export function resolveRelativeRange(
 		localFieldsToEpochMillis({ year, month, day: day + dayOffset, hour: 0, minute: 0, second: 0 }, ianaTimeZone);
 
 	if (keyword === "this-week" || keyword === "next-week") {
-		// 【月曜起点の求め方(Why not Date のローカル曜日メソッド)】
+		// 【日曜起点の求め方(Why not Date のローカル曜日メソッド)】
 		// 「Y-M-D の曜日」はカレンダー計算であって瞬間(epoch)に依存しない値なので、ランタイム TZ
 		// 非依存の原則(instant.ts 冒頭コメント)を守るために Date.UTC(year, month-1, day) を UTC の
 		// カレンダー日として構築して getUTCDay() で曜日を取る(0=日 ... 6=土。ローカル TZ 依存の
 		// new Date(y,m,d) や getDay() は使わない — wrangler dev のローカル TZ に化ける事故を避ける)。
 		const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-		// daysSinceMonday: 月曜=0, 火=1, ..., 日=6 になるよう日曜(0)を6に回す変換。
-		const daysSinceMonday = (weekday + 6) % 7;
-		const thisWeekMondayOffset = -daysSinceMonday;
+		// daysSinceSunday: 日曜=0, 月=1, ..., 土=6(getUTCDay() の値がそのまま日曜起点のオフセット
+		// になる。月曜起点だった旧実装は (weekday + 6) % 7 で日曜を6に回す変換が必要だったが、
+		// 日曜起点では変換不要— weekday そのものが「日曜から何日進んだか」を表す)。
+		const daysSinceSunday = weekday;
+		const thisWeekSundayOffset = -daysSinceSunday;
 		const weekShift = keyword === "next-week" ? 7 : 0;
 		return {
-			timeMinMillis: atMidnight(thisWeekMondayOffset + weekShift),
-			timeMaxMillis: atMidnight(thisWeekMondayOffset + weekShift + 7),
+			timeMinMillis: atMidnight(thisWeekSundayOffset + weekShift),
+			timeMaxMillis: atMidnight(thisWeekSundayOffset + weekShift + 7),
 		};
 	}
 
