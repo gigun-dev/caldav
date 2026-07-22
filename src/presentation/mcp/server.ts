@@ -30,6 +30,9 @@ import type { Context } from "hono";
 // OAuthProvider の ExecutionContext 型との橋渡し=局所キャストを行う)。
 import type { ExecutionContext } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// R1(docs/modeling/15 §A-2): ToolAnnotations の型。registerTool の config.annotations に渡す
+// (SDK の mcp.d.ts で registerTool の第2引数が { ...; annotations?: ToolAnnotations } を受けることを確認済み)。
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 // E-2 スライス①: MCP Apps(ui://)の登録ヘルパー。registerAppResource は素の
 // registerResource のラッパーで mimeType を RESOURCE_MIME_TYPE("text/html;profile=mcp-app")に
 // 既定化する。registerAppTool は registerTool のラッパーで _meta.ui.resourceUri から
@@ -52,7 +55,10 @@ import { AGENDA_APP_HTML, AGENDA_UI_URI } from "./ui/agenda-app";
 import { CONFIRM_APP_HTML, CONFIRM_UI_URI } from "./ui/confirm-app";
 // S1: 確認トークンの生成/検証(HMAC-SHA256・canonical JSON・TTL)。層は presentation/mcp に閉じる
 // (application 層の UC シグネチャに confirmToken を持ち込まない — docs/modeling/14 §7)。
-import { CARD_TOKEN_TTL_MS, PROPOSE_TOKEN_TTL_MS, signConfirmToken, verifyConfirmToken } from "./confirm-token";
+// R1(docs/modeling/15 §A-3): verifyConfirmToken(検証)はもう server.ts から使わない(delete-* の
+// サーバー側トークン強制を撤去したため)。signConfirmToken(発行)は propose-delete-* / カード免除
+// トークン発行に引き続き使うので残す。
+import { CARD_TOKEN_TTL_MS, PROPOSE_TOKEN_TTL_MS, signConfirmToken } from "./confirm-token";
 
 import type { AuthenticationPort, CollectionUnitOfWork } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
@@ -358,17 +364,69 @@ export function slugifyForCollectionId(displayName: string): string {
 	return isDegenerate ? crypto.randomUUID() : slug;
 }
 
+// =============================================================================
+// R1(docs/modeling/15 §A-2): tool annotations の共通定義
+// =============================================================================
+// 【なぜ全ツールに annotations を付けるか(未履行の仕様義務)】
+// annotations(destructiveHint/openWorldHint 等)は MCP spec 上 **untrusted hint** であり、
+// ホストが自動的に確認を省略/強制することを保証しない(spec の NOTE: "Clients should never
+// make tool use decisions based on ToolAnnotations")。それでも申告が要るのは、ToolAnnotations の
+// デフォルトが性悪説側(destructiveHint 既定 true・openWorldHint 既定 true)だから — 申告を怠ると
+// list-todos のような読み取り専用ツールすら「破壊的操作」としてホストに扱われ得る。申告するのは
+// 「あれば親切」ではなく仕様義務として扱う(modeling/15 §A-2)。
+// openWorldHint は全ツール共通で false(このサーバーは自前の D1 だけを操作し、Web 検索や外部
+// API のような「未知の open world」とはやり取りしない)。
+const READ_ONLY_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+// create 系: 新規リソースを作るだけで既存状態を破壊しない(destructiveHint:false)。同じ入力を
+// 2回叩けば2件できる(idempotentHint:false — 冪等ではない。同じ内容の重複作成を「同じ結果」とは
+// みなさない)。
+const CREATE_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: false,
+	openWorldHint: false,
+};
+// update/complete/move 系: destructiveHint:true とする。既存状態を不可逆に上書きする操作という
+// 意味で「壊れたら戻せない」を正直に申告する(update は本来「置き換え」であって「破壊」ではないが、
+// R2/R3 のソフトデリート・版履歴が入るまでは取り消し手段が無いため destructive 側に倒す)。
+// 【Why not: update だけ readOnlyHint:false, destructiveHint:false にする案】却下。R3(revert-*)導入前は
+// update の巻き戻し手段が一切無く、「元に戻せる」という誤ったシグナルをホストに渡すことになる。
+// R3 で版履歴による取り消しが入ったら、update 系の destructiveHint は緩められる可能性がある
+// (docs/modeling/15 §A-3 の R3 参照。ここが緩和の起点になるので、その時にこのコメントごと見直すこと)。
+const DESTRUCTIVE_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: false,
+	openWorldHint: false,
+};
+// delete 系: destructiveHint:true(不可逆な削除)+ idempotentHint:true(対象が既に無い状態への
+// 同じ呼び出しを繰り返しても結果は同じ「無い」に収束する — delete-todo.ts 等が「常に無条件削除」の
+// 方針を取っているのと同じ発想)。
+const DELETE_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: true,
+	openWorldHint: false,
+};
+
 // S1(docs/modeling/14): confirmToken は「確認カードで承認済み」を証明するトークン(§4 Tier A)。
 // モデルはこのトークンを知り得ない(propose-delete-* が _meta にだけ載せる)ので、モデルが
 // confirmToken 無しで直接叩くと拒否される。カード発の削除は免除トークンを渡す(getCardToken 参照)。
 // delete-calendar / delete-todo / delete-event の3つの入力 shape で共有するため、最初に使う
 // delete-calendar より前に定義する(const の TDZ を避ける — 使用箇所より前に置く必要がある)。
+// R1(docs/modeling/15 §A-3): サーバー側でのトークン検証(verifyDeleteConfirmation)は撤去した
+// (§A 参照 — 確認 UI の提示はホスト責務であり、annotations(destructiveHint 等)を正しく申告して
+// ホストの判断に委ねる。サーバー側の二重確認は claude.ai の per-tool 許可と重複するだけだった)。
+// フィールド自体は後方互換のため optional のまま残し、渡されても無視する(既存の確認カード/
+// todos・agenda カードの swipe 削除がトークン付きで delete-* を呼ぶ実装は壊さない — 猶予期間中は
+// propose-delete-* も残る。撤去は別スライス)。
 const confirmTokenField = z
 	.string()
 	.optional()
 	.describe(
-		"確認トークン。破壊的操作の承認証跡(propose-* が確認カードの _meta に載せて発行する)。" +
-			"通常モデルはこれを直接指定せず、propose-* → 確認カードのユーザータップ経由でのみ設定される。",
+		"非推奨・現在は無視される。以前は破壊的操作の承認証跡(propose-* が確認カードの _meta に" +
+			"載せて発行するトークン)だったが、確認 UI の提示責務はホストへ移した(docs/modeling/15 §A)。" +
+			"指定してもしなくても delete-* の実行結果は変わらない。",
 	);
 
 // --- propose-delete-*(S1・docs/modeling/14 確認カードの入り口)の入力 shape --------------------
@@ -1054,55 +1112,13 @@ function deleteProposePayload(tool: DeleteToolName, id: string, calendarId: stri
 	return calendarId !== undefined ? { kind: "delete", tool, id, calendarId } : { kind: "delete", tool, id };
 }
 
-/**
- * delete-* 実行前のトークン検証(§4 Tier A のハード強制)。confirmToken が無い/不正/別対象/失効なら
- * 拒否メッセージ(string)を返し、受理できるなら null を返す(呼び出し側は null のときだけ UC を実行)。
- *
- * 受理するトークンは2種類(docs/modeling/14 §6 項目5 の設計判断):
- *   (A) propose-delete-* が発行した「対象特定トークン」(payload.kind==="delete" かつ tool/id/calendarId 一致)。
- *   (B) 既存 todos/agenda カードが持つ「免除トークン」(payload.kind==="card")。カード内の swipe/詳細
- *       ページ削除は既にユーザーの明示操作なので確認カードを二重に挟まない。カードは list/refresh/mutate
- *       応答の _meta.confirm.cardToken でこの免除トークンを受け取り、delete 時に confirmToken として返す
- *       (詳細な採択理由・ボツ案は下の getCardToken 定義箇所コメント参照)。
- * どちらも「モデルは _meta を読めない=トークンを知り得ない」ことで、確認済み実行が必ずユーザーの
- * タップを経由することを担保する(§2)。
- */
-async function verifyDeleteConfirmation(
-	secret: string,
-	confirmToken: string | undefined,
-	tool: DeleteToolName,
-	id: string,
-	calendarId: string | undefined,
-): Promise<string | null> {
-	// secret 未設定は確認機構が成立しない(propose も署名できない)。安全側=削除を通さない
-	// (空鍵で誰でも通る事故を防ぐ)。運用者向けの明示メッセージにする。
-	if (secret === "") {
-		return "サーバーの確認トークン鍵(CONFIRM_SECRET)が未設定のため、削除を実行できません。管理者に設定を依頼してください。";
-	}
-	if (confirmToken === undefined || confirmToken === "") {
-		// Tier A の誘導: モデルが直接 delete-* を叩いた(propose を経ていない)ケース。propose を促す。
-		return `この操作には確認が必要です。まず propose-${tool}(id 等を渡す)を呼び、ユーザーが確認カードで承認してから実行してください。`;
-	}
-	const v = await verifyConfirmToken(secret, confirmToken);
-	if (!v.ok) {
-		if (v.reason === "expired") return "確認トークンの有効期限が切れています。もう一度 propose-* から確認し直してください。";
-		return "確認トークンが不正です。propose-* が発行したトークンを使ってください。";
-	}
-	const p = v.payload;
-	// (B) 免除トークン(カード発の削除)。対象特定はしない(カード操作自体がユーザーの明示確認)。
-	if (p.kind === "card") return null;
-	// (A) 対象特定トークン。tool/id/calendarId が完全一致するときだけ受理。
-	if (
-		p.kind === "delete" &&
-		p.tool === tool &&
-		p.id === id &&
-		(p.calendarId ?? undefined) === (calendarId ?? undefined)
-	) {
-		return null;
-	}
-	// 署名は正しいが対象が違う(別 id/別ツール用に発行されたトークンの流用)。黙って通さない。
-	return "確認トークンがこの削除対象と一致しません。この対象に対する propose-* を呼び直してください。";
-}
+// R1(docs/modeling/15 §A-3): delete-* 実行前のサーバー側トークン検証(旧 verifyDeleteConfirmation)は
+// ここで撤去した。撤去理由(Why not サーバー側強制を維持する案): MCP spec の User Interaction Model は
+// 確認プロンプトの提示を Applications(ホスト)の責務と明記しており(§A-1)、claude.ai は既に per-tool
+// 許可(Always allow / 毎回確認 / Block)を備える — サーバー側トークン強制はこれと二重に確認を課すだけで
+// 仕様の責務分界にも反する(docs/modeling/15 §A-4)。サーバー側の残る責務は annotations の正しい申告
+// (destructiveHint/idempotentHint — 下の DELETE_ANNOTATIONS)と可逆性の提供(R2 ソフトデリート予定)。
+// confirmToken フィールド自体は後方互換のため残し無視する(confirmTokenField 定義箇所コメント参照)。
 
 // --- propose-delete-* のプレビュー生成(表示専用の best-effort な ICS 覗き見)---------------------
 // 【なぜ presentation で ICS を覗くのか(層の割り切り)】確認カードのプレビュー(タイトル/日時)は
@@ -1489,9 +1505,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		{
 			title: "Propose delete todo",
 			description:
-				"リマインダー(VTODO)の削除確認カードを表示する(まだ削除しない)。削除は破壊的で取り消せないため、" +
-				"delete-todo を直接呼ぶ前に必ずこれを呼び、ユーザーがカードで承認してから削除が実行される。",
+				"[deprecated] ホスト許可モデルへ移行済み(docs/modeling/15 §A)。通常は delete-todo を直接呼ぶこと" +
+				" — delete-todo の annotations(destructiveHint 等)を見てホストが確認要否を判断する。" +
+				"このツールは猶予期間中の後方互換として残るのみで、確認カードを表示するだけで削除自体は行わない。",
 			inputSchema: proposeDeleteTodoInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: CONFIRM_UI_URI },
 				"openai/outputTemplate": CONFIRM_UI_URI,
@@ -1520,9 +1538,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		{
 			title: "Propose delete event",
 			description:
-				"予定(VEVENT)の削除確認カードを表示する(まだ削除しない)。削除は破壊的で取り消せないため、" +
-				"delete-event を直接呼ぶ前に必ずこれを呼び、ユーザーがカードで承認してから削除が実行される。",
+				"[deprecated] ホスト許可モデルへ移行済み(docs/modeling/15 §A)。通常は delete-event を直接呼ぶこと" +
+				" — delete-event の annotations(destructiveHint 等)を見てホストが確認要否を判断する。" +
+				"このツールは猶予期間中の後方互換として残るのみで、確認カードを表示するだけで削除自体は行わない。",
 			inputSchema: proposeDeleteEventInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: CONFIRM_UI_URI },
 				"openai/outputTemplate": CONFIRM_UI_URI,
@@ -1551,9 +1571,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		{
 			title: "Propose delete calendar",
 			description:
-				"カレンダー/リマインダーリスト(コレクション)の削除確認カードを表示する(まだ削除しない)。" +
-				"中身がある場合は「中身ごと消える」ことをカードで警告する。delete-calendar を直接呼ぶ前に必ずこれを呼ぶ。",
+				"[deprecated] ホスト許可モデルへ移行済み(docs/modeling/15 §A)。通常は delete-calendar を直接呼ぶこと" +
+				" — delete-calendar の annotations(destructiveHint 等)を見てホストが確認要否を判断する。" +
+				"このツールは猶予期間中の後方互換として残るのみで、確認カードを表示するだけで削除自体は行わない。",
 			inputSchema: proposeDeleteCalendarInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: CONFIRM_UI_URI },
 				"openai/outputTemplate": CONFIRM_UI_URI,
@@ -1604,6 +1626,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			title: "Get current time",
 			description: "現在時刻を指定タイムゾーンの offset 付き ISO8601 で返す。エージェントが「今日/今」を基準に期間を組み立てるための基準時刻取得ツール。",
 			inputSchema: getCurrentTimeInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ timeZone }) => {
 			try {
@@ -1755,6 +1778,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					'「今週の予定」「来週」「今月」なども事前 get-current-time なしで1発で引ける。' +
 				"応答の calendarId が null の場合は全コレクション横断の結果であることを示す(単一コレクション指定時のみその ID を echo する)。",
 			inputSchema: listEventsExpandedInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
 				"openai/outputTemplate": AGENDA_UI_URI,
@@ -1777,6 +1801,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"UI(アジェンダ App)専用の再読み込みツール。UI が保持する現在の期間(timeMin/timeMax)を引数で受け取り、" +
 				"その期間の最新の展開済み一覧を返す。モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得用。",
 			inputSchema: listEventsExpandedInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI, visibility: ["app"] },
 				"openai/outputTemplate": AGENDA_UI_URI,
@@ -1797,6 +1822,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"this-week/next-week/this-month)で指定する。「今週」「来週」「今月」も range で1発で引ける。" +
 				"range を使えば事前 get-current-time なしで「今日の空き時間」を1発で引ける。",
 			inputSchema: getFreeBusyInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ timeMin, timeMax, range, timeZone, calendarId }) => {
 			try {
@@ -1858,6 +1884,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"list-todos/create-todo 等の calendarId、components に含まれる \"VTODO\" がリマインダーリスト・" +
 				'"VEVENT" がカレンダー(予定)であることを示す。',
 			inputSchema: listCalendarsInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async () => {
 			try {
@@ -1902,6 +1929,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				'components を省略すると VTODO 用(リマインダーリスト)として作られる。作成後の id は' +
 				"create-todo/list-todos の calendarId としてそのまま使える。",
 			inputSchema: createCalendarInputShape,
+			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -1962,13 +1990,13 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"コレクションは拒否する(誤操作で予定・リマインダーが巻き添えで消えるのを防ぐ安全装置)。" +
 				"中身ごと削除したい場合のみ force:true を指定する。",
 			inputSchema: deleteCalendarInputShape,
+			annotations: DELETE_ANNOTATIONS,
 		},
-		async ({ id, force, confirmToken }) => {
+		async ({ id, force }) => {
 			try {
-				// S1(docs/modeling/14 §4 Tier A): UC 実行前にトークン検証。calendarId は無い(コレクション
-				// そのものが対象)ので undefined を渡す(propose-delete-calendar の payload も calendarId 無し)。
-				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-calendar", id, undefined);
-				if (denied !== null) return toolError(denied);
+				// R1(docs/modeling/15 §A-3): confirmToken 検証は撤去(受け取っても無視。schema 上は
+				// deleteCalendarInputShape.confirmToken に残るが未使用 — 破壊的操作の確認要否はホストが
+				// annotations(下の DELETE_ANNOTATIONS)を見て判断する)。
 				const targetId = mkCollectionId(id);
 				const deleteCollection = new DeleteCollection(deps.collectionRepo, deps.resourceRepo);
 				await deleteCollection.execute({ owner: principal, collectionId: targetId, force });
@@ -2016,6 +2044,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					// カードが N 枚積まれる実害があったため、複数件は create-todos へ誘導する。
 					"2件以上のリマインダーをまとめて追加する場合は create-todo を繰り返し呼ばず、必ず create-todos を使うこと。",
 			inputSchema: createTodoInputShape,
+			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2103,6 +2132,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				'calendarId/timeZone は全 item 共通。省略時の保存先は "tasks"。' +
 				"1件だけ追加する場合は create-todo を使ってよい(create-todos でも動くが単発なら簡潔な方を推奨)。",
 			inputSchema: createTodosInputShape,
+			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2370,6 +2400,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。" +
 				'calendarId 省略時は "tasks" のみ。応答の otherTodoCollections に他のリマインダーリストが載る場合、全体を見るにはそれらも列挙すること。',
 			inputSchema: listTodosInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2418,6 +2449,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"引数で受け取り、そのビューの最新一覧を返す(引数なしなら既定=未完了のみ)。" +
 				"モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得が callServerTool で叩く用。",
 			inputSchema: listTodosInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2438,6 +2470,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"status:\"COMPLETED\"/\"NEEDS-ACTION\" でフィールド更新と同時に完了/再開もできる" +
 				"(status:\"COMPLETED\" は complete-todo と同じ D4 モデルで定期タスク(RRULE あり)にも対応)。",
 			inputSchema: updateTodoInputShape,
+			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2532,6 +2565,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"定期タスク(RRULE あり)は docs/modeling/06 §D4 の D4 モデル(新 UID の完了スナップショットを作り、" +
 				"マスターを次回 occurrence へ前進させる)で処理する。",
 			inputSchema: completeTodoInputShape,
+			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2575,17 +2609,16 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			title: "Delete todo",
 			description: "VTODO(リマインダー)を削除する。常に無条件削除(ETag 条件なし — delete-todo.ts 冒頭コメント参照)。",
 			inputSchema: deleteTodoInputShape,
+			annotations: DELETE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, timeZone, confirmToken }) => {
+		async ({ id, calendarId, timeZone }) => {
 			try {
-				// S1(docs/modeling/14 §4 Tier A): UC 実行の手前で確認トークンを検証する(presentation に
-				// 閉じる=DeleteTodo UC のシグネチャに confirmToken を持ち込まない)。無効/欠落は propose 誘導。
-				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-todo", id, calendarId);
-				if (denied !== null) return toolError(denied);
+				// R1(docs/modeling/15 §A-3): confirmToken 検証は撤去(受け取っても無視 — deleteTodoInputShape の
+				// confirmToken フィールドは後方互換のため残るだけ)。
 				// removed の title/due は「削除直前」の状態が要る(削除後は当然もう読めない)。
 				// DeleteTodo UC が If-Match 解決のため内部 read する更新前レンズを removed として返す
 				// ようになった(2026-07-14 レイテンシ改善。以前は presentation で findTaskById が別途
@@ -2633,6 +2666,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"移動元=移動先の指定はエラーになる。移動先が VTODO を受け付けないコレクション" +
 				"(supported-calendar-component-set に VTODO が無い)もエラーになる。",
 			inputSchema: moveTodoInputShape,
+			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
@@ -2714,6 +2748,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				'calendarId 省略時は "calendar" コレクションに作成する。' +
 				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
 			inputSchema: createEventInputShape,
+			annotations: CREATE_ANNOTATIONS,
 		},
 		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes, structuredLocation, conference }) => {
 			try {
@@ -2762,6 +2797,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"複数の予定(VEVENT)をまとめて追加する。2件以上の追加は必ずこちらを使うこと。" +
 				"各 item は create-event と同じ語彙(title/start 必須)。calendarId/timeZone は全 item 共通。",
 			inputSchema: createEventsInputShape,
+			annotations: CREATE_ANNOTATIONS,
 		},
 		async ({ items, calendarId, timeZone }) => {
 			try {
@@ -2833,6 +2869,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"(alarms/recurrence/url/travelMinutes を指定すれば更新、null で除去)。" +
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
+			annotations: DESTRUCTIVE_ANNOTATIONS,
 		},
 		async ({
 			id,
@@ -2918,12 +2955,11 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			title: "Delete event",
 			description: "VEVENT(予定)を削除する。常に無条件削除(ETag 条件なし — delete-event.ts 冒頭コメント参照)。",
 			inputSchema: deleteEventInputShape,
+			annotations: DELETE_ANNOTATIONS,
 		},
-		async ({ id, calendarId, confirmToken }) => {
+		async ({ id, calendarId }) => {
 			try {
-				// S1(docs/modeling/14 §4 Tier A): UC 実行前にトークン検証(delete-todo と対称)。
-				const denied = await verifyDeleteConfirmation(deps.confirmSecret, confirmToken, "delete-event", id, calendarId);
-				if (denied !== null) return toolError(denied);
+				// R1(docs/modeling/15 §A-3): confirmToken 検証は撤去(delete-todo と対称。受け取っても無視)。
 				const deleteCalendarObject = new DeleteCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow);
 				const deleteEvent = new DeleteEvent(deleteCalendarObject, deps.resourceRepo);
 				const { removed } = await deleteEvent.execute({ owner: principal, eventId: id, calendarId });
@@ -2953,6 +2989,7 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"vevent の「場所または会議」入力・vtodo の到着/出発通知(到着地点)の候補として使う既知の場所の一覧" +
 				"(セミモーダルの「既知の場所」候補用)。最近使った順(recency)に並ぶ。",
 			inputSchema: listKnownLocationsInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ calendarId }) => {
 			try {

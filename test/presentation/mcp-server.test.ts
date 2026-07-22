@@ -221,6 +221,44 @@ describe("/mcp", () => {
 		]);
 	});
 
+	// R1(docs/modeling/15 §A-2): tool annotations の代表サンプル検証。全23ツール分を1件ずつ
+	// 突き合わせると変更のたびにこのテストを保守するコストが高いので、read/create/update/delete
+	// それぞれの代表1〜2ツールで annotations の形が正しく付いていることだけを固定する
+	// (annotations 自体は untrusted hint なので、値の正しさより「未申告のツールが無い」ことが本質)。
+	it("tools/list の annotations が read/create/update/delete で申告される", async () => {
+		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+		const rpc = await jsonRpcResult(res);
+		const byName = new Map<string, { annotations?: Record<string, unknown> }>(
+			rpc.result.tools.map((t: { name: string; annotations?: Record<string, unknown> }) => [t.name, t]),
+		);
+		// read 系: readOnlyHint:true・openWorldHint:false。
+		expect(byName.get("list-todos")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+		expect(byName.get("get-current-time")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+		// create 系: readOnlyHint:false・destructiveHint:false・idempotentHint:false・openWorldHint:false。
+		expect(byName.get("create-todo")?.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: false,
+			openWorldHint: false,
+		});
+		// update/complete/move 系: destructiveHint:true(R3 の revert 導入まで「戻せない」と正直に申告)。
+		expect(byName.get("update-todo")?.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+			openWorldHint: false,
+		});
+		// delete 系: destructiveHint:true・idempotentHint:true。
+		expect(byName.get("delete-todo")?.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: true,
+			openWorldHint: false,
+		});
+		// propose-delete-* は副作用が無いので readOnlyHint:true(猶予期間中も正しく申告する)。
+		expect(byName.get("propose-delete-todo")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+	});
+
 	it("initialize が単発でも成功する(stateless transport)", async () => {
 		const res = await fetchMcp({
 			jsonrpc: "2.0",
@@ -1339,15 +1377,20 @@ describe("/mcp", () => {
 	});
 
 	// =============================================================================
-	// S1(docs/modeling/14 確認カード): propose-delete-* → confirmToken → delete-* の e2e
+	// R1(docs/modeling/15 §A): delete-* のサーバー側 confirmToken 強制を撤去した後の契約
 	// =============================================================================
+	// 【意図の反転(旧 S1 からの契約変更)】旧テストは「トークン無しの delete-* は拒否される」
+	// 「別対象向けトークンの流用は拒否される」ことを固定していたが、R1(docs/modeling/15 §A)で
+	// サーバー側のトークン強制そのものを撤去した(確認プロンプトの提示はホスト責務・§A-1)。
+	// 新契約はその裏返し: delete-* はトークンの有無・中身に関わらず常に成功する
+	// (confirmToken は受け取っても無視する後方互換フィールド)。
 	// 何を保証するか(What):
-	//   - トークン無しの delete-* は拒否される(§4 Tier A のハード強制)。isError で propose を誘導する。
-	//   - propose-delete-* はトークン + プレビューを結果 _meta にだけ載せ、モデル向け content には
-	//     トークンを一切載せない(§2: モデルはトークンを知り得ない)。
-	//   - propose が発行したトークンを渡すと delete が実行される(確認済み経路)。
-	//   - 別対象向けに発行したトークンの流用は拒否される(対象特定の担保)。
-	describe("S1 確認カード(propose-delete-* + confirmToken)", () => {
+	//   - トークン無しの delete-todo は成功する(旧: 拒否されていた)。
+	//   - propose-delete-todo は引き続きトークン + プレビューを結果 _meta にだけ載せる(後方互換の
+	//     猶予期間中も壊さない)。
+	//   - 旧 propose 由来のトークンを添えて delete-todo を呼んでも(対象が一致しなくても)成功する
+	//     (検証自体が無くなったのでトークンの中身は一切見ない)。
+	describe("R1(delete-* の confirmToken 強制撤去)", () => {
 		const TASKS = collectionId("tasks");
 		function seedTasksCollection(): void {
 			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
@@ -1365,7 +1408,7 @@ describe("/mcp", () => {
 			return rpc.result.structuredContent.affected[0].id as string;
 		}
 
-		it("トークン無しの delete-todo は拒否される(propose を誘導)", async () => {
+		it("トークン無しの delete-todo は成功する(R1: サーバー側強制を撤去)", async () => {
 			seedTasksCollection();
 			const id = await createTodo("消される予定のもの");
 			const res = await fetchMcp({
@@ -1375,11 +1418,10 @@ describe("/mcp", () => {
 				params: { name: "delete-todo", arguments: { id } },
 			});
 			const rpc = await jsonRpcResult(res);
-			expect(rpc.result.isError).toBe(true);
-			expect(rpc.result.content[0].text).toContain("propose-delete-todo");
-			// 拒否されたのでリソースは残っている(誤って消えていない)。
+			expect(rpc.result.isError).toBeFalsy();
+			// 実際に消えている(確認要否の判断はホストに委ね、サーバーはブロックしない)。
 			const stillThere = await repos.resources.findUriByUid(OWNER, TASKS, id);
-			expect(stillThere).not.toBeNull();
+			expect(stillThere).toBeNull();
 		});
 
 		it("propose-delete-todo はトークン + プレビューを _meta にだけ載せ、content には載せない", async () => {
@@ -1431,11 +1473,11 @@ describe("/mcp", () => {
 			expect(await repos.resources.findUriByUid(OWNER, TASKS, id)).toBeNull();
 		});
 
-		it("別対象向けに発行したトークンの流用は拒否される(対象特定の担保)", async () => {
+		it("別対象向けに発行したトークンを添えても delete-todo は成功する(R1: 中身を検証しない)", async () => {
 			seedTasksCollection();
 			const idA = await createTodo("A");
 			const idB = await createTodo("B");
-			// A 向けの propose トークンを取得。
+			// A 向けの propose トークンを取得(後方互換フィールドの値としてはそのまま残る)。
 			const proposeRes = await fetchMcp({
 				jsonrpc: "2.0",
 				id: 6,
@@ -1443,7 +1485,7 @@ describe("/mcp", () => {
 				params: { name: "propose-delete-todo", arguments: { id: idA } },
 			});
 			const tokenForA = (await jsonRpcResult(proposeRes)).result._meta.confirm.token as string;
-			// それを使って B を消そうとする → 対象不一致で拒否。
+			// それを使って B を消す → R1 以降 confirmToken は無視されるので対象不一致でも成功する。
 			const delRes = await fetchMcp({
 				jsonrpc: "2.0",
 				id: 7,
@@ -1451,9 +1493,9 @@ describe("/mcp", () => {
 				params: { name: "delete-todo", arguments: { id: idB, confirmToken: tokenForA } },
 			});
 			const delRpc = await jsonRpcResult(delRes);
-			expect(delRpc.result.isError).toBe(true);
-			// B は残っている。
-			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).not.toBeNull();
+			expect(delRpc.result.isError).toBeFalsy();
+			// B は消えている。
+			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).toBeNull();
 		});
 	});
 
