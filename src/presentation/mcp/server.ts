@@ -162,6 +162,18 @@ const listEventsExpandedInputShape = {
 	range: rangeEnumField,
 	timeZone: z.string().optional().describe("応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して列挙する。"),
+	// calendarIds(2026-07-22 agenda カード表示フィルタ用): 複数コレクションを明示指定して、その集合
+	// だけを横断合成する。単数 calendarId との併存で、両方指定されたら calendarIds を優先する(下記
+	// resolveCollectionIds のコメント参照)。UI(アジェンダカードの表示フィルタシート)が「一部だけ
+	// 表示 ON」の状態で refresh-events を叩くときに使う。全 ON のとき UI は calendarIds を送らない
+	// (=省略 → 従来どおり全コレクション横断)ので、既定挙動は一切変わらない(additive)。
+	calendarIds: z
+		.array(z.string())
+		.optional()
+		.describe(
+			"対象コレクション ID の集合。指定したコレクションだけを横断して列挙・合成する(開始時刻順)。" +
+				"単数 calendarId と両方指定された場合は calendarIds を優先する。省略時は calendarId の挙動に従う。",
+		),
 	maxEvents: z.number().int().positive().optional().describe("返す occurrence の上限。既定 250。"),
 };
 
@@ -857,15 +869,26 @@ function resolveTimeZone(timeZone: string | undefined): string {
 }
 
 /**
- * 対象コレクション ID の一覧を解決する。calendarId 指定ありならその1件、無ければ
- * collectionRepo.findAllByOwner で owner 配下の全コレクションを列挙する
- * (list-events-expanded / get-freebusy 共通のロジック)。
- */
+ * 対象コレクション ID の一覧を解決する。優先順位は calendarIds(複数)→ calendarId(単数)→ 全横断。
+ *   - calendarIds 指定あり(1件以上)→ その集合を CollectionId 化して返す(2026-07-22 追加。
+ *     agenda カードの表示フィルタが「一部だけ表示 ON」の状態をこの複数指定で表現する)。
+ *   - calendarId 指定あり → その1件(従来挙動)。
+ *   - どちらも無し → collectionRepo.findAllByOwner で owner 配下の全コレクションを列挙する。
+ * (list-events-expanded / get-freebusy 共通のロジック。get-freebusy は calendarIds を渡さないので
+ *  従来どおり calendarId/全横断の2択で動く — シグネチャ後方互換のため calendarIds は optional 引数。)
+ *
+ * 【なぜ calendarIds を calendarId より優先するか】両方指定は本来 UI からは起きないが(アジェンダ
+ * カードは calendarIds しか送らない)、モデルが両方載せてくる可能性はある。黙って一方を無視すると
+ * 「なぜその件数になったか」が説明できないので、より具体的な指定(集合の明示列挙)である calendarIds を
+ * 勝たせる方針を description にも明記した。空配列 [] は「指定なし」と区別できないと事故る(全横断に
+ * 化ける)ので、length===0 は calendarIds 未指定として扱い calendarId/全横断へフォールバックする。 */
 async function resolveCollectionIds(
 	deps: McpAppDeps,
 	owner: PrincipalRef,
 	calendarId: string | undefined,
+	calendarIds?: string[],
 ): Promise<CollectionId[]> {
+	if (calendarIds !== undefined && calendarIds.length > 0) return calendarIds.map((id) => mkCollectionId(id));
 	if (calendarId !== undefined) return [mkCollectionId(calendarId)];
 	const collections = await deps.collectionRepo.findAllByOwner(owner);
 	return collections.map((c) => c.id);
@@ -1177,9 +1200,10 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 		range?: RelativeRangeKeyword;
 		timeZone?: string;
 		calendarId?: string;
+		calendarIds?: string[];
 		maxEvents?: number;
 	}) => {
-		const { timeMin, timeMax, range, timeZone, calendarId, maxEvents } = input;
+		const { timeMin, timeMax, range, timeZone, calendarId, calendarIds, maxEvents } = input;
 		try {
 			// サーバー権威の now を1点で確定し(range 解決 + resolvedRange エコーで同じ now を使う)、
 			// range/絶対の XOR 検証と範囲解決を共通ヘルパーに委ねる(get-freebusy と同一ロジックを共有)。
@@ -1187,7 +1211,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			const { rangeStartMillis, rangeEndMillis, zone } = resolveRequestRange({ timeMin, timeMax, range, timeZone, nowMillis });
 				const limit = maxEvents ?? DEFAULT_MAX_EVENTS;
 
-				const collectionIds = await resolveCollectionIds(deps, principal, calendarId);
+				// calendarIds(複数指定)が来ていればその集合を、無ければ calendarId(単数)/全横断を解決する。
+				const collectionIds = await resolveCollectionIds(deps, principal, calendarId, calendarIds);
 				const listOccurrences = new ListOccurrences(deps.resourceRepo, deps.iterator);
 
 				// 複数コレクションをまたぐ場合はそれぞれ ListOccurrences を呼んでマージする
@@ -1296,8 +1321,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": AGENDA_UI_URI,
 			},
 		},
-		async ({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }) =>
-			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }),
+		async ({ timeMin, timeMax, range, timeZone, calendarId, calendarIds, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, calendarIds, maxEvents }),
 	);
 
 	// refresh-events(E-3 S2: UI 専用の再読み込みツール)。visibility:["app"] でモデルには見せず、
@@ -1318,8 +1343,8 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				"openai/outputTemplate": AGENDA_UI_URI,
 			},
 		},
-		async ({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }) =>
-			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, maxEvents }),
+		async ({ timeMin, timeMax, range, timeZone, calendarId, calendarIds, maxEvents }) =>
+			runListEvents({ timeMin, timeMax, range, timeZone, calendarId, calendarIds, maxEvents }),
 	);
 
 	// --- get-freebusy -----------------------------------------------------------

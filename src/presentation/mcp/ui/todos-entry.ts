@@ -175,6 +175,13 @@ const liveEl = document.getElementById("live") as HTMLElement;
 // (廃止理由の詳細は sheetState 宣言のコメント参照)。
 // E-2 スライス③: 対象リスト名の見出し。#root の外(常時ある操作面)なので描画の破壊的更新に巻き込まれない。
 const appTitleEl = document.getElementById("app-title") as HTMLElement;
+// --- リスト切替ドロップダウン(2026-07-22 collection-picker-v5)の参照 ------------------------
+// 見出しボタン(#app-title-btn)・メニュー本体(#list-menu)・外タップ捕捉レイヤ(#menu-outside)。
+// いずれも #root の外(ヘッダ/body 直下)にあるので renderAll の破壊的更新に巻き込まれない
+// (appTitleEl / quickAddFab と同じ「静的参照 + 1回だけ配線」パターン)。
+const appTitleBtn = document.getElementById("app-title-btn") as HTMLButtonElement;
+const listMenuEl = document.getElementById("list-menu") as HTMLElement;
+const menuOutsideEl = document.getElementById("menu-outside") as HTMLElement;
 // 追加 FAB(+)。タップで一覧末尾に空のドラフト行を選択状態で生やす(startDraft)。
 // 【v2→v3 で覆した点(経緯・財産)】v2 は FAB タップで position:fixed の quick-add ボトムシート
 // (#quick-add フォーム + 段階的開示パネル)を開いていた。fixed+vh の実機バグとトーン不一致のため
@@ -3325,7 +3332,10 @@ function applyStructuredContent(sc: unknown): void {
 	// (未受領のうちはプレースホルダ「リマインダー」のまま = 後方互換 degrade)。
 	if (structuredContent?.calendarId !== undefined) {
 		currentCalendarId = structuredContent.calendarId;
-		appTitleEl.textContent = currentCalendarId;
+		// ヘッダ見出しは displayName を優先(calendarsCache があれば)。未取得のうちは raw id
+		// フォールバック(従来挙動)。メニューを一度でも開けばキャッシュが埋まり displayName に揃う
+		// (titleForCalendarId のコメント参照)。 —— 2026-07-22 リスト切替ドロップダウン導入に伴う変更。
+		appTitleEl.textContent = titleForCalendarId(currentCalendarId);
 	}
 	// timeZone を保持(詳細シートの「時間帯」行の出し分けに使う)。値が来たときだけ更新する。
 	if (structuredContent?.timeZone !== undefined) {
@@ -4286,6 +4296,162 @@ headerDoneEl.addEventListener("click", () => {
 	draft = null;
 	selectedId = null;
 	renderAll();
+});
+
+// --- リスト切替ドロップダウン(2026-07-22 collection-picker-v5)------------------------------
+// 見出しタップでヘッダ直下に「今持っているリマインダーリスト(VTODO コレクション)」の一覧を開き、
+// 選んだリストへ表示を切り替える(単一選択のプライマリ操作)。作成行は置かない(ユーザー裁定:
+// todos の作成は LLM/CalDAV クライアント経由)。calendarsCache(リスト移動ページと共用の list-calendars
+// キャッシュ)を再利用する。
+
+/** currentCalendarId に対応する表示名を calendarsCache から引く(未取得/不明なら id をそのまま返す)。
+ *  ヘッダ見出しと突き合わせて「メニューでは displayName、ヘッダでは id」というズレを無くすためのヘルパー。
+ *  【なぜ id フォールバックか】calendarsCache はメニューを一度開くまで null(遅延取得)なので、
+ *  初回応答〜メニュー未展開の間はキャッシュが無い。その間はヘッダに raw id が出る(従来と同じ挙動=
+ *  後方互換の degrade)。メニューを開けば ensureCalendars がキャッシュを埋め、以降 displayName に揃う。 */
+function titleForCalendarId(id: string): string {
+	const hit = calendarsCache?.find((c) => c.id === id);
+	return hit !== undefined && hit.displayName !== "" ? hit.displayName : id;
+}
+
+/** メニューが開いているか(#list-menu の hidden 属性を真実の源にする — 状態変数を二重に持たない)。 */
+function isListMenuOpen(): boolean {
+	return !listMenuEl.hidden;
+}
+
+/** ドロップダウンの中身(リスト行)を calendarsCache から組み立てる。VTODO を受理するコレクション
+ *  だけを列挙し(リマインダーリスト)、現在行に check アイコンを付ける。表示は displayName のみ
+ *  (id 併記しない・モック collection-picker-v5 の FB)。取得中はプレースホルダ行を出す。 */
+function renderListMenu(): void {
+	listMenuEl.textContent = "";
+	if (calendarsCache === null) {
+		// ensureCalendars 完了後に openListMenu の then が renderListMenu を呼び直す。
+		const loading = el("button", "menu-item") as HTMLButtonElement;
+		loading.type = "button";
+		loading.disabled = true;
+		const name = el("span", "name");
+		name.textContent = "読み込み中…";
+		loading.append(el("span", "check-slot"), name);
+		listMenuEl.appendChild(loading);
+		return;
+	}
+	const lists = calendarsCache.filter((c) => c.components.includes("VTODO"));
+	if (lists.length === 0) {
+		const empty = el("button", "menu-item") as HTMLButtonElement;
+		empty.type = "button";
+		empty.disabled = true;
+		const name = el("span", "name");
+		name.textContent = "リストがありません";
+		empty.append(el("span", "check-slot"), name);
+		listMenuEl.appendChild(empty);
+		return;
+	}
+	for (const c of lists) {
+		const item = el("button", "menu-item") as HTMLButtonElement;
+		item.type = "button";
+		const checkSlot = el("span", "check-slot");
+		if (c.id === currentCalendarId) checkSlot.appendChild(createIcon("check"));
+		const name = el("span", "name");
+		name.textContent = c.displayName !== "" ? c.displayName : c.id;
+		item.append(checkSlot, name);
+		item.addEventListener("click", (e) => {
+			// メニュー内クリックは document click(選択解除)へ伝播させない。
+			e.stopPropagation();
+			openListMenu(false);
+			// 同じリストを選んだら何もしない(無駄な refetch を避ける)。
+			if (c.id === currentCalendarId) return;
+			void switchCalendar(c.id);
+		});
+		listMenuEl.appendChild(item);
+	}
+}
+
+/** メニューの開閉。開くときは calendarsCache を遅延取得し、外タップ捕捉レイヤを表示、
+ *  そして「inline カードの高さ担保」を行う(下記コメント参照)。 */
+function openListMenu(open: boolean): void {
+	listMenuEl.hidden = !open;
+	menuOutsideEl.hidden = !open;
+	appTitleBtn.setAttribute("aria-expanded", String(open));
+	if (open) {
+		renderListMenu();
+		// calendarsCache 未取得なら取得してから描き直す(取得中は「読み込み中…」行が出ている)。
+		if (calendarsCache === null) {
+			void ensureCalendars().then(() => {
+				// 取得完了までにユーザーが閉じている可能性があるので、まだ開いているときだけ描き直す。
+				if (isListMenuOpen()) {
+					renderListMenu();
+					applyMenuHeightGuard();
+					// 遅延取得でヘッダの id → displayName も揃えられるようになるので反映する。
+					if (currentCalendarId !== null) appTitleEl.textContent = titleForCalendarId(currentCalendarId);
+				}
+			});
+		}
+		applyMenuHeightGuard();
+	} else {
+		// 閉じたら高さ担保の min-height を解除する(メニューぶんの余白を残さない)。
+		clearMenuHeightGuard();
+	}
+}
+
+/** 【inline ドロップダウンの高さ担保(タスクの明示要件)】
+ *  メニューは position:absolute でカード内(ヘッダ .menu-wrap 基準)に開くため、通常フローの
+ *  document 高さには寄与しない。inline カードはホストがコンテンツ(document)高さに追従して
+ *  iframe をリサイズする方式なので、absolute のメニューは「document 高さの外」に描かれ、下端が
+ *  カード(iframe)の可視領域からはみ出してクリップされてしまう。
+ *  対策として、開いている間だけ body に min-height を与え、メニュー下端が document フロー高さの
+ *  内側に入るよう強制する → ホストの高さ追従(size-changed)が自然に働き、iframe がメニューを
+ *  収める高さまで伸びる。閉じたら min-height を外して元の高さへ戻す。
+ *  【なぜ root ではなく body か】メニューの基準は .menu-wrap(ヘッダ内=body 直下)なので、
+ *  メニュー下端の絶対 Y は body 座標系で測るのが素直。body に min-height を積めば documentElement の
+ *  scrollHeight(ホストが観測する高さ)がそのぶん伸びる。 */
+function applyMenuHeightGuard(): void {
+	// メニュー下端(body 座標系)+ 余白 12px。getBoundingClientRect + scrollY で絶対 Y を求める。
+	const menuBottom = listMenuEl.getBoundingClientRect().bottom + window.scrollY;
+	// body 自身の padding-bottom 相当の余裕を足して、はみ出しゼロに倒す(足りないと1px 単位で
+    // クリップされうるので安全側)。
+	document.body.style.minHeight = `${Math.ceil(menuBottom) + 12}px`;
+}
+function clearMenuHeightGuard(): void {
+	document.body.style.minHeight = "";
+}
+
+/** 選んだリストへ表示を切り替える。currentCalendarId を更新し、ビューは既定に戻して(別リストの
+ *  「未完了のみ」を素直に開く)、refresh-todos(refreshArgs が currentCalendarId/currentView を載せる)で
+ *  取り直す。失敗はバナーに degrade(現在の一覧は保持)。 */
+async function switchCalendar(id: string): Promise<void> {
+	// 進行中の選択編集/スワイプは切替前に畳む(別リストへ移ると対象 id が消えて宙に浮くため)。
+	commitSelection();
+	draft = null;
+	selectedId = null;
+	swipeId = null;
+	currentCalendarId = id;
+	// 別リストへ切り替えたら「そのリストの既定ビュー(未完了のみ)」から見せる(前リストの
+	// includeCompleted:true 等を引き継がない — リストごとに見たいビューは独立、という素直な既定)。
+	currentView = {};
+	// ヘッダ見出しを即・displayName へ反映(応答を待たずに手応えを出す。applyStructuredContent が
+	// 後で raw id を書くが、titleForCalendarId でキャッシュ済み displayName に揃うので跳ねない)。
+	appTitleEl.textContent = titleForCalendarId(id);
+	clearBanner();
+	try {
+		await fetchLatest();
+		renderAll();
+	} catch (e) {
+		showBanner(
+			`リストの切り替えに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+			() => void switchCalendar(id),
+		);
+	}
+}
+
+// 見出しボタン: タップでメニュー開閉トグル。document click(選択解除)へ伝播させない。
+appTitleBtn.addEventListener("click", (e) => {
+	e.stopPropagation();
+	openListMenu(!isListMenuOpen());
+});
+// 外タップ捕捉レイヤ: どこをタップしても閉じる(ポップオーバーの定石)。
+menuOutsideEl.addEventListener("click", (e) => {
+	e.stopPropagation();
+	openListMenu(false);
 });
 
 // --- グローバルクリック: 選択解除(確定)/ スワイプ露出畳み --------------------------------------

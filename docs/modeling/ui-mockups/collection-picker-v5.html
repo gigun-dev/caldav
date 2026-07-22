@@ -1,0 +1,268 @@
+<!doctype html>
+<!-- コレクション選択 インタラクティブプロトタイプ v5(2026-07-22)
+     v4 からのユーザーFB(iOS カレンダーの「カレンダー」シート添付)を反映した役割分離:
+     - todos: ビュー=常に1リスト → 見出しタップ=プライマリなリスト切替(v4 のドロップダウン
+       単一選択のまま)。作成は載せない(LLM/CalDAV クライアント経由)。
+     - agenda: ビュー=複数カレンダーの合成 → 表示 ON/OFF は「切替」ではなく「フィルタ」で
+       セカンダリ。見出しは不動(「カレンダー」)。ヘッダ右端のアイコンボタン(lucide sliders)
+       からセミモーダルを開き、iOS カレンダー同様に:
+         * 色付き丸チェックで ON/OFF(開いたまま・裏へ即時反映)
+         * 末尾に「カレンダーを追加」(create-calendar — 追加はここに置くのが iOS の文法)
+     - 表示は displayname のみ(id 併記なし・v4 FB 継続)。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --radius: var(--border-radius-md, 8px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    display: flex; gap: 24px; justify-content: center; align-items: flex-start; padding: 24px; flex-wrap: wrap; }
+  .phone { width: 360px; }
+  .phone-label { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .card { position: relative; overflow: hidden; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; min-height: 480px; }
+  .lucide-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .bar-right { display: flex; align-items: center; gap: 10px; }
+  .app-title-btn { display: flex; align-items: center; gap: 3px; border: none; background: none;
+    padding: 2px 0; font: inherit; font-size: 16px; font-weight: 700; color: var(--fg); cursor: pointer; }
+  .app-title-btn .lucide-icon { width: 13px; height: 13px; color: var(--muted); transition: transform .2s; }
+  .app-title-btn[aria-expanded="true"] .lucide-icon { transform: rotate(180deg); }
+  .app-title-static { font-size: 16px; font-weight: 700; }
+  .updated { font-size: 11px; color: var(--muted); }
+  .icon-btn { border: none; background: none; color: var(--muted); padding: 6px; margin: -6px;
+    cursor: pointer; display: flex; }
+  .icon-btn .lucide-icon { width: 17px; height: 17px; }
+  /* 色ドットクラスタ(凡例兼フィルタ入口)。重なりで「層」を示す。OFF のカレンダーは表示しない。 */
+  .dots-btn { align-items: center; gap: 3px; }
+  .dots { display: flex; }
+  .dots .d { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg); }
+  .dots .d + .d { margin-left: -5px; }
+  .dots .d-more { width: 13px; height: 13px; border-radius: 50%; margin-left: -5px;
+    background: var(--surface); color: var(--muted); font-size: 8px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg); }
+
+  section h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 12px 0 4px; }
+  ul.rows { margin: 0; padding: 0; }
+  ul.rows li { list-style: none; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 15px;
+    display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
+
+  /* --- todos: ドロップダウン(v4 のまま) --- */
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; top: 100%; left: 0; margin-top: 6px; min-width: 220px; z-index: 10;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); overflow: hidden; }
+  .hidden-x { display: none !important; }
+  .menu-item { display: flex; align-items: center; gap: 10px; padding: 11px 14px; width: 100%;
+    min-height: 44px; border: none; background: none; text-align: left; color: var(--fg);
+    font: inherit; font-size: 15px; cursor: pointer; }
+  .menu-item + .menu-item { border-top: 1px solid var(--border); }
+  .menu-item:active { background: var(--surface); }
+  .menu-item .check-slot { width: 16px; flex: none; color: var(--accent); display: flex; }
+  .menu-item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* --- agenda: セミモーダル(C4 .loc-* 同型・カード内 absolute) --- */
+  .dimmer { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.32); z-index: 20; }
+  .semimodal { position: absolute; left: 0; right: 0; bottom: 0; max-height: 86%;
+    background: var(--bg); border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.25);
+    display: flex; flex-direction: column; z-index: 21; }
+  .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--border); margin: 8px auto 4px; flex: none; }
+  .sm-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 8px; flex: none; }
+  .sm-title { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .sm-done { border: none; background: none; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .sm-body { flex: 1; overflow-y: auto; padding: 0 16px 20px; }
+  .cal-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .cal-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; width: 100%; min-height: 48px;
+    border: none; background: none; text-align: left; color: var(--fg); font: inherit; font-size: 15px; cursor: pointer; }
+  .cal-item + .cal-item { border-top: 1px solid var(--border); }
+  /* iOS カレンダー風の色付き丸チェック: ON = 塗り+白チェック / OFF = 色付き輪郭のみ */
+  .cal-circle { width: 22px; height: 22px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center; border: 2px solid; }
+  .cal-circle .lucide-icon { width: 13px; height: 13px; stroke: #fff; stroke-width: 3; }
+  .cal-item .name { flex: 1; min-width: 0; }
+  .cal-add { display: flex; align-items: center; gap: 10px; padding: 13px 14px; width: 100%;
+    border: none; background: var(--surface); border-radius: var(--radius); margin-top: 12px;
+    color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .cal-new-row { margin-top: 10px; display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border-radius: var(--radius); padding: 9px 12px; }
+  .cal-new-row input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
+  .cal-new-confirm { flex: none; border: none; background: var(--accent); color: #fff; font: inherit;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .outside { position: fixed; inset: 0; z-index: 9; }
+</style>
+</head>
+<body>
+
+<!-- ============ todos(v4 のまま: 見出し=プライマリ切替) ============ -->
+<div class="phone">
+  <div class="phone-label">todos — 見出しタップ=リスト切替(プライマリ・単一選択)</div>
+  <div class="card">
+    <header class="bar">
+      <div class="menu-wrap">
+        <button class="app-title-btn" id="t-title" aria-expanded="false">
+          <span id="t-title-text">リマインダー</span>
+          <svg class="lucide-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="menu hidden-x" id="t-menu"></div>
+      </div>
+      <span class="updated">12:34</span>
+    </header>
+    <div id="t-body"></div>
+  </div>
+</div>
+
+<!-- ============ agenda(見出し不動・右端 sliders からフィルタシート) ============ -->
+<div class="phone">
+  <div class="phone-label">agenda — 見出し不動・フィルタは右端アイコン(セカンダリ)</div>
+  <div class="card">
+    <header class="bar">
+      <span class="app-title-static">カレンダー <span class="updated">7/22〜7/28</span></span>
+      <div class="bar-right">
+        <!-- 表示中カレンダーの色ドットクラスタ = 凡例 + フィルタシートの入口(2026-07-22 fable 案)。
+             sliders/filter アイコンは「設定/内容絞り込み」と誤読されうるが、色ドットは行の色ドットと
+             同じ語彙で「いま表示している層」を直示する。タップ可能なことは chevron で示す。 -->
+        <button class="icon-btn dots-btn" id="a-filter" aria-label="表示するカレンダー">
+          <span class="dots" id="a-dots"></span>
+          <svg class="lucide-icon" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+    </header>
+    <div id="a-body"></div>
+
+    <div class="dimmer hidden-x" id="a-dimmer"></div>
+    <div class="semimodal hidden-x" id="a-sheet">
+      <div class="grabber"></div>
+      <div class="sm-header">
+        <span class="sm-title">表示するカレンダー</span>
+        <button class="sm-done" id="a-close">完了</button>
+      </div>
+      <div class="sm-body">
+        <div class="cal-list" id="a-list"></div>
+        <button class="cal-add" id="a-add">
+          <svg class="lucide-icon" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+          カレンダーを追加
+        </button>
+        <div class="cal-new-row hidden-x" id="a-new-row">
+          <input id="a-new-name" placeholder="カレンダー名" />
+          <button class="cal-new-confirm" id="a-new-ok">作成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="outside hidden-x" id="outside"></div>
+
+<script>
+const CHECK = '<svg class="lucide-icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>';
+const $ = (id) => document.getElementById(id);
+
+// ---------------- todos(v4 と同一) ----------------
+const tCols = [
+  { id: "tasks", name: "リマインダー", items: ["牛乳を買う", "レポート提出", "宅配を受け取る"] },
+  { id: "reading-list", name: "読書リスト", items: ["『達人プログラマー』", "『詳解 Swift』"] },
+];
+let tCurrent = "tasks";
+function tRenderBody() {
+  const col = tCols.find((c) => c.id === tCurrent);
+  $("t-title-text").textContent = col.name;
+  $("t-body").innerHTML = `<section><h2>今日</h2><ul class="rows">${
+    col.items.map((i) => `<li>${i}</li>`).join("")}</ul></section>`;
+}
+function tRenderMenu() {
+  $("t-menu").innerHTML = tCols.map((c) => `
+    <button class="menu-item" data-id="${c.id}">
+      <span class="check-slot">${c.id === tCurrent ? CHECK : ""}</span>
+      <span class="name">${c.name}</span>
+    </button>`).join("");
+  $("t-menu").querySelectorAll(".menu-item").forEach((b) =>
+    b.addEventListener("click", () => { tCurrent = b.dataset.id; tRenderBody(); tOpen(false); }));
+}
+function tOpen(open) {
+  $("t-menu").classList.toggle("hidden-x", !open);
+  $("outside").classList.toggle("hidden-x", !open);
+  $("t-title").setAttribute("aria-expanded", String(open));
+  if (open) tRenderMenu();
+}
+$("t-title").addEventListener("click", () => tOpen($("t-menu").classList.contains("hidden-x")));
+$("outside").addEventListener("click", () => tOpen(false));
+tRenderBody();
+
+// ---------------- agenda(見出し不動・フィルタシート) ----------------
+const aCols = [
+  { id: "calendar", name: "カレンダー", color: "#007aff",
+    events: [["9:00", "Paizaミーティング"], ["15:00", "ゼミ"]] },
+  { id: "work", name: "仕事", color: "#ff9500",
+    events: [["11:00", "1on1"], ["18:00", "リリース判定"]] },
+];
+let aVisible = new Set(["calendar", "work"]);
+
+function aRenderDots() {
+  const on = aCols.filter((c) => aVisible.has(c.id));
+  const shown = on.slice(0, 3);
+  $("a-dots").innerHTML = shown.map((c) => `<span class="d" style="background:${c.color}"></span>`).join("")
+    + (on.length > 3 ? `<span class="d-more">+${on.length - 3}</span>` : "")
+    + (on.length === 0 ? `<span class="d-more">0</span>` : "");
+}
+function aRenderBody() {
+  aRenderDots();
+  const rows = aCols.filter((c) => aVisible.has(c.id))
+    .flatMap((c) => c.events.map(([t, s]) => ({ t, s, color: c.color })))
+    .sort((x, y) => x.t.localeCompare(y.t));
+  $("a-body").innerHTML = rows.length === 0
+    ? `<p class="empty">表示中のカレンダーがありません</p>`
+    : `<section><h2>今日</h2><ul class="rows">${rows.map((r) =>
+        `<li><span class="dot" style="background:${r.color}"></span><span style="color:var(--muted);font-size:12px;width:38px">${r.t}</span>${r.s}</li>`).join("")}</ul></section>`;
+}
+function aRenderList() {
+  $("a-list").innerHTML = aCols.map((c) => {
+    const on = aVisible.has(c.id);
+    return `
+    <button class="cal-item" data-id="${c.id}">
+      <span class="cal-circle" style="border-color:${c.color};background:${on ? c.color : "transparent"}">${on ? CHECK : ""}</span>
+      <span class="name">${c.name}</span>
+    </button>`;
+  }).join("");
+  $("a-list").querySelectorAll(".cal-item").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      if (aVisible.has(id)) aVisible.delete(id); else aVisible.add(id);
+      aRenderList(); aRenderBody(); // 開いたまま即反映
+    }));
+}
+function aOpen(open) {
+  $("a-dimmer").classList.toggle("hidden-x", !open);
+  $("a-sheet").classList.toggle("hidden-x", !open);
+  if (open) { aRenderList(); $("a-new-row").classList.add("hidden-x"); }
+}
+$("a-filter").addEventListener("click", () => aOpen(true));
+$("a-close").addEventListener("click", () => aOpen(false));
+$("a-dimmer").addEventListener("click", () => aOpen(false));
+$("a-add").addEventListener("click", () => { $("a-new-row").classList.remove("hidden-x"); $("a-new-name").focus(); });
+$("a-new-ok").addEventListener("click", () => {
+  const name = $("a-new-name").value.trim(); if (!name) return;
+  const palette = ["#34c759", "#af52de", "#ff2d55"];
+  const id = name.toLowerCase().replace(/\s+/g, "-") || `cal-${aCols.length}`;
+  aCols.push({ id, name, color: palette[aCols.length % palette.length], events: [] });
+  aVisible.add(id); $("a-new-name").value = "";
+  aRenderList(); aRenderBody();
+});
+aRenderBody();
+</script>
+</body>
+</html>

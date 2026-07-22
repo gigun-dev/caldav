@@ -208,15 +208,70 @@ export const TODOS_APP_HTML = `<!doctype html>
      * 無効果(見た目は一切変わらない = 退行ゼロ)。効くのは fullscreen 時に root へ
      * overflow-y:auto を当てたとき(C3 で実装)だけ — sticky は「スクロール文脈が生まれたときに
      * 初めて仕事をする」宣言であり、いま単独で追加しても不活性なのが確認できる。
-     * z-index は他レイヤ(.banner/.status/セクション本文)より前面に出す必要があるが、このカードに
-     * 明示的な z-index 階層が無いため 1 を割り当てる(将来モーダル的な要素が増えたら見直す)。 */
+     * z-index は他レイヤ(.banner/.status/セクション本文)より前面に出す必要がある。
+     * 【2026-07-22 更新: 1 → 11(リスト切替ドロップダウン導入)】見出しドロップダウン(.menu z-index:10)は
+     * この .bar が作る stacking context の内側にあるため、外タップ捕捉レイヤ(.menu-outside z-index:9)より
+     * .bar 全体を前面に出さないと overlay が .bar ごとメニューを覆いメニューがクリックできなくなる
+     * (.menu-outside のコメント参照)。overlay(9)より高い 11 を割り当て「.bar+メニュー > overlay > #root 本文」
+     * の層にする(将来モーダル的な要素が増えたら見直す)。 */
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: 11;
     background: var(--bg);
   }
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .app-title { font-size: 16px; font-weight: 700; }
+
+  /* --- リスト切替ドロップダウン(2026-07-22 collection-picker-v5 モック実装)---------------
+   * 見出し(#app-title)を button 化してタップでヘッダ直下にリスト一覧を開く「プライマリな
+   * リスト切替」(単一選択)。モック docs/modeling/ui-mockups/collection-picker-v5.html の
+   * .menu-wrap/.menu/.menu-item をそのまま写す。作成行は置かない(ユーザー裁定: todos の作成は
+   * LLM/CalDAV クライアント経由 — アプリ内で新規リストは作らせない)。
+   *
+   * 【なぜ agenda の「フィルタ」ではなく「切替」か】todos のビューは常に1リスト(単一コレクション
+   * 契約。todos-view-model.ts の calendarId:string 必須)なので、見出しタップは「今見ているリストを
+   * 別のリストへ切り替える」プライマリ操作。複数を同時表示する概念が無いので単一選択のドロップダウンが
+   * 正しい(agenda は複数合成なので ON/OFF フィルタ=別語彙。collection-picker-v5 の役割分離コメント参照)。 */
+  .menu-wrap { position: relative; }
+  /* 見出しボタン: 素の見出しに chevron-down を添えるだけ。色/太さは .app-title を継承させたいので
+   * font 系は inherit にし、chevron だけ muted で小さく置く(「押せる」ことを示す最小限のヒント)。 */
+  .app-title-btn {
+    display: inline-flex; align-items: center; gap: 3px;
+    border: none; background: none; padding: 0; margin: 0;
+    font: inherit; color: var(--fg); cursor: pointer;
+  }
+  .app-title-btn .chev { display: inline-flex; color: var(--muted); font-size: 12px; transition: transform .2s; }
+  /* 開いている間は chevron を反転(iOS の展開表現)。aria-expanded を真実の源にする。 */
+  .app-title-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  /* ドロップダウン本体。ヘッダ直下(top:100%)左寄せ。モックの視覚(bg/border/radius 12px/影・
+   * 44px 行)をそのまま。z-index はバナー/セクションより前面(ヘッダ .bar が z-index:1 なので、
+   * それより上の 10 を割り当てる)。 */
+  .menu {
+    position: absolute; top: 100%; left: 0; margin-top: 6px; min-width: 220px; z-index: 10;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); overflow: hidden;
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 10px; padding: 11px 14px; width: 100%;
+    min-height: 44px; border: none; background: none; text-align: left; color: var(--fg);
+    font: inherit; font-size: 15px; cursor: pointer;
+  }
+  .menu-item + .menu-item { border-top: 1px solid var(--border); }
+  .menu-item:active { background: var(--surface); }
+  /* 現在行の check スロット(常に幅を確保して表示名の左端を揃える。check の有無で行がガタつかない)。 */
+  .menu-item .check-slot { width: 16px; flex: none; color: var(--accent); display: flex; align-items: center; }
+  .menu-item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 外タップ捕捉レイヤ(モックの .outside)。メニューが開いている間だけ全面を覆い、どこを
+   * タップしても閉じる。position:fixed で #root のスクロールに追従しない全画面レイヤにする。
+   * 【z-index の噛み合い(2026-07-22 重要)】このカードの .bar は position:sticky; z-index を
+   * 持つ(下記 .bar 参照)ため独自の stacking context を作る。ドロップダウン(.menu z-index:10)は
+   * その .bar コンテキストの内側にあるので、.bar 全体の z-index より上のレイヤ(この overlay)を
+   * .bar より高くしてしまうと、overlay が .bar ごとメニューを覆い、メニュー項目がクリックできなく
+   * なる(overlay がクリックを奪って即閉じる)。そこで overlay は .bar より低い z-index(9 < .bar の
+   * 11)にし、「.bar+メニューは overlay の上・#root 本文は overlay の下」という層にする。overlay の
+   * 役割は「#root 本文(メニュー外)のタップで閉じる」ことなので、ヘッダ帯だけ覆えなくても実害はない
+   * (ヘッダ内の見出しボタンはトグルで閉じる・updated は微小領域)。 */
+  .menu-outside { position: fixed; inset: 0; z-index: 9; }
   .updated { font-size: 11px; color: var(--muted); white-space: nowrap; }
   /* 【S-E: カード右上の単一 Done】button.confirm(旧・行内)と同じ「押せば確定する」トーンを
    * 引き継ぎつつ、ヘッダはテキストリンク言語(page-head の .link と同系)の方が「常設の操作面」
@@ -1457,7 +1512,19 @@ export const TODOS_APP_HTML = `<!doctype html>
            【将来課題】いまは calendarId(コレクションの内部 ID 文字列)をそのまま出す。iOS リマインダーの
            リスト名に相当する displayname(CalDAV の DAV:displayname プロパティ)取得は未実装なので、
            人間可読名が要るなら別途 principal→コレクション displayname を引く経路を足す(このスライス外)。 -->
-      <span id="app-title" class="app-title">リマインダー</span>
+      <!-- 見出し=リスト切替ドロップダウン(2026-07-22 collection-picker-v5)。#app-title の span は
+           entry が textContent を書き込む参照点として温存し、外側を button 化する(entry 側の
+           appTitleEl.textContent = ... は一切変えずに済む)。chevron-down は「押せる」ヒント
+           (lucide "chevron-down" の生 SVG。サーバー側静的文字列なので createIcon は使えない)。
+           aria-haspopup/aria-expanded でメニュー展開を支援技術へ伝える。 -->
+      <div class="menu-wrap">
+        <button id="app-title-btn" class="app-title-btn" type="button" aria-haspopup="true" aria-expanded="false">
+          <span id="app-title" class="app-title">リマインダー</span>
+          <span class="chev"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+        </button>
+        <!-- リスト一覧(entry が calendarsCache から VTODO コレクションだけを描く)。既定 hidden。 -->
+        <div id="list-menu" class="menu" hidden></div>
+      </div>
       <!-- 最終更新 HH:mm。entry が成功データ受領のたびに書く(空のうちは非表示同然)。 -->
       <span id="updated" class="updated"></span>
     </div>
@@ -1473,6 +1540,10 @@ export const TODOS_APP_HTML = `<!doctype html>
          有無で表示/非表示を切り替える(renderAll 内)。 -->
     <button id="header-done" class="header-done" type="button" hidden>完了</button>
   </header>
+  <!-- リスト切替ドロップダウンの外タップ捕捉レイヤ(2026-07-22)。開いている間だけ表示され、
+       全画面を覆ってどこをタップしても閉じる(ポップオーバーの定石)。#root の外・body 直下に置き、
+       renderAll(#root の innerHTML 再構築)の影響を受けないようにする。 -->
+  <div id="menu-outside" class="menu-outside" hidden></div>
   <!-- 操作失敗・接続失敗を「リストを壊さずに」重ねるバナー(既定 hidden)。 -->
   <div id="banner" class="banner" hidden></div>
   <!-- 接続フェーズの診断行(iOS WebView にコンソールが無いための画面デバッグ導線)。 -->

@@ -1,0 +1,179 @@
+<!doctype html>
+<!-- agenda fullscreen ビュー切替 + 月グリッド インタラクティブモック v6(2026-07-22)
+     ロードマップ②(ユーザー合意: ①コレクション選択 → ②ビュー切替+月 → ③日タイムライン)。
+     - fullscreen 前提(inline はリスト一択のまま — 高さクランプ内で月グリッドは潰れる)。
+     - ヘッダ下にセグメント(リスト | 月)。C4 の .segment 部品と同じ視覚言語。
+       「日」は ③ で追加予定のためセグメントに枠だけ置いて disabled。
+     - 月ビュー: セバスチャン式「上=月グリッド・下=選択日のリスト」連動。
+       予定ドット(コレクション色)・今日リング・選択日ハイライト・前後月ナビ・今日ボタン。
+     - 色は①の決定的パレット(カレンダー id → 色)と同じ語彙。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --danger: #ff3b30;
+    --radius: var(--border-radius-md, 8px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    display: flex; justify-content: center; padding: 24px; }
+  .phone { width: 380px; }
+  .phone-label { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; min-height: 640px; }
+  .lucide-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .app-title { font-size: 16px; font-weight: 700; }
+  .updated { font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .dots { display: flex; }
+  .dots .d { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg); }
+  .dots .d + .d { margin-left: -5px; }
+
+  /* セグメント(C4 .segment と同型) */
+  .segment { display: flex; background: var(--surface); border-radius: 9px; padding: 2px; margin-bottom: 12px; }
+  .segment button { flex: 1; border: none; background: none; font: inherit; font-size: 13px;
+    padding: 6px 0; border-radius: 7px; color: var(--fg); cursor: pointer; }
+  .segment button[aria-pressed="true"] { background: var(--bg); font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .segment button:disabled { color: var(--muted); cursor: default; }
+
+  /* 月グリッド */
+  .month-nav { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 8px; }
+  .month-nav .ym { font-size: 15px; font-weight: 700; }
+  .month-nav .nav-btns { display: flex; align-items: center; gap: 2px; }
+  .month-nav button { border: none; background: none; color: var(--accent); font: inherit;
+    padding: 6px; cursor: pointer; display: flex; }
+  .month-nav .today-btn { font-size: 13px; padding: 4px 8px; }
+  .dow, .grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .dow span { text-align: center; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+  .dow .sun { color: var(--danger); }
+  .cell { position: relative; aspect-ratio: 1 / 1.05; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px; border: none; background: none;
+    font: inherit; font-size: 14px; color: var(--fg); cursor: pointer; border-radius: 10px; }
+  .cell.out { color: var(--muted); opacity: .45; }
+  .cell.sun { color: var(--danger); }
+  .cell.sun.out { color: var(--danger); }
+  .cell .num { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; }
+  .cell.today .num { border: 1.5px solid var(--accent); font-weight: 700; color: var(--accent); }
+  .cell.selected .num { background: var(--accent); color: #fff; font-weight: 700; }
+  .cell .evdots { display: flex; gap: 2px; height: 4px; }
+  .cell .evdots i { width: 4px; height: 4px; border-radius: 50%; }
+
+  /* 選択日のリスト(下段連動) */
+  .day-head { font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 4px;
+    padding-top: 10px; border-top: 1px solid var(--border); }
+  ul.rows { margin: 0; padding: 0; }
+  ul.rows li { list-style: none; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 15px;
+    display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .t { color: var(--muted); font-size: 12px; width: 40px; flex: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 14px 2px; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="phone-label">agenda fullscreen — セグメント切替 + 月グリッド(セバスチャン式連動)</div>
+  <div class="card">
+    <header class="bar">
+      <span><span class="app-title">カレンダー</span><span class="updated">12:34</span></span>
+      <span class="dots"><span class="d" style="background:#007aff"></span><span class="d" style="background:#ff9500"></span></span>
+    </header>
+    <div class="segment">
+      <button id="seg-list" aria-pressed="false">リスト</button>
+      <button id="seg-month" aria-pressed="true">月</button>
+      <button disabled title="③で追加予定">日</button>
+    </div>
+
+    <div id="view-month">
+      <div class="month-nav">
+        <span class="ym" id="ym">2026年7月</span>
+        <span class="nav-btns">
+          <button class="today-btn" id="nav-today">今日</button>
+          <button id="nav-prev"><svg class="lucide-icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+          <button id="nav-next"><svg class="lucide-icon" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="dow"><span class="sun">日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>
+      <div class="grid" id="grid"></div>
+      <div id="day-panel"></div>
+    </div>
+
+    <div id="view-list" style="display:none">
+      <p class="empty">(現状のリストビュー — 省略)</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ダミーデータ: 色は①のパレット(カレンダー id → 決定的割当)と同じ語彙。
+const EVENTS = {
+  "2026-07-07": [{ t: "10:00", s: "歯医者", c: "#007aff" }],
+  "2026-07-17": [{ t: "15:00", s: "Paizaミーティング", c: "#007aff" }],
+  "2026-07-18": [{ t: "9:00", s: "ゼミ", c: "#007aff" }, { t: "11:00", s: "1on1", c: "#ff9500" }],
+  "2026-07-20": [{ t: "終日", s: "海の日", c: "#007aff" }, { t: "22:00", s: "会議", c: "#ff9500" }],
+  "2026-07-21": [{ t: "10:00", s: "歯医者", c: "#007aff" }],
+};
+const TODAY = "2026-07-22";
+let ym = { y: 2026, m: 7 };
+let selected = TODAY;
+const $ = (id) => document.getElementById(id);
+const key = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+function renderGrid() {
+  $("ym").textContent = `${ym.y}年${ym.m}月`;
+  const first = new Date(ym.y, ym.m - 1, 1);
+  const start = new Date(first); start.setDate(1 - first.getDay()); // 日曜始まり
+  let html = "";
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const k = key(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    const out = d.getMonth() + 1 !== ym.m;
+    const cls = ["cell", out ? "out" : "", d.getDay() === 0 ? "sun" : "",
+      k === TODAY ? "today" : "", k === selected ? "selected" : ""].filter(Boolean).join(" ");
+    const evs = EVENTS[k] ?? [];
+    // 予定ドットは最大3(それ以上は情報でなくノイズ — 「ある」ことが伝わればよい)
+    const dots = evs.slice(0, 3).map((e) => `<i style="background:${e.c}"></i>`).join("");
+    html += `<button class="${cls}" data-k="${k}"><span class="num">${d.getDate()}</span><span class="evdots">${dots}</span></button>`;
+    if (i === 41 && d.getMonth() + 1 <= ym.m && d.getFullYear() <= ym.y) break;
+  }
+  $("grid").innerHTML = html;
+  $("grid").querySelectorAll(".cell").forEach((b) =>
+    b.addEventListener("click", () => { selected = b.dataset.k; renderGrid(); renderDay(); }));
+}
+function renderDay() {
+  const evs = EVENTS[selected] ?? [];
+  const [y, m, d] = selected.split("-").map(Number);
+  const dow = "日月火水木金土"[new Date(y, m - 1, d).getDay()];
+  $("day-panel").innerHTML = `<div class="day-head">${m}月${d}日(${dow})</div>` +
+    (evs.length === 0 ? `<p class="empty">予定はありません</p>`
+      : `<ul class="rows">${evs.map((e) =>
+          `<li><span class="dot" style="background:${e.c}"></span><span class="t">${e.t}</span>${e.s}</li>`).join("")}</ul>`);
+}
+$("nav-prev").addEventListener("click", () => { ym.m--; if (ym.m === 0) { ym.m = 12; ym.y--; } renderGrid(); });
+$("nav-next").addEventListener("click", () => { ym.m++; if (ym.m === 13) { ym.m = 1; ym.y++; } renderGrid(); });
+$("nav-today").addEventListener("click", () => { ym = { y: 2026, m: 7 }; selected = TODAY; renderGrid(); renderDay(); });
+$("seg-list").addEventListener("click", () => {
+  $("seg-list").setAttribute("aria-pressed", "true"); $("seg-month").setAttribute("aria-pressed", "false");
+  $("view-list").style.display = ""; $("view-month").style.display = "none";
+});
+$("seg-month").addEventListener("click", () => {
+  $("seg-month").setAttribute("aria-pressed", "true"); $("seg-list").setAttribute("aria-pressed", "false");
+  $("view-month").style.display = ""; $("view-list").style.display = "none";
+});
+renderGrid(); renderDay();
+</script>
+</body>
+</html>

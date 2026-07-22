@@ -281,6 +281,45 @@ describe("/mcp", () => {
 		expect(rpc.result.structuredContent.events).toHaveLength(1);
 	});
 
+	// calendarIds(2026-07-22 agenda カード表示フィルタ): 複数コレクションを明示指定して、その集合だけを
+	// 横断合成する経路。2コレクションに1件ずつ seed し、両方/片方指定で件数が変わることを確認する
+	// (アジェンダカードが「一部だけ表示 ON」を calendarIds で表現する挙動の裏取り)。
+	it("list-events-expanded: calendarIds で指定した集合だけを合成する(件数が変わる)", async () => {
+		// seedEvent は既定の "calendar" コレクションへ入れる。もう1つ "work" コレクションを足して1件 seed。
+		await seedEvent("uid-cids-1", "In Calendar");
+		repos.collections.seed(new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work" }));
+		const workResource = await CalendarObjectResource.fromIcs(resourceUri("uid-cids-2.ics"), vevent("uid-cids-2", "In Work"));
+		repos.resources.seed(OWNER, collectionId("work"), workResource);
+
+		const call = async (args: Record<string, unknown>) => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "list-events-expanded",
+					arguments: { timeMin: "2026-07-01T00:00:00Z", timeMax: "2026-08-01T00:00:00Z", ...args },
+				},
+			});
+			return (await jsonRpcResult(res)).result.structuredContent;
+		};
+
+		// 両方指定 → 2件。各 event に由来コレクション(calendarId)が入っていることも確認(色ドット用)。
+		const both = await call({ calendarIds: ["calendar", "work"] });
+		expect(both.events).toHaveLength(2);
+		expect(new Set(both.events.map((e: { calendarId: string }) => e.calendarId))).toEqual(new Set(["calendar", "work"]));
+
+		// 片方だけ指定 → 1件(その集合だけに絞られる)。
+		const onlyWork = await call({ calendarIds: ["work"] });
+		expect(onlyWork.events).toHaveLength(1);
+		expect(onlyWork.events[0].calendarId).toBe("work");
+
+		// calendarIds が calendarId(単数)より優先される: 単数で "calendar" を指定しても calendarIds が勝つ。
+		const priority = await call({ calendarId: "calendar", calendarIds: ["work"] });
+		expect(priority.events).toHaveLength(1);
+		expect(priority.events[0].calendarId).toBe("work");
+	});
+
 	it("list-events-expanded: floating(offset無し)入力は isError", async () => {
 		const res = await fetchMcp({
 			jsonrpc: "2.0",

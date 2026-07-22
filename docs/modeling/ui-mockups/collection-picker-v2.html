@@ -1,0 +1,132 @@
+<!doctype html>
+<!-- コレクション選択・作成ピッカー モック v2(2026-07-22)
+     v1 からの変更: 既存カードの実 CSS を流用する形へ全面改稿(ユーザー指摘「既存の Design 踏まえて」)。
+     - CSS 変数: todos-app.ts の :root 一式(ホスト注入 var + フォールバック)をそのままコピー。
+     - ヘッダ: agenda-app.ts の .bar / .app-title と同型。見出しに chevron を足しタップ可能に。
+     - セミモーダル: C4 の .loc-dimmer / .loc-semimodal / .loc-grabber / .loc-sm-header を同名転用。
+     - 一覧: .loc-place-list / .loc-place-item(surface 角丸リスト)と同じ視覚言語。
+     - アイコン: lucide(check / plus)。絵文字不使用。
+     挙動(実装時):
+     - 見出しタップ → セミモーダル。一覧は list-calendars を components でフィルタ
+       (todos=VTODO / agenda=VEVENT)。現在行に check。
+     - agenda は先頭に「すべてのカレンダー」(calendarId 省略の横断列挙)。
+     - 「新しいリスト」タップでその行が名前入力に変わり、作成 → create-calendar → 新リストへ切替。
+     - 選択 → currentCalendarId 更新 → calendarId 付き再取得。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --danger: #ff3b30;
+    --radius: var(--border-radius-md, 8px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif; padding: 12px 14px; }
+  .lucide-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  /* --- ヘッダ(agenda .bar と同型 + 見出しをタップ可能に) --- */
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .app-title-btn { display: flex; align-items: center; gap: 3px; border: none; background: none;
+    padding: 2px 0; font: inherit; font-size: 16px; font-weight: 700; color: var(--fg); cursor: pointer; }
+  .app-title-btn .lucide-icon { width: 13px; height: 13px; color: var(--muted); }
+  .updated { font-size: 11px; color: var(--muted); }
+
+  /* --- 一覧(既存の行の雰囲気だけ・本題ではない) --- */
+  section h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 12px 0 4px; }
+  li { list-style: none; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 16px; }
+  ul { margin: 0; padding: 0; }
+
+  /* --- セミモーダル(C4 .loc-* を同名転用) --- */
+  .loc-dimmer { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32); z-index: 20; }
+  .loc-semimodal { position: fixed; left: 0; right: 0; bottom: 0; max-height: 78vh;
+    background: var(--bg); color: var(--fg); border-radius: 16px 16px 0 0;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; z-index: 21; }
+  .loc-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--border); margin: 8px auto 4px; flex: none; }
+  .loc-sm-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 8px; flex: none; }
+  .loc-sm-title { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .loc-sm-done { border: none; background: none; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; padding: 0; cursor: pointer; }
+  .loc-sm-body { flex: 1; overflow-y: auto; padding: 0 16px 20px; }
+
+  /* コレクション一覧(.loc-place-list / .loc-place-item と同じ視覚言語) */
+  .col-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .col-item { display: flex; align-items: center; gap: 10px; padding: 12px; width: 100%;
+    border: none; background: none; text-align: left; color: var(--fg); font: inherit; font-size: 14.5px; cursor: pointer; }
+  .col-item + .col-item { border-top: 1px solid var(--border); }
+  .col-item .check-slot { width: 16px; flex: none; color: var(--accent); }
+  .col-item .name { flex: 1; min-width: 0; }
+  .col-item .sub { font-size: 12px; color: var(--muted); flex: none; }
+  .col-item.create { color: var(--accent); font-weight: 600; }
+  .col-item.create .check-slot { color: var(--accent); }
+
+  /* 「新しいリスト」タップ後の名前入力(.loc-chip-url-row と同型) */
+  .col-new-row { margin-top: 10px; display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border-radius: var(--radius); padding: 9px 12px; }
+  .col-new-row input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
+  .col-new-confirm { flex: none; border: none; background: var(--accent); color: #fff; font: inherit;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <!-- カード(閉じた状態のヘッダ + 一覧の雰囲気) -->
+  <header class="bar">
+    <div class="bar-left">
+      <button class="app-title-btn">リマインダー
+        <svg class="lucide-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+    </div>
+    <span class="updated">12:34</span>
+  </header>
+  <section>
+    <h2>今日</h2>
+    <ul><li>牛乳を買う</li><li>レポート提出</li></ul>
+  </section>
+
+  <!-- セミモーダル(開いた状態) -->
+  <div class="loc-dimmer"></div>
+  <div class="loc-semimodal">
+    <div class="loc-grabber"></div>
+    <div class="loc-sm-header">
+      <span class="loc-sm-title">リスト</span>
+      <button class="loc-sm-done">閉じる</button>
+    </div>
+    <div class="loc-sm-body">
+      <div class="col-list">
+        <button class="col-item">
+          <span class="check-slot">
+            <svg class="lucide-icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+          </span>
+          <span class="name">リマインダー</span>
+          <span class="sub">tasks</span>
+        </button>
+        <button class="col-item">
+          <span class="check-slot"></span>
+          <span class="name">読書リスト</span>
+          <span class="sub">reading-list</span>
+        </button>
+        <button class="col-item create">
+          <span class="check-slot">
+            <svg class="lucide-icon" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+          </span>
+          <span class="name">新しいリスト</span>
+        </button>
+      </div>
+      <!-- 「新しいリスト」タップ後に create 行の直下へ現れる名前入力 -->
+      <div class="col-new-row">
+        <input placeholder="リスト名" value="買い物" />
+        <button class="col-new-confirm">作成</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

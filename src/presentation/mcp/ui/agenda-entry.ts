@@ -41,6 +41,8 @@ import { App } from "@modelcontextprotocol/ext-apps";
 import { computeSyncDiff, type SyncDiff } from "./events-diff-client";
 // 絵文字/文字グリフを lucide のインライン SVG へ統一する(icons.ts 冒頭コメント参照)。
 import { createIcon } from "./icons";
+// 由来コレクション id → 表示色の決定的割当(2026-07-22 色ドット)。同 id→同色の純関数(単体テストあり)。
+import { colorForCalendarId } from "./calendar-colors";
 // 行同一性の合成キー(modeling/12 §7.1・2026-07-16 実機FB)。展開 occurrence の id は全行
 // マスター UID なので、選択/スワイプ/DOM 特定は id 単独でなく rowKey(id+recurrenceId)で引く。
 // 二層分離の理由(mutate 状態はマスター id のまま)は row-key.ts の冒頭コメント参照。
@@ -98,9 +100,18 @@ const updatedEl = document.getElementById("updated") as HTMLElement;
 const bannerEl = document.getElementById("banner") as HTMLElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const liveEl = document.getElementById("live") as HTMLElement;
-const appTitleEl = document.getElementById("app-title") as HTMLElement;
+// 【2026-07-22 appTitleEl 参照は撤去】見出しは「カレンダー」固定(選択内容で変えない)になり JS から
+// 触らなくなったため、#app-title への参照は持たない(静的骨格の文言をそのまま表示する。経緯は
+// applyStructuredContent の calendarId 分岐コメント参照)。
 const rangeEl = document.getElementById("range") as HTMLElement;
 const quickAddFab = document.getElementById("quick-add-fab") as HTMLButtonElement;
+// --- 表示カレンダーフィルタ(2026-07-22 collection-picker-v5)の参照 ---------------------------
+// ヘッダ右端の色ドットクラスタ + chevron ボタン(#cal-filter-btn)、その中のドットクラスタ(#cal-dots)、
+// 直下に開くドロップダウン(#cal-menu)、外タップ捕捉レイヤ(#cal-menu-outside)。いずれも #root の外。
+const calFilterBtn = document.getElementById("cal-filter-btn") as HTMLButtonElement;
+const calDotsEl = document.getElementById("cal-dots") as HTMLElement;
+const calMenuEl = document.getElementById("cal-menu") as HTMLElement;
+const calMenuOutsideEl = document.getElementById("cal-menu-outside") as HTMLElement;
 
 // --- C1: hostContext から読んだ空間制約(P4-DM・設計04 §5 C1。todos-entry.ts の同名ブロックを移植)---
 // getHostContext().containerDimensions.maxHeight / displayMode / availableDisplayModes を保持する。
@@ -144,6 +155,9 @@ function applyHostContext(): void {
 interface EventItem {
 	id: string;
 	recurrenceId: string | null;
+	// 由来コレクション id(server の toWireEvent が全 event に付与)。色ドット(どのカレンダー由来か)に使う。
+	// 2026-07-22 additive 写経: 旧 vm も calendarId を運んでいたが interface に写経していなかったので足す。
+	calendarId?: string;
 	title: string;
 	// 終日 "YYYY-MM-DD" / 時刻付き offset ISO(例 "2026-07-16T19:00:00+09:00")。start は必須。
 	start: string;
@@ -331,6 +345,28 @@ let currentTimeZone: string | null = null;
 // currentRange: この一覧の期間(list-events-expanded/refresh-events が echo する range)。focus refetch /
 // mutation 後の再取得へ引き継ぐ(引き継がないと再取得のたびに既定期間へ落ちて一覧が変わる)。null=未受領。
 let currentRange: { from: string; to: string } | null = null;
+
+// --- 表示カレンダーフィルタ(2026-07-22 collection-picker-v5)---------------------------------
+// list-calendars の結果キャッシュ(VEVENT を含むコレクションだけをフィルタメニューに列挙)。
+// todos-entry.ts の calendarsCache と同じ「メニューを開くまで遅延取得」方式。null=未取得。
+let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[] }> | null = null;
+// visibleCalendarIds: 表示 ON のコレクション id 集合。
+//   null = 「明示フィルタなし(全 ON・既定)」→ refreshArgs は calendarIds を送らない(=従来挙動)。
+//   Set  = 「一部 OFF のフィルタ適用中」→ refreshArgs が calendarIds:[...] を送る(server が calendarIds
+//          優先で横断合成)。全部 ON へ戻したときは null に正規化する(送信を省いて全横断=既定へ戻す)。
+// 【なぜ null と空 Set を区別するか】空 Set = 「全部 OFF」(何も表示しない)で、null = 「フィルタ未適用」。
+// 両者は意味が違うので混同しない(空 Set は calendarIds:[] を送る…と server は length===0 を未指定扱いに
+// するため、全 OFF は送信側で「1件も出さない」= events を空表示にする専用処理をする。下記 refetchFiltered)。
+let visibleCalendarIds: Set<string> | null = null;
+// フィルタメニューが「カレンダーを追加」入力モードかどうか(1つだけなので boolean で足りる)。
+let calAddMode = false;
+// 全カレンダー OFF(visibleCalendarIds が空 Set)のとき、サーバーは呼ばず一覧を空表示にする。
+// renderAll がこのフラグを見て「予定はありません」を出す(空 Set を calendarIds:[] で送ると server が
+// 未指定=全横断と解釈してしまうため、送信自体を避ける。上の visibleCalendarIds コメント参照)。
+let allCalendarsHidden = false;
+// 予定行の左に色ドットを出すか。renderAll が「現在の events に2つ以上のコレクションが混在するか」で
+// 決める(単一コレクションのみのビューでは色ドットはノイズなので出さない)。renderRow が読む。
+let showCalendarDots = false;
 
 // --- 自動 refetch のガード用状態(todos と同じ)-------------------------------------------
 let connected = false;
@@ -722,6 +758,15 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 
 	const rowMain = el("div", "row-main");
 	if (needsRowMainDelay) rowMain.style.animationDelay = `-${animElapsedMs}ms`;
+	// 由来コレクションの色ドット(2026-07-22)。複数コレクション混在ビューのときだけ・calendarId が
+	// 分かる行にだけ付ける(単一コレクションのみ/由来不明はノイズなので出さない)。時刻列(行の錨)の
+	// 左に小さく置き、走査時に色でカレンダーを即読みできるようにする。
+	if (showCalendarDots && ev.calendarId !== undefined) {
+		const dot = el("span", "cal-dot");
+		dot.style.background = colorForCalendarId(ev.calendarId);
+		dot.setAttribute("aria-hidden", "true");
+		rowMain.appendChild(dot);
+	}
 	rowMain.appendChild(renderTimeColumn(ev));
 
 	// --- head(タイトル / meta)---------------------------------------------------------
@@ -1100,8 +1145,17 @@ function renderAll(): void {
 	selMemoInput = null;
 	// 系列集約(§7.1)のパス内状態をリセット(この描画パスで最初に出会った可視行だけが装飾を得る)。
 	seenAffectedIds.clear();
-	const baseEvents = events ?? [];
+	// 全カレンダー OFF(フィルタで全部消した)のときは一覧を空扱いにする(サーバーは呼んでいない。
+	// refetchFiltered が空 Set のとき allCalendarsHidden を立てる。上のコメント参照)。draft はそのまま。
+	const baseEvents = allCalendarsHidden ? [] : (events ?? []);
 	const todayKey = localDateKey(new Date());
+	// 色ドットの出し分け(2026-07-22): 現在の events に2つ以上のコレクションが混在するときだけ出す
+	// (単一コレクションのみのビューでは由来が自明なのでドットはノイズ)。renderRow がこの値を読む。
+	{
+		const cids = new Set<string>();
+		for (const ev of baseEvents) if (ev.calendarId !== undefined) cids.add(ev.calendarId);
+		showCalendarDots = cids.size > 1;
+	}
 
 	// 【C0-c: 削除ゴースト(ghostItems)の合流を廃止(2026-07-17 ユーザー裁定)】旧実装は ghosts
 	// (removed 由来)を擬似 EventItem に変換し日セクションへ合流させ、renderRow が破線ボックスに
@@ -2406,11 +2460,17 @@ function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean
 	// range は list/refresh のみ echo。値が来たときだけ更新する(mutate 応答では currentRange を保つ)。
 	if (structuredContent?.range !== undefined) currentRange = structuredContent.range;
 	if (structuredContent?.calendarId !== undefined) {
+		// currentCalendarId は refreshArgs の従来経路(フィルタ未適用時)のためだけに保持する。
+		// 【2026-07-22 ヘッダ見出しは不動へ】旧実装はここで appTitleEl.textContent = currentCalendarId と
+		// していたが、agenda は複数カレンダー合成ビューで見出しは「カレンダー」固定が正しい(選択内容で
+		// 変えない・collection-picker-v5 の役割分離)。よって見出しへの書き込みは廃止し、静的骨格の
+		// 「カレンダー」のまま据え置く(currentCalendarId 追跡自体は refetch のために残す)。
 		currentCalendarId = structuredContent.calendarId;
-		appTitleEl.textContent = currentCalendarId;
 	}
 	if (structuredContent?.timeZone !== undefined) currentTimeZone = structuredContent.timeZone;
 	renderRangeLabel();
+	// 表示カレンダーの色ドットクラスタを更新(events の由来 id / calendarsCache から凡例を組む)。
+	renderCalDots();
 	markUpdated();
 	announceBecoming();
 }
@@ -2495,7 +2555,16 @@ function refreshArgs(): Record<string, unknown> {
 		args.timeMax = currentRange.to;
 	}
 	if (currentTimeZone !== null) args.timeZone = currentTimeZone;
-	if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+	// 表示フィルタ(2026-07-22): 一部 OFF の絞り込み中(visibleCalendarIds が非 null かつ非空)は
+	// calendarIds を送り、その集合だけを横断合成させる(server 側 resolveCollectionIds が calendarIds を
+	// 優先)。このとき calendarId(単数)は送らない(併記すると意図が曖昧・calendarIds が勝つが明示的に省く)。
+	// フィルタ未適用(null)のときだけ従来どおり calendarId(あれば)を送る = 従来挙動を厳密に保つ。
+	// 全 OFF(空 Set)はサーバーを呼ばない(refetchFiltered が空表示にする)ので、ここには非空 Set しか来ない。
+	if (visibleCalendarIds !== null && visibleCalendarIds.size > 0) {
+		args.calendarIds = [...visibleCalendarIds];
+	} else if (currentCalendarId !== null) {
+		args.calendarId = currentCalendarId;
+	}
 	return args;
 }
 
@@ -2555,6 +2624,284 @@ async function retryFetch(): Promise<void> {
 	} catch (e) {
 		showBanner(`再読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`, () => void retryFetch());
 	}
+}
+
+// =============================================================================
+// 表示カレンダーフィルタ(2026-07-22 collection-picker-v5)
+// =============================================================================
+// ヘッダ右端の色ドットクラスタ(凡例 + フィルタ入口)をタップ → ボタン直下にドロップダウンを開き、
+// 色付き丸チェックで各カレンダーの表示 ON/OFF をトグルする(開いたまま・裏の一覧へ即時反映)。
+// 末尾「カレンダーを追加」で create-calendar。セミモーダル案はトリガー乖離でボツ(2026-07-22 ユーザーFB)。
+
+/** list-calendars を遅延取得してキャッシュする(フィルタメニューを開くときに使う)。失敗はバナーへ degrade。
+ *  todos-entry.ts の ensureCalendars と同型(コード重複だが両 entry は別バンドルなので共有せず写経)。 */
+async function ensureCalendars(): Promise<void> {
+	if (calendarsCache !== null) return;
+	try {
+		const result = await app.callServerTool({ name: "list-calendars", arguments: {} });
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		const sc = result.structuredContent as
+			| { calendars?: Array<{ id: string; displayName?: string; components?: readonly string[] }> }
+			| undefined;
+		calendarsCache = (sc?.calendars ?? []).map((c) => ({
+			id: c.id,
+			displayName: c.displayName ?? c.id,
+			// components 欠落時は VEVENT 既定(agenda 文脈なので予定カレンダーと見なす)。
+			components: c.components ?? ["VEVENT"],
+		}));
+	} catch (e) {
+		showBanner(`カレンダーの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+/** フィルタ対象になりうるカレンダー(VEVENT を受理するコレクション)の id 一覧。
+ *  calendarsCache があればそれを正とし、無い(メニュー未展開)間は現在表示中の events の由来 id を
+ *  distinct して代用する(凡例ドットを初回描画から出すため)。順序は安定させたいので events 出現順。 */
+function knownCalendarIds(): string[] {
+	if (calendarsCache !== null) return calendarsCache.filter((c) => c.components.includes("VEVENT")).map((c) => c.id);
+	const seen: string[] = [];
+	for (const ev of events ?? []) {
+		const cid = ev.calendarId;
+		if (cid !== undefined && !seen.includes(cid)) seen.push(cid);
+	}
+	return seen;
+}
+
+/** いま表示 ON のカレンダー id 一覧(色ドットクラスタ・「全 ON か」判定の源)。
+ *  visibleCalendarIds が null(フィルタ未適用)なら knownCalendarIds 全部、Set ならその集合と既知の積。 */
+function onCalendarIds(): string[] {
+	const known = knownCalendarIds();
+	const vis = visibleCalendarIds; // module let をローカル const に束ねて closure 内でも narrowing を効かせる。
+	if (vis === null) return known;
+	return known.filter((id) => vis.has(id));
+}
+
+/** ヘッダの色ドットクラスタを描く。表示 ON のカレンダー色を最大3つ重ね、超過は「+N」、全 OFF は「0」
+ *  (モック collection-picker-v5 の aRenderDots)。単一カレンダーしか無い環境でも凡例として色1つは出す。 */
+function renderCalDots(): void {
+	calDotsEl.textContent = "";
+	const on = onCalendarIds();
+	const shown = on.slice(0, 3);
+	for (const id of shown) {
+		const d = el("span", "d");
+		d.style.background = colorForCalendarId(id);
+		calDotsEl.appendChild(d);
+	}
+	if (on.length > 3) {
+		const more = el("span", "d-more");
+		more.textContent = `+${on.length - 3}`;
+		calDotsEl.appendChild(more);
+	} else if (on.length === 0) {
+		// 全 OFF(または表示できるカレンダーが1件も無い)。「0」を出して「今は何も表示していない」を明示。
+		const zero = el("span", "d-more");
+		zero.textContent = "0";
+		calDotsEl.appendChild(zero);
+	}
+}
+
+/** メニューが開いているか(#cal-menu の hidden を真実の源にする)。 */
+function isCalMenuOpen(): boolean {
+	return !calMenuEl.hidden;
+}
+
+/** ドロップダウンの中身を calendarsCache から組み立てる。VEVENT コレクションだけを列挙し、
+ *  各行に色付き丸チェック(ON=塗り+白 check / OFF=色輪郭)+ 表示名。末尾に「カレンダーを追加」。 */
+function renderCalMenu(): void {
+	calMenuEl.textContent = "";
+	if (calendarsCache === null) {
+		const loading = el("div", "cal-menu-item");
+		const name = el("span", "name");
+		name.textContent = "読み込み中…";
+		loading.append(el("span", "cal-circle"), name);
+		calMenuEl.appendChild(loading);
+		return;
+	}
+	const cals = calendarsCache.filter((c) => c.components.includes("VEVENT"));
+	// 現在の ON 集合を実体化(null=全 ON なので既知全部を ON とみなす)。
+	const onSet = visibleCalendarIds === null ? new Set(cals.map((c) => c.id)) : visibleCalendarIds;
+	for (const c of cals) {
+		const item = el("button", "cal-menu-item") as HTMLButtonElement;
+		item.type = "button";
+		const on = onSet.has(c.id);
+		const color = colorForCalendarId(c.id);
+		const circle = el("span", "cal-circle");
+		circle.style.borderColor = color;
+		circle.style.background = on ? color : "transparent";
+		if (on) circle.appendChild(createIcon("check"));
+		const name = el("span", "name");
+		name.textContent = c.displayName !== "" ? c.displayName : c.id;
+		item.append(circle, name);
+		item.addEventListener("click", (e) => {
+			e.stopPropagation();
+			toggleCalendar(c.id);
+		});
+		calMenuEl.appendChild(item);
+	}
+	if (cals.length === 0) {
+		const empty = el("div", "cal-menu-item");
+		const name = el("span", "name");
+		name.textContent = "カレンダーがありません";
+		empty.append(el("span", "cal-circle"), name);
+		calMenuEl.appendChild(empty);
+	}
+	// 末尾「カレンダーを追加」行 or 追加入力モード。
+	if (calAddMode) {
+		const row = el("div", "cal-new-row");
+		const input = document.createElement("input");
+		input.type = "text";
+		input.placeholder = "カレンダー名";
+		input.setAttribute("aria-label", "新しいカレンダー名");
+		const confirm = el("button", "cal-new-confirm") as HTMLButtonElement;
+		confirm.type = "button";
+		confirm.textContent = "作成";
+		const submit = (): void => {
+			const nm = input.value.trim();
+			if (nm === "") return;
+			void createCalendar(nm);
+		};
+		input.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.isComposing) {
+				e.preventDefault();
+				submit();
+			}
+		});
+		confirm.addEventListener("click", (e) => {
+			e.stopPropagation();
+			submit();
+		});
+		row.append(input, confirm);
+		calMenuEl.appendChild(row);
+		// メニューを開き直した直後に入力へフォーカス(iOS キーボードを即出す)。
+		setTimeout(() => input.focus(), 0);
+	} else {
+		const add = el("button", "cal-menu-add") as HTMLButtonElement;
+		add.type = "button";
+		const plusSlot = el("span", "plus-slot");
+		plusSlot.appendChild(createIcon("plus"));
+		add.append(plusSlot, document.createTextNode("カレンダーを追加"));
+		add.addEventListener("click", (e) => {
+			e.stopPropagation();
+			calAddMode = true;
+			renderCalMenu();
+			applyCalMenuHeightGuard();
+		});
+		calMenuEl.appendChild(add);
+	}
+}
+
+/** カレンダーの表示 ON/OFF をトグルする(開いたまま即反映)。全部 ON へ戻ったら null に正規化する。 */
+function toggleCalendar(id: string): void {
+	const known = knownCalendarIds();
+	// 現在の ON 集合を実体化(null=全 ON)。
+	const on = visibleCalendarIds === null ? new Set(known) : new Set(visibleCalendarIds);
+	if (on.has(id)) on.delete(id);
+	else on.add(id);
+	// 全部 ON に戻ったら「フィルタ未適用(null)」へ正規化 → refreshArgs が calendarIds を送らず全横断(既定)。
+	if (known.length > 0 && on.size >= known.length && known.every((k) => on.has(k))) {
+		visibleCalendarIds = null;
+	} else {
+		visibleCalendarIds = on;
+	}
+	renderCalMenu();
+	renderCalDots();
+	void refetchFiltered();
+}
+
+/** フィルタ変更後の一覧取り直し。全 OFF(空 Set)はサーバーを呼ばず空表示、それ以外は fetchLatest。 */
+async function refetchFiltered(): Promise<void> {
+	// 全 OFF: 空 Set。サーバーは呼ばない(calendarIds:[] は server が全横断と誤解するため)。
+	if (visibleCalendarIds !== null && visibleCalendarIds.size === 0) {
+		allCalendarsHidden = true;
+		renderAll();
+		return;
+	}
+	allCalendarsHidden = false;
+	clearBanner();
+	try {
+		await fetchLatest();
+		renderAll();
+	} catch (e) {
+		showBanner(`表示の切り替えに失敗しました: ${e instanceof Error ? e.message : String(e)}`, () => void refetchFiltered());
+	}
+}
+
+/** create-calendar(新しい予定カレンダーを作る)。成功で list-calendars 再取得・新カレンダーを ON にして
+ *  メニュー内一覧を更新。失敗は既存のバナーパターンへ degrade(メニューは開いたまま)。 */
+async function createCalendar(displayName: string): Promise<void> {
+	clearBanner();
+	try {
+		const result = await app.callServerTool({
+			name: "create-calendar",
+			arguments: {
+				displayName,
+				// agenda は予定(VEVENT)カレンダーを作る(リマインダーリスト VTODO ではない)。
+				components: ["VEVENT"],
+				// 作成直後に返る空一覧の表示ゾーン(server が additive に受ける)。閲覧デバイスの IANA ゾーン。
+				timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+			},
+		});
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		// structuredContent.calendarId = 作成されたコレクション id(server の create-calendar 応答契約)。
+		const newId = (result.structuredContent as { calendarId?: string } | undefined)?.calendarId;
+		// list-calendars を取り直して新カレンダーをメニューに反映する。
+		calendarsCache = null;
+		await ensureCalendars();
+		calAddMode = false;
+		// 新カレンダーを表示 ON にする。フィルタ未適用(null=全 ON)なら新規も自動で ON なので何もしない。
+		// 一部 OFF 中(Set)なら新 id を明示的に足す。
+		if (newId !== undefined && visibleCalendarIds !== null) visibleCalendarIds.add(newId);
+		renderCalMenu();
+		renderCalDots();
+		applyCalMenuHeightGuard();
+		// 新カレンダーは空なので一覧の見た目は変わらないが、フィルタ集合が変わったので取り直す
+		// (全 ON=null のときは従来経路で全横断が取り直される)。
+		void refetchFiltered();
+	} catch (e) {
+		// 追加入力モードは維持したままバナーで告知(ユーザーが名前を直して再試行できるように)。
+		showBanner(`カレンダーの作成に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+/** フィルタメニューの開閉。開くときは calendarsCache を遅延取得し、外タップ捕捉レイヤを表示、高さ担保。 */
+function openCalMenu(open: boolean): void {
+	calMenuEl.hidden = !open;
+	calMenuOutsideEl.hidden = !open;
+	calFilterBtn.setAttribute("aria-expanded", String(open));
+	if (open) {
+		calAddMode = false; // 開くたびに追加入力モードはリセット(前回開いたときの入力を残さない)。
+		renderCalMenu();
+		if (calendarsCache === null) {
+			void ensureCalendars().then(() => {
+				if (isCalMenuOpen()) {
+					renderCalMenu();
+					renderCalDots(); // キャッシュが埋まると全 ON の凡例が「events 由来」→「既知全部」に精緻化される。
+					applyCalMenuHeightGuard();
+				}
+			});
+		}
+		applyCalMenuHeightGuard();
+	} else {
+		calAddMode = false;
+		clearCalMenuHeightGuard();
+	}
+}
+
+/** 【inline ドロップダウンの高さ担保】todos-entry.ts の applyMenuHeightGuard と同じ手法・同じ理由
+ *  (absolute のメニューは document フロー高さに寄与せず、auto-height iframe でクリップされるので、
+ *  開いている間だけ body に min-height を積んでホストの size-changed に伸ばさせる)。詳細は
+ *  todos-entry.ts のコメント参照。右寄せ(right:0)でも下端 Y の計算は同じ(bottom + scrollY)。 */
+function applyCalMenuHeightGuard(): void {
+	const menuBottom = calMenuEl.getBoundingClientRect().bottom + window.scrollY;
+	document.body.style.minHeight = `${Math.ceil(menuBottom) + 12}px`;
+}
+function clearCalMenuHeightGuard(): void {
+	document.body.style.minHeight = "";
 }
 
 /** mutate 応答の確定描画共通後処理: tasks(events)が乗っていれば適用、無ければ refresh で取り直す。 */
@@ -3604,6 +3951,20 @@ function triggerCreateEvent(): void {
 quickAddFab.addEventListener("click", (e) => {
 	e.stopPropagation();
 	triggerCreateEvent();
+});
+
+// --- 表示カレンダーフィルタ(2026-07-22)のボタン配線 ----------------------------------------------
+// 色ドットボタン: タップでドロップダウン開閉。document click(選択解除)へ伝播させない。
+calFilterBtn.addEventListener("click", (e) => {
+	e.stopPropagation();
+	openCalMenu(!isCalMenuOpen());
+});
+// メニュー内クリックは document click へ伝播させない(行トグル/追加入力を選択解除と誤判定させない)。
+calMenuEl.addEventListener("click", (e) => e.stopPropagation());
+// 外タップ捕捉レイヤ: どこをタップしても閉じる(ポップオーバーの定石)。
+calMenuOutsideEl.addEventListener("click", (e) => {
+	e.stopPropagation();
+	openCalMenu(false);
 });
 
 // --- グローバルクリック: 選択解除(確定)/ スワイプ露出畳み ----------------------------------------

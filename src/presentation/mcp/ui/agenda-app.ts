@@ -94,12 +94,87 @@ export const AGENDA_APP_HTML = `<!doctype html>
     background: var(--bg);
   }
 
-  /* --- ヘッダ(タイトル + 期間 + 最終更新)--- */
+  /* --- ヘッダ(タイトル + 期間 + 表示フィルタ + 最終更新)--- */
   .bar { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .bar-right { display: flex; align-items: center; gap: 10px; flex: none; }
   .app-title { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
   .range { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .updated { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+
+  /* --- 表示カレンダーフィルタ(2026-07-22 collection-picker-v5 モック実装)------------------
+   * agenda は複数カレンダーの合成ビューなので、見出しは不動(「カレンダー」+期間のまま)にし、
+   * 表示 ON/OFF は「切替」ではなく「フィルタ」= セカンダリ操作としてヘッダ右端に置く
+   * (collection-picker-v5 の役割分離。todos は単一リストの「切替」=見出しタップ)。
+   *
+   * 【出現位置の設計変更(2026-07-22 ユーザーFB)】当初モックは iOS カレンダー同様の下端セミモーダル
+   * (C4 .loc-* 型)で実装しかけたが、「トリガーが右上なのに出現が画面下では乖離があり『メニューは
+   * トリガー直近に開く』定石に反する(iOS がシートなのはトリガー自体が画面下だから)」というユーザー
+   * FB を受け、セミモーダル案はボツにしてヘッダ右端ドットボタン直下にアンカーするポップオーバー
+   * (ドロップダウン)へ変更した。todos のリスト切替ドロップダウンと同じ視覚部品を流用し、右端
+   * アンカーなので right:0 で開く。 */
+  /* 色ドットクラスタ(凡例 + フィルタ入口)。表示中カレンダーの色を最大3つ重ね、超過は +N、全 OFF は 0。
+   * 重なり(-5px マージン)で「層」を示す(モック .dots)。タップ可能を小 chevron で示す。 */
+  .dots-btn {
+    display: flex; align-items: center; gap: 3px;
+    border: none; background: none; color: var(--muted); padding: 4px; margin: -4px; cursor: pointer;
+  }
+  .dots-btn .chev { display: inline-flex; color: var(--muted); font-size: 12px; transition: transform .2s; }
+  .dots-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  .dots { display: flex; }
+  .dots .d { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg); }
+  .dots .d + .d { margin-left: -5px; }
+  .dots .d-more {
+    width: 13px; height: 13px; border-radius: 50%; margin-left: -5px;
+    background: var(--surface); color: var(--muted); font-size: 8px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg);
+  }
+  /* ドロップダウン本体。ドットボタン直下(top:100%)右寄せ(right:0)。視覚は todos の .menu と同一
+   * (bg/border/radius 12px/影・44px 行)。z-index はヘッダ .bar より前面。 */
+  .cal-menu-wrap { position: relative; display: flex; align-items: center; }
+  .cal-menu {
+    position: absolute; top: 100%; right: 0; margin-top: 6px; min-width: 220px; z-index: 10;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); overflow: hidden;
+  }
+  /* 行 = 色付き丸チェック + 表示名。タップで即トグル(メニューは開いたまま)。min-height 44px。 */
+  .cal-menu-item {
+    display: flex; align-items: center; gap: 12px; padding: 9px 14px; width: 100%;
+    min-height: 44px; border: none; background: none; text-align: left; color: var(--fg);
+    font: inherit; font-size: 15px; cursor: pointer;
+  }
+  .cal-menu-item + .cal-menu-item { border-top: 1px solid var(--border); }
+  .cal-menu-item:active { background: var(--surface); }
+  /* iOS カレンダー風の色付き丸チェック: ON = 塗り+白 check / OFF = 色付き輪郭のみ。 */
+  .cal-circle {
+    width: 22px; height: 22px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center; border: 2px solid;
+  }
+  .cal-circle .lucide-icon { width: 13px; height: 13px; stroke: #fff; stroke-width: 3; }
+  .cal-menu-item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 「カレンダーを追加」行(accent・lucide plus)。他行と同じ 44px 行だが色で操作性を示す。 */
+  .cal-menu-add {
+    display: flex; align-items: center; gap: 12px; padding: 9px 14px; width: 100%;
+    min-height: 44px; border: none; background: none; border-top: 1px solid var(--border);
+    text-align: left; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  .cal-menu-add .plus-slot { width: 22px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+  /* 追加モード: 「カレンダーを追加」行がテキスト入力 + 作成ボタンへ変わる(メニュー内で完結)。 */
+  .cal-new-row {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-top: 1px solid var(--border);
+  }
+  .cal-new-row input { flex: 1; min-width: 0; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
+  .cal-new-confirm {
+    flex: none; border: none; background: var(--accent); color: #fff; font: inherit;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .cal-new-confirm:disabled { opacity: 0.5; cursor: default; }
+  /* 外タップ捕捉レイヤ(ポップオーバーの定石: どこをタップしても閉じる)。position:fixed で全画面。 */
+  .cal-menu-outside { position: fixed; inset: 0; z-index: 9; }
+
+  /* 予定行の左に付く由来コレクションの色ドット(単一コレクションのみのビューでは出さない=ノイズ)。
+   * 行の錨=時刻列の左に小さく置き、走査時に「どのカレンダーか」を色で即読みできるようにする。 */
+  .cal-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 
   /* --- 診断/エラーバナー(todos と同じ)--- */
   .status { font-size: 12px; color: var(--muted); padding: 4px 0; }
@@ -540,14 +615,32 @@ export const AGENDA_APP_HTML = `<!doctype html>
 <body>
   <header class="bar">
     <div class="bar-left">
-      <!-- 対象カレンダー名。entry が vm.calendarId を書き込む。データ到着前は「カレンダー」。 -->
+      <!-- 見出しは不動(「カレンダー」+期間)。agenda は複数カレンダー合成ビューなので、見出しで
+           対象を切り替えない(表示 ON/OFF は右端のフィルタで行う。collection-picker-v5 の役割分離)。
+           #app-title の span は entry が触るが「カレンダー」固定表示(選択内容で変えない)。 -->
       <span id="app-title" class="app-title">カレンダー</span>
       <!-- 期間(M/D〜M/D)。entry が vm.range を書き込む。 -->
       <span id="range" class="range"></span>
     </div>
-    <!-- 最終更新 HH:mm。 -->
-    <span id="updated" class="updated"></span>
+    <div class="bar-right">
+      <!-- 表示カレンダーフィルタ(2026-07-22)。色ドットクラスタ = 凡例 + フィルタ入口。タップで
+           このボタン直下にドロップダウンを開く(セミモーダル案はトリガー乖離でボツ・上の CSS コメント参照)。
+           chevron-down は「押せる」ヒント(lucide の生 SVG。サーバー側静的文字列なので createIcon は使えない)。 -->
+      <div class="cal-menu-wrap">
+        <button id="cal-filter-btn" class="dots-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="表示するカレンダー">
+          <span id="cal-dots" class="dots"></span>
+          <span class="chev"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+        </button>
+        <!-- フィルタメニュー(entry が list-calendars キャッシュから VEVENT コレクションを描く)。既定 hidden。 -->
+        <div id="cal-menu" class="cal-menu" hidden></div>
+      </div>
+      <!-- 最終更新 HH:mm。 -->
+      <span id="updated" class="updated"></span>
+    </div>
   </header>
+  <!-- フィルタドロップダウンの外タップ捕捉レイヤ(2026-07-22)。開いている間だけ全画面を覆い、
+       どこをタップしても閉じる。#root の外・body 直下に置き renderAll の影響を受けない。 -->
+  <div id="cal-menu-outside" class="cal-menu-outside" hidden></div>
   <div id="banner" class="banner" hidden></div>
   <div id="status" class="status" hidden></div>
   <!-- 一覧 / 詳細ページ本体(カード内ページ遷移)。entry が sheetState に応じて書き換える。 -->

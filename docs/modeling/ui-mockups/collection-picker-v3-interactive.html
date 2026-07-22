@@ -1,0 +1,255 @@
+<!doctype html>
+<!-- コレクション選択・作成 インタラクティブプロトタイプ v3(2026-07-22)
+     v2(静止画)ではフロー全体が想像できないというフィードバックを受けて、クリックで
+     一連の動きを試せる形にした。左右に todos / agenda の2カードを並べ、それぞれ:
+     - ヘッダ見出しタップ → セミモーダル(カード内に閉じた擬似 fixed)
+     - todos: 単一選択(タップで check が移り、一覧が切替わってシートが閉じる)
+     - agenda: 表示 ON/OFF チェックリスト(タップで即トグル・シートは開いたまま・
+       一覧は裏で即時反映・「閉じる」で畳む)= Apple/Google カレンダーの文法
+     - 「+ 新しいリスト/カレンダー」→ 名前入力 → 作成 → 追加されて選択状態に
+     実装時の対応: 選択 = currentCalendarId(todos)/ visibleCalendarIds(agenda)を更新して
+     list-todos / list-events-expanded(calendarIds 拡張)を再取得。作成 = create-calendar。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --radius: var(--border-radius-md, 8px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    display: flex; gap: 24px; justify-content: center; align-items: flex-start; padding: 24px; flex-wrap: wrap; }
+  .phone { width: 360px; }
+  .phone-label { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  /* カード枠(chat 内カードの見立て。overflow:hidden で擬似 fixed をカード内に閉じる) */
+  .card { position: relative; overflow: hidden; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; min-height: 480px; }
+  .lucide-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .app-title-btn { display: flex; align-items: center; gap: 3px; border: none; background: none;
+    padding: 2px 0; font: inherit; font-size: 16px; font-weight: 700; color: var(--fg); cursor: pointer; }
+  .app-title-btn .lucide-icon { width: 13px; height: 13px; color: var(--muted); transition: transform .2s; }
+  .app-title-btn[aria-expanded="true"] .lucide-icon { transform: rotate(180deg); }
+  .updated { font-size: 11px; color: var(--muted); }
+
+  section h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 12px 0 4px; }
+  ul.rows { margin: 0; padding: 0; }
+  ul.rows li { list-style: none; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 15px;
+    display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
+
+  /* セミモーダル(C4 .loc-* 同型。カード内に閉じるため absolute) */
+  .dimmer { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.32); border-radius: 12px; }
+  .semimodal { position: absolute; left: 0; right: 0; bottom: 0; max-height: 82%;
+    background: var(--bg); border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.25);
+    display: flex; flex-direction: column; transform: translateY(0); transition: transform .25s ease; }
+  .semimodal.hidden-sheet, .dimmer.hidden-sheet { display: none; }
+  .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--border); margin: 8px auto 4px; flex: none; }
+  .sm-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 8px; flex: none; }
+  .sm-title { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .sm-done { border: none; background: none; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .sm-body { flex: 1; overflow-y: auto; padding: 0 16px 20px; }
+
+  .col-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .col-item { display: flex; align-items: center; gap: 10px; padding: 12px; width: 100%; min-height: 44px;
+    border: none; background: none; text-align: left; color: var(--fg); font: inherit; font-size: 14.5px; cursor: pointer; }
+  .col-item + .col-item { border-top: 1px solid var(--border); }
+  .col-item .check-slot { width: 16px; flex: none; color: var(--accent); display: flex; }
+  .col-item .name { flex: 1; min-width: 0; }
+  .col-item .sub { font-size: 12px; color: var(--muted); flex: none; }
+  .col-item.create { color: var(--accent); font-weight: 600; }
+  .col-new-row { margin-top: 10px; display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border-radius: var(--radius); padding: 9px 12px; }
+  .col-new-row.hidden-sheet { display: none; }
+  .col-new-row input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
+  .col-new-confirm { flex: none; border: none; background: var(--accent); color: #fff; font: inherit;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<!-- ============ todos(単一選択) ============ -->
+<div class="phone">
+  <div class="phone-label">todos カード — 単一選択(iOS リマインダーの文法)</div>
+  <div class="card" id="todos-card">
+    <header class="bar">
+      <button class="app-title-btn" id="t-title" aria-expanded="false">
+        <span id="t-title-text">リマインダー</span>
+        <svg class="lucide-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <span class="updated">12:34</span>
+    </header>
+    <div id="t-body"></div>
+
+    <div class="dimmer hidden-sheet" id="t-dimmer"></div>
+    <div class="semimodal hidden-sheet" id="t-sheet">
+      <div class="grabber"></div>
+      <div class="sm-header">
+        <span class="sm-title">リスト</span>
+        <button class="sm-done" id="t-close">閉じる</button>
+      </div>
+      <div class="sm-body">
+        <div class="col-list" id="t-list"></div>
+        <div class="col-new-row hidden-sheet" id="t-new-row">
+          <input id="t-new-name" placeholder="リスト名" />
+          <button class="col-new-confirm" id="t-new-ok">作成</button>
+        </div>
+        <p class="hint">タップで切替(シートは閉じる)。「+ 新しいリスト」で create-calendar。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ agenda(複数 ON/OFF) ============ -->
+<div class="phone">
+  <div class="phone-label">agenda カード — 表示 ON/OFF(Apple/Google カレンダーの文法)</div>
+  <div class="card" id="agenda-card">
+    <header class="bar">
+      <button class="app-title-btn" id="a-title" aria-expanded="false">
+        <span id="a-title-text">カレンダー</span>
+        <svg class="lucide-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <span class="updated">7/22〜7/28</span>
+    </header>
+    <div id="a-body"></div>
+
+    <div class="dimmer hidden-sheet" id="a-dimmer"></div>
+    <div class="semimodal hidden-sheet" id="a-sheet">
+      <div class="grabber"></div>
+      <div class="sm-header">
+        <span class="sm-title">表示するカレンダー</span>
+        <button class="sm-done" id="a-close">閉じる</button>
+      </div>
+      <div class="sm-body">
+        <div class="col-list" id="a-list"></div>
+        <div class="col-new-row hidden-sheet" id="a-new-row">
+          <input id="a-new-name" placeholder="カレンダー名" />
+          <button class="col-new-confirm" id="a-new-ok">作成</button>
+        </div>
+        <p class="hint">タップで即トグル(シートは開いたまま・裏の一覧が即時反映)。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CHECK = '<svg class="lucide-icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>';
+const PLUS  = '<svg class="lucide-icon" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>';
+
+// ---------------- todos: 単一選択 ----------------
+const tCols = [
+  { id: "tasks", name: "リマインダー", items: ["牛乳を買う", "レポート提出", "宅配を受け取る"] },
+  { id: "reading-list", name: "読書リスト", items: ["『達人プログラマー』", "『詳解 Swift』"] },
+];
+let tCurrent = "tasks";
+const $ = (id) => document.getElementById(id);
+
+function tRenderBody() {
+  const col = tCols.find((c) => c.id === tCurrent);
+  $("t-title-text").textContent = col.name;
+  $("t-body").innerHTML = `<section><h2>今日</h2><ul class="rows">${
+    col.items.map((i) => `<li>${i}</li>`).join("")}</ul></section>`;
+}
+function tRenderList() {
+  $("t-list").innerHTML = tCols.map((c) => `
+    <button class="col-item" data-id="${c.id}">
+      <span class="check-slot">${c.id === tCurrent ? CHECK : ""}</span>
+      <span class="name">${c.name}</span><span class="sub">${c.id}</span>
+    </button>`).join("") + `
+    <button class="col-item create" id="t-create">
+      <span class="check-slot">${PLUS}</span><span class="name">新しいリスト</span>
+    </button>`;
+  $("t-list").querySelectorAll(".col-item[data-id]").forEach((b) =>
+    b.addEventListener("click", () => { tCurrent = b.dataset.id; tRenderBody(); tToggle(false); }));
+  $("t-create").addEventListener("click", () => { $("t-new-row").classList.remove("hidden-sheet"); $("t-new-name").focus(); });
+}
+function tToggle(open) {
+  $("t-dimmer").classList.toggle("hidden-sheet", !open);
+  $("t-sheet").classList.toggle("hidden-sheet", !open);
+  $("t-title").setAttribute("aria-expanded", String(open));
+  if (open) { tRenderList(); $("t-new-row").classList.add("hidden-sheet"); }
+}
+$("t-title").addEventListener("click", () => tToggle(true));
+$("t-close").addEventListener("click", () => tToggle(false));
+$("t-dimmer").addEventListener("click", () => tToggle(false));
+$("t-new-ok").addEventListener("click", () => {
+  const name = $("t-new-name").value.trim(); if (!name) return;
+  const id = name.toLowerCase().replace(/\s+/g, "-") || `list-${tCols.length}`;
+  tCols.push({ id, name, items: [] }); tCurrent = id; $("t-new-name").value = "";
+  tRenderBody(); tToggle(false);
+});
+tRenderBody();
+
+// ---------------- agenda: 複数 ON/OFF ----------------
+const aCols = [
+  { id: "calendar", name: "カレンダー", color: "#007aff",
+    events: [["9:00", "Paizaミーティング"], ["15:00", "ゼミ"]] },
+  { id: "work", name: "仕事", color: "#ff9500",
+    events: [["11:00", "1on1"], ["18:00", "リリース判定"]] },
+];
+let aVisible = new Set(["calendar", "work"]);
+
+function aRenderBody() {
+  const rows = aCols.filter((c) => aVisible.has(c.id))
+    .flatMap((c) => c.events.map(([t, s]) => ({ t, s, color: c.color })))
+    .sort((x, y) => x.t.localeCompare(y.t));
+  $("a-title-text").textContent = aVisible.size === aCols.length
+    ? "カレンダー(すべて)"
+    : aCols.filter((c) => aVisible.has(c.id)).map((c) => c.name).join("・") || "カレンダー";
+  $("a-body").innerHTML = rows.length === 0
+    ? `<p class="empty">表示中のカレンダーがありません</p>`
+    : `<section><h2>今日</h2><ul class="rows">${rows.map((r) =>
+        `<li><span class="dot" style="background:${r.color}"></span><span style="color:var(--muted);font-size:12px;width:38px">${r.t}</span>${r.s}</li>`).join("")}</ul></section>`;
+}
+function aRenderList() {
+  $("a-list").innerHTML = aCols.map((c) => `
+    <button class="col-item" data-id="${c.id}">
+      <span class="check-slot">${aVisible.has(c.id) ? CHECK : ""}</span>
+      <span class="name"><span class="dot" style="background:${c.color};display:inline-block;margin-right:6px"></span>${c.name}</span>
+      <span class="sub">${c.id}</span>
+    </button>`).join("") + `
+    <button class="col-item create" id="a-create">
+      <span class="check-slot">${PLUS}</span><span class="name">新しいカレンダー</span>
+    </button>`;
+  $("a-list").querySelectorAll(".col-item[data-id]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      if (aVisible.has(id)) aVisible.delete(id); else aVisible.add(id);
+      aRenderList(); aRenderBody(); // シートは開いたまま・裏を即時反映
+    }));
+  $("a-create").addEventListener("click", () => { $("a-new-row").classList.remove("hidden-sheet"); $("a-new-name").focus(); });
+}
+function aToggle(open) {
+  $("a-dimmer").classList.toggle("hidden-sheet", !open);
+  $("a-sheet").classList.toggle("hidden-sheet", !open);
+  $("a-title").setAttribute("aria-expanded", String(open));
+  if (open) { aRenderList(); $("a-new-row").classList.add("hidden-sheet"); }
+}
+$("a-title").addEventListener("click", () => aToggle(true));
+$("a-close").addEventListener("click", () => aToggle(false));
+$("a-dimmer").addEventListener("click", () => aToggle(false));
+$("a-new-ok").addEventListener("click", () => {
+  const name = $("a-new-name").value.trim(); if (!name) return;
+  const id = name.toLowerCase().replace(/\s+/g, "-") || `cal-${aCols.length}`;
+  const palette = ["#34c759", "#af52de", "#ff2d55"];
+  aCols.push({ id, name, color: palette[aCols.length % palette.length], events: [] });
+  aVisible.add(id); $("a-new-name").value = "";
+  aRenderList(); aRenderBody();
+});
+aRenderBody();
+</script>
+</body>
+</html>
