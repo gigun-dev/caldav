@@ -236,6 +236,46 @@ export interface CalendarObjectResourceRepository {
 		rangeEndMillis: number,
 		collectionIds?: readonly CollectionId[],
 	): Promise<OwnerTimeRangeMatch[]>;
+
+	// ---------------------------------------------------------------------------
+	// R2: ソフトデリート(deleted_at)— docs/modeling/15 §A-3 R2 / docs/next-directions.md
+	// ---------------------------------------------------------------------------
+	//
+	// 【可観測挙動の契約(RFC 検証済み)】上の読み取りメソッド(findAllInCollection / findByUri /
+	// findManyByUri / findUriByUid / getUidAtUri / findInCollectionByTimeRange /
+	// findVTodosInCollection / findByOwnerTimeRange)は **すべて `deleted_at IS NULL` を適用し、
+	// tombstone 済みリソースを一切返さない**。これにより:
+	//   - soft-delete 済み URI への GET/PROPFIND は 404(findByUri が null)。
+	//   - listing/REPORT からは消える(find*InCollection / *TimeRange が返さない)。
+	//   - findUriByUid が生存行のみを見るので「soft-delete 後の同 UID 再作成」が no-uid-conflict に
+	//     引っかからず、restore の UID 衝突判定も「現に生きている衝突相手」だけを対象にする。
+	//   - PUT の If-None-Match:*(must-not-exist)は、findByUri が null を返すので unmapped 扱いで
+	//     成功する(RFC 4918 §9.6: DELETE 義務はマッピング除去でありデータ破棄ではない)。
+	// 以下の3メソッドだけが例外的に tombstone を対象にする(ゴミ箱の読み取り + 物理掃除)。
+
+	/**
+	 * R2 list-deleted: owner 配下の soft-delete 済み行(ゴミ箱)を deleted_at 降順で返す。
+	 * MCP list-deleted ツールが uri/uid/summary/deleted_at/calendarId を組む土台。
+	 */
+	listDeleted(owner: PrincipalRef): Promise<DeletedObject[]>;
+
+	/**
+	 * R2 restore: soft-delete 済み行のみを uri で1件引く(生存行は返さない)。RestoreDeleted UC が
+	 * 復元対象のゴーストを読み、その UID で生存側の衝突を判定するために使う。
+	 */
+	findDeletedByUri(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): Promise<CalendarObjectResource | null>;
+
+	/**
+	 * R2 物理 purge(30日 TTL): deleted_at < cutoffMillis の tombstone を物理 DELETE する。
+	 *
+	 * 【sync_changes を書かない契約(仕様 #7)】soft-delete 時に既に 'deleted' を記録済みで、
+	 * クライアントから見た状態は purge の前後で変わらない。よって新たな変更ログは書かない
+	 * (書くと「既に消えたものをもう一度消す」無意味な token 消費になる)。呼び出しの配線
+	 * (Workers cron trigger)は別スライス — このメソッドとテストまでがこのタスクのスコープ。
+	 *
+	 * @returns 物理削除した行数。
+	 */
+	purgeDeletedBefore(cutoffMillis: number): Promise<number>;
 }
 
 /**
@@ -245,6 +285,16 @@ export interface CalendarObjectResourceRepository {
 export interface OwnerTimeRangeMatch {
 	readonly collectionId: CollectionId;
 	readonly resource: CalendarObjectResource;
+}
+
+/**
+ * R2 listDeleted の返り値要素。soft-delete 済みリソース1件 + 所属コレクション + 削除時刻。
+ * resource から uri/uid/summary を取り、deletedAtMillis を「いつ消したか」の表示に使う。
+ */
+export interface DeletedObject {
+	readonly collectionId: CollectionId;
+	readonly resource: CalendarObjectResource;
+	readonly deletedAtMillis: number;
 }
 
 // =============================================================================
@@ -417,5 +467,28 @@ export interface CollectionUnitOfWork {
 		uri: ResourceUri,
 		collection: CalendarCollection,
 		precondition: ResourceWritePrecondition,
+	): Promise<void>;
+
+	/**
+	 * R2 restore: soft-delete 済みリソースを復元し、コレクションに 'created' を記録する。
+	 *
+	 * 【可観測挙動の契約】deleteResource は物理削除ではなく deleted_at を立てる(tombstone 化)。
+	 * restoreResource はその tombstone を外して生存行に戻し、sync_changes に 'created' を積む
+	 * (RFC 6578 §3.5.1: 再マップは changed として報告・removed と報告してはならない。既存
+	 * changesSince の後勝ち fold が自動でこれを満たす — docs/next-directions.md「R2 RFC 検証完了」)。
+	 *
+	 * @param currentUri 復元対象ゴーストが現在保持している uri(list-deleted が返した uri。
+	 *   再利用時にゴースト rename された退避 uri かもしれない)。
+	 * @param newUri 復元後に生存行として使う uri。元 uri が空いていれば currentUri と同じ、
+	 *   生存行に再利用されていれば呼び出し側(RestoreDeleted UC)が新採番した別 uri。
+	 *   sync_changes の 'created' はこの newUri で記録する。
+	 * @param collection recordChange(newUri, "created") 済みの集約(token は DB 側で採番)。
+	 */
+	restoreResource(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		currentUri: ResourceUri,
+		newUri: ResourceUri,
+		collection: CalendarCollection,
 	): Promise<void>;
 }

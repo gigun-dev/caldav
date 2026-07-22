@@ -325,6 +325,11 @@ describe("Worker app", () => {
 				deleteResource: async () => {
 					throw new ConcurrencyConflictError(OWNER, CALENDAR);
 				},
+				// R2: このテストは PUT の競合マッピングだけを見る。restore は使わないが
+				// CollectionUnitOfWork の型を満たすために competitive に throw するスタブを置く。
+				restoreResource: async () => {
+					throw new ConcurrencyConflictError(OWNER, CALENDAR);
+				},
 			};
 			// harness.repos.uow の静的型は makeRepos() の推論結果(具象 FakeCollectionUnitOfWork)
 			// になっているため、ポート型(CollectionUnitOfWork)の別実装をそのまま代入すると

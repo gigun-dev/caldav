@@ -117,6 +117,11 @@ import {
 	eventFromOccurrence,
 	// C5(設計 05): 既知の場所ツール。
 	ListKnownLocations,
+	// R2(docs/modeling/15 §A-3): ソフトデリートのゴミ箱一覧 + 復元。
+	ListDeleted,
+	RestoreDeleted,
+	RestoreTargetNotFoundError,
+	RestoreUidConflictError,
 } from "../../application/usecases";
 import type { RecurrenceIterator } from "../../domain/ical/recurrence";
 import type { CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
@@ -405,6 +410,16 @@ const DESTRUCTIVE_ANNOTATIONS: ToolAnnotations = {
 const DELETE_ANNOTATIONS: ToolAnnotations = {
 	readOnlyHint: false,
 	destructiveHint: true,
+	idempotentHint: true,
+	openWorldHint: false,
+};
+// restore-deleted(R2・docs/modeling/15 §A-3): 可逆性の提供そのもの。ゴミ箱の tombstone を
+// 生存行に戻す「非破壊」操作(destructiveHint:false — 既存データを壊さず復活させるだけ)。
+// idempotentHint:true(同じものを2回復元しても、2回目は「もう削除済み行が無い」で結果が変わらない
+// = 同じ生存状態に収束する)。openWorldHint:false は全ツール共通(自前 D1 のみ)。
+const RESTORE_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: false,
 	idempotentHint: true,
 	openWorldHint: false,
 };
@@ -3001,6 +3016,70 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 					structuredContent: vm as { [key: string]: unknown },
 				};
 			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- list-deleted / restore-deleted(R2 ソフトデリート・docs/modeling/15 §A-3)----------------
+	// 【なぜ registerTool(素の)か】ゴミ箱は現状 UI カードを持たない(todos/agenda カードとは別関心)。
+	// list-deleted は「復元候補を確定するための下ごしらえ」、restore-deleted は「復元の実行」であり、
+	// list-calendars/create-calendar と同じく素の registerTool に留める(UI 化は将来のスライス)。
+	server.registerTool(
+		"list-deleted",
+		{
+			title: "List deleted (trash)",
+			description:
+				"ソフトデリート済み(ゴミ箱にある)予定/リマインダーを一覧する。各エントリは uri(復元キー)・" +
+				"uid・種別・タイトル・削除時刻・calendarId を持つ。復元したいときは restore-deleted に uri と " +
+				"calendarId を渡す。iOS/CalDAV からは見えない MCP 専用のゴミ箱ビュー。",
+			inputSchema: {},
+			annotations: READ_ONLY_ANNOTATIONS,
+		},
+		async () => {
+			try {
+				const listDeleted = new ListDeleted(deps.resourceRepo);
+				const { entries } = await listDeleted.execute({ owner: principal });
+				const vm = { entries };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+					structuredContent: vm as { [key: string]: unknown },
+				};
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	server.registerTool(
+		"restore-deleted",
+		{
+			title: "Restore deleted",
+			description:
+				"ソフトデリート済み(ゴミ箱の)予定/リマインダーを復元する。list-deleted が返した uri と " +
+				"calendarId を渡す。前提: 同じ UID の生存リソースが既にある場合は復元できない(衝突相手を示す" +
+				"エラーになる)。元の uri が再利用されていれば新しい uri を採番して復元する。",
+			inputSchema: {
+				uri: z.string().describe("復元対象の uri(list-deleted が返した uri)。"),
+				calendarId: z.string().optional().describe('所属コレクション ID。省略時は "tasks"。'),
+			},
+			annotations: RESTORE_ANNOTATIONS,
+		},
+		async ({ uri, calendarId }) => {
+			try {
+				const restoreDeleted = new RestoreDeleted(deps.collectionRepo, deps.resourceRepo, deps.uow);
+				const restored = await restoreDeleted.execute({ owner: principal, resourceUri: uri, calendarId });
+				const vm = { restored };
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+					structuredContent: vm as { [key: string]: unknown },
+				};
+			} catch (error) {
+				// RestoreTargetNotFoundError(404 相当)/ RestoreUidConflictError(UID 衝突・conflictUri を
+				// 含む)/ CollectionNotFoundError いずれもメッセージが自己説明的なので toolError に写す。
+				if (error instanceof RestoreTargetNotFoundError) return toolError(error.message);
+				if (error instanceof RestoreUidConflictError) return toolError(error.message);
+				if (error instanceof CollectionNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
 		},

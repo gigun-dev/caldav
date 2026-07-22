@@ -35,6 +35,7 @@ import {
 	type CalendarCollectionRepository,
 	type CalendarObjectResourceRepository,
 	type CollectionUnitOfWork,
+	type DeletedObject,
 	type ResourceWritePrecondition,
 } from "../../src/application/ports";
 import type { ComponentKind } from "../../src/domain/caldav";
@@ -151,6 +152,15 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 	// first_occurrence/last_occurrence 列の代わりにインメモリで保持する。
 	// findInCollectionByTimeRange のテスト用フェイク実装が参照する。
 	private readonly boundsStore = new Map<string, OccurrenceBounds>();
+	// R2(ソフトデリート): key → deletedAt(エポック ms)。存在する key は tombstone 済みで、
+	// D1 実装の `deleted_at IS NOT NULL` に相当する。読み取り経路はすべてこの Map に載る key を
+	// 素通しで除外する(D1 の全読み取りに `deleted_at IS NULL` を足したのと同じ意味論を再現)。
+	private readonly deletedStore = new Map<string, number>();
+
+	/** key が tombstone 済みか(D1 の deleted_at IS NOT NULL 相当)。 */
+	private isDeleted(key: string): boolean {
+		return this.deletedStore.has(key);
+	}
 
 	async findAllInCollection(
 		owner: PrincipalRef,
@@ -158,7 +168,7 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 	): Promise<CalendarObjectResource[]> {
 		const prefix = `${owner}::${collectionId}::`;
 		return [...this.store.entries()]
-			.filter(([k]) => k.startsWith(prefix))
+			.filter(([k]) => k.startsWith(prefix) && !this.isDeleted(k))
 			.map(([, v]) => v);
 	}
 
@@ -167,7 +177,9 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		collectionId: CollectionId,
 		uri: ResourceUri,
 	): Promise<CalendarObjectResource | null> {
-		return this.store.get(resourceKey(owner, collectionId, uri)) ?? null;
+		const key = resourceKey(owner, collectionId, uri);
+		if (this.isDeleted(key)) return null;
+		return this.store.get(key) ?? null;
 	}
 
 	async findManyByUri(
@@ -176,7 +188,9 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		uris: ResourceUri[],
 	): Promise<CalendarObjectResource[]> {
 		return uris
-			.map((u) => this.store.get(resourceKey(owner, collectionId, u)))
+			.map((u) => resourceKey(owner, collectionId, u))
+			.filter((k) => !this.isDeleted(k))
+			.map((k) => this.store.get(k))
 			.filter((r): r is CalendarObjectResource => r !== undefined);
 	}
 
@@ -187,7 +201,9 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 	): Promise<ResourceUri | null> {
 		const prefix = `${owner}::${collectionId}::`;
 		for (const [k, r] of this.store) {
-			if (k.startsWith(prefix) && r.uid === uid) {
+			// 生存行のみ(tombstone は除外)。これが「soft-delete 後の同 UID 再作成」と
+			// 「restore の UID 衝突判定」を正しくするための肝(D1 の findUriByUid と同じ)。
+			if (k.startsWith(prefix) && !this.isDeleted(k) && r.uid === uid) {
 				return r.uri;
 			}
 		}
@@ -199,7 +215,9 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		collectionId: CollectionId,
 		uri: ResourceUri,
 	): Promise<string | null> {
-		return this.store.get(resourceKey(owner, collectionId, uri))?.uid ?? null;
+		const key = resourceKey(owner, collectionId, uri);
+		if (this.isDeleted(key)) return null;
+		return this.store.get(key)?.uid ?? null;
 	}
 
 	/** テストセットアップ用: リソースを直接挿入する。bounds を省略すると null/null(未索引)。 */
@@ -229,6 +247,7 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		const result: CalendarObjectResource[] = [];
 		for (const [k, r] of this.store) {
 			if (!k.startsWith(prefix)) continue;
+			if (this.isDeleted(k)) continue; // R2: tombstone を除外(D1 の deleted_at IS NULL)。
 			if (r.componentKind !== componentKind) continue;
 			const bounds = this.boundsStore.get(k) ?? { firstMillis: null, lastMillis: null };
 			const lastOk = bounds.lastMillis === null || bounds.lastMillis > rangeStartMillis;
@@ -246,7 +265,7 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 	async findVTodosInCollection(owner: PrincipalRef, collectionId: CollectionId): Promise<CalendarObjectResource[]> {
 		const prefix = `${owner}::${collectionId}::`;
 		return [...this.store.entries()]
-			.filter(([k, v]) => k.startsWith(prefix) && v.componentKind === "VTODO")
+			.filter(([k, v]) => k.startsWith(prefix) && !this.isDeleted(k) && v.componentKind === "VTODO")
 			.map(([, v]) => v);
 	}
 
@@ -270,6 +289,7 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		const result: { collectionId: CollectionId; resource: CalendarObjectResource }[] = [];
 		for (const [k, r] of this.store) {
 			if (!k.startsWith(ownerPrefix)) continue;
+			if (this.isDeleted(k)) continue; // R2: tombstone を除外。
 			if (r.componentKind !== componentKind) continue;
 			// キーは `${owner}::${collectionId}::${uri}`。owner に "::" は含まれない前提で 2 要素目を
 			// collectionId として取り出す(resourceKey の分解の逆。D1 の collection_id 列に相当)。
@@ -288,9 +308,105 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 		return this.boundsStore.get(resourceKey(owner, collectionId, uri));
 	}
 
-	/** 指定キーのリソースを削除する(UoW 実装から呼ばれる)。 */
+	/** 指定キーのリソースを物理削除する(purge 経路などから使う残置ヘルパー)。 */
 	remove(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): void {
 		this.store.delete(resourceKey(owner, collectionId, uri));
+		this.boundsStore.delete(resourceKey(owner, collectionId, uri));
+		this.deletedStore.delete(resourceKey(owner, collectionId, uri));
+	}
+
+	// ---------------------------------------------------------------------------
+	// R2: ソフトデリート(deleted_at)のフェイク実装
+	// ---------------------------------------------------------------------------
+
+	/** UoW.deleteResource から呼ぶ: 物理削除せず tombstone(deletedAt を立てる)。 */
+	softDelete(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri, at: number): void {
+		this.deletedStore.set(resourceKey(owner, collectionId, uri), at);
+	}
+
+	/**
+	 * UoW.saveResource から呼ぶ(仕様 #4 ゴースト退避 rename の模倣)。target uri に tombstone 済みの
+	 * ゴーストが居たら、退避 uri へ「移動」してから新規作成に道を空ける。D1 では uri 列は ICS 本文と
+	 * 独立(hydrateResource が row.uri を使う)なので、フェイクも退避 uri を持つ resource を fromIcs で
+	 * 作り直して別 key へ移す(store/bounds/deletedStore を丸ごと付け替え)。
+	 */
+	async renameGhostAt(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): Promise<void> {
+		const key = resourceKey(owner, collectionId, uri);
+		if (!this.isDeleted(key)) return; // 生存行 or 不在なら no-op。
+		const ghost = this.store.get(key);
+		const at = this.deletedStore.get(key)!;
+		if (!ghost) return;
+		const rand = Math.random().toString(36).slice(2, 8);
+		const newUri = mkResourceUri(`${uri}.deleted-${Date.now()}-${rand}`);
+		const moved = await CalendarObjectResource.fromIcs(newUri, ghost.rawIcs);
+		const newKey = resourceKey(owner, collectionId, newUri);
+		this.store.set(newKey, moved);
+		const bounds = this.boundsStore.get(key);
+		if (bounds) this.boundsStore.set(newKey, bounds);
+		this.deletedStore.set(newKey, at);
+		// 旧 key を退去(rename なので元 uri は空く)。
+		this.store.delete(key);
+		this.boundsStore.delete(key);
+		this.deletedStore.delete(key);
+	}
+
+	/**
+	 * UoW.restoreResource から呼ぶ: tombstone を外し、必要なら uri を newUri へ移す。
+	 * newUri === currentUri なら deletedStore の解除だけ、異なれば key を付け替える。
+	 */
+	async restore(owner: PrincipalRef, collectionId: CollectionId, currentUri: ResourceUri, newUri: ResourceUri): Promise<void> {
+		const key = resourceKey(owner, collectionId, currentUri);
+		const ghost = this.store.get(key);
+		if (!ghost) return;
+		if (newUri === currentUri) {
+			this.deletedStore.delete(key);
+			return;
+		}
+		const restored = await CalendarObjectResource.fromIcs(newUri, ghost.rawIcs);
+		const newKey = resourceKey(owner, collectionId, newUri);
+		this.store.set(newKey, restored);
+		const bounds = this.boundsStore.get(key);
+		if (bounds) this.boundsStore.set(newKey, bounds);
+		// 復元先は生存行(deletedStore に載せない)。旧 key を掃除。
+		this.store.delete(key);
+		this.boundsStore.delete(key);
+		this.deletedStore.delete(key);
+	}
+
+	/** R2 list-deleted のフェイク実装。tombstone 済み行を deletedAt 降順で返す。 */
+	async listDeleted(owner: PrincipalRef): Promise<DeletedObject[]> {
+		const ownerPrefix = `${owner}::`;
+		const out: DeletedObject[] = [];
+		for (const [k, at] of this.deletedStore) {
+			if (!k.startsWith(ownerPrefix)) continue;
+			const r = this.store.get(k);
+			if (!r) continue;
+			const cid = k.slice(ownerPrefix.length, k.indexOf("::", ownerPrefix.length));
+			out.push({ collectionId: mkCollectionId(cid), resource: r, deletedAtMillis: at });
+		}
+		out.sort((a, b) => b.deletedAtMillis - a.deletedAtMillis);
+		return out;
+	}
+
+	/** R2 restore のフェイク実装: 削除済み行のみを uri で引く。 */
+	async findDeletedByUri(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): Promise<CalendarObjectResource | null> {
+		const key = resourceKey(owner, collectionId, uri);
+		if (!this.isDeleted(key)) return null;
+		return this.store.get(key) ?? null;
+	}
+
+	/** R2 物理 purge のフェイク実装: deletedAt < cutoff の tombstone を物理削除し、件数を返す。 */
+	async purgeDeletedBefore(cutoffMillis: number): Promise<number> {
+		let n = 0;
+		for (const [k, at] of [...this.deletedStore]) {
+			if (at < cutoffMillis) {
+				this.store.delete(k);
+				this.boundsStore.delete(k);
+				this.deletedStore.delete(k);
+				n++;
+			}
+		}
+		return n;
 	}
 
 	/**
@@ -357,6 +473,11 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		bounds: OccurrenceBounds,
 		precondition: ResourceWritePrecondition,
 	): Promise<void> {
+		// R2(仕様 #4): target uri に tombstone 済みゴーストが居たら退避 rename して道を空ける
+		// (D1 の saveResource が rename 文を ③ の前に積むのと同じ順序)。assertPrecondition の
+		// 「create なのに既に在る」判定はゴースト退去後に評価する(退去後は uri が空くので
+		// unmapped 扱いで create が成功する — RFC 4918 §9.6 の If-None-Match:* 成功要件)。
+		await this.resourceRepo.renameGhostAt(owner, collectionId, resource.uri);
 		this.assertPrecondition(owner, collectionId, resource.uri, precondition);
 		// リソースを保存(bounds も一緒に。D1 実装が同一行へ書くのと同じ扱い)。
 		this.resourceRepo.seed(owner, collectionId, resource, bounds);
@@ -372,9 +493,22 @@ export class FakeCollectionUnitOfWork implements CollectionUnitOfWork {
 		precondition: ResourceWritePrecondition,
 	): Promise<void> {
 		this.assertPrecondition(owner, collectionId, uri, precondition);
-		// リソースを削除。
-		this.resourceRepo.remove(owner, collectionId, uri);
+		// R2(仕様 #3): 物理削除ではなく soft-delete(tombstone 化)。sync_changes 'deleted' は
+		// collection 側で recordChange 済みなので、ここでは deletedAt を立てるだけ。
+		this.resourceRepo.softDelete(owner, collectionId, uri, Date.now());
 		// コレクションを保存。
+		this.collectionRepo.seed(collection);
+	}
+
+	async restoreResource(
+		owner: PrincipalRef,
+		collectionId: CollectionId,
+		currentUri: ResourceUri,
+		newUri: ResourceUri,
+		collection: CalendarCollection,
+	): Promise<void> {
+		// R2 restore: tombstone を外し、必要なら newUri へ移す + コレクションに 'created' を記録。
+		await this.resourceRepo.restore(owner, collectionId, currentUri, newUri);
 		this.collectionRepo.seed(collection);
 	}
 }

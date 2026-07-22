@@ -189,7 +189,9 @@ describe("/mcp", () => {
 	// 19→20 に更新。
 	// 2026-07-22 S1 追記: propose-delete-todo/propose-delete-event/propose-delete-calendar(確認カードの
 	// 入り口。docs/modeling/14)を追加したため 20→23 に更新。
-	it("正しい Bearer で tools/list に23ツールが並ぶ(S1 propose-delete-* 追加分)", async () => {
+	// 2026-07-23 R2 追記: list-deleted/restore-deleted(ソフトデリートのゴミ箱一覧 + 復元。
+	// docs/modeling/15 §A-3 R2)を追加したため 23→25 に更新。
+	it("正しい Bearer で tools/list に25ツールが並ぶ(R2 list-deleted/restore-deleted 追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -207,6 +209,7 @@ describe("/mcp", () => {
 			"get-current-time",
 			"get-freebusy",
 			"list-calendars",
+			"list-deleted",
 			"list-events-expanded",
 			"list-known-locations",
 			"list-todos",
@@ -216,6 +219,7 @@ describe("/mcp", () => {
 			"propose-delete-todo",
 			"refresh-events",
 			"refresh-todos",
+			"restore-deleted",
 			"update-event",
 			"update-todo",
 		]);

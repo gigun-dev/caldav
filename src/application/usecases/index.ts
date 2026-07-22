@@ -259,3 +259,18 @@ export {
 	type ListKnownLocationsOutput,
 	type KnownLocation,
 } from "./list-known-locations";
+
+// R2(docs/modeling/15 §A-3): ソフトデリートのゴミ箱一覧 + 復元。
+export {
+	ListDeleted,
+	type ListDeletedInput,
+	type ListDeletedOutput,
+	type DeletedEntry,
+} from "./list-deleted";
+export {
+	RestoreDeleted,
+	RestoreTargetNotFoundError,
+	RestoreUidConflictError,
+	type RestoreDeletedInput,
+	type RestoreDeletedOutput,
+} from "./restore-deleted";

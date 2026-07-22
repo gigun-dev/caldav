@@ -27,6 +27,7 @@ import {
 	type CalendarCollectionRepository,
 	type CalendarObjectResourceRepository,
 	type CollectionUnitOfWork,
+	type DeletedObject,
 	type PrincipalRepository,
 	type ResourceWritePrecondition,
 } from "../../application/ports";
@@ -161,16 +162,21 @@ export class D1CalendarCollectionRepository implements CalendarCollectionReposit
 export class D1CalendarObjectResourceRepository implements CalendarObjectResourceRepository {
 	constructor(private readonly db: D1Database) {}
 
+	// R2(ソフトデリート): 全 DAV/MCP 読み取り経路は `deleted_at IS NULL` を一貫適用する。
+	// これで soft-delete 済み URI は GET/PROPFIND から 404・listing/REPORT から不可視になり
+	// (RFC 4918 §9.6 の「URI→リソースのマッピング除去」= データ破棄ではない、を満たす)、
+	// findUriByUid が生存行のみを見るので「同 UID の再作成」「restore の UID 衝突判定」が
+	// 正しく tombstone を無視する(docs/next-directions.md「R2 RFC 検証完了」・ports コメント)。
 	async findAllInCollection(owner: PrincipalRef, id: CollectionId): Promise<CalendarObjectResource[]> {
 		const rows = await this.db.prepare(
-			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? ORDER BY uri",
+			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND deleted_at IS NULL ORDER BY uri",
 		).bind(owner, id).all<ResourceRow>();
 		return Promise.all(rows.results.map(hydrateResource));
 	}
 
 	async findByUri(owner: PrincipalRef, id: CollectionId, uri: ResourceUri): Promise<CalendarObjectResource | null> {
 		const row = await this.db.prepare(
-			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?",
+			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NULL",
 		).bind(owner, id, uri).first<ResourceRow>();
 		return row ? hydrateResource(row) : null;
 	}
@@ -180,21 +186,25 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 		const placeholders = uris.map(() => "?").join(",");
 		const rows = await this.db.prepare(
 			`SELECT uri, ics FROM calendar_objects
-			 WHERE owner = ? AND collection_id = ? AND uri IN (${placeholders})`,
+			 WHERE owner = ? AND collection_id = ? AND uri IN (${placeholders}) AND deleted_at IS NULL`,
 		).bind(owner, id, ...uris).all<ResourceRow>();
 		return Promise.all(rows.results.map(hydrateResource));
 	}
 
 	async findUriByUid(owner: PrincipalRef, id: CollectionId, uid: string): Promise<ResourceUri | null> {
+		// 生存行のみを見る(deleted_at IS NULL)。これが「soft-delete 後の同 UID 再作成が
+		// no-uid-conflict に引っかからない」ことと「restore の UID 衝突判定が tombstone を無視して
+		// 現に生きている衝突相手だけを返す」ことの両方を担保する。partial unique index
+		// (calendar_objects_uid_live)とも整合する。
 		const row = await this.db.prepare(
-			"SELECT uri FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uid = ?",
+			"SELECT uri FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uid = ? AND deleted_at IS NULL",
 		).bind(owner, id, uid).first<{ uri: string }>();
 		return row ? resourceUri(row.uri) : null;
 	}
 
 	async getUidAtUri(owner: PrincipalRef, id: CollectionId, uri: ResourceUri): Promise<string | null> {
 		const row = await this.db.prepare(
-			"SELECT uid FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?",
+			"SELECT uid FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NULL",
 		).bind(owner, id, uri).first<{ uid: string }>();
 		return row?.uid ?? null;
 	}
@@ -214,7 +224,7 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 	): Promise<CalendarObjectResource[]> {
 		const rows = await this.db.prepare(
 			`SELECT uri, ics FROM calendar_objects
-			 WHERE owner = ? AND collection_id = ? AND component_kind = ?
+			 WHERE owner = ? AND collection_id = ? AND component_kind = ? AND deleted_at IS NULL
 			 AND (last_occurrence IS NULL OR last_occurrence > ?)
 			 AND (first_occurrence IS NULL OR first_occurrence < ?)
 			 ORDER BY uri`,
@@ -239,7 +249,7 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 	 */
 	async findVTodosInCollection(owner: PrincipalRef, id: CollectionId): Promise<CalendarObjectResource[]> {
 		const rows = await this.db.prepare(
-			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND component_kind = 'VTODO' ORDER BY uri",
+			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND component_kind = 'VTODO' AND deleted_at IS NULL ORDER BY uri",
 		).bind(owner, id).all<ResourceRow>();
 		return Promise.all(rows.results.map(hydrateResource));
 	}
@@ -277,7 +287,7 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 				: "";
 		const stmt = this.db.prepare(
 			`SELECT collection_id, uri, ics FROM calendar_objects
-			 WHERE owner = ? AND component_kind = ?
+			 WHERE owner = ? AND component_kind = ? AND deleted_at IS NULL
 			 AND (last_occurrence IS NULL OR last_occurrence > ?)
 			 AND (first_occurrence IS NULL OR first_occurrence < ?)${inClause}
 			 ORDER BY collection_id, uri`,
@@ -295,6 +305,65 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 				resource: await hydrateResource(row),
 			})),
 		);
+	}
+
+	// ---------------------------------------------------------------------------
+	// R2: ソフトデリート済み行(ゴミ箱)の読み取り + 物理 purge
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * R2 list-deleted: owner 配下の soft-delete 済み行を deleted_at 降順(最近消したものが先頭)で返す。
+	 * calendar_objects_deleted 索引(owner, deleted_at)が効く。行ごとに collectionId と deletedAt を
+	 * 添えて返す(MCP list-deleted ツールが uri/uid/summary/deleted_at/calendarId を組む土台)。
+	 */
+	async listDeleted(owner: PrincipalRef): Promise<DeletedObject[]> {
+		const rows = await this.db.prepare(
+			`SELECT collection_id, uri, ics, deleted_at FROM calendar_objects
+			 WHERE owner = ? AND deleted_at IS NOT NULL
+			 ORDER BY deleted_at DESC, collection_id, uri`,
+		).bind(owner).all<ResourceRow & { collection_id: string; deleted_at: number }>();
+		return Promise.all(
+			rows.results.map(async (row) => ({
+				collectionId: collectionId(row.collection_id),
+				resource: await hydrateResource(row),
+				deletedAtMillis: row.deleted_at,
+			})),
+		);
+	}
+
+	/**
+	 * R2 restore: 復元対象を「削除済み行のみ」から uri で1件引く(restore-deleted の入力 uri は
+	 * list-deleted が返した現在の uri。ゴースト rename 後の退避 uri かもしれない)。生存行は返さない
+	 * (findByUri が生存行専用なのと対称の tombstone 専用アクセサ)。
+	 */
+	async findDeletedByUri(owner: PrincipalRef, id: CollectionId, uri: ResourceUri): Promise<CalendarObjectResource | null> {
+		const row = await this.db.prepare(
+			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NOT NULL",
+		).bind(owner, id, uri).first<ResourceRow>();
+		return row ? hydrateResource(row) : null;
+	}
+
+	/**
+	 * R2 物理 purge(30日 TTL): deleted_at < cutoff の tombstone を物理 DELETE する。
+	 *
+	 * 【sync_changes を書かない理由(仕様 #7・6578 上の正当性)】soft-delete した時点で既に
+	 * sync_changes に 'deleted' を記録済みで、iOS はその時点でリソースが消えたと認識している。
+	 * purge は「もう誰の目にも触れないゴミ箱の中身を実際に消す」だけの掃除であり、クライアントから
+	 * 見た状態は soft-delete 時点から一切変わらない。よって新たな変更ログは不要(むしろ書くと
+	 * 「既に消えたものをもう一度消した」という無意味な token 消費になる)。
+	 *
+	 * 【呼び出しの配線は別スライス(コメントで明示)】本命は Workers の cron trigger だが、
+	 * wrangler.jsonc の cron 配線はこのタスクのスコープ外。このメソッドとテストまでを用意し、
+	 * 実際の定期実行の配線は R2 の後続スライスで行う(docs/next-directions.md 参照)。
+	 *
+	 * @param cutoffMillis これより前(<)に削除された行を消す。呼び出し側が now - 30日 を渡す想定。
+	 * @returns 物理削除した行数。
+	 */
+	async purgeDeletedBefore(cutoffMillis: number): Promise<number> {
+		const res = await this.db.prepare(
+			"DELETE FROM calendar_objects WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+		).bind(cutoffMillis).run();
+		return res.meta.changes ?? 0;
 	}
 }
 
@@ -445,6 +514,19 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 		// (D1 docs: "executed sequentially and atomically")ので、②のサブクエリは①適用後の値を
 		// 必ず読む — これが D1 で成立する唯一のアトミック採番。
 		const statements = this.bumpAndLogStatements(owner, id, resource.uri, change.kind, precondition);
+		// R2 ゴースト退避 rename(仕様 #4): この uri に soft-delete 済み行(ゴースト)が居座っていると、
+		// PK(owner, collection_id, uri)を全一意に保ったまま新規 INSERT すると PK 衝突する。そこで
+		// ③ の書き込みの「前」にゴーストの uri を退避リネームして uri を空ける。生存行(match 経路の
+		// 対象)は deleted_at IS NULL なのでこの UPDATE にヒットせず no-op(害が無いので precondition を
+		// 問わず常に積む)。退避後のゴーストは restore 一覧に「同 uri の亡霊」として残らず、元 uri は
+		// 新リソースが自由に使える。退避 uri は timestamp + 乱数で衝突しないよう生成する。
+		// (partial unique URI 案を採らず PK 全一意 + rename にした理由は migrations/0004 冒頭コメント。)
+		statements.push(
+			this.db.prepare(
+				`UPDATE calendar_objects SET uri = ?
+				 WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NOT NULL`,
+			).bind(deletedGhostUri(resource.uri), owner, id, resource.uri),
+		);
 		// ③ オブジェクト書き込み。precondition ごとに文を変える(ports の ResourceWritePrecondition
 		// コメント参照)。
 		if (precondition.kind === "match") {
@@ -506,23 +588,80 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 		const change = collection.changes.at(-1);
 		if (!change) throw new Error("deleteResource requires a recorded collection change");
 		const statements = this.bumpAndLogStatements(owner, id, uri, change.kind, precondition);
-		// ③ DELETE 本体。match(If-Match 付き削除)は etag 一致時のみ削除する CAS、
-		// それ以外(overwrite)は無条件削除。create は削除では使わない(ports コメント)。
+		// R2(仕様 #3): 物理 DELETE を soft-delete(deleted_at = now)へ置き換える。
+		// sync_changes の 'deleted' 記録(bumpAndLogStatements)は現行どおり不変なので、iOS から
+		// 見た挙動は完全同一(RFC 4918 §9.6 の DELETE 義務 = URI→リソースのマッピング除去 は
+		// deleted_at フィルタ済みの読み取り経路が満たす。docs/next-directions.md「R2 RFC 検証完了」)。
+		// `AND deleted_at IS NULL` を付けて、既に消えている行を二重に上書きしない(現実には UC が
+		// findByUri で 404 を先に返すので到達しないが、tombstone を resurrection させない belt)。
+		const deletedAt = Date.now();
+		// ③ soft-delete 本体。match(If-Match 付き削除)は etag 一致時のみ tombstone 化する CAS、
+		// それ以外(overwrite)は無条件 tombstone 化。create は削除では使わない(ports コメント)。
 		if (precondition.kind === "match") {
 			statements.push(
 				this.db.prepare(
-					"DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ?",
-				).bind(owner, id, uri, precondition.expectedEtag),
+					"UPDATE calendar_objects SET deleted_at = ? WHERE owner = ? AND collection_id = ? AND uri = ? AND etag = ? AND deleted_at IS NULL",
+				).bind(deletedAt, owner, id, uri, precondition.expectedEtag),
 			);
 		} else {
 			statements.push(
 				this.db.prepare(
-					"DELETE FROM calendar_objects WHERE owner = ? AND collection_id = ? AND uri = ?",
-				).bind(owner, id, uri),
+					"UPDATE calendar_objects SET deleted_at = ? WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NULL",
+				).bind(deletedAt, owner, id, uri),
 			);
 		}
 		await this.executeWriteBatch(owner, id, statements, precondition.kind === "match");
 	}
+
+	/**
+	 * R2 restore: soft-delete 済み行を復元する(deleted_at を NULL に戻す)+ sync_changes に
+	 * 'created' を記録する(RFC 6578 §3.5.1: 再マップは changed として報告・removed と報告しては
+	 * ならない。既存 changesSince の後勝ち fold と噛み合い自動で準拠する — docs/next-directions.md)。
+	 *
+	 * @param currentUri 復元対象のゴーストが現在保持している uri(list-deleted が返した uri)。
+	 * @param newUri 復元後に生存行として使う uri。元 uri が空いていれば currentUri と同じ、
+	 *   生存行に再利用されていれば application 層が新採番した別 uri(RestoreDeleted UC が決める)。
+	 *   sync_changes の 'created' はこの newUri で記録する(クライアントが取得する現在の URL)。
+	 * @param collection recordChange(newUri, "created") 済みの集約(token は DB 側で採番する)。
+	 *
+	 * 【なぜ overwrite 相当(etagCas=false)で組むか】restore は「今このゴーストを生き返らせる」
+	 * 唯一の書き込みで、ETag ベースの楽観ロック(同一リソースの並行更新)とは無縁。currentUri の
+	 * tombstone は他経路から触られない(生存経路は deleted_at フィルタで見えない)ので、bump[0] の
+	 * 0 行(= コレクション行不在)だけを構造異常として検知すれば足りる。
+	 */
+	async restoreResource(
+		owner: PrincipalRef,
+		id: CollectionId,
+		currentUri: ResourceUri,
+		newUri: ResourceUri,
+		collection: CalendarCollection,
+	): Promise<void> {
+		const change = collection.changes.at(-1);
+		if (!change) throw new Error("restoreResource requires a recorded collection change");
+		// ①② 採番 + 'created' ログ(newUri で記録)。precondition は overwrite(ゲート無し)。
+		const statements = this.bumpAndLogStatements(owner, id, newUri, change.kind, { kind: "overwrite" });
+		// ③ tombstone を解除しつつ uri を newUri へ(元 uri が空いていれば currentUri と同値)。
+		// deleted_at IS NOT NULL を条件に付け、生存行を誤って書き換えない。updated_at も現在時刻へ
+		// 更新する(復元は「今起きた変更」なので iOS の再取得トリガーとして自然)。
+		statements.push(
+			this.db.prepare(
+				`UPDATE calendar_objects SET deleted_at = NULL, uri = ?, updated_at = ?
+				 WHERE owner = ? AND collection_id = ? AND uri = ? AND deleted_at IS NOT NULL`,
+			).bind(newUri, Date.now(), owner, id, currentUri),
+		);
+		await this.executeWriteBatch(owner, id, statements, false);
+	}
+}
+
+/**
+ * R2 ゴースト退避 uri の生成(saveResource が soft-delete 済み URI の再利用時に使う)。
+ * 元 uri を prefix に残しつつ、timestamp + 乱数 suffix で衝突しない別 uri を作る。
+ * PK(uri)は全一意なので、退避先が既存 uri と衝突しないことが要件(短時間に同一 uri を
+ * 2回 delete→recreate しても suffix の乱数で分かれる)。
+ */
+function deletedGhostUri(uri: ResourceUri): string {
+	const rand = Math.random().toString(36).slice(2, 8);
+	return `${uri}.deleted-${Date.now()}-${rand}`;
 }
 
 export interface D1Repositories {
