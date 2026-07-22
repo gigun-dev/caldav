@@ -292,6 +292,27 @@ export class UpdateEvent {
 		const vcalendar = looked.resource.payload.raw;
 		let components = vcalendar.components.map((c) => (c === looked.vevent.raw ? patched : c));
 
+		// 【recurrence: null = 反復をやめるときは同 UID の override も削除する(2026-07-22)】
+		// iPhone 純正カレンダーで単発編集された繰り返し予定は、master と同じファイルに
+		// RECURRENCE-ID 付き override VEVENT を持つ(本番 D1 の実データで確認 — 移動した1回分が
+		// 別コンポーネントとして同居)。RRULE だけ消すと override が孤児として残り、
+		// (1) 本アプリの展開エンジン(expansion.ts item10: 非反復 master は master 1件のみ返す)では
+		//     表示されないのに、(2) Apple クライアントは生 ICS を直接描くので表示され続ける、という
+		//     クライアント間の見え方割れが起きる(§3.8.4.4: RECURRENCE-ID は反復セットの特定
+		//     インスタンス参照 — 参照先の反復セットが消えた時点で意味を失う)。
+		// 「detached として単発イベントに昇格させて残す」案はボツ: ユーザーの意図は「反復をやめて
+		// 1つの予定にする」であり、編集済みの過去回が別予定として突然増殖するのは驚き最小原則に反する
+		// (EXDATE/RDATE の除去は vevent-patch.ts 側 — プロパティ単位はあちら・コンポーネント単位は
+		// ここ、という責務分界。あちらのコメントと対)。
+		if (recurrencePatch === null) {
+			components = components.filter((c) => {
+				if (c.name !== "VEVENT" || c === patched) return true;
+				const uid = c.properties.find((p) => p.name === "UID")?.value;
+				const isOverride = c.properties.some((p) => p.name === "RECURRENCE-ID");
+				return !(uid === input.eventId && isOverride);
+			});
+		}
+
 		// 時刻付き start/end に変更したときの VTIMEZONE 同梱(重複回避。UpdateTodo と同じ責務分担)。
 		for (const vtz of [parsedStart?.vtimezone, parsedEnd?.vtimezone]) {
 			if (vtz === undefined) continue;

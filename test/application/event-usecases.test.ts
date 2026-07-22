@@ -272,6 +272,57 @@ describe("event usecases", () => {
 		expect(stored[0]!.rawIcs).not.toContain("RRULE");
 	});
 
+	it("recurrence:null は EXDATE と override(RECURRENCE-ID)も掃除する", async () => {
+		// 【2026-07-22 本番実データ由来の回帰テスト】iPhone 純正カレンダーが単発編集した繰り返し予定は
+		// master(RRULE+EXDATE)と override(RECURRENCE-ID 付き VEVENT)が1ファイルに同居する。
+		// この状態で MCP から「繰り返しなし」に変更したとき、RRULE だけ消して EXDATE/override を
+		// 残すと、本アプリの展開(非反復 master は override を捨てる)では見えないのに Apple
+		// クライアントには孤児 override が表示され続ける、というクライアント間の見え方割れが起きる
+		// (update-event.ts / vevent-patch.ts の対コメント参照)。
+		const putCalendarObject = new PutCalendarObject(collectionRepo, resourceRepo, uow, TEST_RECURRENCE_ITERATOR);
+		const uid = "apple-edited-recurring-001";
+		const ics = [
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Test//JP",
+			"BEGIN:VEVENT",
+			`UID:${uid}`,
+			"DTSTAMP:20260721T000000Z",
+			"DTSTART:20260716T060000Z",
+			"DTEND:20260716T070000Z",
+			"RRULE:FREQ=DAILY;UNTIL=20260718T145959Z",
+			"EXDATE:20260717T060000Z",
+			"SUMMARY:反復(Apple 単発編集済み)",
+			"END:VEVENT",
+			"BEGIN:VEVENT",
+			`UID:${uid}`,
+			"DTSTAMP:20260721T000000Z",
+			"RECURRENCE-ID:20260716T060000Z",
+			"DTSTART:20260721T060000Z",
+			"DTEND:20260721T070000Z",
+			"SUMMARY:反復(Apple 単発編集済み)",
+			"END:VEVENT",
+			"END:VCALENDAR",
+		].join("\r\n");
+		await putCalendarObject.execute({
+			owner: TEST_OWNER,
+			collectionId: mkCollectionId("calendar"),
+			resourceUri: `${uid}.ics`,
+			ics,
+			condition: { kind: "must-not-exist" },
+		});
+
+		const { event } = await updateEvent.execute({ owner: TEST_OWNER, eventId: uid, recurrence: null });
+		expect(event.recurrence).toBeNull();
+		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		const raw = stored[0]!.rawIcs;
+		expect(raw).not.toContain("RRULE");
+		expect(raw).not.toContain("EXDATE");
+		expect(raw).not.toContain("RECURRENCE-ID"); // 孤児 override が削除されている
+		// master 自体は残っている(VEVENT が1つだけになる)。
+		expect(raw.split("BEGIN:VEVENT").length - 1).toBe(1);
+	});
+
 	it("url を三値で更新できる(設定→除去)", async () => {
 		const id = await seedEvent({ owner: TEST_OWNER, title: "URL", start: "2026-07-15" });
 		const set = await updateEvent.execute({ owner: TEST_OWNER, eventId: id, url: "https://a.example/x" });

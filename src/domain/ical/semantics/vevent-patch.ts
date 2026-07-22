@@ -150,6 +150,15 @@ export function patchVEventFields(vevent: Component, fields: VEventPatchFields):
 	if (fields.recurrence !== undefined) {
 		if (fields.recurrence === null) {
 			out = removeProperty(out, "RRULE");
+			// 【2026-07-22 実データ調査(iPhone 純正カレンダーが単発編集した繰り返し予定)で追加】
+			// 反復をやめるとき RRULE だけ消すと、単発編集の痕跡 EXDATE(除外日)・RDATE(追加日)が
+			// master に残骸として残る。非反復イベントではどちらも意味を持たない(§3.8.5 は反復セットの
+			// 修飾)ため一緒に除去する(removeProperty は同名プロパティを全件消す — EXDATE 複数行も一掃)。
+			// 同 UID の override コンポーネント(RECURRENCE-ID 付き VEVENT)の削除は component 単位の
+			// 操作なので、単一 VEVENT しか見えないここではできない — 呼び出し側
+			// (update-event.ts の components 再組立)が担う(コメントを対にしてある)。
+			out = removeProperty(out, "EXDATE");
+			out = removeProperty(out, "RDATE");
 		} else {
 			out = upsertProperty(out, "RRULE", formatRecurrenceRule(fields.recurrence));
 		}
