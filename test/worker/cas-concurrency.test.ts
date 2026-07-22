@@ -264,6 +264,8 @@ function staleReadRepo(
 		getUidAtUri: (o, c, u) => real.getUidAtUri(o, c, u),
 		findInCollectionByTimeRange: (o, c, k, s, e) => real.findInCollectionByTimeRange(o, c, k, s, e),
 		findVTodosInCollection: (o, c) => real.findVTodosInCollection(o, c),
+		// レイテンシ案2(2026-07-22): 新ポートも素通し委譲(この CAS テストは put 経路だけ差し込む)。
+		findByOwnerTimeRange: (o, k, s, e, cids) => real.findByOwnerTimeRange(o, k, s, e, cids),
 		async findByUri(o: PrincipalRef, c: CollectionId, u: ResourceUri) {
 			if (remaining > 0 && u === stale.uri) {
 				remaining -= 1;
@@ -295,6 +297,8 @@ function conflictInjectingRepo(
 		getUidAtUri: (o, c, u) => real.getUidAtUri(o, c, u),
 		findInCollectionByTimeRange: (o, c, k, s, e) => real.findInCollectionByTimeRange(o, c, k, s, e),
 		findVTodosInCollection: (o, c) => real.findVTodosInCollection(o, c),
+		// レイテンシ案2(2026-07-22): 新ポートも素通し委譲(この CAS テストは put 経路だけ差し込む)。
+		findByOwnerTimeRange: (o, k, s, e, cids) => real.findByOwnerTimeRange(o, k, s, e, cids),
 		async findByUri(o: PrincipalRef, c: CollectionId, u: ResourceUri) {
 			const value = await real.findByUri(o, c, u);
 			// put の Step 2 read(= このデコレータへの findByUri)を掴んだら、返す前に競合を注入する。

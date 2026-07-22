@@ -243,6 +243,59 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 		).bind(owner, id).all<ResourceRow>();
 		return Promise.all(rows.results.map(hydrateResource));
 	}
+
+	/**
+	 * レイテンシ案2(2026-07-22): owner 配下の time-range 一致リソースを、collection_id 付きで
+	 * 1 クエリ取得する。findInCollectionByTimeRange の WHERE を「collection_id 等値」から
+	 * 「owner 等値 + (任意) collection_id IN(...)」に緩めただけで、time-range 部分は同一。
+	 *
+	 * 【索引が効くか】migrations/0002 の calendar_objects_time_range は
+	 * (owner, collection_id, component_kind, last_occurrence, first_occurrence) を想定した複合索引。
+	 * 全横断(collection_id 条件なし)でも先頭 owner + component_kind の等値でプレフィックスが効く
+	 * (collection_id を飛ばすと last/first_occurrence は範囲索引としては使えないが、owner スコープ内の
+	 * 行数は現実 ~数千未満なのでスキャンは軽い。旧経路の N 往復を 1 往復に畳む効果が支配的)。
+	 *
+	 * 【IN 句プレースホルダ上限】D1/SQLite の bound parameter 上限は 999。collectionIds は
+	 * calendarIds 指定(UI の表示フィルタ)由来で現実 ~7 件程度なので上限に触れない。将来
+	 * 数百コレクションを一度に指定する需要が出たら分割 IN が要るが、今は YAGNI(コメントで明示)。
+	 */
+	async findByOwnerTimeRange(
+		owner: PrincipalRef,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+		collectionIds?: readonly CollectionId[],
+	): Promise<{ collectionId: CollectionId; resource: CalendarObjectResource }[]> {
+		// 空配列は「どのコレクションにもマッチしない」= 空結果(ports の契約)。全横断(undefined)と
+		// 区別してここで早期 return する(SQL に `IN ()` を書くと SQLite で構文エラーになるため)。
+		if (collectionIds !== undefined && collectionIds.length === 0) return [];
+
+		// collectionIds 指定時のみ IN 句を追加する。undefined(全横断)なら collection_id 条件を付けない。
+		const inClause =
+			collectionIds !== undefined
+				? ` AND collection_id IN (${collectionIds.map(() => "?").join(",")})`
+				: "";
+		const stmt = this.db.prepare(
+			`SELECT collection_id, uri, ics FROM calendar_objects
+			 WHERE owner = ? AND component_kind = ?
+			 AND (last_occurrence IS NULL OR last_occurrence > ?)
+			 AND (first_occurrence IS NULL OR first_occurrence < ?)${inClause}
+			 ORDER BY collection_id, uri`,
+		).bind(
+			owner,
+			componentKind,
+			rangeStartMillis,
+			rangeEndMillis,
+			...(collectionIds ?? []),
+		);
+		const rows = await stmt.all<ResourceRow & { collection_id: string }>();
+		return Promise.all(
+			rows.results.map(async (row) => ({
+				collectionId: collectionId(row.collection_id),
+				resource: await hydrateResource(row),
+			})),
+		);
+	}
 }
 
 export class D1CollectionUnitOfWork implements CollectionUnitOfWork {

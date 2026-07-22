@@ -250,6 +250,39 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 			.map(([, v]) => v);
 	}
 
+	/**
+	 * レイテンシ案2(2026-07-22): findByOwnerTimeRange のフェイク実装。
+	 * findInCollectionByTimeRange と同じ time-range 判定(NULL は常に候補)を owner スコープに広げ、
+	 * collectionIds 指定時はその集合に限定する。undefined = 全横断(owner 配下の全コレクション)。
+	 * 空配列 [] は D1 実装と同じく空結果(全横断に化けさせない)。行ごとに collectionId を復元して返す
+	 * (キーの2要素目がコレクション ID)。
+	 */
+	async findByOwnerTimeRange(
+		owner: PrincipalRef,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+		collectionIds?: readonly CollectionId[],
+	): Promise<{ collectionId: CollectionId; resource: CalendarObjectResource }[]> {
+		if (collectionIds !== undefined && collectionIds.length === 0) return [];
+		const ownerPrefix = `${owner}::`;
+		const allow = collectionIds === undefined ? null : new Set<string>(collectionIds);
+		const result: { collectionId: CollectionId; resource: CalendarObjectResource }[] = [];
+		for (const [k, r] of this.store) {
+			if (!k.startsWith(ownerPrefix)) continue;
+			if (r.componentKind !== componentKind) continue;
+			// キーは `${owner}::${collectionId}::${uri}`。owner に "::" は含まれない前提で 2 要素目を
+			// collectionId として取り出す(resourceKey の分解の逆。D1 の collection_id 列に相当)。
+			const cid = k.slice(ownerPrefix.length, k.indexOf("::", ownerPrefix.length));
+			if (allow !== null && !allow.has(cid)) continue;
+			const bounds = this.boundsStore.get(k) ?? { firstMillis: null, lastMillis: null };
+			const lastOk = bounds.lastMillis === null || bounds.lastMillis > rangeStartMillis;
+			const firstOk = bounds.firstMillis === null || bounds.firstMillis < rangeEndMillis;
+			if (lastOk && firstOk) result.push({ collectionId: mkCollectionId(cid), resource: r });
+		}
+		return result;
+	}
+
 	/** テスト検証用: 保存されている bounds を直接読む。 */
 	boundsOf(owner: PrincipalRef, collectionId: CollectionId, uri: ResourceUri): OccurrenceBounds | undefined {
 		return this.boundsStore.get(resourceKey(owner, collectionId, uri));

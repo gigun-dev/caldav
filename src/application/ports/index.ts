@@ -197,6 +197,54 @@ export interface CalendarObjectResourceRepository {
 	 * @param collectionId 対象コレクション。ListTodos の既定は "tasks" だが calendarId で変更可。
 	 */
 	findVTodosInCollection(owner: PrincipalRef, collectionId: CollectionId): Promise<CalendarObjectResource[]>;
+
+	/**
+	 * レイテンシ案2「コレクション横断1クエリ化」(2026-07-22): owner 配下の(任意コレクションの)
+	 * component_kind 一致リソースを time-range で粗く絞り、**どのコレクションのものか(collectionId)を
+	 * 添えて 1 クエリで返す**。list-events-expanded / get-freebusy の「calendarId 省略=全横断」経路が
+	 * 主な利用者。
+	 *
+	 * 【なぜ findInCollectionByTimeRange と別メソッドにするか(Why not: 引数拡張で兼ねない)】
+	 * findInCollectionByTimeRange は「1 コレクション内のリソースそのもの」を返す G-3(calendar-query)の
+	 * 契約で、返り値に collectionId を持たない(呼び出し側が単一コレクションを既に知っている)。
+	 * 全横断では occurrence ごとに「どのカレンダーの予定か」を wire に併記する必要があり(toWireEvent の
+	 * per-event calendarId)、行ごとに collection_id を運ぶ必要がある。両者は返り値の形が違うので、
+	 * G-3 の既存契約・索引前提を壊さないよう別メソッドとして足す(既存 UC/テストは不変)。
+	 *
+	 * 【1 クエリ化の背景(旧: 3 波の D1 往復)】
+	 * 旧経路は ①resolveCollectionIds(findAllByOwner)→ ②その hydrate が各コレクションの sync_changes を
+	 * N+1 発行 → ③各コレクションで findInCollectionByTimeRange を N 並列、という 3 波だった。
+	 * calendar_objects は owner 列を持つ(migrations/0001)ため、全横断はコレクション列挙なしで
+	 * この 1 メソッド 1 クエリに畳める。②の sync_changes N+1 波は sync-collection 等の別経路が使う
+	 * ものでこのメソッドのスコープ外(events/free-busy 経路からは呼ばなくなる)。
+	 *
+	 * 【絞り込みの粗さは findInCollectionByTimeRange と同契約】
+	 * time-range 判定は同じく「粗い」(取りこぼさないが多く返してよい)。呼び出し側 UC が
+	 * expandRecurrenceSet で精密判定する。TZ スラックも呼び出し側が窓を広げてから渡す。
+	 *
+	 * @param componentKind VEVENT/VTODO どちらか(events は "VEVENT" 固定)。
+	 * @param rangeStartMillis 窓の開始(半開区間の下限。呼び出し側がスラック加算済み)。
+	 * @param rangeEndMillis 窓の終了(半開区間の上限、非包含。スラック加算済み)。
+	 * @param collectionIds 指定時はその集合に限定(calendarId/calendarIds 指定経路)。
+	 *   **undefined = owner 配下の全コレクション横断**(コレクション列挙 SQL を発行しない)。
+	 *   空配列 [] は「どのコレクションにもマッチしない」= 空結果(呼び出し側で全横断に化けさせない）。
+	 */
+	findByOwnerTimeRange(
+		owner: PrincipalRef,
+		componentKind: ComponentKind,
+		rangeStartMillis: number,
+		rangeEndMillis: number,
+		collectionIds?: readonly CollectionId[],
+	): Promise<OwnerTimeRangeMatch[]>;
+}
+
+/**
+ * findByOwnerTimeRange の返り値要素。行ごとに「どのコレクションのリソースか」を運ぶ
+ * (全横断では occurrence を per-event calendarId 付きで返す必要があるため)。
+ */
+export interface OwnerTimeRangeMatch {
+	readonly collectionId: CollectionId;
+	readonly resource: CalendarObjectResource;
 }
 
 // =============================================================================

@@ -194,3 +194,76 @@ describe("D1CalendarCollectionRepository.delete: FK ON DELETE CASCADE", () => {
 		expect(changesAfter?.n).toBe(0);
 	});
 });
+
+// =============================================================================
+// レイテンシ案2(2026-07-22): findByOwnerTimeRange — コレクション横断1クエリ + collection_id 復元
+// =============================================================================
+//
+// 【何を実 D1 で固定したいか】
+// 1) owner 配下の複数コレクションの行を 1 クエリで返し、行ごとに collection_id を正しく復元すること
+//    (application 層の across-owner UC が per-event calendarId を組み立てる土台)。
+// 2) NULL の first/last_occurrence は常に候補に含める(索引未書き込み行を取りこぼさない)こと。
+// 3) collectionIds 指定でその集合に絞り、undefined で全横断になること。
+// 直接 INSERT する理由は上の findVTodosInCollection テストと同じ(UoW の changeLog 準備を避ける)。
+describe("D1CalendarObjectResourceRepository.findByOwnerTimeRange: 横断1クエリ + collection_id 復元", () => {
+	it("owner 配下の複数コレクションを 1 呼び出しで返し、collection_id を復元 / NULL bounds を含める / IN 絞り込みが効く", async () => {
+		const owner = principalPath("/dav/principals/d1-repo-owner-tr-test/");
+		const work = collectionId("owner-tr-work");
+		const home = collectionId("owner-tr-home");
+
+		await new D1PrincipalRepository(env.DB).save(Principal.create(owner, "/dav/d1-repo-owner-tr-test/"));
+		const collections = new D1CalendarCollectionRepository(env.DB);
+		await collections.save(new CalendarCollection({ id: work, owner, displayName: "Work" }));
+		await collections.save(new CalendarCollection({ id: home, owner, displayName: "Home" }));
+
+		// 窓 [2026-01-06, 2026-01-07)。work は窓内の bounds 付き VEVENT、home は bounds NULL の VEVENT。
+		const windowStart = Date.UTC(2026, 0, 6);
+		const windowEnd = Date.UTC(2026, 0, 7);
+		// findByOwnerTimeRange は行を hydrate(fromIcs)するので、空 ICS ではなく妥当な本文が要る。
+		const bodyFor = (uid: string, kind: string) =>
+			kind === "VTODO"
+				? ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+				   "BEGIN:VTODO", `UID:${uid}`, "DTSTAMP:20260101T000000Z", "SUMMARY:t", "END:VTODO", "END:VCALENDAR"].join("\r\n")
+				: ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+				   "BEGIN:VEVENT", `UID:${uid}`, "DTSTAMP:20260101T000000Z",
+				   "DTSTART:20260106T090000Z", "DTEND:20260106T100000Z", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		const insert = async (
+			cid: string,
+			uri: string,
+			uid: string,
+			kind: string,
+			first: number | null,
+			last: number | null,
+		) => {
+			await env.DB.prepare(
+				`INSERT INTO calendar_objects(owner, collection_id, uri, etag, ics, component_kind, uid, updated_at, first_occurrence, last_occurrence)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).bind(owner, cid, uri, `etag-${uid}`, bodyFor(uid, kind), kind, uid, Date.now(), first, last).run();
+		};
+		// work: 窓内に収まる VEVENT。
+		await insert("owner-tr-work", "w.ics", "w-evt", "VEVENT", Date.UTC(2026, 0, 6, 9), Date.UTC(2026, 0, 6, 10));
+		// home: bounds NULL(未索引)の VEVENT → 常に候補に含まれるべき。
+		await insert("owner-tr-home", "h.ics", "h-evt", "VEVENT", null, null);
+		// work: 窓の外(前日で完結)の VEVENT → 除外されるべき。
+		await insert("owner-tr-work", "past.ics", "past-evt", "VEVENT", Date.UTC(2026, 0, 1, 9), Date.UTC(2026, 0, 1, 10));
+		// work: 別 component_kind(VTODO)→ VEVENT クエリでは除外されるべき。
+		await insert("owner-tr-work", "t.ics", "t-todo", "VTODO", null, null);
+
+		const repo = new D1CalendarObjectResourceRepository(env.DB);
+
+		// 全横断(collectionIds 省略)。
+		const all = await repo.findByOwnerTimeRange(owner, "VEVENT", windowStart, windowEnd);
+		const byUid = new Map(all.map((m) => [m.resource.uid, m.collectionId]));
+		expect([...byUid.keys()].sort()).toEqual(["h-evt", "w-evt"]); // past-evt(窓外)/ t-todo(VTODO)は除外
+		expect(byUid.get("w-evt")).toBe(work); // collection_id 復元
+		expect(byUid.get("h-evt")).toBe(home); // NULL bounds でも含む + 復元
+
+		// collectionIds=[work] に絞ると home の h-evt は落ちる。
+		const workOnly = await repo.findByOwnerTimeRange(owner, "VEVENT", windowStart, windowEnd, [work]);
+		expect(workOnly.map((m) => m.resource.uid)).toEqual(["w-evt"]);
+
+		// 空配列は空結果(全横断に化けない)。
+		const none = await repo.findByOwnerTimeRange(owner, "VEVENT", windowStart, windowEnd, []);
+		expect(none).toEqual([]);
+	});
+});

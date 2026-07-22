@@ -62,7 +62,11 @@ import type { AffectedEvent, EventSnapshot } from "./events-view-model";
 import { buildEventEditedChanges, snapshotFromEvent } from "./events-diff";
 import {
 	CompleteTodo,
-	ComputeFreeBusy,
+	// レイテンシ案2(2026-07-22): 全横断/一部/単一を1 D1 往復で満たす across-owner 版へ移行。
+	// 旧 ComputeFreeBusy / ListOccurrences(単一コレクション専用)は application 層に第一級 UC として
+	// 残す(DAV REPORT 等の別入口が使う)が、MCP の list-events-expanded / get-freebusy はもう
+	// N 並列で呼ばない(server 側のマージ/coalesce も UC へ吸収)。
+	ComputeFreeBusyAcrossOwner,
 	CreateTodo,
 	DeleteCalendarObject,
 	DeleteETagMismatchError,
@@ -71,7 +75,7 @@ import {
 	DueTimeZoneRequiredError,
 	InvalidDueError,
 	InvalidTimeZoneError,
-	ListOccurrences,
+	ListOccurrencesAcrossOwner,
 	ListTodos,
 	MoveTodo,
 	MoveTodoSameCollectionError,
@@ -102,8 +106,7 @@ import {
 	// C5(設計 05): 既知の場所ツール。
 	ListKnownLocations,
 } from "../../application/usecases";
-import type { Occurrence, RecurrenceIterator } from "../../domain/ical/recurrence";
-import { coalesceBusyIntervals, type BusyInterval } from "../../domain/ical/freebusy";
+import type { RecurrenceIterator } from "../../domain/ical/recurrence";
 import type { CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
 import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } from "../../domain/caldav";
 // list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
@@ -895,6 +898,27 @@ async function resolveCollectionIds(
 }
 
 /**
+ * レイテンシ案2(2026-07-22): events/free-busy の全横断経路が使う「D1 を呼ばない」引数組み立て。
+ * resolveCollectionIds と同じ優先順位「calendarIds → calendarId → 全横断」だが、全横断を
+ * findAllByOwner で列挙せず **undefined**(= ports の findByOwnerTimeRange に「全横断」を意味させる)へ
+ * 畳む。これにより旧経路の①findAllByOwner + ②hydrate の sync_changes N+1 波を events/free-busy から
+ * 消し、③の time-range 取得を 1 クエリ(owner スコープ)に一本化する。
+ *
+ * 【空配列 [] の扱い】resolveCollectionIds と同じく length===0 は「指定なし」と区別できず全横断に
+ * 化けると事故る(表示フィルタが全 OFF のときに全部見えてしまう)ので、calendarIds は length>0 の
+ * ときだけ勝たせる。空配列は calendarId/全横断へフォールバックする(挙動を旧 resolveCollectionIds に
+ * 揃える — 回帰ガードの結果不変性を守る)。
+ */
+function collectionIdArg(
+	calendarId: string | undefined,
+	calendarIds?: string[],
+): CollectionId[] | undefined {
+	if (calendarIds !== undefined && calendarIds.length > 0) return calendarIds.map((id) => mkCollectionId(id));
+	if (calendarId !== undefined) return [mkCollectionId(calendarId)];
+	return undefined; // 全横断: findByOwnerTimeRange に collection_id 条件を付けさせない。
+}
+
+/**
  * list-todos の silent drop 対策(D 案)用: calendarId 省略呼び出しで「実際に見せたコレクション以外に
  * VTODO コレクションがまだ存在するか」を解決する。
  *
@@ -1211,40 +1235,25 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 			const { rangeStartMillis, rangeEndMillis, zone } = resolveRequestRange({ timeMin, timeMax, range, timeZone, nowMillis });
 				const limit = maxEvents ?? DEFAULT_MAX_EVENTS;
 
-				// calendarIds(複数指定)が来ていればその集合を、無ければ calendarId(単数)/全横断を解決する。
-				const collectionIds = await resolveCollectionIds(deps, principal, calendarId, calendarIds);
-				const listOccurrences = new ListOccurrences(deps.resourceRepo, deps.iterator);
-
-				// 複数コレクションをまたぐ場合はそれぞれ ListOccurrences を呼んでマージする
-				// (ListOccurrences 自体は単一コレクション専用。list-occurrences.ts のスコープ外
-				// コメントのとおり、複数コレクション横断はこの呼び出し側=MCP アダプタの責務)。
-				const entries: { uid: string; calendarId: CollectionId; occurrence: Occurrence }[] = [];
-				let truncated = false;
-				// 【2026-07-17 レイテンシ改善: コレクション横断を直列 → 並列(Promise.all)化】
-				// calendarId 省略時の既定呼び出しは findAllByOwner の全コレクション(実測 ~7 件)を横断する。
-				// 旧実装はこれを for-await で直列に叩いていたため、D1 プライマリ(APAC/HKG)から遠い colo
-				// (IAD 等)で実行されると「1 コレクション = 1 D1 往復(~150-200ms)」がそのまま N 回加算され、
-				// list-events-expanded が 1.2〜2.3s に達していた(observability 実測。SQL 自体は 0.46ms・
-				// データ 9 件でパース/展開は無罪=支配項は往復回数 × colo-D1 距離)。ListOccurrences は
-				// 単一コレクション専用で互いに独立(共有可変状態なし)なので Promise.all で一斉発行し、
-				// 直列往復 N を並列 1 段に畳む。結果順序は下の entries.sort で始点昇順に正規化するので、
-				// 並列で解決順が入れ替わっても最終出力は不変。truncated は OR で畳む。
-				const outs = await Promise.all(
-					collectionIds.map((cid) =>
-						listOccurrences.execute({
-							owner: principal,
-							collectionId: cid,
-							rangeStartMillis,
-							rangeEndMillis,
-							floatingTimeZone: zone,
-						}),
-					),
-				);
-				for (const out of outs) {
-					if (out.truncated) truncated = true;
-					entries.push(...out.occurrences);
-				}
-				entries.sort((a, b) => a.occurrence.startMillis - b.occurrence.startMillis);
+				// 【2026-07-22 レイテンシ案2: コレクション横断1クエリ化】
+				// 旧実装は ①resolveCollectionIds(findAllByOwner + hydrate の sync_changes N+1)→
+				// ②ListOccurrences を N 並列(各 1 D1 往復)、という 2 波の往復だった(2026-07-17 に②を
+				// 直列→並列化したが往復回数自体は N のまま)。calendar_objects は owner 列を持つ
+				// (migrations/0001)ので、全横断はコレクション列挙なしで 1 クエリに畳める。優先順位
+				// 「calendarIds → calendarId → 全横断」は D1 を呼ばない薄い引数組み立て(collectionIdArg)へ
+				// 退避し、全横断は undefined(= 全コレクション)として UC に渡す。マージ・始点昇順ソート・
+				// truncated の OR 畳み込みは ListOccurrencesAcrossOwner に内包した(server から消えた)。
+				const collectionIds = collectionIdArg(calendarId, calendarIds);
+				const listOccurrences = new ListOccurrencesAcrossOwner(deps.resourceRepo, deps.iterator);
+				const listed = await listOccurrences.execute({
+					owner: principal,
+					rangeStartMillis,
+					rangeEndMillis,
+					floatingTimeZone: zone,
+					collectionIds,
+				});
+				const entries = listed.occurrences;
+				let truncated = listed.truncated;
 
 				// maxEvents は MCP アダプタ側の露出制限(内部の LIST_OCCURRENCES_MAX_OCCURRENCES
 				// とは別の口。09 の「内部 maxOccurrences は露出しない」方針どおり、ここでだけ切る)。
@@ -1376,34 +1385,23 @@ function buildMcpServer(deps: McpAppDeps, principal: PrincipalRef, scopes: reado
 				const nowMillis = Date.now();
 				const { rangeStartMillis, rangeEndMillis, zone } = resolveRequestRange({ timeMin, timeMax, range, timeZone, nowMillis });
 
-				const collectionIds = await resolveCollectionIds(deps, principal, calendarId);
-				const computeFreeBusy = new ComputeFreeBusy(deps.resourceRepo, deps.iterator);
+				// 【2026-07-22 レイテンシ案2: list-events-expanded と同じくコレクション横断1クエリ化】
+				// 旧実装は resolveCollectionIds(findAllByOwner + N+1 hydrate)+ ComputeFreeBusy を N 並列 +
+				// server 側でもう一度 coalesceBusyIntervals、という構成だった。ComputeFreeBusyAcrossOwner が
+				// owner スコープの候補を 1 クエリで取り、横断 coalesce まで内包するので、server から
+				// マージ/coalesce の知識が消える(get-freebusy は calendarIds を受けないので calendarId/
+				// 全横断の 2 択。collectionIdArg に calendarIds を渡さず undefined フォールバックさせる)。
+				const collectionIds = collectionIdArg(calendarId);
+				const computeFreeBusy = new ComputeFreeBusyAcrossOwner(deps.resourceRepo, deps.iterator);
+				const fb = await computeFreeBusy.execute({
+					owner: principal,
+					rangeStartMillis,
+					rangeEndMillis,
+					floatingTimeZone: zone,
+					collectionIds,
+				});
 
-				// 【2026-07-17 レイテンシ改善: コレクション横断を直列 → 並列(Promise.all)化】
-				// list-events-expanded と同型の問題(D1 プライマリ遠方 colo での直列往復 ×N)。
-				// ComputeFreeBusy も単一コレクション専用で互いに独立なので一斉発行する。マージは下の
-				// coalesceBusyIntervals が全区間を集約するので解決順に依存しない(順序不変)。
-				const allIntervals: BusyInterval[] = [];
-				const fbOuts = await Promise.all(
-					collectionIds.map((cid) =>
-						computeFreeBusy.execute({
-							owner: principal,
-							collectionId: cid,
-							rangeStartMillis,
-							rangeEndMillis,
-							floatingTimeZone: zone,
-						}),
-					),
-				);
-				for (const out of fbOuts) {
-					allIntervals.push(...out.intervals);
-				}
-				// 複数コレクション分をマージしたら再度 coalesce する(単一コレクションの
-				// ComputeFreeBusy が返す結果はコレクション内で既に coalesce 済みだが、
-				// コレクションをまたいだ重複/連続はここで初めて解消できる)。
-				const merged = coalesceBusyIntervals(allIntervals);
-
-				const busy = merged.map((iv) => ({
+				const busy = fb.intervals.map((iv) => ({
 					start: epochToIso(iv.startMillis, zone),
 					end: epochToIso(iv.endMillis, zone),
 					type: iv.type,

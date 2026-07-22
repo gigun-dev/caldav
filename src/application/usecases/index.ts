@@ -102,6 +102,19 @@ export {
 	type ListOccurrencesEntry,
 } from "./list-occurrences";
 
+// 全横断1クエリ版(レイテンシ案2: list-events-expanded / get-freebusy の全横断/一部/単一を1 D1 往復で)
+export {
+	ListOccurrencesAcrossOwner,
+	type ListOccurrencesAcrossOwnerInput,
+	type ListOccurrencesAcrossOwnerOutput,
+	type ListOccurrencesAcrossOwnerEntry,
+} from "./list-occurrences-across-owner";
+export {
+	ComputeFreeBusyAcrossOwner,
+	type ComputeFreeBusyAcrossOwnerInput,
+	type ComputeFreeBusyAcrossOwnerOutput,
+} from "./compute-free-busy-across-owner";
+
 // 初期プロビジョニング
 export {
 	ProvisionDefaultCollections,

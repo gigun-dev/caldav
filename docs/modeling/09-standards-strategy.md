@@ -130,3 +130,26 @@ nextcloud/calendar#4436。
    段階(RFC Editor Queue)。
 4. web/PWA に標準カレンダー API が無い世界線が続く前提で、**「プロトコルレベルの
    フルアクセス + サーバー側意味計算」を製品価値の核**として押す(09 §3)。
+
+## 6. ユースケースの単一/横断2系統(2026-07-22 レイテンシ案2で追記)
+
+§5-2 の第一級ユースケース `ListOccurrences(range, tz)` / `ComputeFreeBusy(range)` は
+**単一コレクション専用**として実装した(DAV の calendar-query / free-busy-query REPORT は
+コレクション URL に対して1つ、という RFC 4791 の粒度に素直)。一方 MCP の
+list-events-expanded / get-freebusy は「calendarId 省略=カレンダーホーム全体を横断」が既定で、
+最初は presentation(server.ts)が単一 UC をコレクション数 N 回呼んでマージしていた。
+
+この N 回呼びは D1 往復を 3 波(①コレクション列挙 findAllByOwner + ②各コレクションの
+sync_changes hydrate N+1 + ③各コレクションの time-range 取得 N 並列)に膨らませ、D1 プライマリから
+遠い colo でレイテンシ主因になっていた。calendar_objects は owner 列を持つ(migrations/0001)ため、
+**全横断はコレクション列挙なしで owner スコープの1クエリに畳める**。そこで横断専用の姉妹 UC を追加した:
+
+- **ListOccurrencesAcrossOwner** — owner 配下の VEVENT を1クエリ展開。occurrence ごとに
+  由来コレクション(calendarId)を併記して始点昇順マージ・truncated を OR 畳み込み。
+- **ComputeFreeBusyAcrossOwner** — 同じく1クエリで busy を集計し、コレクションをまたいだ
+  区間を末尾で横断 coalesce まで内包(旧 server.ts の手動 coalesce を吸収)。
+
+ポートは `findByOwnerTimeRange(owner, kind, start, end, collectionIds?)`(undefined=全横断 /
+集合=一部 / []=空)を追加。展開ループは両横断 UC で共有ヘルパー expandOwnerOccurrences に一本化した。
+**単一 UC(ListOccurrences / ComputeFreeBusy)は DAV REPORT の第一級実装として不変のまま残す**
+(RFC 粒度に対応する表面と、agentic の「全部見せる」表面を別 UC として疎結合に保つ)。
