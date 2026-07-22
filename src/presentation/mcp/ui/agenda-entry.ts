@@ -2455,7 +2455,13 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 	const save = document.createElement("button");
 	save.type = "button";
 	save.className = "link link-save";
-	save.textContent = "保存";
+	// 【2026-07-22 main 裁定・todos-entry.ts の作成ボタン改称に追随】従来は create/edit 共通で
+	// 「保存」固定だったが、todos 側で新規作成の確定ボタンを iOS 準拠の「追加」へ改称した(下の
+	// back の isCreate 分岐と同様、この画面も create/edit で意味が違う)。agenda(予定)には
+	// todos の「完了」に相当する完了概念が無い(イベントは完了しない)ため、todos のように
+	// 「追加/完了」の二択にはせず、編集モードは従来通り「保存」を維持し、作成モードだけ「追加」にする。
+	save.textContent = isCreate ? "追加" : "保存";
+	save.setAttribute("aria-label", isCreate ? "この内容で追加" : "編集を保存して一覧へ戻る");
 	save.addEventListener("click", () => {
 		if (isCreate) {
 			const title = d.title.trim();

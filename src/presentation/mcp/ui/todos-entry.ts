@@ -2087,10 +2087,15 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	// (collectSheetChanges + saveEdit)。狙いは、行選択中に出る sticky ヘッダの「完了」と
 	// page-head の「保存」が別語彙で並ぶ紛らわしさを断ち、「完了 = このカードでの編集を確定」に
 	// 語彙を一本化すること(selectedId 未クリアバグ根治と併せて二重表示自体も消える)。
-	// 作成モードは「完了」だと "タスク完了" と紛れるため「保存」を維持する(create の確定は
-	// タスクの新規作成であって完了操作ではない — 語の衝突を避ける判断。親レビューの論点)。
-	save.textContent = isCreate ? "保存" : "完了";
-	save.setAttribute("aria-label", isCreate ? "この内容で作成" : "編集を保存して一覧へ戻る");
+	// 作成モードは「完了」だと "タスク完了" と紛れるため、当初は「保存」にしていた(create の確定は
+	// タスクの新規作成であって完了操作ではない — 語の衝突を避ける判断)。
+	// 【2026-07-22 main 裁定で「追加」へ再変更】「保存」は上の「戻る」行が編集モードで
+	// 「保存して戻る」に上書き済みのため、作成モードで見ると「保存」だけが編集モード語彙の生き残りに
+	// 見えて紛らわしい。iOS のカレンダー/連絡先/リマインダーの新規作成シートは軒並み
+	// 「追加」(Add)を確定ボタンに使っており、それに揃える。「完了」との二重意味懸念は
+	// 引き続き妥当なため、作成モードには使わず「追加」を採用(完了とも保存とも被らない第三の語)。
+	save.textContent = isCreate ? "追加" : "完了";
+	save.setAttribute("aria-label", isCreate ? "この内容で追加" : "編集を保存して一覧へ戻る");
 	save.addEventListener("click", () => {
 		if (isCreate) {
 			// 作成モードの「保存」= create-todo に全フィールドを渡す(既存 optimisticRows 経路 + 詳細フィールド)。
