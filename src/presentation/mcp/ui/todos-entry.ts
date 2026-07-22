@@ -1671,15 +1671,30 @@ function startDraft(focusDelayMs = 0): void {
 	renderAll();
 	// renderRow が selTitleInput をセットするので、renderAll 後にフォーカスできる(選択行と同じ流儀)。
 	if (focusDelayMs <= 0) {
-		if (selTitleInput !== null) selTitleInput.focus();
+		focusDraftTitle();
 		return;
 	}
 	setTimeout(() => {
 		// 遅延中にユーザーが別操作(選択解除・別行選択)をしたら奪わない(selectedId が draft のままの
 		// ときだけフォーカスする)。draft は startDraft 呼び出しごとに新 id なのでクロージャで捕まえる。
 		const draftId = draft?.id ?? null;
-		if (draftId !== null && selectedId === draftId && selTitleInput !== null) selTitleInput.focus();
+		if (draftId !== null && selectedId === draftId) focusDraftTitle();
 	}, focusDelayMs);
+}
+
+/** ドラフト行のタイトル input へフォーカスし、行を可視域へスクロールする(startDraft の下請け)。
+ *  【なぜ scrollIntoView が要るか(2026-07-18 実機FB「全画面だとスクロールが一切発火しない」)】
+ *  ドラフト行は一覧の**末尾**に生えるので、fullscreen(全件表示・内部スクロール #root.fullscreen-scroll)
+ *  ではタスクが多いと画面外の下にいる。WKWebView はプログラム的 focus() では caret への自動スクロールが
+ *  走らない(ユーザー操作起点の focus と挙動が違う)ため、明示的に scrollIntoView する。
+ *  block:"center" なのは、末尾行ゆえ "nearest" だと画面最下端=直後にせり上がるキーボードの裏に
+ *  来るため(中央なら実機のどのキーボード高さでも隠れない)。inline(内部スクロール無効・カード全高が
+ *  常に見える)では scrollIntoView は実質 no-op で無害 — inline のカード下端可視化はホスト側
+ *  InlineCardKeyboardAvoider の責務(責務分界: カードは自分の中を、ホストは会話の中のカードを動かす)。 */
+function focusDraftTitle(): void {
+	if (selTitleInput === null) return;
+	selTitleInput.focus();
+	selTitleInput.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 /** ドラフト行での Enter = 「確定して追加モードを終える」(= 完了ボタン header-done と同一挙動)。
@@ -2863,8 +2878,10 @@ function renderAll(): void {
 let cachedActionRowBlockPx: number | null = null;
 
 // 直近の描画で inline プレビューを実際に畳んだ(アクション行左に「他 N件」を出した)か。
-// applyInlineFold が毎描画で設定し、⊕(旧 FAB・現 action-add)ハンドラが「折り畳み中の追加は
-// fullscreen へ昇格してから」の判定に読む(宣言は applyInlineFold のコメント参照)。
+// applyInlineFold が毎描画で設定する。【2026-07-18 追更新: ⊕ の昇格判定からは外れた】旧仕様では
+// ⊕ ハンドラが「折り畳み中の追加だけ fullscreen へ昇格」の条件に読んでいたが、追加は常時昇格へ
+// 統一した(triggerQuickAdd のコメント参照)ため現在読む者はいない。畳み状態の記録として残す
+// (将来「畳み中だけ挙動を変える」判断が再び要るときの足場・消すのは容易)。
 let lastFoldActive = false;
 
 // 【2026-07-17 実機 FB: 選択(編集モード)で inline プレビューの表示件数が減るバグの根治】
@@ -4227,18 +4244,20 @@ function triggerQuickAdd(): void {
 	draft = null;
 	selectedId = null;
 
-	// 【折り畳み中の追加は fullscreen へ昇格してから(2026-07-17 実機FB・ユーザー提案)】
-	// inline プレビューは上位 N 件だけを見せる truncate なので、畳んだ状態で新規行を足すと
-	// (1) 新規行が top-N の窓の外にソートされてフッタ「他 N件」の下に出る不自然さ、
-	// (2) 追加確定後にその行が畳みに飲まれて見えなくなる、という2つの破綻が起きる(実機FB)。
-	// 並び順やピン留めで inline のまま辻褄を合わせるより、「全件表示+スクロールできる fullscreen へ
-	// 上げてから追加する」方が単純で自然(iOS リマインダーでも新規追加は全件の見える文脈で行う)。
-	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから startDraft する
-	// (applyInlineFold は inline でなくなり畳まないので、新規行が全件の末尾に見えたまま残る)。
+	// 【追加は常に fullscreen へ昇格してから(2026-07-18 実機FB「ここ矛盾が多い」で常時昇格へ統一)】
+	// 旧仕様は「折り畳み中(lastFoldActive)だけ昇格・畳みが無ければ inline のままドラフト行」だった
+	// (2026-07-17 ユーザー提案「収納状態で add が押されたら fullscreen」由来)。しかしホスト側の
+	// 可視高レース修正で maxHeight が正しく大きくなった結果、畳みが発生せず inline 追加になる頻度が
+	// 上がり、(1) inline 追加はキーボード回避のスクロール量が足りずタイトルが隠れる、(2) agenda の
+	// ⊕ は常時昇格なのに todos だけ条件分岐、という矛盾が実機で露呈した。inline 追加の
+	// キーボード問題をホスト側回避量の調整で追うより、「追加は常に全件の見える fullscreen で行う」に
+	// 統一する方が単純(iOS リマインダーも新規追加は全件の見える文脈・agenda と挙動も揃う)。
+	// 旧・畳み時の破綻理由(top-N 窓の外へソートされる/追加後に畳みへ飲まれる)は常時昇格でも
+	// 引き続き回避される(lastFoldActive はこの判定から外れたが、畳み描画自体の記録として残す)。
+	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから startDraft する。
 	// 昇格不可(ホストが fullscreen 非対応=canRequestFullscreen false)や拒否/失敗のときは inline の
-	// まま追加へフォールバックする(この経路でも draft 行は section 外の ul なので畳み対象外=消えはしない。
-	// フッタとの上下は fullscreen 非対応ホストでのみ残る軽微な既知事項)。
-	if (lastFoldActive && canRequestFullscreen(hostAvailableDisplayModes)) {
+	// まま追加へフォールバックする(この経路でも draft 行は section 外の ul なので畳み対象外=消えはしない)。
+	if (canRequestFullscreen(hostAvailableDisplayModes)) {
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
 			.then(() => {
