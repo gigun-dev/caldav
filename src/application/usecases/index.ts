@@ -130,6 +130,7 @@ export {
 export {
 	UpdateCollectionProperties,
 	type UpdateCollectionPropertiesInput,
+	type UpdateCollectionPropertiesOutput,
 } from "./update-collection-properties";
 
 // Task DTO(E-2 UI-ready。CreateTodo/ListTodos 共通)

@@ -194,7 +194,9 @@ describe("/mcp", () => {
 	// 入り口。docs/modeling/14)を追加したため 20→23 に更新。
 	// 2026-07-23 R2 追記: list-deleted/restore-deleted(ソフトデリートのゴミ箱一覧 + 復元。
 	// docs/modeling/15 §A-3 R2)を追加したため 23→25 に更新。
-	it("正しい Bearer で tools/list に25ツールが並ぶ(R2 list-deleted/restore-deleted 追加分)", async () => {
+	// 2026-07-23 K2 追記: update-calendar(list-calendars/create-calendar/delete-calendar の対を
+	// 埋める。MCP から表示名/色を変更できるようにした)を追加したため 25→26 に更新。
+	it("正しい Bearer で tools/list に26ツールが並ぶ(K2 update-calendar 追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -223,6 +225,7 @@ describe("/mcp", () => {
 			"refresh-events",
 			"refresh-todos",
 			"restore-deleted",
+			"update-calendar",
 			"update-event",
 			"update-todo",
 		]);
@@ -264,6 +267,14 @@ describe("/mcp", () => {
 		});
 		// propose-delete-* は副作用が無いので readOnlyHint:true(猶予期間中も正しく申告する)。
 		expect(byName.get("propose-delete-todo")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+		// update-calendar(K2): destructiveHint:true・idempotentHint:true(値は delete 系と同じだが
+		// 意味付けは独立に決めている — server.ts UPDATE_CALENDAR_ANNOTATIONS コメント参照)。
+		expect(byName.get("update-calendar")?.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: true,
+			openWorldHint: false,
+		});
 	});
 
 	it("initialize が単発でも成功する(stateless transport)", async () => {
@@ -737,6 +748,102 @@ describe("/mcp", () => {
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
+		});
+	});
+
+	// 2026-07-23 K2: update-calendar(list-calendars/create-calendar/delete-calendar の対を埋める。
+	// UpdateCollectionProperties UC を MCP から露出。DAV PROPPATCH(app.ts)と同じ UC を別入口から呼ぶ)。
+	describe("update-calendar", () => {
+		it("displayName のみ変更できる", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "work", displayName: "Job" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent).toEqual({
+				id: "work",
+				displayName: "Job",
+				components: ["VEVENT", "VTODO", "VJOURNAL"],
+			});
+			expect((await repos.collections.findById(OWNER, collectionId("work")))?.displayName).toBe("Job");
+		});
+
+		it("color のみ変更できる", async () => {
+			repos.collections.seed(
+				new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work", color: AppleColor.parse("#111111") }),
+			);
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "work", color: "#00FF00" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent).toEqual({
+				id: "work",
+				displayName: "Work",
+				components: ["VEVENT", "VTODO", "VJOURNAL"],
+				color: "#00FF00",
+			});
+		});
+
+		it("displayName/color を両方変更できる", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "work", displayName: "Job", color: "#0000FF" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			expect(rpc.result.structuredContent).toEqual({
+				id: "work",
+				displayName: "Job",
+				components: ["VEVENT", "VTODO", "VJOURNAL"],
+				color: "#0000FF",
+			});
+		});
+
+		it("不正な color は isError(AppleColor.parse のバリデーション)", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "work", color: "not-a-color" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("存在しない calendarId は isError(CollectionNotFoundError)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "no-such-calendar", displayName: "X" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+		});
+
+		it("displayName/color 両方省略は no-op エラー", async () => {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("work"), owner: OWNER, displayName: "Work" }));
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "update-calendar", arguments: { id: "work" } },
+			});
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBe(true);
+			expect(rpc.result.content[0].text).toContain("変更する項目");
 		});
 	});
 
