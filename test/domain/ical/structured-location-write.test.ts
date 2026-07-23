@@ -198,4 +198,47 @@ describe("patchVEventFields: structuredLocation の三値 patch", () => {
 		const patched = patchVEventFields(vevent, { summary: "タイトルだけ変更" });
 		expect(readStructuredLocation(patched)!.title).toBe("元の場所");
 	});
+
+	// #45 スライス B: geo 無しの設定 = degrade。LOCATION に title(+住所)を書き、既存の
+	// X-APPLE-STRUCTURED-LOCATION(古い座標)は除去する(残留すると別地点のピンが残る)。
+	test("geo 無しの StructuredLocationInput で設定すると degrade(LOCATION に住所併記・X-APPLE-STRUCTURED-LOCATION 除去)", () => {
+		const calendar = buildBase();
+		const vevent = ICalendarObject.fromComponent(calendar).events()[0]!.raw;
+		const patched = patchVEventFields(vevent, { structuredLocation: { title: "住所だけの場所", address: "岐阜県岐阜市柳戸1-1" } });
+		// 古い座標(X-APPLE-STRUCTURED-LOCATION)は消える。
+		expect(readStructuredLocation(patched)).toBeNull();
+		// LOCATION は title + 住所を改行で併記(structuredLocationDegradeText)。
+		expect(patched.properties.find((p) => p.name === "LOCATION")?.value).toBe("住所だけの場所\\n岐阜県岐阜市柳戸1-1");
+	});
+});
+
+describe("buildVEventCalendar: structuredLocation の geo 無し degrade(#45 スライス B)", () => {
+	test("geo(lat/lon)無しなら X-APPLE-STRUCTURED-LOCATION を書かず LOCATION に title だけ書く", () => {
+		const component = buildVEventCalendar({
+			uid: "ev-degrade",
+			now: NOW,
+			summary: "座標なしの予定",
+			start: { type: "DATE", raw: "20260718" },
+			structuredLocation: { title: "どこかの店" },
+		});
+		const ev = ICalendarObject.fromComponent(component).events()[0]!;
+		expect(ev.location).toBe("どこかの店");
+		// X-APPLE-STRUCTURED-LOCATION は書かれない(value 本体の geo URI を作れないため)。
+		expect(readStructuredLocation(ev.raw)).toBeNull();
+	});
+
+	test("geo 無し + 住所ありなら LOCATION に title と住所を改行併記する", () => {
+		const component = buildVEventCalendar({
+			uid: "ev-degrade2",
+			now: NOW,
+			summary: "住所つき",
+			start: { type: "DATE", raw: "20260718" },
+			structuredLocation: { title: "叙々苑 品川店", address: "東京都港区高輪4-10-30" },
+		});
+		const ev = ICalendarObject.fromComponent(component).events()[0]!;
+		// ev.location は VEvent レンズの生値(未 decode)。encodeText で実改行が "\n"(バックスラッシュ+n)へ
+		// エスケープされた形で入る(Event DTO 側では decodeText されて実改行に戻る — application 層のテストで検証)。
+		expect(ev.location).toBe("叙々苑 品川店\\n東京都港区高輪4-10-30");
+		expect(readStructuredLocation(ev.raw)).toBeNull();
+	});
 });

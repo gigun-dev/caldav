@@ -68,11 +68,15 @@ import {
 import {
 	AnalyticsEngineTelemetryAdapter,
 	createD1Repositories,
+	D1GeocodingQuotaStore,
+	GooglePlacesGeocodingAdapter,
 	IcaljsRRuleIterator,
 	NoopTelemetryAdapter,
 	OAuthPropsAuth,
 	type OAuthPrincipalProps,
 } from "./infrastructure";
+// #45 場所モデル: Google Places アダプタを月次 quota デコレータで包む(application 層の横断的関心事)。
+import { QuotaLimitedGeocoding } from "./application";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
 import { createMcpApp } from "./presentation/mcp/server";
@@ -884,6 +888,20 @@ export const mcpApiApp = new Hono<{ Bindings: CloudflareBindings }>().route(
 			// 使わない利用者は env.TELEMETRY を bind しなければ自然に no-op へ落ちる
 			// (infrastructure/telemetry/noop-telemetry.ts 冒頭コメント参照)。
 			telemetry: env.TELEMETRY !== undefined ? new AnalyticsEngineTelemetryAdapter(env.TELEMETRY) : new NoopTelemetryAdapter(),
+			// #45 場所モデル: geocoding。Google Places アダプタ(env.GOOGLE_MAPS_API_KEY で認証・空文字なら
+			// 呼び出し時に GeocodingNotConfiguredError へ縮退)を、月次 quota デコレータ(D1 カウンタ)で包む。
+			// 【上限の既定 1000 の根拠(コーディネータ一次資料 2026-07-23)】geocoding は Google Places
+			// Text Search で displayName/formattedAddress/location を要求する = Text Search **Pro** SKU
+			// (developers.google.com/maps/billing-and-pricing/sku-details)。Pro の無料枠は月 5,000 コール、
+			// 超過は $9.60〜25.60/1,000(同/pricing)。既定 1000 は無料枠 5,000 の 20% に当たる保守的な
+			// マージンで、想定利用(単一ユーザーの場所解決)なら十分に収まりつつ、万一の暴走でも無料枠内で
+			// 打ち止まる。env.GEOCODING_MONTHLY_LIMIT で上書き可能(数値化できない値は既定に倒す)。
+			geocoding: (() => {
+				const parsed = Number(env.GEOCODING_MONTHLY_LIMIT);
+				const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
+				const google = new GooglePlacesGeocodingAdapter(env.GOOGLE_MAPS_API_KEY ?? "");
+				return new QuotaLimitedGeocoding(google, new D1GeocodingQuotaStore(env.DB), limit);
+			})(),
 		};
 	}),
 );

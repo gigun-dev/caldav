@@ -111,11 +111,22 @@ describe("structuredToLocationPickerValue", () => {
 		});
 	});
 
-	test("geo 無し構造化場所は place として表現できないので degrade して null", () => {
-		// structuredLocationInputSchema は lat/lon 必須だが、既存データに geo 無しの混在があり得る
-		// (location-picker.ts の関数コメント参照)。トリガ行は「未選択」に見えるだけで、location
-		// フィールド自体は消えない(このケースは呼び出し側 makeSheetDraft の責務外)。
-		const structured = { title: "岐阜大学", address: null, geo: null, radiusMeters: null };
+	// #45 スライス B/C: structuredLocation の lat/lon が optional になったので、geo 無し構造化場所も
+	// place として復元できる(lat/lon は null。保存時に degrade で省かれる)。以前は null(未選択)扱いだった。
+	test("geo 無し構造化場所は place(lat/lon=null)として復元される", () => {
+		const structured = { title: "岐阜大学", address: "岐阜県岐阜市柳戸1-1", geo: null, radiusMeters: null };
+		expect(structuredToLocationPickerValue(structured, null)).toEqual({
+			kind: "place",
+			title: "岐阜大学",
+			address: "岐阜県岐阜市柳戸1-1",
+			lat: null,
+			lon: null,
+			radius: null,
+		});
+	});
+
+	test("title すら無い構造化場所は place にできず null(会議も無ければ未選択)", () => {
+		const structured = { title: null, address: null, geo: null, radiusMeters: null };
 		expect(structuredToLocationPickerValue(structured, null)).toBeNull();
 	});
 

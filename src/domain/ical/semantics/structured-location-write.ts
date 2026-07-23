@@ -33,16 +33,53 @@ import { VIDEO_CALL_BLOCK_RE, HTTP_URL_RE } from "./structured-location";
 
 /**
  * structuredLocation 入力(C8・create/update-event の shape から渡される)。
- * read 側 StructuredLocation(全フィールド nullable)とは非対称: write は「これから設定する値」
- * なので lat/lon(geo)と title は必須(geo の無い structured location は意味を成さない・
- * タイトルが無いと LOCATION 表示テキストが空になる)。
+ * title は必須(LOCATION 表示テキストの本体になるため)。
+ *
+ * 【#45 スライス B: lat/lon を optional に緩和した(geo 無し = 住所のみ受理)】
+ * 以前は lat/lon が必須だった(geo の無い structured location は意味を成さない、という判断)。
+ * しかし search-location で座標を解決できないケース(住所は分かるが geocoding が0件・枠切れ・
+ * キー未設定)でも「title と住所だけで登録したい」需要がある。そこで geo(lat/lon)を optional にし、
+ * geo 無しのときは **X-APPLE-STRUCTURED-LOCATION を書かず LOCATION に degrade する**
+ * (X-APPLE-STRUCTURED-LOCATION の value 本体は `geo:lat,lon` URI なので、geo が無いと value を
+ * 作れない = プロパティ自体が成立しない。RFC 的にも geo URI 抜きの X-APPLE-STRUCTURED-LOCATION は
+ * 無意味なので、書かずに LOCATION テキスト側へ住所を併記するのが安全 — 詳細は buildStructuredLocation-
+ * Property / structuredLocationHasGeo / structuredLocationDegradeText の各コメント)。
+ * lat/lon は「両方あるか両方無いか」のどちらか(片方だけの部分 geo は不正 — 検証は application 層の
+ * validateStructuredLocation が担う。ここは型として optional にするだけ)。
  */
 export interface StructuredLocationInput {
 	title: string;
 	address?: string;
-	lat: number;
-	lon: number;
+	lat?: number;
+	lon?: number;
 	radius?: number;
+}
+
+/**
+ * #45 スライス B: この入力が geo(lat/lon 両方)を持つか。持つときだけ X-APPLE-STRUCTURED-LOCATION を
+ * 書き、持たないときは LOCATION への degrade に倒す(write 側の分岐の単一情報源)。
+ * 片方だけ(部分 geo)は false 扱いにして degrade へ倒す(application 層で弾かれる前提だが、防御的に)。
+ */
+export function structuredLocationHasGeo(loc: StructuredLocationInput): boolean {
+	return typeof loc.lat === "number" && typeof loc.lon === "number";
+}
+
+/**
+ * #45 スライス B: geo 無しのときに LOCATION プロパティへ書く表示テキストを作る degrade 表現。
+ * title を主に、住所(address)があれば改行で併記する(「title\naddress」)。
+ *
+ * 【なぜ address を LOCATION に畳み込むか】geo 無しでは X-APPLE-STRUCTURED-LOCATION を書けず、
+ * address を運ぶ他のプロパティが無い(X-ADDRESS は X-APPLE-STRUCTURED-LOCATION のパラメータで、
+ * 親プロパティ抜きには置けない)。LOCATION は自由記述 TEXT(§3.8.1.7)なので、title と住所を
+ * 1つのテキストに畳んでおけば「場所名 + 住所」の情報を失わずに済む(iOS のイベント詳細では
+ * LOCATION テキストとして1行/複数行表示される。geo が無いので地図ピンは付かないが、これは
+ * 座標が取れなかった degrade の受容できる帰結)。title と address が同一なら重複を避けて title のみ。
+ */
+export function structuredLocationDegradeText(loc: StructuredLocationInput): string {
+	if (loc.address !== undefined && loc.address !== "" && loc.address !== loc.title) {
+		return `${loc.title}\n${loc.address}`;
+	}
+	return loc.title;
 }
 
 // X-APPLE-STRUCTURED-LOCATION は URI 値型(実データ VALUE=URI 明示。§1-b)。
@@ -57,6 +94,13 @@ const VALUE_URI_PARAM: Parameter = { name: "VALUE", values: ["URI"] };
  * X-APPLE-RADIUS は数値をそのまま文字列化(read 側 parseRadiusMeters の逆)。
  */
 export function buildStructuredLocationProperty(loc: StructuredLocationInput): Property {
+	// #45 スライス B: geo 無しでここに来るのは呼び出し側のバグ(write 側は structuredLocationHasGeo で
+	// 分岐して geo 有りのときだけ呼ぶ契約)。value 本体の geo:lat,lon URI を作れないので防御的に throw する
+	// (黙って壊れた `geo:undefined,undefined` を書かない — vevent-write の「表現できない入力を黙って
+	// 壊さない」方針と同じ)。
+	if (!structuredLocationHasGeo(loc)) {
+		throw new Error("buildStructuredLocationProperty: lat/lon required (geo-less input must degrade to LOCATION)");
+	}
 	const parameters: Parameter[] = [VALUE_URI_PARAM, { name: "X-TITLE", values: [encodeText(loc.title)] }];
 	if (loc.address !== undefined && loc.address !== "") {
 		parameters.push({ name: "X-ADDRESS", values: [encodeText(loc.address)] });

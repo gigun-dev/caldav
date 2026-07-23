@@ -29,6 +29,8 @@ import { buildStartRelativeAlarm, isStartRelativeAlarm } from "./vevent-alarm";
 import {
 	removeStructuredLocationProperty,
 	upsertStructuredLocationProperty,
+	structuredLocationHasGeo,
+	structuredLocationDegradeText,
 	type StructuredLocationInput,
 } from "./structured-location-write";
 import { type CalDateTime } from "../values/cal-date-time";
@@ -182,9 +184,15 @@ export function patchVEventFields(vevent: Component, fields: VEventPatchFields):
 	if (fields.structuredLocation !== undefined) {
 		if (fields.structuredLocation === null) {
 			out = removeStructuredLocationProperty(out);
-		} else {
+		} else if (structuredLocationHasGeo(fields.structuredLocation)) {
 			out = upsertProperty(out, "LOCATION", encodeText(fields.structuredLocation.title));
 			out = upsertStructuredLocationProperty(out, fields.structuredLocation);
+		} else {
+			// #45 スライス B: geo 無しの設定 = degrade。LOCATION に title(+住所)を書き、既存の
+			// X-APPLE-STRUCTURED-LOCATION(古い座標)は除去する(新しい場所に座標が無いのに古い geo が
+			// 残ると「別地点のピン」が残留する事故になる。geo 無しへ差し替える = 構造化データを消す、が正)。
+			out = upsertProperty(out, "LOCATION", encodeText(structuredLocationDegradeText(fields.structuredLocation)));
+			out = removeStructuredLocationProperty(out);
 		}
 	}
 

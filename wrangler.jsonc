@@ -19,7 +19,12 @@
   // 動き続ける(設定漏れで本番の該当機能だけ静かに壊れる事故を構造的に防ぐ。CONFIRM_SECRET 未設定だと
   // delete 系が安全側全拒否になる、を deploy 失敗として顕在化させる)。wrangler types の型生成もここが正。
   "secrets": {
-    "required": ["CALDAV_PASSWORD", "PROXY_SHARED_SECRET", "MCP_TOKEN", "CONFIRM_SECRET"]
+    // #45 場所モデル: GOOGLE_MAPS_API_KEY(geocoding = Google Places Text Search)を追加。未設定でも
+    // Worker 起動・他ツールは正常(search-location 呼び出し時のみ縮退エラー — google-places-geocoding.ts)
+    // だが、本番で geocoding を静かに壊さないよう required に載せて「未設定 deploy を失敗として顕在化」
+    // させる(CONFIRM_SECRET と同じ運用思想)。GEOCODING_MONTHLY_LIMIT は秘密ではない var なので
+    // required には入れない(未設定時は app.ts が既定 1000 を使う縮退)。
+    "required": ["CALDAV_PASSWORD", "PROXY_SHARED_SECRET", "MCP_TOKEN", "CONFIRM_SECRET", "GOOGLE_MAPS_API_KEY"]
   },
   "vars": {
     // 公開してよいログイン名。パスワードとプロキシ共有鍵は Wrangler secret に置く。

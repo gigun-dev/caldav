@@ -35,6 +35,9 @@ export * from "./authentication";
 // 観測基盤 v1: MCP ツール呼び出しの計測ポート(TelemetryPort / TelemetryEvent)。
 // 契約の詳細は telemetry.ts のコメントを参照。
 export * from "./telemetry";
+// #45 場所モデル: geocoding ポート(GeocodingPort / LocationCandidate)+ 月次 quota ポート
+// (GeocodingQuotaStore)+ 型付きエラー。契約の詳細は geocoding.ts のコメントを参照。
+export * from "./geocoding";
 import type { ComponentKind } from "../../domain/caldav";
 import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 

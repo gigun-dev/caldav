@@ -11,3 +11,5 @@ export * from "./usecases";
 // time/ — 時刻グラウンディング補助(相対レンジ enum → 絶対 epoch 範囲の純関数解決)。
 // ports/usecases とは別カテゴリ(ユースケースクラスではない純関数)なので個別 re-export する。
 export * from "./time/relative-range";
+// geocoding/ — GeocodingPort に月次 quota ガードを被せるデコレータ(#45 追加要件)。
+export * from "./geocoding/quota-limited-geocoding";

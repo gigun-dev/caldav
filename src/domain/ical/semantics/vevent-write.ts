@@ -34,7 +34,12 @@ import { appendSubComponent, upsertProperty } from "../structure/edit";
 import { encodeText } from "../values/text-value";
 import { formatRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
 import { buildStartRelativeAlarm } from "./vevent-alarm";
-import { upsertStructuredLocationProperty, type StructuredLocationInput } from "./structured-location-write";
+import {
+	upsertStructuredLocationProperty,
+	structuredLocationHasGeo,
+	structuredLocationDegradeText,
+	type StructuredLocationInput,
+} from "./structured-location-write";
 import type { NowStamp } from "./vtodo-stamp";
 
 // PRODID(§3.7.3)。vtodo-write.ts の局所定数と同値(サーバー発 ICS の product identifier は
@@ -179,11 +184,17 @@ export function buildVEventCalendar(fields: VEventFields): Component {
 		vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.location));
 	}
 	if (fields.structuredLocation !== undefined) {
-		// author 規約(設計 05 §1-b): LOCATION は structuredLocation.title で(上書き含め)確定させ、
-		// X-APPLE-STRUCTURED-LOCATION を additive に足す。location フィールドの後に適用するので
-		// 両方渡された場合は structuredLocation が勝つ(VEventFields.structuredLocation コメント参照)。
-		vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.structuredLocation.title));
-		vevent = upsertStructuredLocationProperty(vevent, fields.structuredLocation);
+		// author 規約(設計 05 §1-b): LOCATION は structuredLocation 側で(上書き含め)確定させる。
+		// location フィールドの後に適用するので、両方渡された場合は structuredLocation が勝つ。
+		// #45 スライス B: geo(lat/lon)が有るときだけ X-APPLE-STRUCTURED-LOCATION を additive に足す。
+		// geo 無しは degrade — X-APPLE-STRUCTURED-LOCATION(value = geo:lat,lon URI)を書かず、LOCATION に
+		// title(+住所)だけを併記する(structuredLocationDegradeText。geo が取れなかった住所のみ登録)。
+		if (structuredLocationHasGeo(fields.structuredLocation)) {
+			vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.structuredLocation.title));
+			vevent = upsertStructuredLocationProperty(vevent, fields.structuredLocation);
+		} else {
+			vevent = upsertProperty(vevent, "LOCATION", encodeText(structuredLocationDegradeText(fields.structuredLocation)));
+		}
 	}
 	if (fields.url !== undefined && fields.url !== "") {
 		// URL は URI 値型(§3.8.4.6)なので encodeText しない(生値のまま。VEventFields.url コメント参照)。

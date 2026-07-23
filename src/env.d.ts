@@ -20,6 +20,17 @@ declare global {
 		// 型は「必須の string」にするが、未設定(空文字)は server.ts 側でランタイムに検出して
 		// propose-* をエラーにする(空鍵で誰でも通る事故を防ぐ — MCP_TOKEN と同じガード思想)。
 		CONFIRM_SECRET: string;
+		// #45 場所モデル: Google Maps Places API キー(secret)。wrangler.jsonc の secrets.required に
+		// 載せる(CONFIRM_SECRET と同じ扱い)が、未設定(空文字)でも Worker 起動・他ツールは正常で、
+		// search-location ツールを呼んだときだけ GeocodingNotConfiguredError に縮退する
+		// (infrastructure/geocoding/google-places-geocoding.ts の縮退方針)。本番は
+		// `wrangler secret put GOOGLE_MAPS_API_KEY`・dev/テストは .dev.vars / .secrets.local.json。
+		GOOGLE_MAPS_API_KEY: string;
+		// #45 追加要件: geocoding の月次上限(env で設定可能)。未設定時は app.ts が既定 1000 を使う
+		// (Text Search Pro の無料枠 月5,000 の 20% 保守マージン — 根拠は app.ts の wiring コメント)。
+		// var(秘密ではない)扱い。wrangler types 再生成前でも tsc を通すため任意 var として手書きする
+		// (DUMP_DAV_REQUESTS と同じ扱い。値は文字列で来るので app.ts で Number 化する)。
+		GEOCODING_MONTHLY_LIMIT?: string;
 		// iOS 実機検証用のキャプチャログを有効化するゲート(var)。"1" で有効。
 		// 検証時のみ有効化する。通常は 0(または未設定)。旧名 CAPTURE_LOG(2026-07-11 改名)。
 		// vars なので worker-configuration.d.ts が本来の source of truth だが、

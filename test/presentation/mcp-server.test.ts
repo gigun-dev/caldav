@@ -107,6 +107,9 @@ beforeEach(() => {
 			// 観測基盤 v1: ツール振る舞いテストなので計測は no-op(AE マッピングの検証は
 			// analytics-engine-telemetry.test.ts がフェイク dataset を注入して単体で行う)。
 			telemetry: new NoopTelemetryAdapter(),
+			// #45 場所モデル: この汎用ハーネスでは geocoding は使わない(search-location 専用の検証は
+			// 下の describe が専用 createMcpApp + フェイク GeocodingPort を組んで行う)。空候補スタブ。
+			geocoding: { searchLocation: async () => [] },
 		})),
 	);
 });
@@ -196,7 +199,8 @@ describe("/mcp", () => {
 	// docs/modeling/15 §A-3 R2)を追加したため 23→25 に更新。
 	// 2026-07-23 K2 追記: update-calendar(list-calendars/create-calendar/delete-calendar の対を
 	// 埋める。MCP から表示名/色を変更できるようにした)を追加したため 25→26 に更新。
-	it("正しい Bearer で tools/list に26ツールが並ぶ(K2 update-calendar 追加分)", async () => {
+	// 2026-07-23 #45 追記: search-location(geocoding。文字列 → 座標候補)を追加したため 26→27 に更新。
+	it("正しい Bearer で tools/list に27ツールが並ぶ(#45 search-location 追加分)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -225,6 +229,7 @@ describe("/mcp", () => {
 			"refresh-events",
 			"refresh-todos",
 			"restore-deleted",
+			"search-location",
 			"update-calendar",
 			"update-event",
 			"update-todo",
@@ -1986,6 +1991,7 @@ describe("観測基盤 v1: telemetry 失敗が tool call を壊さない", () =>
 				uow,
 				confirmSecret: CONFIRM_SECRET,
 				telemetry: throwingTelemetry,
+				geocoding: { searchLocation: async () => [] },
 			})),
 		);
 		const res = await app.fetch(
@@ -2007,5 +2013,100 @@ describe("観測基盤 v1: telemetry 失敗が tool call を壊さない", () =>
 		);
 		const rpc = await jsonRpcResult(res);
 		expect(rpc.result.isError).toBeFalsy();
+	});
+});
+
+// =============================================================================
+// #45 場所モデル: search-location(geocoding)ツール
+// =============================================================================
+// 汎用ハーネス(先頭 beforeEach)は空候補スタブを注入しているので、ここは専用 createMcpApp に
+// 制御可能なフェイク GeocodingPort を差し込み、①候補写像 ②空クエリの早期エラー(quota 非消費)
+// ③quota 超過の人間可読メッセージ ④キー未設定の縮退メッセージ を固定する。
+describe("search-location(geocoding)", () => {
+	// フェイク GeocodingPort: searchLocation の挙動を差し替え可能にする(候補返却/例外送出)。
+	let behavior: (query: string) => Promise<import("../../src/application/ports").LocationCandidate[]>;
+	let callCount = 0;
+	// 計測イベントを捕捉して errKind を検証する(要件 #3: quota 超過を observability で区別できる)。
+	let capturedEvents: import("../../src/application/ports").TelemetryEvent[] = [];
+	function buildApp() {
+		const collections = new FakeCalendarCollectionRepository();
+		const resources = new FakeCalendarObjectResourceRepository();
+		const uow = new FakeCollectionUnitOfWork(resources, collections);
+		return new Hono<{ Bindings: CloudflareBindings }>().route(
+			"/mcp",
+			createMcpApp(() => ({
+				auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+				collectionRepo: collections,
+				resourceRepo: resources,
+				iterator: recurrenceIterator,
+				uow,
+				confirmSecret: CONFIRM_SECRET,
+				telemetry: { record: (e) => capturedEvents.push(e) },
+				geocoding: {
+					searchLocation: async (query: string) => {
+						callCount++;
+						return behavior(query);
+					},
+				},
+			})),
+		);
+	}
+
+	async function callSearch(app: ReturnType<typeof buildApp>, query: unknown): Promise<any> {
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCP_TOKEN}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search-location", arguments: { query } } }),
+			}),
+			ENV,
+		);
+		return jsonRpcResult(res);
+	}
+
+	it("候補を structuredContent.candidates(title/address/geo)に載せる", async () => {
+		callCount = 0;
+		behavior = async () => [
+			{ title: "東京駅", address: "東京都千代田区丸の内1丁目9", geo: { lat: 35.681, lon: 139.767 } },
+		];
+		const rpc = await callSearch(buildApp(), "東京駅");
+		expect(rpc.result.isError).toBeFalsy();
+		expect(rpc.result.structuredContent.candidates).toEqual([
+			{ title: "東京駅", address: "東京都千代田区丸の内1丁目9", geo: { lat: 35.681, lon: 139.767 } },
+		]);
+		expect(callCount).toBe(1);
+	});
+
+	it("空白のみの query は geocoding を呼ばずに早期エラー(quota 非消費)", async () => {
+		callCount = 0;
+		behavior = async () => [];
+		const rpc = await callSearch(buildApp(), "   ");
+		expect(rpc.result.isError).toBe(true);
+		expect(callCount).toBe(0); // searchLocation に到達しない = quota を消費しない。
+	});
+
+	it("quota 超過は住所のみ登録できる旨の人間可読メッセージ + telemetry errKind で区別できる(500 で落とさない)", async () => {
+		const { GeocodingQuotaExceededError } = await import("../../src/application/ports");
+		behavior = async () => {
+			throw new GeocodingQuotaExceededError("2026-07", 1000);
+		};
+		capturedEvents = [];
+		const rpc = await callSearch(buildApp(), "東京駅");
+		expect(rpc.result.isError).toBe(true);
+		expect(rpc.result.content[0].text).toContain("枠を使い切りました");
+		// 要件 #3: errKind に quota 超過を区別できる値が載る("ToolError" 一律ではない)。
+		const ev = capturedEvents.find((e) => e.mcpTool === "search-location");
+		expect(ev?.ok).toBe(false);
+		expect(ev?.errKind).toBe("GeocodingQuotaExceededError");
+	});
+
+	it("キー未設定は管理者への設定依頼メッセージに縮退する", async () => {
+		const { GeocodingNotConfiguredError } = await import("../../src/application/ports");
+		behavior = async () => {
+			throw new GeocodingNotConfiguredError();
+		};
+		const rpc = await callSearch(buildApp(), "東京駅");
+		expect(rpc.result.isError).toBe(true);
+		expect(rpc.result.content[0].text).toContain("GOOGLE_MAPS_API_KEY");
 	});
 });

@@ -6,3 +6,6 @@ export { OAuthPropsAuth, type OAuthPrincipalProps } from "./auth/oauth-props-aut
 // 各ファイル冒頭参照。
 export { AnalyticsEngineTelemetryAdapter } from "./telemetry/analytics-engine-telemetry";
 export { NoopTelemetryAdapter } from "./telemetry/noop-telemetry";
+// #45 場所モデル: geocoding アダプタ(Google Places 実装 + D1 月次 quota ストア)。
+export { GooglePlacesGeocodingAdapter } from "./geocoding/google-places-geocoding";
+export { D1GeocodingQuotaStore } from "./geocoding/d1-geocoding-quota-store";

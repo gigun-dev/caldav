@@ -22,8 +22,11 @@ export type LocationPickerValue =
 			kind: "place";
 			title: string;
 			address: string | null;
-			lat: number;
-			lon: number;
+			// #45 スライス B/C: geo(lat/lon)は null 可(座標無しの既知場所・地図検索で解決できなかった
+			// 住所のみの場所)。null のとき create/update へは lat/lon を省いて渡す(degrade — サーバー側
+			// structuredLocation の lat/lon optional 契約に対応。iOS の地図ピンは付かないが場所名/住所は残る)。
+			lat: number | null;
+			lon: number | null;
 			radius: number | null;
 	  }
 	| {
@@ -39,8 +42,12 @@ export type LocationPickerValue =
 export interface KnownLocationView {
 	title: string;
 	address: string | null;
-	lat: number;
-	lon: number;
+	// #45 スライス C: geo を null 可にした(list-known-locations が座標無しの既知場所も返しうる場合に
+	// ピッカーが表示・選択できるように点検)。現状の list-known-locations UC は geo 有りだけを返すため
+	// 実際に null が来るのは将来の拡張時だが、型を先に緩めておくことで「geo 無しの既知場所は選べない」
+	// という暗黙の前提を UI 側から取り除く(親への論点: UC が geo 無しを emit すべきかは別途判断)。
+	lat: number | null;
+	lon: number | null;
 	radius: number | null;
 }
 
@@ -51,8 +58,10 @@ export interface LocationConferenceArgs {
 	structuredLocation?: {
 		title: string;
 		address?: string;
-		lat: number;
-		lon: number;
+		// #45 スライス B: lat/lon は optional(座標無しの degrade を許す。サーバーの structuredLocation
+		// 入力 shape が lat/lon optional + 両方 or 両方無しの refine を持つのに合わせる)。
+		lat?: number;
+		lon?: number;
 		radius?: number;
 	};
 	conference?: {
@@ -74,9 +83,13 @@ export function locationPickerToCreateArgs(value: LocationPickerValue | null): L
 	if (value.kind === "place") {
 		const structuredLocation: LocationConferenceArgs["structuredLocation"] = {
 			title: value.title,
-			lat: value.lat,
-			lon: value.lon,
 		};
+		// #45 スライス B/C: geo は両方揃っているときだけ渡す(片方だけは不可 = サーバーの refine が弾く)。
+		// null(座標無し)のときは lat/lon を省いて degrade(住所のみで登録・地図ピンなし)。
+		if (value.lat !== null && value.lon !== null) {
+			structuredLocation.lat = value.lat;
+			structuredLocation.lon = value.lon;
+		}
 		if (value.address !== null) structuredLocation.address = value.address;
 		if (value.radius !== null) structuredLocation.radius = value.radius;
 		return { structuredLocation };
@@ -91,12 +104,12 @@ export function locationPickerToCreateArgs(value: LocationPickerValue | null): L
  * 【2026-07-23 追加(編集詳細への C4 移植)】locationPickerToCreateArgs の逆写像(read 側)。
  *
  * 【出し分けの判断】
- *   - structuredLocation は geo(lat/lon)が必須(structuredLocationInputSchema)なので、C1 側で
- *     geo が null(GEO 無しの構造化場所・想定される混在データ)のときは LocationPickerValue の
- *     "place" では表現できない。この場合は場所側を諦め、下の会議判定へフォールする(親への
- *     報告事項: geo 無し構造化場所は編集トリガ行では「未選択」に見える degrade。既存の
- *     location(LOCATION テキスト)自体は失われない — update-event 側で location フィールドは
- *     このセミモーダルと独立に扱われる)。
+ *   - structuredLocation は title があれば "place" として復元する。#45 スライス B で geo(lat/lon)が
+ *     optional になったため、geo 無しの構造化場所(GEO 無しの混在データや、search-location で座標を
+ *     解決できず degrade 登録した場所)も "place" として編集トリガ行に復元できる(lat/lon は null に
+ *     なり、保存時に再び degrade で省かれる)。以前は geo===null を「未選択」に落としていたが
+ *     (structuredLocation の lat/lon が必須だった当時の制約)、その前提は解消された。
+ *     title すら無い場合のみ下の会議判定へフォールする。
  *   - conference は source==="description"(= conference 入力欄が書いた DESCRIPTION の
  *     「ビデオ通話」ブロック由来)のときだけ拾う。source==="url" は既存の url フィールド
  *     (参照 URL)がたまたま http(s) だったのを読み取り側が会議として分類しただけで、
@@ -111,13 +124,17 @@ export function structuredToLocationPickerValue(
 	structured: { title: string | null; address: string | null; geo: { lat: number; lon: number } | null; radiusMeters: number | null } | null,
 	conference: { url: string; source: "url" | "description" } | null,
 ): LocationPickerValue | null {
-	if (structured !== null && structured.geo !== null && structured.title !== null) {
+	// #45 スライス C: geo(structured.geo)は null 可に緩和した。title さえあれば「場所」として選択値に
+	// できる(geo null = 座標無しの place → 保存時に degrade で lat/lon を省く)。以前は geo===null を
+	// 「未選択」に落としていたが(下記の旧コメント参照)、B で structuredLocation の geo が optional に
+	// なったので、geo 無し構造化場所も編集トリガ行に「場所」として復元できるようにする。
+	if (structured !== null && structured.title !== null) {
 		return {
 			kind: "place",
 			title: structured.title,
 			address: structured.address,
-			lat: structured.geo.lat,
-			lon: structured.geo.lon,
+			lat: structured.geo?.lat ?? null,
+			lon: structured.geo?.lon ?? null,
 			radius: structured.radiusMeters,
 		};
 	}

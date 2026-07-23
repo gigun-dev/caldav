@@ -46,6 +46,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
 	"refresh-todos",
 	// C5(設計 05): 既知の場所ツールも list-* の照会系(read)。
 	"list-known-locations",
+	// #45 場所モデル: geocoding(文字列 → 座標候補)は読み取り専用の照会系(書き込みは伴わない)。
+	"search-location",
 	// R2(docs/modeling/15 §A-3): ゴミ箱一覧は読み取り専用。復元(restore-deleted)は mutation
 	// なので safe default で write 扱いになる(ここには入れない)。
 	"list-deleted",

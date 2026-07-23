@@ -60,8 +60,10 @@ import { CONFIRM_APP_HTML, CONFIRM_UI_URI } from "./ui/confirm-app";
 // トークン発行に引き続き使うので残す。
 import { CARD_TOKEN_TTL_MS, PROPOSE_TOKEN_TTL_MS, signConfirmToken } from "./confirm-token";
 
-import type { AuthenticationPort, CollectionUnitOfWork, TelemetryPort } from "../../application/ports";
+import type { AuthenticationPort, CollectionUnitOfWork, TelemetryPort, GeocodingPort } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
+// #45 場所モデル: search-location が catch して人間可読メッセージ + errKind へ写す型付きエラー。
+import { GeocodingNotConfiguredError, GeocodingQuotaExceededError } from "../../application/ports";
 // 観測基盤 v1: host 推定 / argsDigest 要約 / _meta からの sessionId 読み取り(純関数群)。
 // 判定ロジックを1関数ずつに隔離する狙いは telemetry-support.ts 冒頭コメント参照。
 import { classifyHost, readSessionId, summarizeArgsDigest } from "./telemetry-support";
@@ -172,6 +174,10 @@ export interface McpAppDeps {
 	// 観測基盤 v1: 1 tool call = 1 イベントの計測ポート。実装アダプタ(AE / no-op)の選択は
 	// コンポジションルート(app.ts)が担う(env.TELEMETRY の有無で切り替え — app.ts コメント参照)。
 	readonly telemetry: TelemetryPort;
+	// #45 場所モデル: search-location ツールが使う geocoding ポート。app.ts は Google Places アダプタを
+	// 月次 quota デコレータ(QuotaLimitedGeocoding)で包んだものを注入する。プロバイダ・quota の詳細は
+	// server.ts からは見えない(GeocodingPort の語彙 title/address/geo と型付きエラーだけを扱う)。
+	readonly geocoding: GeocodingPort;
 }
 
 // --- get-current-time -------------------------------------------------------
@@ -968,15 +974,22 @@ const moveTodoInputShape = {
 const structuredLocationInputSchema = z
 	.object({
 		title: z.string().min(1).describe("表示名(例「岐阜大学」「福登の自宅」)。LOCATION テキストにもこの値が使われる(location フィールドより優先)。"),
-		address: z.string().optional().describe("住所(表示用の補足テキスト)。省略可。"),
-		lat: z.number().min(-90).max(90).describe("緯度(WGS84)。"),
-		lon: z.number().min(-180).max(180).describe("経度(WGS84)。"),
+		address: z.string().optional().describe("住所(表示用の補足テキスト)。省略可。geo 無しのときはこの住所が LOCATION に併記される。"),
+		// #45 スライス B: lat/lon を optional に緩和(住所のみでの登録 = degrade を許す)。
+		lat: z.number().min(-90).max(90).optional().describe("緯度(WGS84)。lon とセットで指定(片方だけは不可)。省略すると座標無しの住所表現になる。"),
+		lon: z.number().min(-180).max(180).optional().describe("経度(WGS84)。lat とセットで指定(片方だけは不可)。省略すると座標無しの住所表現になる。"),
 		radius: z.number().positive().optional().describe("ジオフェンス半径(メートル)。省略可(半径なしの地点として扱う)。"),
 	})
+	// lat/lon は「両方あるか両方無いか」。片方だけの部分 geo は座標として成立しないので入力段で弾く
+	// (application 層 validateStructuredLocation の geo-partial と同じ契約を presentation でも早期化)。
+	.refine((v) => (v.lat === undefined) === (v.lon === undefined), {
+		message: "lat と lon は両方指定するか、両方省略してください(片方だけは不可)。",
+	})
 	.describe(
-		"座標付きの構造化された場所(list-known-locations が返す既知の場所や、地図検索で選んだ地点を想定)。" +
-			'自由記述のテキストだけを設定したい場合は location フィールドを使うこと(structuredLocation は "この地点" を' +
-			"座標込みで表す場合にのみ使う — 単なる場所の説明文をここに入れない)。",
+		"構造化された場所。search-location(地図検索)で解決した候補や list-known-locations の既知の場所を写して使う。" +
+			"lat/lon を付けると iOS の地図表示・経路案内が効く。search-location で解決できない(0件・枠切れ)場合は " +
+			"lat/lon を省略し title と address だけでも登録できる(degrade: 地図ピンは付かないが場所名・住所は残る)。" +
+			'自由記述のテキストだけを設定したい場合は location フィールドを使うこと(structuredLocation は "その場所そのもの" を表す)。',
 	);
 
 // C8(設計 05 §1-c・§2「会議」スロット): conference の shape(create/update 共通)。
@@ -1125,6 +1138,17 @@ const deleteEventInputShape = {
 	confirmToken: confirmTokenField,
 };
 
+// #45 場所モデル: search-location の入力。query は内容データ(店名・施設名・住所の自由記述)。
+// 【telemetry: query を argsDigest に載せない】query は IDENTIFIER_KEYS(telemetry-support.ts)に
+// 入っていないので summarizeArgsDigest は "string" とだけ記録し値は漏らさない(内容データ禁止の規律)。
+// 呼び出し回数と ok/errKind(quota 超過等)だけで効果測定できる、というタスク要件どおりの扱いになる。
+const searchLocationInputShape = {
+	query: z.string().min(1).describe(
+		"解決したい場所の文字列(店名・施設名・住所)。例「東京駅」「品川の叙々苑」「岐阜市橋本町1丁目10-1」。" +
+			"ユーザーが口にした表現をそのまま渡してよい(内部で地図検索プロバイダに問い合わせる)。",
+	),
+};
+
 // C5(設計 05 §3・§5・§6): list-known-locations の入力。
 const listKnownLocationsInputShape = {
 	calendarId: z.string().optional().describe(
@@ -1246,11 +1270,26 @@ function toWireEvent(event: Event, calendarId: string, isRecurring: boolean): Re
 	};
 }
 
-/** MCP ツールハンドラの共通エラー整形。isError:true + content にメッセージを詰める。 */
-function toolError(message: string) {
+// 観測基盤: toolError が telemetry へ「エラー種別」を渡すための _meta キー(名前空間付き)。
+// registerTool ラッパー(計測点)がこのキーを読み、isError 結果の errKind を "ToolError"(既定)より
+// 具体的な値へ上書きする。_meta はモデルへの content ではないので、この分類値が会話に露出しない。
+export const TELEMETRY_ERRKIND_META_KEY = "gigun.dev/errKind";
+
+/**
+ * MCP ツールハンドラの共通エラー整形。isError:true + content にメッセージを詰める。
+ *
+ * 【errKind(第2引数・#45 で追加)】観測用のエラー種別を任意で受け取り、結果の _meta に載せる。
+ * これを付けると registerTool ラッパーが telemetry の errKind をこの値にできる(付けなければ従来どおり
+ * 一律 "ToolError")。search-location の quota 超過/キー未設定のように「isError で graceful に返しつつ、
+ * どの原因で失敗したかを observability で区別したい」ケースのための additive な口。例外を throw する
+ * (= errKind に例外クラス名が乗る)経路と違い、ツールを落とさずに種別だけ運べる。
+ */
+function toolError(message: string, errKind?: string) {
 	return {
 		content: [{ type: "text" as const, text: message }],
 		isError: true,
+		// errKind 未指定時は _meta を付けない(既存の toolError 呼び出しの結果形を変えない)。
+		...(errKind !== undefined ? { _meta: { [TELEMETRY_ERRKIND_META_KEY]: errKind } } : {}),
 	};
 }
 
@@ -1404,7 +1443,11 @@ function buildMcpServer(
 				const result = await cb(...args);
 				if (typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true) {
 					ok = false;
-					errKind = "ToolError";
+					// #45: toolError(message, errKind) が _meta にエラー種別を載せていればそれを採る
+					// (search-location の quota 超過/キー未設定を区別可能にする)。無ければ従来どおり
+					// 一律 "ToolError"(種別を分けたくない/分ける必要のない大多数のエラー)。
+					const metaErrKind = (result as { _meta?: Record<string, unknown> })._meta?.[TELEMETRY_ERRKIND_META_KEY];
+					errKind = typeof metaErrKind === "string" ? metaErrKind : "ToolError";
 				}
 				return result;
 			} catch (error) {
@@ -3462,6 +3505,90 @@ function buildMcpServer(
 				};
 			} catch (error) {
 				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- search-location(#45 場所モデル・geocoding)----------------------------------------------
+	// 【なぜ素の registerTool(カード無し)か】search-location は「文字列 → 候補配列」を返すだけの
+	// 純粋な解決ツールで、UI 描画の責務を持たない(選んだ候補を structuredLocation に写すのは
+	// create-event/update-event 側 = 別ツール)。list-known-locations と同じく素の registerTool に留める。
+	server.registerTool(
+		"search-location",
+		{
+			title: "Search location (geocode)",
+			description:
+				"場所(店名・施設名・住所)の文字列を、地図検索で座標付きの候補(title/address/geo)に解決する。" +
+				"【使い方の順序】ユーザーが場所を口にしたら、create-event/update-event の structuredLocation を組む前に、" +
+				"まず list-known-locations(過去に使った場所)を見て一致があればそれを使う。無ければこの search-location で" +
+				"解決する。candidates から文脈に最も合う1件を選び、structuredLocation {title, address, lat, lon} に写す" +
+				"(geo 付きにすると iOS の地図表示・経路案内が効く)。" +
+				"【解決できないとき / 枠を使い切ったとき】候補が0件、または今月の解決枠を使い切った場合でも、" +
+				"structuredLocation を lat/lon 無し(title と address だけ)で渡せば住所表現として登録できる(degrade)。" +
+				"その場合 iOS の地図ピンは付かないが場所名・住所は残る。",
+			inputSchema: searchLocationInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
+		},
+		async ({ query }) => {
+			// query は zod で min(1) 済みだが、空白のみは無意味な Google 呼び出し(= quota 消費)になるので
+			// ここでも弾く(要件 #4: バリデーション相当の失敗では quota を消費しない — searchLocation を
+			// 呼ばずに返すことで QuotaLimitedGeocoding の tryConsume に到達させない)。
+			const trimmed = query.trim();
+			if (trimmed === "") {
+				return toolError("query が空です。解決したい場所の文字列(店名・施設名・住所)を指定してください。");
+			}
+			try {
+				const candidates = await deps.geocoding.searchLocation(trimmed);
+				// structuredContent(モデル/カードが機械的に読む): 候補配列。lat/lon はフラットに載せる
+				// (structuredLocation の入力 shape と同じ形にして、モデルがそのまま写しやすくする)。
+				const vm = {
+					candidates: candidates.map((c) => ({
+						title: c.title,
+						address: c.address,
+						geo: { lat: c.geo.lat, lon: c.geo.lon },
+					})),
+				};
+				// content(人間可読): 候補リスト。0件は「見つからなかった → degrade できる」を明示して誘導する。
+				const text =
+					candidates.length === 0
+						? `「${trimmed}」に一致する場所が見つかりませんでした。住所が分かる場合は structuredLocation を lat/lon 無し(title/address のみ)で登録できます。`
+						: [`「${trimmed}」の候補 ${candidates.length} 件:`]
+								.concat(
+									candidates.map(
+										(c, i) =>
+											`${i + 1}. ${c.title}${c.address !== null ? ` — ${c.address}` : ""}(${c.geo.lat}, ${c.geo.lon})`,
+									),
+								)
+								.join("\n");
+				return {
+					content: [{ type: "text" as const, text }],
+					structuredContent: vm as { [key: string]: unknown },
+				};
+			} catch (error) {
+				// 型付きエラーは人間可読メッセージへ写しつつ、telemetry の errKind に種別を載せる
+				// (toolError の第2引数 → _meta → registerTool ラッパーが記録。要件 #3: quota 超過を
+				// observability で区別できるようにする)。ツールは isError で graceful に返すので落ちない。
+				if (error instanceof GeocodingQuotaExceededError) {
+					return toolError(
+						"今月の場所解決の枠を使い切りました。住所が分かる場合は structuredLocation を lat/lon 無し" +
+							"(title/address のみ)で登録できます(地図ピンは付きませんが場所名・住所は残ります)。",
+						error.kind, // "GeocodingQuotaExceededError"(枠に当たった頻度を errKind で集計できる)。
+					);
+				}
+				if (error instanceof GeocodingNotConfiguredError) {
+					return toolError(
+						"地図検索(GOOGLE_MAPS_API_KEY)が未設定のため場所を解決できません。管理者に設定を依頼してください。" +
+							"住所が分かる場合は structuredLocation を lat/lon 無しで登録できます。",
+						error.kind, // "GeocodingNotConfiguredError"(未設定の観測 = 設定漏れの検知)。
+					);
+				}
+				// その他(HTTP エラー・壊れた JSON 等)は種別を "GeocodingProviderError" にまとめる
+				// (プロバイダ側の一過性障害。個別のメッセージ本文は errKind に載せない — 内容漏洩防止)。
+				return toolError(
+					`場所の解決に失敗しました(${error instanceof Error ? error.message : String(error)})。` +
+						"住所が分かる場合は structuredLocation を lat/lon 無しで登録できます。",
+					"GeocodingProviderError",
+				);
 			}
 		},
 	);

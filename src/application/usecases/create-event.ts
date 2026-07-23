@@ -216,7 +216,7 @@ export class InvalidTravelMinutesError extends Error {
  */
 export class InvalidStructuredLocationError extends Error {
 	readonly kind = "InvalidStructuredLocationError" as const;
-	constructor(readonly reason: "title-empty" | "lat-out-of-range" | "lon-out-of-range" | "radius-non-positive", message: string) {
+	constructor(readonly reason: "title-empty" | "lat-out-of-range" | "lon-out-of-range" | "radius-non-positive" | "geo-partial", message: string) {
 		super(message);
 		this.name = "InvalidStructuredLocationError";
 	}
@@ -312,11 +312,25 @@ export function validateStructuredLocation(loc: StructuredLocationInput): void {
 	if (loc.title === "") {
 		throw new InvalidStructuredLocationError("title-empty", "structuredLocation.title must not be empty");
 	}
-	if (!Number.isFinite(loc.lat) || loc.lat < -90 || loc.lat > 90) {
-		throw new InvalidStructuredLocationError("lat-out-of-range", `structuredLocation.lat must be in [-90, 90], got ${loc.lat}`);
+	// #45 スライス B: geo(lat/lon)は optional に緩和した(住所のみ登録 = degrade を許す)。
+	// ただし「片方だけ」(lat だけ / lon だけ)は座標として成立しない部分入力なので弾く
+	// (両方あるか両方無いかのどちらか。write 側の structuredLocationHasGeo もこの前提で分岐する)。
+	const hasLat = loc.lat !== undefined;
+	const hasLon = loc.lon !== undefined;
+	if (hasLat !== hasLon) {
+		throw new InvalidStructuredLocationError(
+			"geo-partial",
+			"structuredLocation.lat and lon must both be present or both omitted",
+		);
 	}
-	if (!Number.isFinite(loc.lon) || loc.lon < -180 || loc.lon > 180) {
-		throw new InvalidStructuredLocationError("lon-out-of-range", `structuredLocation.lon must be in [-180, 180], got ${loc.lon}`);
+	// geo がある場合のみ範囲検証する(geo 無しは degrade 経路 — 検証対象は title/radius だけ)。
+	if (hasLat && hasLon) {
+		if (!Number.isFinite(loc.lat) || loc.lat! < -90 || loc.lat! > 90) {
+			throw new InvalidStructuredLocationError("lat-out-of-range", `structuredLocation.lat must be in [-90, 90], got ${loc.lat}`);
+		}
+		if (!Number.isFinite(loc.lon) || loc.lon! < -180 || loc.lon! > 180) {
+			throw new InvalidStructuredLocationError("lon-out-of-range", `structuredLocation.lon must be in [-180, 180], got ${loc.lon}`);
+		}
 	}
 	if (loc.radius !== undefined && loc.radius <= 0) {
 		throw new InvalidStructuredLocationError("radius-non-positive", `structuredLocation.radius must be > 0, got ${loc.radius}`);

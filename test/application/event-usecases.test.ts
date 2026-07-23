@@ -216,6 +216,31 @@ describe("event usecases", () => {
 		).rejects.toBeInstanceOf(InvalidStructuredLocationError);
 	});
 
+	// #45 スライス B: geo(lat/lon)無しの structuredLocation は degrade で受理する(住所のみ登録)。
+	it("structuredLocation を geo 無し(title/address のみ)で指定すると LOCATION に degrade して読み戻せる", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "座標なしの予定",
+			start: "2026-07-15",
+			structuredLocation: { title: "叙々苑 品川店", address: "東京都港区高輪4-10-30" },
+		});
+		// LOCATION は title + 住所を改行併記(degrade)。X-APPLE-STRUCTURED-LOCATION は書かれない。
+		expect(event.location).toBe("叙々苑 品川店\n東京都港区高輪4-10-30");
+		expect(event.structuredLocation).toBeNull();
+	});
+
+	// #45 スライス B: 片方だけの geo(lat だけ / lon だけ)は部分入力として弾く。
+	it("structuredLocation の lat だけ(lon 欠落)は InvalidStructuredLocationError(geo-partial)", async () => {
+		await expect(
+			createEvent.execute({
+				owner: TEST_OWNER,
+				title: "部分 geo",
+				start: "2026-07-15",
+				structuredLocation: { title: "どこか", lat: 35 },
+			}),
+		).rejects.toBeInstanceOf(InvalidStructuredLocationError);
+	});
+
 	// --- UpdateEvent -----------------------------------------------------------
 
 	async function seedEvent(args: Parameters<CreateEvent["execute"]>[0]): Promise<string> {
