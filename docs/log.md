@@ -1114,3 +1114,25 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 鍵の受け渡し完了: .secrets.local.json(GOOGLE_MAPS_API_KEY / APPLE_MAPS_TOKEN /
   APPLE_MAPS_KEY_ID / APPLE_MAPS_TEAM_ID)+ AuthKey_*.p8(gitignore 済み)。
   Google プロジェクトは Places/Geocoding の2 API に整理・キーも2 API 制限済み。
+
+## 2026-07-23(続き9・#45 完了: search-location+quotaガード+geo緩和)
+
+- #45 を artisan で実装・deploy。GeocodingPort(application)+ GooglePlacesGeocodingAdapter
+  (Text Search (New)・FieldMask は Pro SKU 3点のみ)+ 月次 quota デコレータ(D1 の条件付き
+  UPSERT+RETURNING で atomic 予約・既定 1000/月 = Pro 無料枠 5,000 の 20%・GEOCODING_MONTHLY_LIMIT
+  で上書き可・超過は graceful + errKind 観測)+ search-location ツール(known-locations 先引き誘導)。
+  geo 緩和: lat/lon は両方 or 無し、geo 無しは X-APPLE-STRUCTURED-LOCATION を書かず LOCATION へ
+  degrade(geo URI が value 本体のため)。picker も geo 無し対応。migrations/0005(expand のみ)。
+- 周辺整備: GOOGLE_MAPS_API_KEY を secrets.required 化し本番投入済み(.secrets.prod.json にも控え)。
+  GCP は専用プロジェクト caldav-503307 を Places/Geocoding の2 API に整理・キーも2 API 制限。
+  予算アラート caldav-geocoding-guard(¥1,000・50/90/100%)を gcloud で作成。無料枠の一次資料確認:
+  FieldMask(displayName/formattedAddress/location)は Text Search **Pro** SKU = 月5,000無料、
+  超過 $9.60〜25.60/1k(2026-07-23 確認)。
+- Inspector 受け入れで**本番のみ発現の重大バグを検出**: fetch を素の参照でクラスフィールドに
+  持つと this が adapter になり workerd が Illegal invocation(スタブ fetch は this を見ないため
+  make check は green)。アロー括りで修正(7ea62c8)→ 再検証で「品川の叙々苑」が title/address/geo
+  3点セットで解決 PASS。geo 付き登録の生 ICS 裏取り・geo 無し degrade・geo-partial 拒否・quota
+  消費整合も PASS。deploy 時の副事象: Workers Builds が 3705483 の webhook を取りこぼし空コミットで
+  再トリガー。
+- 残: iOS 実機確認(geo 無しイベントの LOCATION 表示・title\naddress の改行形式)。バックログ追加:
+  list-known-locations の geo 無し emit 判断・quota 失敗時も消費する挙動の許容可否。
