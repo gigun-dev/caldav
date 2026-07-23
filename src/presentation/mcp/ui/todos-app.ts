@@ -933,16 +933,20 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
   /* ⊕ 追加ボタン(旧 #quick-add-fab の役割を継承)。タップ領域 44px・アイコンは accent 色で
    * .fold-more の「押せるテキスト」と同じ視覚言語に揃える(円形の塗りボタンにはしない — fullscreen
    * 限定の浮遊 .fab と役割が違う場所だと分かるよう、意図的にトーンを変える)。 */
+  /* #44 item 3: ⊕ にテキストラベル「タスクを追加」を併記(記号だけでは意味が伝わらない実機FB)。
+   * 旧・正方形 44px アイコンボタンから、アイコン + テキストの pill 形へ。タップ領域は min-height:44px で
+   * 確保しつつ横は auto(右寄せは margin-left:auto 維持)。gap でアイコンと文字を離す。agenda-app.ts と同型。 */
   .action-add {
     flex-shrink: 0;
     margin-left: auto;
-    width: 44px;
-    height: 44px;
-    display: flex;
+    min-height: 44px;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    padding: 0;
-    font-size: 20px;
+    gap: 6px;
+    padding: 0 6px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
     color: var(--accent);
     background: none;
     border: none;

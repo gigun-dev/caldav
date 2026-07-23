@@ -1774,13 +1774,15 @@ function focusDraftTitle(): void {
 	selTitleInput.focus();
 }
 
-/** 作成モード詳細ページ(fullscreen 昇格 → openCreateSheet の遷移先)のタイトル input へフォーカスする。
- *  【2026-07-23 新設(カード UI 原則 (b) 是正②)】旧・遅延フォーカス(~450ms)の対象を「一覧末尾の
- *  ドラフト行」から「作成ビュー(詳細ページ)そのもの」へ移した。詳細ページは #root を丸ごと差し替える
- *  単一ページ遷移なので、遷移直後は scrollTop=0(=safe top)が保証されており、対象へスクロールを
- *  追わせる必要が最初から無い(B-3 の「スクロール位置 top=0 が安全先頭」という前提そのもの)。
- *  450ms 遅延自体は残す(旧 startDraft の JSDoc が記録していたとおり、fullscreen 昇格ズーム遷移との
- *  直列化が目的でホスト差分吸収ではないため — triggerQuickAdd 参照)。 */
+/** 作成モード詳細ページ(openCreateSheet の遷移先)のタイトル input へフォーカスする。
+ *  【2026-07-23 新設(カード UI 原則 (b) 是正②)】旧・遅延フォーカスの対象を「一覧末尾のドラフト行」から
+ *  「作成ビュー(詳細ページ)そのもの」へ移した。詳細ページは #root を丸ごと差し替える単一ページ遷移
+ *  なので、遷移直後は scrollTop=0(=safe top)が保証され、対象へスクロールを追わせる必要が無い。
+ *  【#44 item 5: 呼び出しは「タップジェスチャ内の同期」に変更(450ms 遅延は撤去)】旧実装は
+ *  fullscreen 昇格の Promise 解決後に setTimeout(…, 450) でこれを呼んでいたが、iOS WebKit は
+ *  ジェスチャ外の focus() ではソフトキーボードを出さない(=キーボードが出ない実機バグの温床だった)。
+ *  triggerQuickAdd が openCreateSheet の同期 renderAll 直後・requestDisplayMode を投げる前にこれを
+ *  同期で呼ぶ形へ改めた(root-cause と不変条件は render-gate.ts / triggerQuickAdd のコメント参照)。 */
 function focusSheetTitle(): void {
 	if (sheetTitleInput === null) return;
 	sheetTitleInput.focus();
@@ -3742,8 +3744,11 @@ function buildActionRow(remaining: number | null): HTMLElement {
 	const addBtn = document.createElement("button");
 	addBtn.type = "button";
 	addBtn.className = "action-add";
-	addBtn.setAttribute("aria-label", "リマインダーを追加");
+	addBtn.setAttribute("aria-label", "タスクを追加");
 	addBtn.appendChild(createIcon("plus"));
+	// #44 item 3(実機FB「⊕ が記号だけで意味不明」): テキストラベル「タスクを追加」を併記(agenda 側は
+	// 「予定を追加」)。アイコン単独では何が追加されるか伝わらないので語を添える。
+	addBtn.appendChild(document.createTextNode("タスクを追加"));
 	addBtn.addEventListener("click", (e) => {
 		e.stopPropagation(); // 旧 quickAddFab ハンドラと同じ理由(document click の選択解除に巻き込まない)。
 		triggerQuickAdd();
@@ -5150,21 +5155,31 @@ function triggerQuickAdd(): void {
 	// openCreateSheet() で作成ビューへ即遷移する形に変える。450ms 遅延 focus 自体は撤去しない
 	// (ズーム遷移との直列化が目的でホスト差分吸収ではないため。startDraft 旧 JSDoc の記録を
 	// focusSheetTitle 側へ引き継いだ)。
+	// 【#44 item 5(iOS キーボード根治)で順序を並べ替えた・450ms 遅延 focus を撤去】
+	// 旧実装は「requestDisplayMode(fullscreen).then(() => { applyHostContext(); startDraft();
+	// openCreateSheet(); setTimeout(focusSheetTitle, 450) })」で、作成ビューの描画も focus も昇格の
+	// Promise 解決後(=タップジェスチャの外・非同期)に起きていた。iOS WebKit はユーザージェスチャの
+	// 同期実行中以外の input.focus() ではソフトキーボードを出さないため、450ms 遅延 focus は原理的に
+	// キーボードが出ない(root-cause は render-gate.ts 冒頭コメント)。agenda-entry.ts の
+	// triggerCreateEvent と同じ順序へ統一する:
+	//   (1) startDraft() + openCreateSheet() を同期実行 = 作成ビュー(タイトル input)を今すぐ DOM に用意
+	//   (2) focusSheetTitle() を同期実行 = タップジェスチャ内で focus し、この時点でキーボード権を確保
+	//   (3) その後 requestDisplayMode(fullscreen) を投げ、解決後は applyHostContext(CSS のみ・非破壊)だけ
+	// 昇格に伴い後から来る hostcontextchanged 等の再描画要求は guardedRenderAll が sheetState!==null で
+	// 抑止する(render-gate)ため、focus 済み input が DOM から外れずキーボードが閉じない。
+	// 【不変条件(テスト不能なのでコメントで明文化)】昇格後に「focus 済み要素を DOM から外す破壊的
+	// renderAll」を走らせないこと。applyHostContext・guardedRenderAll はいずれもシート表示中に focus
+	// 要素を作り直さない。この不変条件を崩す新経路を足すときは要注意。
+	startDraft();
+	openCreateSheet(); // 同期 renderAll で作成ビューを描き、buildDetailPage(create)が sheetTitleInput を登録
+	focusSheetTitle(); // ← タップジェスチャ内の同期 focus(キーボード権の確保。450ms 遅延 focus は撤去した)
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
-			.then(() => {
-				applyHostContext(); // 昇格結果(displayMode=fullscreen)を反映してから
-				startDraft();
-				openCreateSheet(); // 安全先頭に置いた作成ビューへ直行(scrollIntoView 不要)
-				setTimeout(() => {
-					// 遅延中にユーザーが別操作(戻る等で作成モードを抜ける)をしたら奪わない。
-					if (sheetState?.create === true) focusSheetTitle();
-				}, 450);
-			})
-			.catch(() => startDraft()); // 拒否/失敗は inline のまま追加(フォールバック)
-	} else {
-		startDraft();
+			.then(() => applyHostContext()) // 非破壊のレイアウト調整のみ(focus は保持)
+			.catch(() => {
+				// 拒否/失敗は握りつぶす — 作成ビューは inline のまま成立しているので追加処理は不要。
+			});
 	}
 }
 quickAddFab.addEventListener("click", (e) => {
@@ -5363,7 +5378,26 @@ function renderListMenu(): void {
 	addRow.addEventListener("click", (e) => {
 		e.stopPropagation();
 		openListMenu(false);
+		// 【#44 item 4+5: 新規リスト作成を fullscreen 昇格 + 同期 focus に統一】旧実装は
+		// openCollectionSheet(null) を呼ぶだけで inline のまま・focus も当てていなかった(名前入力に
+		// キーボードが出ない)。タスク追加(triggerQuickAdd)と同じ流儀へ揃える:
+		//   (1) openCollectionSheet(null) を同期実行 = コレクション作成ページ(表示名 input)を今すぐ DOM に
+		//       用意し、buildCollectionSheetPage(isCreate)が sheetTitleInput を登録する(create パスは
+		//       ensureCalendars を待たない=完全同期)。
+		//   (2) focusSheetTitle() を同期実行 = タップジェスチャ内で名前入力へ focus しキーボード権を確保。
+		//   (3) その後 requestDisplayMode(fullscreen) を投げ、解決後は applyHostContext(CSS のみ・非破壊)。
+		// 昇格後に来る hostcontextchanged は guardedRenderAll が collectionSheet!==null で抑止する
+		// (guardedRenderAll が collectionSheet も抑止対象に含む・render-gate)ため focus が保持される。
 		openCollectionSheet(null);
+		focusSheetTitle();
+		if (canRequestFullscreen(hostAvailableDisplayModes)) {
+			app
+				.requestDisplayMode({ mode: "fullscreen" })
+				.then(() => applyHostContext())
+				.catch(() => {
+					// 拒否/失敗は握りつぶす — 作成ページは inline のまま成立しているので追加処理は不要。
+				});
+		}
 	});
 	listMenuEl.appendChild(addRow);
 }

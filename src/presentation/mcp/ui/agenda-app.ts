@@ -407,16 +407,20 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     min-height: 44px;
     margin-top: 8px;
   }
+  /* #44 item 3: ⊕ にテキストラベル「予定を追加」を併記(記号だけでは意味が伝わらない実機FB)。
+   * 旧・正方形 44px アイコンボタンから、アイコン + テキストの pill 形へ。タップ領域は min-height:44px で
+   * 確保しつつ、横は内容に合わせて auto(右寄せは margin-left:auto を維持)。gap でアイコンと文字を離す。 */
   .action-add {
     flex-shrink: 0;
     margin-left: auto;
-    width: 44px;
-    height: 44px;
-    display: flex;
+    min-height: 44px;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    padding: 0;
-    font-size: 20px;
+    gap: 6px;
+    padding: 0 6px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
     color: var(--accent);
     background: none;
     border: none;
@@ -660,6 +664,25 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
   .sw.on { background: var(--accent); }
   .sw.on::after { left: auto; right: 2px; }
+
+  /* --- 読み取り専用の詳細ページ(#44 実機FB「イベントタップ=詳細ファースト」)---
+   * 編集フォーム(.detail-page 内の input/toggle)とは別に、閲覧用の静的な表示を持つ。行の骨格
+   * (.f-row/.f-label/.f-value)と .join-row/.cal-dot は編集ページの部品を流用し、値だけ read-only の
+   * テキストにする。ここは view 固有の見た目(見出し・住所・メモ全文・コピー導線・削除ボタン)だけ定義。 */
+  .view-title { display: block; font-size: 17px; font-weight: 600; color: var(--fg); padding: 12px 0 6px; overflow-wrap: anywhere; }
+  .view-text { color: var(--fg); overflow-wrap: anywhere; }
+  .view-subtext { color: var(--muted); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
+  .view-loc { display: flex; flex-direction: column; min-width: 0; }
+  /* メモ全文(改行保持)。閲覧なので textarea ではなく div + pre-wrap で読ませる。 */
+  .view-notes { white-space: pre-wrap; color: var(--fg); font-size: 14px; line-height: 1.4; padding: 10px 0; border-top: 1px solid var(--border-hair); overflow-wrap: anywhere; }
+  /* URL 行(会議/参照)。リンク(タップ=開く)+「コピー」ボタン(開けないホスト向けの degrade 導線)。 */
+  .view-url-row { justify-content: flex-start; }
+  .view-url-row .join-link { flex: 1; min-width: 0; }
+  .view-copy { flex: none; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 12px; padding: 3px 10px; cursor: pointer; }
+  /* コピー成功の一時トースト。role=status で読み上げ、hidden 属性で出し入れ(JS が 1.6s 後に隠す)。 */
+  .view-copy-toast { text-align: center; color: var(--muted); font-size: 12px; padding: 6px 0; }
+  /* 削除ボタン(閲覧ページ下部)。破壊操作なので危険色(--danger があればそれ・無ければ赤系)。 */
+  .view-delete { display: block; width: 100%; margin-top: 14px; font: inherit; font-size: 14px; color: var(--danger, #e5484d); background: none; border: none; padding: 12px 0; cursor: pointer; }
 
   .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 

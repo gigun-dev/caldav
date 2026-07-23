@@ -67,6 +67,10 @@ import {
 	resolveLocationTitle,
 	showReferenceUrl,
 } from "./location-view";
+// #44(実機FB): 一覧行タップで開く「読み取り専用の詳細ページ」の表示項目を組む純関数群(detail-view.ts)。
+// URL 行の並び(会議→参照)・日時の1行整形・コピー degrade 分岐は純関数に隔離し(mcp-detail-view.test.ts)、
+// ここは DOM 組み立て(buildViewPage)と副作用(openLink / clipboard)だけを担う。
+import { chooseCopyStrategy, detailUrlRows, formatDetailWhen, type DetailUrlRow } from "./detail-view";
 // C3+C4(設計 05 §4・§5): 作成フォームの「場所または会議」セミモーダルの選択結果 ⇄ create-event
 // 引数の変換(write 側)。location-view.ts(read 側)とは別ファイル(役割が違う: 読みは3スロットの
 // 表示判断、書きは1つの選択結果からどちらのスロットへ書くかの判断)。
@@ -397,7 +401,11 @@ let swipeId: string | null = null;
 // sheetState: 詳細ページ / リスト選択ページの「カード内ページ遷移」状態(list は event では move 未実装で省略)。
 // key は rowKey — 詳細ページは「タップされたその occurrence 行」を対象にする(先頭 occurrence に
 // すり替わると開始日時の表示・差分計算が別の日のものになる)。
-let sheetState: { key: string; page: "detail"; create?: boolean } | null = null;
+// 【#44 実機FB: page に "view"(読み取り専用の詳細ページ)を追加】旧実装は一覧行タップ →
+// openSheet で page:"detail"(編集フォーム)へ直行していたが、iOS カレンダー準拠の「行タップ=詳細閲覧、
+// 編集は詳細内の『編集』ボタン」へ改めるため、閲覧専用の "view" を編集 "detail" の手前に挟む。
+// buildDetailPage(編集)は温存し、view ページの「編集」ボタンが page を "view"→"detail" へ差し替える。
+let sheetState: { key: string; page: "view" | "detail"; create?: boolean } | null = null;
 let sheetDraft: SheetDraft | null = null;
 // pendingRenderAfterSheet: 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント)。
 // guardedRenderAll がシート表示中の renderAll() を抑止したとき true になり、シートを閉じた瞬間
@@ -406,6 +414,11 @@ let pendingRenderAfterSheet = false;
 // 選択行のタイトル/メモ入力への参照(commitSelection が renderAll 前の DOM 値を読むため renderRow がセット)。
 let selTitleInput: HTMLInputElement | null = null;
 let selMemoInput: HTMLInputElement | null = null;
+// sheetTitleInput: 作成モード詳細ページ(sheetState.create===true)のタイトル input への参照。
+//   #44 実機FB(item 5・iOS キーボード根治): ⊕ の作成フローで「タップハンドラ内の同期 focus」を
+//   合わせる対象。todos-entry.ts の同名変数と同役割(ページが差し替わると DOM ノードごと作り直されるので、
+//   buildCreatePage が create モードのときだけ都度セットし直す)。
+let sheetTitleInput: HTMLInputElement | null = null;
 
 // --- 表示用 becoming メタ(rebuildDisplay が組み立て、renderRow/announceBecoming が読む)-------------
 let affectedById = new Map<string, AffectedEntry>();
@@ -984,7 +997,9 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 				// 最新の display 行を引き直す(id ではなく合成キーで — §7.1。タップ直後に楽観更新等で
 				// events が差し替わっていても、開いた occurrence 行がすり替わらないようにする)。
 				const latest = events?.find((t) => rowKey(t) === key) ?? ev;
-				openSheet(latest);
+				// #44 実機FB: 行タップは「読み取り専用の詳細ページ」へ(編集フォームには直行しない)。
+				// openSheet(編集)ではなく openViewSheet(閲覧)を開き、編集は view ページの「編集」ボタンから。
+				openViewSheet(latest);
 			});
 		}
 	}
@@ -1256,7 +1271,12 @@ function renderAll(): void {
 			root.innerHTML = "";
 			selTitleInput = null;
 			selMemoInput = null;
-			root.appendChild(buildDetailPage(sheetTask, sheetDraft));
+			sheetTitleInput = null;
+			// #44: page:"view"(読み取り専用の詳細ページ)は編集フォーム buildDetailPage の手前に挟む。
+			// view は sheetDraft を読まないが、「編集」ボタンで page を "detail" へ差し替えたとき即編集に
+			// 入れるよう openViewSheet は sheetDraft を用意済み(makeSheetDraft)。
+			if (sheetState.page === "view") root.appendChild(buildViewPage(sheetTask));
+			else root.appendChild(buildDetailPage(sheetTask, sheetDraft));
 			return;
 		}
 	}
@@ -1283,6 +1303,7 @@ function renderAll(): void {
 	}
 	selTitleInput = null;
 	selMemoInput = null;
+	sheetTitleInput = null; // 一覧を描くときは作成フォームの参照を捨てる(#44 item 5)。
 	// 系列集約(§7.1)のパス内状態をリセット(この描画パスで最初に出会った可視行だけが装飾を得る)。
 	seenAffectedIds.clear();
 	// ビュー切替セグメント(リスト|月|日)は fullscreen のときだけ #root 先頭に出す(2026-07-22 ②)。
@@ -1955,6 +1976,9 @@ function buildActionRow(remaining: number | null): HTMLElement {
 	addBtn.className = "action-add";
 	addBtn.setAttribute("aria-label", "予定を追加");
 	addBtn.appendChild(createIcon("plus"));
+	// #44 item 3(実機FB「⊕ が記号だけで意味不明」): テキストラベルを併記する。アイコン単独では
+	// 「何が追加されるのか」が伝わらないので「予定を追加」を添える(todos 側は「タスクを追加」)。
+	addBtn.appendChild(document.createTextNode("予定を追加"));
 	addBtn.addEventListener("click", (e) => {
 		e.stopPropagation(); // 旧 quickAddFab ハンドラと同じ理由(document click の選択解除に巻き込まない)。
 		triggerCreateEvent();
@@ -2396,6 +2420,19 @@ function openSheet(ev: EventItem): void {
 	renderAll();
 }
 
+/** #44 実機FB: 読み取り専用の詳細ページ(view)を開く(一覧行タップから)。
+ *  view は編集フォームの手前に挟む閲覧ページ。「編集」ボタンで同じ sheetState を page:"detail" に
+ *  差し替えるだけで編集へ入れるよう、openSheet と同じく makeSheetDraft を先に用意しておく
+ *  (view 自体は draft を読まないが、編集へ移る瞬間に作り直す一手間を省く・体感の空白を作らない)。 */
+function openViewSheet(ev: EventItem): void {
+	if (isOptimisticId(ev.id)) return; // 仮行はサーバー id が無いので詳細を持たない(ドラフトは openCreateSheet 経路)
+	sheetDraft = makeSheetDraft(ev);
+	sheetState = { key: rowKey(ev), page: "view" };
+	closeSwipe();
+	quickAddFab.hidden = true;
+	renderAll();
+}
+
 /** 詳細ページを「作成モード」で開く(FAB ドラフト行の ⓘ から)。 */
 function openCreateSheet(): void {
 	if (draft === null) return;
@@ -2410,8 +2447,20 @@ function openCreateSheet(): void {
 function closeSheet(): void {
 	setSheetState(null);
 	sheetDraft = null;
+	sheetTitleInput = null; // ページが消えるので参照を捨てる(次の作成で buildCreatePage が付け直す)。
 	quickAddFab.hidden = false;
 	renderAll();
+}
+
+/** 作成フォームのタイトル input へフォーカスする(#44 item 5・iOS キーボード根治)。
+ *  【なぜタップハンドラ内で同期に呼ぶか】iOS WebKit はユーザージェスチャ(タップハンドラの同期実行中)
+ *  以外での input.focus() ではソフトキーボードを出さない。旧実装は fullscreen 昇格の Promise 解決後に
+ *  setTimeout(…, 450) で focus していた(=ジェスチャ外の非同期 focus)ため、実機でキーボードが出ない
+ *  不具合になっていた。triggerCreateEvent 側でこの関数を「openCreateSheet の同期 renderAll 直後・
+ *  requestDisplayMode を呼ぶ前」に置き、focus をジェスチャ内へ引き戻す(450ms 遅延 focus は撤去)。 */
+function focusSheetTitle(): void {
+	if (sheetTitleInput === null) return;
+	sheetTitleInput.focus();
 }
 
 /** 現在ページが対象にしている表示行(楽観上書きが乗った display 行)。作成モードは draft の擬似行。 */
@@ -2617,6 +2666,247 @@ function buildUrlRow(d: SheetDraft): HTMLElement {
 	row.appendChild(label);
 	row.appendChild(value);
 	return row;
+}
+
+// =============================================================================
+// 読み取り専用の詳細ページ(#44 実機FB「イベントタップ=詳細ファースト」)
+// =============================================================================
+// 【なぜ buildDetailPage(編集)と別関数にするか】編集フォームは input/textarea/トグルで構成され
+// 「タップ=即編集」の文脈だが、閲覧は iOS カレンダー準拠で「読むための静的な面」。両者を1関数で
+// 兼ねると（過去の create/edit 兼用と同じ轍で）分岐が膨れ、編集の既存挙動を壊すリスクが高い。
+// view は draft を読まず ev だけを表示し、「編集」ボタンが page を "view"→"detail" へ差し替えて
+// buildDetailPage を呼び出す(sheetDraft は openViewSheet が用意済み)。
+
+/** カレンダー id → 表示名(色ドットの隣に出す。calendarsCache 未取得時は id へ degrade)。 */
+function calendarName(calendarId: string): string {
+	const hit = calendarsCache?.find((c) => c.id === calendarId);
+	const name = hit?.displayName;
+	return name !== undefined && name !== "" ? name : calendarId;
+}
+
+/** textarea + execCommand("copy") のフォールバックコピー(#44 指示2(b))。成否を返す。
+ *  【なぜ必要か】sandbox iframe では navigator.clipboard.writeText が Permissions Policy で拒否/不在の
+ *  ことがある。その degrade 先として、画面外の readonly textarea を select して execCommand で写す
+ *  古典的手法を用意する(execCommand は deprecated だが iOS WKWebView では今も動く最後の砦)。 */
+function execCommandCopy(text: string): boolean {
+	try {
+		const ta = document.createElement("textarea");
+		ta.value = text;
+		ta.setAttribute("readonly", "");
+		// 画面外へ逃がす(可視化させない・スクロールを動かさない)。opacity:0 + position:fixed で十分。
+		ta.style.position = "fixed";
+		ta.style.top = "0";
+		ta.style.left = "0";
+		ta.style.opacity = "0";
+		document.body.appendChild(ta);
+		ta.select();
+		ta.setSelectionRange(0, text.length); // iOS はこれが無いと選択範囲が空になり copy が空振りする
+		const ok = document.execCommand("copy");
+		document.body.removeChild(ta);
+		return ok;
+	} catch {
+		return false;
+	}
+}
+
+/** URL をコピーし、成功したら toast へ「✓ コピーしました」を一時表示する(#44 指示2(b))。
+ *  第一手段は navigator.clipboard.writeText、拒否/不在なら execCommandCopy へ degrade する
+ *  (どちらを採るかの判定式は純関数 chooseCopyStrategy に隔離・mcp-detail-view.test.ts)。 */
+function copyUrlWithFeedback(url: string, toast: HTMLElement): void {
+	const showOk = (): void => {
+		toast.textContent = "✓ コピーしました";
+		toast.hidden = false;
+		// 1.6s で自然に消す(操作フィードバックの寿命。長すぎると邪魔・短すぎると読めない中間値)。
+		window.setTimeout(() => {
+			toast.hidden = true;
+		}, 1600);
+	};
+	// clipboard API が「関数として在る」かだけを見て第一手段を選ぶ(在っても実行時に拒否されうるので
+	// .catch で execCommand へさらに degrade する二段構え)。
+	const hasClipboardApi =
+		typeof navigator !== "undefined" &&
+		navigator.clipboard !== undefined &&
+		typeof navigator.clipboard.writeText === "function";
+	if (chooseCopyStrategy(hasClipboardApi) === "clipboard-api") {
+		navigator.clipboard.writeText(url).then(showOk).catch(() => {
+			// 実行時拒否(Permissions Policy 等)は execCommand へ degrade。それも失敗なら黙って諦める
+			// (リンクテキスト自体は選択可能なので、最悪ユーザーが手で長押しコピーできる)。
+			if (execCommandCopy(url)) showOk();
+		});
+	} else if (execCommandCopy(url)) {
+		showOk();
+	}
+}
+
+/** 読み取り専用の詳細ページ本体(#44)。ev だけを表示し、編集/削除への導線を持つ。 */
+function buildViewPage(ev: EventItem): HTMLElement {
+	const page = el("div", "detail-page");
+
+	// --- ヘッダ:「‹戻る」(左)/「編集」(右)------------------------------------------------------
+	const head = el("div", "page-head");
+	const back = document.createElement("button");
+	back.type = "button";
+	back.className = "link link-back";
+	back.appendChild(createIcon("chevron-left"));
+	back.appendChild(document.createTextNode("戻る"));
+	back.setAttribute("aria-label", "一覧へ戻る");
+	back.addEventListener("click", () => closeSheet());
+	const edit = document.createElement("button");
+	edit.type = "button";
+	edit.className = "link link-save"; // accent 色の「押せるテキスト」= 編集への遷移(save と同じ視覚言語)。
+	edit.textContent = "編集";
+	edit.setAttribute("aria-label", "この予定を編集");
+	edit.addEventListener("click", () => {
+		// 同じ sheetState を編集フォームへ差し替える(sheetDraft は openViewSheet が用意済み・再作成しない)。
+		if (sheetState !== null) sheetState = { ...sheetState, page: "detail" };
+		renderAll();
+	});
+	head.appendChild(back);
+	head.appendChild(edit);
+	page.appendChild(head);
+
+	const body = el("div", "detail-body");
+
+	// --- タイトル(見出し。read-only なので input ではなく div)------------------------------------
+	const title = el("div", "view-title");
+	title.textContent = ev.title !== "" ? ev.title : "(無題)";
+	body.appendChild(title);
+
+	// --- 日時(1行整形は純関数 formatDetailWhen)----------------------------------------------------
+	appendViewRow(body, "日時", (value) => {
+		const t = el("span", "view-text");
+		t.textContent = formatDetailWhen(ev.start, ev.end, ev.isAllDay);
+		value.appendChild(t);
+	});
+
+	// --- 繰り返し(あれば。閲覧なので短い日本語のみ)------------------------------------------------
+	if (ev.recurrence !== null) {
+		const recurText = formatRecurrence(ev.recurrence);
+		appendViewRow(body, "繰り返し", (value) => {
+			const t = el("span", "view-text");
+			t.textContent = recurText !== "" ? recurText : "繰り返し";
+			value.appendChild(t);
+		});
+	}
+
+	// --- 場所(タイトル + 住所全文。住所は structuredLocation.address の実改行をそのまま)------------
+	const locTitle = resolveLocationTitle(ev.structuredLocation, ev.location);
+	const address = ev.structuredLocation?.address ?? null;
+	if (locTitle !== null || (address !== null && address.trim() !== "")) {
+		appendViewRow(body, "場所", (value) => {
+			const wrap = el("div", "view-loc");
+			if (locTitle !== null) {
+				const t = el("div", "view-text");
+				t.textContent = locTitle;
+				wrap.appendChild(t);
+			}
+			// 住所全文(一覧 meta は施設名だけ出す=詳細ページの責務。ここで初めて全文を見せる)。
+			if (address !== null && address.trim() !== "" && address.trim() !== locTitle) {
+				const addr = el("div", "view-subtext");
+				addr.textContent = address.trim();
+				wrap.appendChild(addr);
+			}
+			value.appendChild(wrap);
+		});
+	}
+
+	// --- URL 行(会議 → 参照。開く=openLink / degrade でコピー。#44 指示2)-----------------------
+	const urlRows = detailUrlRows(ev.url, ev.conference);
+	for (const r of urlRows) appendUrlRow(body, r);
+
+	// --- メモ(全文。改行保持)----------------------------------------------------------------------
+	if (ev.notes !== null && ev.notes.trim() !== "") {
+		const notes = el("div", "view-notes");
+		notes.textContent = ev.notes;
+		body.appendChild(notes);
+	}
+
+	// --- カレンダー(色ドット + 名前)---------------------------------------------------------------
+	if (ev.calendarId !== undefined) {
+		appendViewRow(body, "カレンダー", (value) => {
+			const dot = el("span", "cal-dot");
+			dot.style.background = calendarColor(ev.calendarId!);
+			dot.setAttribute("aria-hidden", "true");
+			const name = el("span", "view-text");
+			name.textContent = calendarName(ev.calendarId!);
+			value.appendChild(dot);
+			value.appendChild(name);
+		});
+		// calendarsCache 未取得だと名前が id のままになるので、遅延取得して名前を埋め直す(view は入力
+		// フォーカスを持たないので直接 renderAll で作り直しても iOS キーボード折れ問題は無い=render-gate 不要)。
+		if (calendarsCache === null) {
+			void ensureCalendars().then(() => {
+				if (sheetState?.page === "view" && sheetState.key === rowKey(ev)) renderAll();
+			});
+		}
+	}
+
+	page.appendChild(body);
+
+	// --- コピー成功トースト(URL コピーの一時表示先。既定は隠す)------------------------------------
+	const toast = el("div", "view-copy-toast");
+	toast.setAttribute("role", "status");
+	toast.hidden = true;
+	page.appendChild(toast);
+	// URL 行のコピーボタンは後付けで toast を参照する(appendUrlRow が body へ追加済みのボタンを引く)。
+	for (const btn of Array.from(body.querySelectorAll<HTMLButtonElement>("button.view-copy[data-url]"))) {
+		btn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			copyUrlWithFeedback(btn.dataset.url ?? "", toast);
+		});
+	}
+
+	// --- 削除(既存の削除フローを流用。閲覧ページ下部)---------------------------------------------
+	const del = document.createElement("button");
+	del.type = "button";
+	del.className = "view-delete";
+	del.textContent = "この予定を削除";
+	del.setAttribute("aria-label", `「${ev.title}」を削除`);
+	del.addEventListener("click", () => {
+		// 一覧のスワイプ削除と同じ deleteEvent(楽観削除 + 失敗ロールバック)。先に閲覧ページを閉じて一覧へ戻す。
+		closeSheet();
+		void deleteEvent(ev);
+	});
+	page.appendChild(del);
+
+	return page;
+}
+
+/** view ページの1行(.f-row [ラベル][値])。値の中身は fill コールバックが組む(read-only 共通足場)。 */
+function appendViewRow(body: HTMLElement, labelText: string, fill: (value: HTMLElement) => void): void {
+	const row = el("div", "f-row");
+	const label = el("span", "f-label");
+	label.textContent = labelText;
+	const value = el("span", "f-value");
+	fill(value);
+	row.appendChild(label);
+	row.appendChild(value);
+	body.appendChild(row);
+}
+
+/** view ページの URL 行(🎥会議 / 🔗参照)。リンク=タップで openLink・隣に「コピー」ボタン(#44 指示2)。 */
+function appendUrlRow(body: HTMLElement, r: DetailUrlRow): void {
+	const row = el("div", "join-row view-url-row");
+	row.appendChild(createIcon(r.kind === "conference" ? "video" : "link"));
+	const a = document.createElement("a");
+	a.className = "join-link";
+	a.href = r.url;
+	a.target = "_blank";
+	a.rel = "noopener noreferrer";
+	a.textContent = r.kind === "conference" ? "会議に参加" : r.url;
+	a.setAttribute("aria-label", r.kind === "conference" ? "会議に参加" : "リンクを開く");
+	// タップ=開く。openExternalLink が app.openLink を第一手段にし、未対応/拒否はテキスト長押しへ degrade。
+	a.addEventListener("click", (e) => openExternalLink(e, r.url));
+	row.appendChild(a);
+	// コピーボタン(開けないホスト向けの確実な導線)。実際の click ハンドラは buildViewPage が toast 参照込みで付ける。
+	const copy = document.createElement("button");
+	copy.type = "button";
+	copy.className = "view-copy";
+	copy.dataset.url = r.url;
+	copy.textContent = "コピー";
+	copy.setAttribute("aria-label", "URL をコピー");
+	row.appendChild(copy);
+	body.appendChild(row);
 }
 
 /** 詳細ページ本体(モック C)。d は sheetDraft(この関数がそれを直接読み書きする)。 */
@@ -3586,8 +3876,15 @@ function renderCalMenu(): void {
 		});
 		row.append(input, confirm);
 		calMenuEl.appendChild(row);
-		// メニューを開き直した直後に入力へフォーカス(iOS キーボードを即出す)。
-		setTimeout(() => input.focus(), 0);
+		// カレンダー名入力へフォーカス(iOS キーボードを即出す)。
+		// 【#44 item 5: setTimeout(0) を撤去し同期 focus へ】renderCalMenu は「＋ カレンダーを追加」トグルの
+		// click ハンドラから同期で呼ばれ、この input も直前に同期で DOM へ append 済み。旧 setTimeout(0) は
+		// focus をタップジェスチャの外(次のマクロタスク)へ追い出しており、iOS WebKit はジェスチャ外の
+		// focus() でソフトキーボードを出さない(create フロー 450ms 遅延と同じ問題クラス)。ジェスチャ内の
+		// 同期 focus に引き戻す。calMenuEl は inline ドロップダウンで破壊的 renderAll の抑止対象外だが、
+		// この focus はトグル直後の同期呼び出しでだけ効けばよい(以降の非同期 renderCalMenu 再描画では
+		// calNewInputMode が既に立っていない/ジェスチャ外なので、そこで開かなくても退行にはならない)。
+		input.focus();
 	} else {
 		const add = el("button", "cal-menu-add") as HTMLButtonElement;
 		add.type = "button";
@@ -4159,6 +4456,10 @@ function buildCreatePage(d: SheetDraft): HTMLElement {
 		d.title = titleInput.value;
 	});
 	body.appendChild(titleInput);
+	// #44 item 5(iOS キーボード根治): 作成フォームは常に create モードで開くので、タイトル input を
+	// sheetTitleInput へ登録し、triggerCreateEvent がタップハンドラ内で同期 focus できるようにする
+	// (todos-entry.ts の buildDetailPage create 分岐と同じ役割)。
+	sheetTitleInput = titleInput;
 
 	if (d.formKind === "event") appendEventCreateFields(body, d);
 	else appendTodoCreateFields(body, d);
@@ -4878,24 +5179,32 @@ function triggerCreateEvent(): void {
 	draft = null;
 	selectedId = null;
 
-	const openForm = (): void => {
-		startDraft();
-		openCreateSheet();
-	};
-	// 昇格を試みる(拒否/未対応ホストでも openForm 自体は行う — 作成フォームは #root 内のカード内
-	// ページ遷移として inline でも成立するため、fullscreen はあくまで「全件が見える文脈」の付加価値。
-	// todos-entry.ts の畳み昇格と違い、ここでは lastFoldActive 条件を課さない(⊕ を押した時点で
-	// 常に作成フォームへ入る合意 — 設計05 §4「vevent 作成 = fullscreen 詳細フォーム」)。
+	// 【#44 item 5(iOS キーボード根治)で順序を並べ替えた】
+	// 旧実装は「requestDisplayMode(fullscreen).then(() => { applyHostContext(); openForm(); })」で、
+	// 作成フォームの描画も focus も昇格の Promise 解決後(=タップジェスチャの外・非同期)に起きていた。
+	// iOS WebKit はジェスチャ外の focus() でソフトキーボードを出さないため、キーボードが出ない不具合の
+	// 温床だった(root-cause は focusSheetTitle / render-gate.ts 冒頭コメント参照)。
+	// 新しい順序:
+	//   (1) startDraft() + openCreateSheet() を同期実行 = 作成フォーム(タイトル input)を今すぐ DOM に用意
+	//   (2) focusSheetTitle() を同期実行 = タップジェスチャ内で focus を当て、この時点でキーボード権を確保
+	//   (3) その後で requestDisplayMode(fullscreen) を投げる = 昇格・レイアウト調整は focus 確保後に回す
+	// 昇格の Promise 解決後は applyHostContext(CSS クラス/変数の更新のみ・非破壊=renderAll しない)だけを
+	// 行う。昇格に伴い後から来る hostcontextchanged 等の再描画要求は guardedRenderAll が sheetState!==null で
+	// 抑止する(render-gate)ため、focus 済みの input が DOM から外れずキーボードが閉じない。
+	// 【不変条件(テスト不能なのでコメントで明文化)】焦点を保持するには「focus 済み要素を DOM から外す
+	// 破壊的 renderAll を昇格後に走らせない」ことが必須。昇格後の経路(applyHostContext・guardedRenderAll)は
+	// いずれも create シート表示中は focus 要素を作り直さない。この不変条件を崩す新経路を足すときは要注意。
+	startDraft();
+	openCreateSheet(); // 同期 renderAll で作成フォームを描き、buildCreatePage が sheetTitleInput を登録する
+	focusSheetTitle(); // ← タップジェスチャ内の同期 focus(キーボード権の確保。450ms 遅延 focus は撤去した)
+	// 昇格を試みる(拒否/未対応ホストでも作成フォームは既に開いている — inline でも #root 内ページとして成立)。
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
-			.then(() => {
-				applyHostContext();
-				openForm();
-			})
-			.catch(() => openForm());
-	} else {
-		openForm();
+			.then(() => applyHostContext()) // 非破壊のレイアウト調整のみ(focus は保持)
+			.catch(() => {
+				// 拒否/失敗は握りつぶす — 作成フォームは inline のまま成立しているので追加の処理は不要。
+			});
 	}
 }
 quickAddFab.addEventListener("click", (e) => {
