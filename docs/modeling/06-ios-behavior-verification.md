@@ -560,3 +560,45 @@ V5 の確定を受け、時刻付き due(DATE-TIME;TZID)を独立 alarm フィ�
   `{frequency:""}` バグを presentation 層で吸収)。
 - **Phase 2(DST ゾーンの VTIMEZONE 生成)は未着手**。America/New_York 等は
   `UnsupportedTimeZoneError` で明示的に拒否される。
+
+## 場所機能の完了定義(2026-07-23 ユーザー裁定・#51 Phase 1)
+
+「場所」を中途半端に載せるのではなく、iOS のどの画面で意味を持つかを完了定義にする。
+サーバーが書く場所情報は、次の3条件を満たしたときだけ「完成」とみなす:
+
+1. **VEVENT の場所 = iOS カレンダーの表示で意味を持つ。** X-APPLE-STRUCTURED-LOCATION
+   (geo + X-TITLE)を書くことで、iOS カレンダーのイベント詳細に地図ピン/経路案内が出る。
+   geo が取れないときは LOCATION テキストへ degrade する(既存 C8 の author 規約どおり)。
+2. **VTODO の場所 = iOS リマインダーの位置通知(geofence)で意味を持つ。** 単なる LOCATION
+   テキストではなく **proximity VALARM**(`X-APPLE-PROXIMITY` + 番兵 TRIGGER +
+   `X-APPLE-STRUCTURED-LOCATION`(REFERENCEFRAME=1 付き))を書くことで、iOS リマインダーの
+   「指定した場所に着いたら通知」が実際に発火する(実データは A9・fixtures/real-ios/
+   vtodo-proximity-alarm.ics)。テキスト LOCATION では geofence にならない(過去に LLM が
+   「◯◯に着いたら通知」を LOCATION 書き込みで済ませ、位置通知が設定されたと誤解させる罠を
+   踏んだ — server.ts の VTODO location 引数全廃コメント参照)。
+3. **中途半端な iOS 非互換を作らない。** proximity は geo(lat/lon)が無いと geofence を
+   定義できないので、座標を解決できないときは **ツールを明示エラーにする**(位置なしの
+   「なんちゃって位置リマインダー」を作らない)。エラーは「search-location で候補確認 or
+   場所名を具体化」を促す(server.ts の LocationReminderUnresolvedError)。domain の
+   `buildProximityAlarm` は ARRIVE/DEPART 両対応だが、MCP 公開 enum は arrive のみ(下記 G2 ゲート)。
+
+### 実機ゲート(未検証 — 実機で通すまで「確定」にしない)
+
+- **G1(arrive)**: `create-todo`/`update-todo` の `locationReminder`(trigger:"arrive")で
+  proximity VALARM を書き、iOS リマインダーで「その場所に着いたら通知」が発火することを実機確認する。
+  Phase 1 の主目的。通過したらこの節を「確定」に更新する。
+- **G2(leave/DEPART)**: `X-APPLE-PROXIMITY:DEPART`(出発時通知)が iOS で発火することを実機確認する。
+  domain writer は既に両対応だが、MCP 公開 enum は G2 通過まで "arrive" のみに絞る(未検証の
+  DEPART を公開して「離れたら通知が実は鳴らない」誤解を生まないため)。通過後に enum へ "leave" を足す。
+- **G3(VEVENT degrade)**: VEVENT の structuredLocation を geo 有り/無しの両方で iOS カレンダーに
+  出し、geo 有り=地図ピン、geo 無し=LOCATION テキストのみ、が期待どおり表示されることを実機確認する。
+
+### Phase 1 実装範囲(コード)
+
+- domain: `src/domain/ical/semantics/valarm-write.ts`(`buildProximityAlarm` — fixtures に
+  バイト忠実。TRIGGER 番兵固定・UID=X-WR-ALARMUID 同値・REFERENCEFRAME=1)。
+  `vtodo-write.ts`/`vtodo-patch.ts` の alarm を union 配列化(absolute + proximity 共存)。
+- application: `create-todo.ts`/`update-todo.ts` が `locationReminder`(解決済み座標付き)を受ける
+  (geocoding は presentation の責務 — application はポートを増やさない)。update は null で除去。
+- presentation: `server.ts` の create-todo/update-todo に `locationReminder` 入力を追加。
+  structuredLocation 明示 or `autoResolveLocation` で座標解決 → 解決不能はツールエラー。

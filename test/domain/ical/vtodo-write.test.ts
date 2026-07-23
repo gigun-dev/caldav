@@ -235,7 +235,7 @@ describe("buildVTodoCalendar", () => {
 				uid: "uid-alarm-1",
 				now: NOW,
 				summary: "通知つきタスク",
-				alarm: { triggerUtcRaw: "20260714T000000Z", uid: "alarm-uid-1" },
+				alarms: [{ kind: "absolute", triggerUtcRaw: "20260714T000000Z", uid: "alarm-uid-1" }],
 			});
 			const ics = serialize(component);
 			const reparsed = ICalendarObject.fromComponent(parse(ics));
@@ -272,7 +272,7 @@ describe("buildVTodoCalendar", () => {
 				uid: "uid-alarm-3",
 				now: NOW,
 				summary: "due なし通知タスク",
-				alarm: { triggerUtcRaw: "20260714T090000Z", uid: "alarm-uid-3" },
+				alarms: [{ kind: "absolute", triggerUtcRaw: "20260714T090000Z", uid: "alarm-uid-3" }],
 			});
 			const ics = serialize(component);
 			const reparsed = ICalendarObject.fromComponent(parse(ics));
@@ -314,7 +314,7 @@ describe("buildVTodoCalendar", () => {
 				summary: "CAP-TIMEDDUE",
 				due: { type: "DATE-TIME", raw: "20260710T140000", tzid: "Asia/Tokyo" },
 				vtimezone,
-				alarm: { triggerUtcRaw: "20260710T050000Z", uid: "generated-alarm-uid" },
+				alarms: [{ kind: "absolute", triggerUtcRaw: "20260710T050000Z", uid: "generated-alarm-uid" }],
 			});
 			const generatedVTodo = ICalendarObject.fromComponent(component).todos()[0]!;
 

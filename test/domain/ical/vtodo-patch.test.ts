@@ -14,6 +14,8 @@ import {
 	patchVTodoFields,
 	pruneUnreferencedVTimezones,
 	removeDueAnchoredAlarmTriggers,
+	removeProximityAlarms,
+	upsertProximityAlarm,
 } from "../../../src/domain/ical/semantics/vtodo-patch";
 import type { NowStamp } from "../../../src/domain/ical/semantics/vtodo-stamp";
 import { parse } from "../../../src/domain/ical/parse/parser";
@@ -379,5 +381,55 @@ describe("applyReopen", () => {
 		expect(propValue(out, "COMPLETED")).toBeUndefined();
 		expect(propValue(out, "PERCENT-COMPLETE")).toBeUndefined();
 		expect(propValue(out, "SUMMARY")).toBe("keep"); // 触っていない
+	});
+});
+
+// --- proximity(位置)VALARM の add/remove(#51 Phase 1)------------------------------------
+describe("upsertProximityAlarm / removeProximityAlarms", () => {
+	// 時刻アラーム(絶対トリガー)を1個持つ VTODO。proximity 操作がこれに干渉しないことを確認する。
+	function vtodoWithTimeAlarm(): Component {
+		return {
+			name: "VTODO",
+			properties: [{ name: "SUMMARY", parameters: [], value: "t" }],
+			components: [
+				{
+					name: "VALARM",
+					properties: [
+						{ name: "ACTION", parameters: [], value: "DISPLAY" },
+						{ name: "TRIGGER", parameters: [{ name: "VALUE", values: ["DATE-TIME"] }], value: "20260715T000000Z" },
+					],
+					components: [],
+				},
+			],
+		};
+	}
+
+	test("upsert で proximity VALARM が1個足され、時刻アラームは温存される(共存)", () => {
+		const out = upsertProximityAlarm(vtodoWithTimeAlarm(), { title: "自宅", lat: 1, lon: 2, trigger: "arrive" });
+		const alarms = out.components.filter((c) => c.name === "VALARM");
+		expect(alarms).toHaveLength(2); // 時刻 + 位置。
+		const proximity = alarms.filter((a) => a.properties.some((p) => p.name === "X-APPLE-PROXIMITY"));
+		expect(proximity).toHaveLength(1);
+		// 時刻アラーム(X-APPLE-PROXIMITY 無し)は消えていない。
+		expect(alarms.some((a) => !a.properties.some((p) => p.name === "X-APPLE-PROXIMITY"))).toBe(true);
+	});
+
+	test("upsert を2回呼んでも proximity は1個に保たれる(差し替え)", () => {
+		let out = upsertProximityAlarm(vtodoWithTimeAlarm(), { title: "自宅", lat: 1, lon: 2, trigger: "arrive" });
+		out = upsertProximityAlarm(out, { title: "オフィス", lat: 3, lon: 4, trigger: "arrive" });
+		const proximity = out.components.filter(
+			(c) => c.name === "VALARM" && c.properties.some((p) => p.name === "X-APPLE-PROXIMITY"),
+		);
+		expect(proximity).toHaveLength(1);
+		const loc = proximity[0]!.properties.find((p) => p.name === "X-APPLE-STRUCTURED-LOCATION")!;
+		expect(loc.parameters.find((p) => p.name === "X-TITLE")?.values[0]).toBe("オフィス"); // 新しい方に差し替わる。
+	});
+
+	test("remove で proximity VALARM だけ消え、時刻アラームは残る", () => {
+		const withProx = upsertProximityAlarm(vtodoWithTimeAlarm(), { title: "自宅", lat: 1, lon: 2, trigger: "arrive" });
+		const out = removeProximityAlarms(withProx);
+		const alarms = out.components.filter((c) => c.name === "VALARM");
+		expect(alarms).toHaveLength(1);
+		expect(alarms[0]?.properties.some((p) => p.name === "X-APPLE-PROXIMITY")).toBe(false); // 残ったのは時刻アラーム。
 	});
 });

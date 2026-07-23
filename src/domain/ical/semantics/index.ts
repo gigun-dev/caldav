@@ -23,7 +23,10 @@ export { VAlarm } from "./valarm";
 
 // E-1 スライス①: VTODO 新規組み立て(CreateTodo 専用。vtodo.ts の読み取りレンズとは別ファイル
 // — vtodo-write.ts 冒頭コメントの「CreateTodo 以外で使わない」方針を参照)。
-export { buildVTodoCalendar, type VTodoFields } from "./vtodo-write";
+export { buildVTodoCalendar, type VTodoFields, type VTodoAlarmInput } from "./vtodo-write";
+
+// #51 Phase 1: proximity(位置)VALARM の write プリミティブ(vtodo-write/vtodo-patch が使う)。
+export { buildProximityAlarm, PROXIMITY_TRIGGER_PLACEHOLDER, type ProximityAlarmInput } from "./valarm-write";
 
 // E-1 スライス②-a: サーバー発 VTODO の生成プロパティ(単一情報源)。CreateTodo(stampCreate)に
 // 加え、将来の UpdateTodo/CompleteTodo(②-b/②-c)が stampUpdate を再利用する想定で公開する。
@@ -78,6 +81,8 @@ export {
 	patchVTodoFields,
 	shiftAbsoluteAlarmTriggers,
 	removeDueAnchoredAlarmTriggers,
+	upsertProximityAlarm,
+	removeProximityAlarms,
 	pruneUnreferencedVTimezones,
 	type VTodoPatchFields,
 	type VTodoDuePatch,

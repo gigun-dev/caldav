@@ -33,6 +33,7 @@ import {
 	serialize,
 	UnsupportedTimeZoneError as DomainUnsupportedTimeZoneError,
 	type Component,
+	type ProximityAlarmInput,
 	type RecurrenceRule,
 } from "../../domain/ical";
 import {
@@ -41,8 +42,10 @@ import {
 	patchVTodoFields,
 	pruneUnreferencedVTimezones,
 	removeDueAnchoredAlarmTriggers,
+	removeProximityAlarms,
 	shiftAbsoluteAlarmTriggers,
 	stampUpdate,
+	upsertProximityAlarm,
 	type VTodoDuePatch,
 } from "../../domain/ical/semantics";
 import { collectionId as mkCollectionId, type PrincipalRef } from "../../domain/caldav";
@@ -198,6 +201,17 @@ export interface UpdateTodoInput {
 	 * (RecurringDueRemovalError は「RRULE を残したまま due だけ外す」場合のみ拒否する)。
 	 */
 	recurrence?: CreateTodoRecurrenceInput | null;
+	/**
+	 * 位置(geofence)リマインダーの設定/変更/除去(#51 Phase 1)。
+	 *   - undefined            = 変更しない(既存 proximity VALARM を残す)
+	 *   - null                 = 位置リマインダーを除去する(proximity VALARM を消す)
+	 *   - ProximityAlarmInput  = 位置リマインダーを設定/差し替える(既存 proximity は置換)
+	 * 【geo は presentation で解決済み】create-todo と同じく、location 文字列の座標解決は presentation の
+	 * 責務(この UC は geocoding を知らない)。解決不能なら presentation がツールをエラーにするので、
+	 * ここには常に lat/lon 付きの ProximityAlarmInput が来る。due 由来の時刻アラームとは独立に扱う
+	 * (upsertProximityAlarm/removeProximityAlarms は X-APPLE-PROXIMITY 有無で時刻アラームと切り分ける)。
+	 */
+	locationReminder?: ProximityAlarmInput | null;
 	/**
 	 * STATUS の遷移。"COMPLETED" で完了・"NEEDS-ACTION" で未完了に戻す。省略時は変更しない。
 	 * 【CompleteTodo と同じガードを status:"COMPLETED" にも適用する(2026-07-12 レビューで確定)】
@@ -404,6 +418,17 @@ export class UpdateTodo {
 			}
 			// oldInstance が undefined(旧 DUE も旧 DTSTART も無い)のときは shift 基準が無いので
 			// 何もしない(仕様どおり — dueShiftMillis の JSDoc 参照)。
+		}
+
+		// --- 位置(geofence)リマインダーの patch(#51 Phase 1)-----------------------------------
+		// undefined=据え置き / null=除去 / ProximityAlarmInput=設定・差し替え。時刻アラーム(due 由来)
+		// とは独立に触る(upsertProximityAlarm/removeProximityAlarms は X-APPLE-PROXIMITY 有無で切り分け、
+		// 上の due VALARM 追随が触る絶対/相対アラームには干渉しない)。due patch の VALARM 追随より後に
+		// 置くことで、「due 変更 + 位置リマインダー変更」を同時に送っても互いに上書きしない。
+		if (input.locationReminder === null) {
+			patched = removeProximityAlarms(patched);
+		} else if (input.locationReminder !== undefined) {
+			patched = upsertProximityAlarm(patched, input.locationReminder);
 		}
 
 		if (input.status === "COMPLETED") {

@@ -21,7 +21,8 @@
 // =============================================================================
 
 import type { Component } from "../structure/types";
-import { removeProperty, upsertProperty } from "../structure/edit";
+import { appendSubComponent, removeProperty, upsertProperty } from "../structure/edit";
+import { buildProximityAlarm, type ProximityAlarmInput } from "./valarm-write";
 import { encodeText } from "../values/text-value";
 import { formatCalDateTime, parseCalDateTime, toEpochMillis, type CalDateTime } from "../values/cal-date-time";
 import { formatRecurrenceRule, parseRecurrenceRule, type RecurrenceRule } from "../values/recurrence-rule";
@@ -373,6 +374,37 @@ export function removeDueAnchoredAlarmTriggers(vtodo: Component): Component {
 		if (c.name !== "VALARM") return true; // VALARM 以外(何も無いが将来のサブコンポーネント)は残す。
 		if (firstProp(c, "X-APPLE-PROXIMITY") !== undefined) return true; // 位置アラーム: 残す(上記)。
 		return false; // 期日依存アラーム(絶対 + 相対): 除去する。
+	});
+	return { ...vtodo, components };
+}
+
+// ---------------------------------------------------------------------------
+// proximity(位置)VALARM の追加 / 除去(#51 Phase 1・update-todo の locationReminder patch)
+// ---------------------------------------------------------------------------
+//
+// 【なぜ upsert(除去してから追加)か】proximity VALARM は VTODO に1個だけ持てる想定(Phase 1)。
+// 「場所リマインダーを付け替える」操作を素朴に append すると古い位置アラームが残って二重になるため、
+// 既存の proximity VALARM を先に全部除去してから新しい1個を append する(冪等な差し替え)。
+// 時刻アラーム(X-APPLE-PROXIMITY を持たない VALARM)には一切触れない(due 由来アラームと共存させる)。
+
+/**
+ * VTODO に proximity(位置)VALARM を1個 upsert する(既存 proximity は差し替え)。
+ * 時刻アラーム・その他のサブコンポーネントは温存する(ロスレス方針)。
+ */
+export function upsertProximityAlarm(vtodo: Component, input: ProximityAlarmInput): Component {
+	const withoutProximity = removeProximityAlarms(vtodo); // 既存 proximity を除去(差し替えのため)。
+	return appendSubComponent(withoutProximity, buildProximityAlarm(input));
+}
+
+/**
+ * VTODO から proximity(位置)VALARM を全て除去する(locationReminder:null での位置通知解除)。
+ * X-APPLE-PROXIMITY を持つ VALARM だけを filter する。時刻アラーム(絶対/相対)は残す
+ * (removeDueAnchoredAlarmTriggers が位置アラームを残すのと対称の判断 — 位置と時刻は独立した通知)。
+ */
+export function removeProximityAlarms(vtodo: Component): Component {
+	const components = vtodo.components.filter((c) => {
+		if (c.name !== "VALARM") return true;
+		return firstProp(c, "X-APPLE-PROXIMITY") === undefined; // proximity VALARM を除去、他は残す。
 	});
 	return { ...vtodo, components };
 }

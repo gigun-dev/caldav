@@ -144,7 +144,7 @@ import type { RecurrenceIterator } from "../../domain/ical/recurrence";
 // application 層 UC が受け取る StructuredLocationInput は同一の shape(title/address?/lat?/lon?/radius?)。
 // application/usecases バレルには re-export されていない(create-event.ts が domain から直接 import する
 // 内部型のため)ので、ここでも同じ domain モジュールから直接引く。
-import type { StructuredLocationInput } from "../../domain/ical/semantics";
+import type { StructuredLocationInput, ProximityAlarmInput } from "../../domain/ical/semantics";
 // #locationAutoResolve: update-event が「location 文字列が変わったか」を判定するために現在の
 // VEVENT.location(生 TEXT)を decodeText した意味的文字列と比較する(event-dto.ts の readEventMeta と
 // 同じ decodeText の使い方)。
@@ -777,8 +777,62 @@ const createTodoItemFieldsShape = {
 	),
 };
 
+// --- locationReminder(#51 Phase 1: VTODO の位置リマインダー = geofence 通知)-----------------
+// 【なぜ create-todo/update-todo だけで create-todos(バッチ)には出さないか】
+// 位置リマインダーは「1件ずつ丁寧に場所を確定する」性格の入力(解決不能ならエラーにする=下記)で、
+// 「5件まとめて追加」のバッチ用途とは相性が悪い(1件の場所解決失敗が全体を止める/曖昧なまま量産する)。
+// よって createTodoItemFieldsShape(create-todo/create-todos 共有)ではなく create-todo 専用の
+// createTodoInputShape にだけ additive に足す(バッチ item には出さない)。
+//
+// 【structuredLocation 明示 vs location 自動解決の2経路】
+// - structuredLocation を明示 → その座標をそのまま使う(autoResolve しない。create-event の
+//   structuredLocation と同じ思想 = 呼び出し側が確定済みの座標を渡すのが最も確実)。lat/lon 必須
+//   (proximity は geo が無いと geofence を定義できない — #51 の「中途半端な iOS 非互換を作らない」裁定)。
+// - location(文字列)のみ → サーバーが autoResolveLocation(既知の場所 → geocoding)で座標へ解決。
+//   解決できたら proximity VALARM を書き、解決不能ならツールをエラーにする(位置なし todo を作らない)。
+//
+// 【trigger enum が "arrive" のみの理由(G2 ゲート)】
+// domain の buildProximityAlarm は ARRIVE/DEPART 両対応だが、DEPART(leave)の実機挙動は G2 ゲート
+// (docs/modeling/06)通過まで未検証。未検証の値を MCP に公開して「離れたら通知」が実は鳴らない、
+// という誤解を生まないよう、公開 enum は "arrive" のみに絞る(domain は対称なので G2 通過後に enum を
+// 増やすだけで済む)。
+const proximityStructuredLocationShape = z
+	.object({
+		// 【structuredLocationInputSchema(create-event 用)を再利用しない理由: 宣言順 + geo 必須の差】
+		// structuredLocationInputSchema は下方(create-event 節)で定義され、かつ lat/lon が optional
+		// (geo 無しは LOCATION へ degrade する VEVENT の仕様)。位置リマインダーは geo 必須なので shape が
+		// そもそも異なる。前方参照も避けたいので、proximity 専用の小さな shape をここに独立して定義する。
+		title: z.string().min(1).describe("場所の表示名(例「自宅」「オフィス」)。X-TITLE になる。"),
+		address: z.string().optional().describe("住所(表示用の補足)。省略可。"),
+		lat: z.number().describe("緯度(必須)。geofence の中心。"),
+		lon: z.number().describe("経度(必須)。geofence の中心。"),
+		radius: z.number().positive().optional().describe("geofence 半径(メートル)。省略可。"),
+	})
+	.describe("解決済みの座標付き場所を明示する(search-location/list-known-locations の結果を写す)。指定するとサーバー側の自動解決をスキップする。");
+
+const locationReminderInputSchema = z
+	.object({
+		location: z.string().min(1).describe(
+			'場所名または住所(例「自宅」「品川の叙々苑」)。structuredLocation を明示しない場合、サーバーが' +
+				"既知の場所 → 地図検索の順で座標へ自動解決する。解決できないとツールはエラーを返す(位置なしでは登録しない)。",
+		),
+		trigger: z
+			.enum(["arrive"])
+			.default("arrive")
+			.describe('通知の向き。"arrive"=その場所に着いたら通知(現状 arrive のみ対応)。'),
+		radius: z.number().positive().optional().describe("geofence 半径(メートル)。省略可。"),
+		structuredLocation: proximityStructuredLocationShape.optional(),
+	})
+	.describe(
+		"位置(geofence)リマインダー。iOS の「指定した場所に着いたら通知」= proximity VALARM を書く。" +
+			"座標は structuredLocation を明示するか、location 文字列からサーバーが自動解決する(解決不能ならエラー)。",
+	);
+
 const createTodoInputShape = {
 	...createTodoItemFieldsShape,
+	locationReminder: locationReminderInputSchema.optional().describe(
+		"位置リマインダー(その場所に着いたら通知)。省略時は位置通知なし。",
+	),
 	timeZone: z.string().optional().describe(
 		'due が時刻付き("YYYY-MM-DDTHH:MM:SS")のときの IANA タイムゾーン名(例 "Asia/Tokyo")。必須' +
 			"(省略時はエラー・暗黙 UTC フォールバックはしない)。DST ゾーン(例 America/New_York)は" +
@@ -930,6 +984,12 @@ const updateTodoInputShape = {
 	recurrence: updateTodoRecurrenceInputShape.optional().describe(
 		'反復リマインダーの設定/変更/除去。省略=変更しない / frequency:"none"=反復を除去 /' +
 			"daily/weekly/... =その反復に全置換。設定/変更時は due(既存 or 同時指定)が必須。",
+	),
+	// locationReminder(#51 Phase 1): 位置リマインダーの設定/変更/除去。create-todo と同じ shape に
+	// nullable を足して三値にする(省略=変更しない / null=除去 / オブジェクト=設定・差し替え)。
+	locationReminder: locationReminderInputSchema.nullable().optional().describe(
+		"位置(geofence)リマインダーの設定/変更/除去。省略=変更しない / null=位置通知を外す /" +
+			"オブジェクト=設定・差し替え(structuredLocation 明示か location 文字列の自動解決。解決不能ならエラー)。",
 	),
 	status: z.enum(["COMPLETED", "NEEDS-ACTION"]).optional().describe(
 		"STATUS の遷移。COMPLETED で完了・NEEDS-ACTION で未完了に戻す。省略時は変更しない。" +
@@ -1126,6 +1186,77 @@ function describeAutoResolvedLocation(outcome: Extract<LocationAutoResolveOutcom
 // から気を逸らすノイズになるため。詳細を知りたい場合は search-location を明示的に呼べば個別メッセージが
 // 得られる(search-location の description に誘導文を残す理由 — 要件4)。
 const LOCATION_AUTO_RESOLVE_FAILED_NOTE = "場所はテキストのみで登録しました(地図ピンなし)。";
+
+// --- locationReminder の座標解決(#51 Phase 1)-------------------------------------------------
+// create-todo/update-todo の locationReminder 入力を domain の ProximityAlarmInput(geo 必須)へ写す。
+// structuredLocation 明示ならそれを、無ければ autoResolveLocation で location 文字列を座標へ解決する。
+// 解決不能なら例外を投げる(呼び出し側 handler の catch-all が toolError に変換 = 位置なし todo を作らない)。
+
+/** locationReminder が解決不能なとき投げるエラー(handler の catch-all がメッセージをそのまま返す)。 */
+class LocationReminderUnresolvedError extends Error {
+	constructor(locationText: string) {
+		// 「search-location で候補確認 or 場所名を具体化」を必ずメッセージに含める(#51 の要件)。
+		super(
+			`位置リマインダーの場所「${locationText}」を解決できませんでした。search-location で候補を確認するか、` +
+				"場所名をより具体的に指定してください(位置が確定できないリマインダーは作成しません)。",
+		);
+		this.name = "LocationReminderUnresolvedError";
+	}
+}
+
+/** resolveLocationReminder の結果。proximity(ProximityAlarmInput)+ 応答 content 用の人間可読ノート。 */
+interface ResolvedLocationReminder {
+	proximity: ProximityAlarmInput;
+	// 誤った場所で通知が鳴る実害を避けるため、解決した title/address を応答に明示する(#51 要件)。
+	note: string;
+}
+
+async function resolveLocationReminder(
+	deps: McpAppDeps,
+	principal: PrincipalRef,
+	// zod で検証済みの locationReminder(structuredLocation は lat/lon 必須・trigger は "arrive" のみ)。
+	input: { location: string; trigger: "arrive"; radius?: number; structuredLocation?: { title: string; address?: string; lat: number; lon: number; radius?: number } },
+): Promise<ResolvedLocationReminder> {
+	// (1) structuredLocation 明示: autoResolve せずそのまま使う(create-event と同じ「明示を上書きしない」思想)。
+	if (input.structuredLocation !== undefined) {
+		const sl = input.structuredLocation;
+		const proximity: ProximityAlarmInput = {
+			title: sl.title,
+			...(sl.address !== undefined ? { address: sl.address } : {}),
+			lat: sl.lat,
+			lon: sl.lon,
+			trigger: input.trigger,
+			// radius は reminder 直下の指定を優先し、無ければ structuredLocation 側の radius を使う。
+			...(input.radius ?? sl.radius) !== undefined ? { radius: input.radius ?? sl.radius } : {},
+		};
+		const addressPart = sl.address !== undefined ? `(${sl.address})` : "";
+		return { proximity, note: `位置リマインダーの場所「${sl.title}」${addressPart}を設定しました。` };
+	}
+
+	// (2) location 文字列を自動解決(既知の場所 → geocoding)。autoResolveLocation は例外を投げない設計
+	// (create-event 用に「失敗は握りつぶす」)だが、位置リマインダーでは解決不能を許容しないので、
+	// failed / geo 欠落のときはここで LocationReminderUnresolvedError を投げてツールをエラーにする。
+	const outcome = await autoResolveLocation(deps, principal, input.location);
+	if (outcome.kind === "failed") {
+		throw new LocationReminderUnresolvedError(input.location);
+	}
+	const sl = outcome.structuredLocation;
+	// autoResolveLocation の known/geocoding 経路は必ず lat/lon を埋める(StructuredLocationInput の
+	// 型上は optional だが実装上は常に設定)。防御的に geo 欠落なら「解決不能」に倒す(geo 無し proximity は作らない)。
+	if (sl.lat === undefined || sl.lon === undefined) {
+		throw new LocationReminderUnresolvedError(input.location);
+	}
+	const proximity: ProximityAlarmInput = {
+		title: sl.title,
+		...(sl.address !== undefined ? { address: sl.address } : {}),
+		lat: sl.lat,
+		lon: sl.lon,
+		trigger: input.trigger,
+		...(input.radius ?? sl.radius) !== undefined ? { radius: input.radius ?? sl.radius } : {},
+	};
+	const addressPart = outcome.address !== null ? `(${outcome.address})` : "";
+	return { proximity, note: `位置リマインダーの場所「${outcome.title}」${addressPart}を解決しました。` };
+}
 
 // C8(設計 05 §1-c・§2「会議」スロット): conference の shape(create/update 共通)。
 const conferenceInputSchema = z
@@ -2552,7 +2683,7 @@ function buildMcpServer(
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ title, notes, due, timeZone, priority, calendarId, recurrence }) => {
+		async ({ title, notes, due, timeZone, priority, calendarId, recurrence, locationReminder }) => {
 			try {
 				// recurrence 正規化(Case E): frequency:"none" は presentation 限定の語彙なので、
 				// application 層に渡す前にここで吸収する(上の createTodoRecurrenceInputShape
@@ -2562,6 +2693,13 @@ function buildMcpServer(
 				// (throw する流儀になったので、ここでは try ブロック内から呼ぶだけでよい —
 				// 投げられた RangeError は下の catch の catch-all で toolError に変換される)。
 				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
+
+				// locationReminder 解決(#51): structuredLocation 明示 or location 文字列の自動解決。
+				// 解決不能なら resolveLocationReminder が LocationReminderUnresolvedError を投げ、下の
+				// catch-all が toolError に変換する(位置なし todo を作らない)。geo は presentation で解決し、
+				// application 層(CreateTodo)には座標付き ProximityAlarmInput を渡す(geocoding を知らせない)。
+				const resolvedReminder =
+					locationReminder !== undefined ? await resolveLocationReminder(deps, principal, locationReminder) : undefined;
 
 				// PutCalendarObject は4依存(collectionRepo/resourceRepo/uow/iterator)を合成する
 				// 既存ユースケース。CreateTodo はそれをさらに1段合成する(create-todo.ts 冒頭コメント)。
@@ -2578,6 +2716,8 @@ function buildMcpServer(
 					// B: location 引数は全廃(上の createTodoItemFieldsShape コメント参照)。CreateTodo は location を
 					// 受け取らなくなり LOCATION を書かない — 場所の意味は proximity VALARM(C8)に一本化する。
 					recurrence: normalizedRecurrence,
+					// #51: 位置リマインダー(解決済み座標付き)。省略時は undefined = proximity VALARM を書かない。
+					locationReminder: resolvedReminder?.proximity,
 				});
 				// affected: 新規作成 = "added"。新 UID は createTodo が返した task.id。確定一覧は
 				// 作成先 calendarId・create 入力の timeZone(due 表示ゾーン)で ListTodos を再実行して
@@ -2589,7 +2729,13 @@ function buildMcpServer(
 					timeZone,
 					affected: [{ id: task.id, kind: "added", task: snapshotFromTask(task) }],
 				});
-				return toTodosToolResponse(vm);
+				const resp = await toTodosToolResponse(vm);
+				// #51: 解決した場所(title/address)を応答 content に明示する(誤った場所で通知が鳴る実害回避)。
+				// content の先頭に足すことで、非 UI ホストでも「どの場所に設定したか」が最初に読める。
+				if (resolvedReminder !== undefined) {
+					resp.content.unshift({ type: "text" as const, text: resolvedReminder.note });
+				}
+				return resp;
 			} catch (error) {
 				// InvalidDueError(due の形式不正・offset ISO8601 拒否)/ DueTimeZoneRequiredError
 				// (時刻付き due に timeZone 無し)/ InvalidTimeZoneError(不正な IANA 名)/
@@ -3018,12 +3164,23 @@ function buildMcpServer(
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
-		async ({ id, calendarId, title, notes, due, timeZone, priority, status, recurrence }) => {
+		async ({ id, calendarId, title, notes, due, timeZone, priority, status, recurrence, locationReminder }) => {
 			try {
 				// recurrence 正規化(2026-07-15): presentation 5値 + optional を application の三値
 				// (undefined=据え置き / null=除去 / 4値=全置換)へ写す。none + サブフィールド併用は
 				// ここで RangeError → catch-all で toolError に変換される(意図した設定を黙殺しない)。
 				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
+				// locationReminder 三値の解決(#51): undefined=変更しない / null=除去 / オブジェクト=解決して設定。
+				// null はそのまま UC の「除去」へ流す。オブジェクトは resolveLocationReminder で座標へ解決する
+				// (解決不能なら例外 → catch-all で toolError)。zod の .nullable().optional() で null/undefined は区別される。
+				let resolvedReminder: ResolvedLocationReminder | undefined;
+				let locationReminderPatch: ProximityAlarmInput | null | undefined;
+				if (locationReminder === null) {
+					locationReminderPatch = null; // 除去。
+				} else if (locationReminder !== undefined) {
+					resolvedReminder = await resolveLocationReminder(deps, principal, locationReminder);
+					locationReminderPatch = resolvedReminder.proximity;
+				}
 				// before 値: UpdateTodo UC が更新前スナップショットを返す(2026-07-14 レイテンシ改善で
 				// UC 側に移した。以前は presentation で findTaskById が別途 ListTodos 全件を読んでいたが、
 				// UC が If-Match 検証で内部 read する更新前状態を before として公開したことで、その
@@ -3044,6 +3201,8 @@ function buildMcpServer(
 					// B: location 引数は全廃(update の inputSchema から削除。UpdateTodo へ location を渡さない=
 					// LOCATION を更新しない。読み取り互換のため既存 LOCATION は round-trip で保持される)。
 					recurrence: normalizedRecurrence,
+					// #51: 位置リマインダー(undefined=据え置き / null=除去 / 解決済み ProximityAlarmInput=設定)。
+					locationReminder: locationReminderPatch,
 					status,
 				});
 
@@ -3084,7 +3243,13 @@ function buildMcpServer(
 				// UI カードは完了/再開/編集のいずれでも閲覧デバイスのゾーンを載せてくるので、確定一覧の
 				// 時刻付き DUE が UTC 落ちしなくなる)。既定 UTC(resolveTimeZone)は不変。
 				const vm = await buildTodosViewModel({ calendarId, timeZone, affected });
-				return toTodosToolResponse(vm);
+				const resp = await toTodosToolResponse(vm);
+				// #51: 位置リマインダーを設定/差し替えたときは解決した場所を content に明示する(誤った場所で
+				// 通知が鳴る実害回避)。除去(null)時はノート無し(消したことは affected/確定一覧で分かる)。
+				if (resolvedReminder !== undefined) {
+					resp.content.unshift({ type: "text" as const, text: resolvedReminder.note });
+				}
+				return resp;
 			} catch (error) {
 				// TodoNotFoundError / InvalidDueError / DueTimeZoneRequiredError / InvalidTimeZoneError /
 				// UnsupportedTimeZoneError / RecurringDueRemovalError(V6 フォローアップの due 系検証)/

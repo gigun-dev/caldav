@@ -44,7 +44,9 @@ import {
 	type CalDateTime,
 	type Component,
 	type Frequency,
+	type ProximityAlarmInput,
 	type RecurrenceRule,
+	type VTodoAlarmInput,
 	type VTodoFields,
 	type Weekday,
 } from "../../domain/ical";
@@ -102,6 +104,17 @@ export interface CreateTodoInput {
 	 * 指定時は due が必須(RRULE は DTSTART をアンカーにするため — RecurrenceRequiresDueError)。
 	 */
 	recurrence?: CreateTodoRecurrenceInput;
+	/**
+	 * 位置(geofence)リマインダー(#51 Phase 1)。省略時は proximity VALARM を書かない。
+	 *
+	 * 【geo は presentation で解決済みの前提(application は geocoding を知らない)】
+	 * ProximityAlarmInput は lat/lon 必須。presentation(MCP サーバー)が location 文字列を
+	 * autoResolveLocation / 明示 structuredLocation で座標へ解決してからこの UC に渡す契約にする
+	 * (この UC は GeocodingPort 等を一切依存に増やさない — CLAUDE.md「application 層は外部技術に
+	 * 依存させない」方針。解決不能なら presentation がツールをエラーにするので、ここには常に geo 付きが来る)。
+	 * due 由来の時刻アラームとは独立に共存できる(両方指定すれば VTODO に VALARM が2個載る)。
+	 */
+	locationReminder?: ProximityAlarmInput;
 }
 
 /** MCP `create-todo` の recurrence 入力(zod 前段は presentation 層が担う。ここは素朴な形のまま)。 */
@@ -415,8 +428,10 @@ export class CreateTodo {
 		// ため、「時刻付き due = その時刻に通知する」という自然な意味に統合した方が概念として
 		// 正しいと判断(概念ミスマッチの解消。未リリース内部 API なので後方互換コストもゼロ)。
 		// 時刻付き due には常に VALARM を付ける(任意指定ではなくなった)。
+		// 【#51 Phase 1: alarms 配列化】絶対時刻アラーム(due 由来)と proximity(位置)アラームを
+		// 共存させるため、単一 alarm から配列に変えた。順序は [absolute, proximity](実測の並びに近い)。
 		let vtimezone: Component | undefined;
-		let alarm: { triggerUtcRaw: string; uid: string } | undefined;
+		const alarms: VTodoAlarmInput[] = [];
 		if (due !== undefined && due.type === "DATE-TIME") {
 			const dueMillis = dueEpochMillis!; // 上のパース分岐で必ず設定されている。
 
@@ -456,7 +471,13 @@ export class CreateTodo {
 			}
 
 			// VALARM の TRIGGER は due 時刻の絶対 UTC(§3.8.6.3: trigabs は UTC MUST)。
-			alarm = { triggerUtcRaw: epochMillisToUtcRaw(dueMillis), uid: crypto.randomUUID() };
+			alarms.push({ kind: "absolute", triggerUtcRaw: epochMillisToUtcRaw(dueMillis), uid: crypto.randomUUID() });
+		}
+
+		// 位置(geofence)リマインダー(#51 Phase 1)。geo は presentation で解決済み(locationReminder の
+		// JSDoc 参照)。absolute アラームの後に append する(実測の [absolute, proximity] 並びに寄せる)。
+		if (input.locationReminder !== undefined) {
+			alarms.push({ kind: "proximity", ...input.locationReminder });
 		}
 
 		const uid = crypto.randomUUID();
@@ -479,7 +500,9 @@ export class CreateTodo {
 			priority: input.priority,
 			location: input.location,
 			recurrence,
-			alarm,
+			// alarms が空なら undefined を渡して従来どおり VALARM を書かない(buildVTodoCalendar は
+			// undefined/空配列どちらでも VALARM を書かないが、空配列を渡すと意図が曖昧になるため明示的に畳む)。
+			alarms: alarms.length > 0 ? alarms : undefined,
 		};
 		const component = buildVTodoCalendar(fields);
 		const ics = serialize(component);
