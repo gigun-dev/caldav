@@ -1057,3 +1057,21 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   全10項目 PASS で受け入れ完了。R2 の delete→list-deleted→restore 一巡も本番で PASS(未検証層消化)。
 - 以後の運用: 実装 → deploy → Inspector subagent 受け入れ → FAIL 即修正、のループ。
   ユーザー確認は自動化不能な範囲(キーボード体感・iOS 標準アプリ回帰・アニメ質感)のみ。
+
+## 2026-07-23(続き6・#43 完了: 完了済み内訳+ゴミ箱カード化+mutate カード配線)
+
+- #43 を artisan で実装・deploy(6d84ae1)。①completedSummary を {total, recent, byCalendar} へ
+  additive 拡張(recent 行に calendarId、単一リスト表示は出身フィルタ+byCalendar 総数、0件は
+  セクション非表示)。②list-deleted/restore-deleted を registerAppTool 化 — fullscreen ゴミ箱
+  ページ+行ごと復元ボタン、content は URI 非露出の人間可読要約(description で誘導)。
+  list-deleted は通常一覧を下敷きに返し「空 vm がカードのキャッシュ一覧を消す」事故を回避。
+  ③create-event/create-events/update-event/delete-event の mutate 応答にカードが出なかった根因は
+  ホスト判断ではなく _meta.ui 未配線(S1 の後回しの名残)— 4ツールを registerAppTool 化して解消。
+  swift への申し送り(mutate カード)は不要になった。
+- Inspector subagent 受け入れ: 全項目 PASS(byCalendar 件数一致・0件非表示・URI 非露出・
+  カード内「復元」→ callServerTool → 再描画 → 一覧復帰・4ツールの _meta.ui)。検証 VTODO 1件は
+  ゴミ箱残留(許容・タイトル「検証43-7f2q」)。未検証: Open App 直接起動経路のゴミ箱表示。
+- 論点メモ: restore 後は復元先リストへ currentCalendarId が遷移(create-todo と同挙動・意図的)。
+  ゴミ箱ページは render-gate の抑止対象外(入力フォーカスが無いため)— 入力 UI を足すなら要再考。
+  byCalendar は所属不明完了行を数えないため内訳合計 ≤ total になりうる(旧応答互換の degrade)。
+- 次: #44(イベント詳細ファースト・会議 URL 導線・⊕ ラベル・新規リスト fullscreen+同期 focus)。

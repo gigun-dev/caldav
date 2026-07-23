@@ -180,6 +180,17 @@
   > 版不整合警告を両カードへ追加し、create-calendar 応答を含む配線テストも固定した。
   > `make check` green(境界・tsc 3種・bun 953 tests・worker 34 tests)。**未実施は実ホスト目視**:
   > コネクタ再同期後の swift/claude.ai で7症状の再確認。次の実装スライスは予定どおり #43。
+  > **2026-07-23 更新: 是正束 deploy(8f9fc13)+ Inspector subagent 受け入れ導入。** 9 PASS・
+  > 1 FAIL(コレクション詳細保存不発 = 残留メニューオーバーレイがタップを吸っていた)→ 修正
+  > deploy(7c6b133)→ 再検証で**全10項目 PASS**。以後「実装→deploy→Inspector 受け入れ→FAIL
+  > 即修正」ループを標準化。
+  > **2026-07-23 更新: ~~#43~~ ✅ 完了(deploy 6d84ae1・Inspector 全項目 PASS)。**
+  > ①completedSummary = {total, recent, byCalendar}(単一リストは出身フィルタ+リスト別総数・
+  > 0件はセクション非表示)②list-deleted/restore-deleted のカード化(fullscreen ゴミ箱ページ+
+  > 行ごと復元・content から URI 追放)③event mutate 4ツールの _meta.ui 未配線が「カードが出ない」
+  > 根因(ホスト判断ではない)→ 配線して解消・**swift への mutate カード申し送りは不要に**。
+  > 論点(log 2026-07-23 続き6): restore 後は復元先リストへ遷移(意図的)/ゴミ箱ページは
+  > render-gate 対象外/byCalendar は所属不明行を数えず内訳合計 ≤ total。次は #44。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
