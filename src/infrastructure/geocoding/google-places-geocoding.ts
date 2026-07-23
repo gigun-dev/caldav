@@ -63,7 +63,13 @@ export class GooglePlacesGeocodingAdapter implements GeocodingPort {
 		// 空なら GeocodingNotConfiguredError(起動時ではなく呼び出し時 — ファイル冒頭の縮退方針)。
 		private readonly apiKey: string,
 		// fetch を注入可能に(テスト容易性)。既定は Workers global fetch。
-		private readonly fetchImpl: typeof fetch = fetch,
+		// 2026-07-23 本番 FAIL 修正: `= fetch` の素の関数参照はダメ。class フィールドに格納して
+		// `this.fetchImpl(...)` で呼ぶと receiver が adapter インスタンスになり、workerd の fetch は
+		// `this` が globalThis でないと "Illegal invocation" を投げる(Inspector E2E で全クエリ失敗)。
+		// bun test のスタブ fetch は this を見ないため green で、本番だけ落ちる典型パターン。
+		// `.bind(globalThis)` ではなくアロー括りにしたのは、ブラウザ/Node/workerd いずれでも同義で
+		// 束縛意図が見た目に残るため。
+		private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
 	) {}
 
 	async searchLocation(query: string, opts?: SearchLocationOptions): Promise<LocationCandidate[]> {
