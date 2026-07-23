@@ -48,3 +48,5 @@ src/presentation/mcp/ui/*-bundle.ts
 .secrets.prod.json
 # ローカル検証用 secrets(geocoding ベンチ等・絶対にコミットしない)
 .secrets.local.json
+# Apple MapKit 秘密鍵(geocoding 用・絶対にコミットしない)
+*.p8
