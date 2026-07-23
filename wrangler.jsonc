@@ -71,7 +71,21 @@
   ],
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 1,
+    // 2026-07-23 #49 OTel Phase 1: Cloudflare ネイティブ自動トレーシング(open beta)。
+    // アプリコード変更ゼロで HTTP 境界のトレース+ログ相関が得られる。個人利用のトラフィックは
+    // 月 10M イベントの込み枠に遠く及ばないため sampling は 1.0(全量)。persist:true で
+    // Cloudflare ダッシュボードに保持。外部送信先(Honeycomb free・保持60日)はダッシュボードで
+    // destination を作成してから "destinations": ["honeycomb"] をここに足す2段構え
+    // (存在しない destination 名を参照すると deploy が壊れるため config 先行はしない)。
+    // otel-cf-workers(コミュニティ SDK)を初手にしなかった理由: pre-1.0(rc.52)+
+    // nodejs_compat 必須 + vitest-pool-workers との相性問題があり、D1/外部 fetch の細粒度 span が
+    // 実際に必要になった時点で Phase 2 として再評価(docs/log.md 2026-07-23 続き12)。
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
   },
   // 2026-07-14 レイテンシ対策: Smart Placement。本 Worker は D1 を直列に複数回叩く
   // (todo mutate 1回で read→PUT batch→一覧再構築)。既定ではユーザー最寄りエッジで実行される

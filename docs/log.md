@@ -1202,3 +1202,18 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   TTL 延長却下を覆す根拠なし。④401 の resource_metadata 付与(SHOULD)は provider が準拠済み
   (#48 確認)。→ 現実解: TTL 維持・#228 ウォッチ・診断ログで事実確定・Anthropic 報告。
 - ユーザー承認: OpenTelemetry のサーバーサイド導入(#49 起票。調査→設計→段階導入)。
+
+## 2026-07-23(続き12・#49 OTel Phase 1: ネイティブトレーシング有効化)
+
+- OTel 導入調査(一次資料): 手段は (a) Cloudflare ネイティブ自動トレーシング(open beta・
+  Workers Paid 必須=AE 利用中なので充足・2026-03 以降は月10Mイベント込み+$0.05/M・
+  コード変更ゼロだが binding 単位の span は不可)(b) @microlabs/otel-cf-workers
+  (pre-1.0 rc.52・nodejs_compat 必須・D1/外部 fetch を自動 span 化・vitest-pool-workers 相性問題)
+  (c) 自前 OTLP POST。送信先無料枠: Honeycomb 20M ev/月・保持60日 / Grafana 50GB・14日 /
+  Axiom ~500GB・30日。MCP 2026-07-28 RC の SEP-414 が _meta の traceparent/tracestate/baggage を
+  予約(telemetry-support.ts の readSessionId が将来の単一変更点という既存コメントどおり)。
+- 裁定: Phase 1 = ネイティブトレーシング(wrangler.jsonc observability.traces・persist・全量)。
+  TelemetryPort/AE は置換せず併存(低カーディナリティ SQL 集計の別ニッチ)。外部送信先は
+  Honeycomb free をダッシュボードで destination 作成後に config へ追記(2段構え)。
+  Phase 2 = D1/外部 fetch の細粒度 span が必要になったら otel-cf-workers 再評価、
+  traceparent は MCP RC 確定後。
