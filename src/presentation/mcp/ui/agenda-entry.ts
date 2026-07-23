@@ -92,6 +92,8 @@ import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./sa
 import { shouldSkipDestructiveRender } from "./render-gate";
 // 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。todos-entry.ts と共有。
 import { shouldRevalidateOnPush } from "./freshness";
+// ④ カードの版不整合(古いカードのキャッシュ描画)判定の純関数コア。todos-entry.ts と共有。
+import { cardVersionIsStale } from "./card-version";
 // 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
 // bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
 import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
@@ -283,6 +285,10 @@ interface EventsStructuredContent {
 	// なので旧応答/フィクスチャでは undefined(events-view-model.ts の EventsViewModel.generatedAt
 	// JSDoc・freshness.ts の shouldRevalidateOnPush 参照)。push 経路の鮮度判定にのみ使う。
 	generatedAt?: number;
+	// uiHash(2026-07-23 カードの版不整合可視化④): 現行デプロイの agenda カード版ハッシュ。カード自身の
+	// 焼き込み値(window.__CARD_BUILD_HASH__)と食い違えば「カードが古い可能性」を表示する
+	// (events-view-model.ts の EventsViewModel.uiHash JSDoc・card-version.ts 参照)。additive・欠落時は非表示。
+	uiHash?: string;
 }
 
 // =============================================================================
@@ -449,6 +455,10 @@ let listRange: { from: string; to: string } | null = null;
 // calendarColor ヘルパーが resolveCalendarColor でフォールバックする)。
 let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[]; color?: string }> | null =
 	null;
+// calendarsFetchFailed(2026-07-23 是正②・todos-entry.ts と同型の写経): 直近の ensureCalendars が
+// 失敗したか。null=未取得 のとき「取得中(false)」と「失敗(true)」を区別し、失敗時は renderCalMenu が
+// 「読み込み中…」で固着せず "取得に失敗・タップで再試行" 行へ落ちる(空メニュー固着バグの解消)。
+let calendarsFetchFailed = false;
 // visibleCalendarIds: 表示 ON のコレクション id 集合。
 //   null = 「明示フィルタなし(全 ON・既定)」→ refreshArgs は calendarIds を送らない(=従来挙動)。
 //   Set  = 「一部 OFF のフィルタ適用中」→ refreshArgs が calendarIds:[...] を送る(server が calendarIds
@@ -466,6 +476,12 @@ let allCalendarsHidden = false;
 // 予定行の左に色ドットを出すか。renderAll が「現在の events に2つ以上のコレクションが混在するか」で
 // 決める(単一コレクションのみのビューでは色ドットはノイズなので出さない)。renderRow が読む。
 let showCalendarDots = false;
+
+// ④ カードの版不整合可視化(todos-entry.ts と同型)。serverUiHash=直近応答が載せた現行版ハッシュ。
+// cardBuildHash=このカードに焼き込まれた版(agenda-app.ts が HTML へ注入・card-version.ts)。
+let serverUiHash: string | null = null;
+const cardBuildHash: string | undefined =
+	typeof window !== "undefined" ? (window as { __CARD_BUILD_HASH__?: string }).__CARD_BUILD_HASH__ : undefined;
 
 // --- 自動 refetch のガード用状態(todos と同じ)-------------------------------------------
 let connected = false;
@@ -1256,6 +1272,15 @@ function renderAll(): void {
 		return;
 	}
 	root.innerHTML = "";
+	// ④ カードの版不整合警告(claude.ai の古いカードキャッシュ描画兆候)。ヘッダ直下に控えめな1行。
+	// cardVersionIsStale は欠落時 false(誤検知回避)なので旧サーバー/版一致時は何も出ない。
+	if (cardVersionIsStale(cardBuildHash, serverUiHash)) {
+		const notice = document.createElement("div");
+		notice.className = "card-stale-notice";
+		notice.setAttribute("role", "status");
+		notice.textContent = "カードが古い可能性があります — コネクタを再同期してください";
+		root.appendChild(notice);
+	}
 	selTitleInput = null;
 	selMemoInput = null;
 	// 系列集約(§7.1)のパス内状態をリセット(この描画パスで最初に出会った可視行だけが装飾を得る)。
@@ -3170,6 +3195,8 @@ function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean
 		currentCalendarId = structuredContent.calendarId;
 	}
 	if (structuredContent?.timeZone !== undefined) currentTimeZone = structuredContent.timeZone;
+	// uiHash を保持(④ カードの版不整合可視化・todos-entry.ts と同型)。値が来たときだけ更新。
+	if (structuredContent?.uiHash !== undefined) serverUiHash = structuredContent.uiHash;
 	renderRangeLabel();
 	// 表示カレンダーの色ドットクラスタを更新(events の由来 id / calendarsCache から凡例を組む)。
 	renderCalDots();
@@ -3244,6 +3271,11 @@ app.ontoolresult = (r) => {
 		guardedRenderAll();
 		if (needsRevalidate) maybeRefetch();
 	});
+	// 【2026-07-23 是正②: カレンダー一覧の背景プリフェッチ(todos 側と同型)】初回応答適用後、ユーザーが
+	// フィルタメニューを開くのを待たずに list-calendars を背景取得しておき、初回タップの同期待ち
+	// (「読み込み中…」を一拍見せる)を解消する。ensureCalendars は取得済みなら即 return・失敗は
+	// 自前でフラグ管理するので void で投げっぱなしでよい。connect 済みでだけ叩く。
+	if (connected) void ensureCalendars();
 };
 // C1: host-context-changed の購読(設計04 §5 C1)。SDK が host-context-changed 受信のたびに内部
 // _hostContext へ merge した後にこのハンドラを呼ぶ(app.d.ts:723-727)ので、applyHostContext() を
@@ -3373,6 +3405,7 @@ async function retryFetch(): Promise<void> {
  *  todos-entry.ts の ensureCalendars と同型(コード重複だが両 entry は別バンドルなので共有せず写経)。 */
 async function ensureCalendars(): Promise<void> {
 	if (calendarsCache !== null) return;
+	calendarsFetchFailed = false; // 再試行に備えて着手時にフラグを倒す(取得中は null のまま false)。
 	try {
 		const result = await app.callServerTool({ name: "list-calendars", arguments: {} });
 		if (result.isError) {
@@ -3397,6 +3430,8 @@ async function ensureCalendars(): Promise<void> {
 			color: c.color,
 		}));
 	} catch (e) {
+		// calendarsCache は null のまま。フラグを立てて renderCalMenu を再試行行へ分岐させる(是正②)。
+		calendarsFetchFailed = true;
 		showBanner(`カレンダーの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
 	}
 }
@@ -3467,6 +3502,28 @@ function isCalMenuOpen(): boolean {
 function renderCalMenu(): void {
 	calMenuEl.textContent = "";
 	if (calendarsCache === null) {
+		if (calendarsFetchFailed) {
+			// 2026-07-23 是正②(todos 側と同型): 取得失敗中は「読み込み中…」固着を避け、タップで再試行
+			// できる有効な行を出す。<div> ではなく <button> にして押下を受け付ける。
+			const retry = el("button", "cal-menu-item") as HTMLButtonElement;
+			retry.type = "button";
+			const name = el("span", "name");
+			name.textContent = "取得に失敗しました — タップで再試行";
+			retry.append(el("span", "cal-circle"), name);
+			retry.addEventListener("click", (e) => {
+				e.stopPropagation();
+				void ensureCalendars().then(() => {
+					if (isCalMenuOpen()) {
+						renderCalMenu();
+						renderCalDots();
+						applyCalMenuHeightGuard();
+					}
+				});
+				renderCalMenu(); // 着手で calendarsFetchFailed=false へ戻るので即「読み込み中…」へ差し替わる。
+			});
+			calMenuEl.appendChild(retry);
+			return;
+		}
 		const loading = el("div", "cal-menu-item");
 		const name = el("span", "name");
 		name.textContent = "読み込み中…";
@@ -3633,6 +3690,8 @@ function openCalMenu(open: boolean): void {
 		renderCalMenu();
 		if (calendarsCache === null) {
 			void ensureCalendars().then(() => {
+				// 成功/失敗どちらでもこの then で描き直す(失敗時は calendarsFetchFailed を見て
+				// renderCalMenu が "取得に失敗・タップで再試行" 行を描く。是正②)。
 				if (isCalMenuOpen()) {
 					renderCalMenu();
 					renderCalDots(); // キャッシュが埋まると全 ON の凡例が「events 由来」→「既知全部」に精緻化される。

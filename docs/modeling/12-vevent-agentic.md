@@ -472,6 +472,19 @@ export const isCommitting = (now: number, startedAt: number): boolean =>
 **要実機検証(item 3)**: 位置不変の体感(done/add で不動)・done sticky が次 refresh で消えないか・FAB のフロー
 位置が claude.ai/Swift で「右下」に読めるか・due 編集セクション跨ぎの受容・(b) の summary 件数。
 
+> **2026-07-23 積層注記(C0-a′ 一時再導入 → 同日 (d′) 裁定で再撤回)**: item 3 ③「done はその場で取消線」に
+> 反する形で、完了行を「3秒猶予 → 完了済みセクションへ移動」する退場機構(C0-a′・commit 1087c2e/0d6854f・
+> `done-exit.ts` / `retiringDoneIds` / `exitingDoneIds` / `scheduleDoneExit` ほか)を一時再導入したが、
+> **同日 (d′) 裁定(architect)で再撤回**した。裁定理由: (1) 時間駆動の視覚イベント(タイマー退場)を型から
+> 排するのが v2.2 統括原理・item 3 の裁可線であり、C0-a′ はこれと真正面から矛盾する。(2) 「消える」旧 C0-a が
+> 生んだ症状A(展開中に <details> ごと消滅)と、C0-a′ 自身が生んだ退行#5(resetPositionMemory がタイマーを
+> 道連れにして done 行が3秒後に移動しない)の実績があり、状態機械の複雑さに見合わない。(3) iOS リマインダーの
+> 「3秒猶予で完了済みへ移動」の 3000ms は一次資料に根拠が無い観測ベースの模倣で、ドクトリンを曲げる根拠にならない。
+> **v2.2 item 3 が正のまま**。completedSummary(常時・有界サマリ)との二重表示排除は、退場タイマーではなく
+> `positionMemory` の「所属判定」(`completed-dedup.ts` の `completedRowIsInBody`)= 時間非依存の純関数へ置換。
+> 完了行はカードインスタンス生存中その場に留まり(取消線・再タップ undo)、次の fresh render / view・calendar
+> 切替のクリーン再セクショニング(`resetPositionMemory`)で初めて completedSummary 側だけの表示へ移る。
+
 ## §7.9 表示順序設定(2026-07-16・Fable 設計・フォローアップ G)
 
 > iOS リマインダーの表示順序(手動/期限/作成日/優先順位/タイトル・既定 手動)の対応物。§7.8 v2.2 の位置不変は

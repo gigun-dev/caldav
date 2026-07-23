@@ -198,4 +198,18 @@ export interface TodosViewModel {
 	 * 挙動へフォールバックする(todos-entry.ts の shouldRevalidateOnPush 参照)。
 	 */
 	generatedAt?: number;
+	/**
+	 * 【2026-07-23 カードの版不整合可視化(④)】現行デプロイの todos カード HTML の版ハッシュ
+	 * (todos-app.ts の TODOS_UI_HASH = fnv1aHex(注入前 core HTML))。
+	 *
+	 * 【なぜ必要か(古いカード混乱)】claude.ai はコネクタ同期時点のツール定義(_meta.ui.resourceUri)を
+	 * キャッシュし、サーバーをデプロイして新 URI を発行しても旧カード HTML を描画し続けることがある。
+	 * カードは自身に焼き込まれた版ハッシュ(window.__CARD_BUILD_HASH__)とこの uiHash を突き合わせ、
+	 * 食い違えば「カードが古い可能性 — コネクタを再同期してください」を控えめに表示する
+	 * (card-version.ts / todos-entry.ts の版チェック参照)。
+	 *
+	 * 【additive・後方互換】旧 UI/旧テストフィクスチャはこのキー不在を前提にしているため optional。
+	 * 欠落時カードは不整合判定をしない(cardVersionIsStale が欠落を false に倒す=誤検知回避)。
+	 */
+	uiHash?: string;
 }

@@ -639,7 +639,15 @@ describe("/mcp", () => {
 			// 値そのものはテスト実行時刻依存で固定できない。「数値であること」だけ確認し、残りは
 			// toEqual の厳密比較から除く(freshness.ts / TodosViewModel.generatedAt JSDoc 参照)。
 			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
-			const { generatedAt: _personalGeneratedAt, ...personalStructuredContent } = rpc.result.structuredContent;
+			// uiHash(2026-07-23 カード版不整合の可視化)も配信 HTML から決まる値なので、
+			// 固定文字列にはせず「現行版を識別できる非空文字列」である契約だけをここで保証する。
+			expect(typeof rpc.result.structuredContent.uiHash).toBe("string");
+			expect(rpc.result.structuredContent.uiHash.length).toBeGreaterThan(0);
+			const {
+				generatedAt: _personalGeneratedAt,
+				uiHash: _personalUiHash,
+				...personalStructuredContent
+			} = rpc.result.structuredContent;
 			expect(personalStructuredContent).toEqual({
 				tasks: [],
 				calendarId: "personal",
@@ -678,7 +686,15 @@ describe("/mcp", () => {
 			// completedSummary は常時付与(2026-07-23 症状B対策)。generatedAt は上のテストと同じ理由
 			// (SWR 完全形・実行時刻依存)で厳密比較から除く。
 			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
-			const { generatedAt: _slugGeneratedAt, ...slugStructuredContent } = rpc.result.structuredContent;
+			// 上の明示 id ケースと同じく、create-calendar が返す初期 todos カードにも
+			// 現行 UI 版が載ることを保証しつつ、バンドル変更で変わる hash 値そのものは固定しない。
+			expect(typeof rpc.result.structuredContent.uiHash).toBe("string");
+			expect(rpc.result.structuredContent.uiHash.length).toBeGreaterThan(0);
+			const {
+				generatedAt: _slugGeneratedAt,
+				uiHash: _slugUiHash,
+				...slugStructuredContent
+			} = rpc.result.structuredContent;
 			expect(slugStructuredContent).toEqual({
 				tasks: [],
 				calendarId: textResult.id,

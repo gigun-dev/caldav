@@ -3,7 +3,7 @@
 //   「初回に全 VTODO コレクション横断取得 → 切替はクライアント側フィルタ」にするための純関数コア
 // =============================================================================
 // 【なぜ切り出すか】todos-entry.ts はブラウザ専用エントリで bun test から直接 import できない
-// (DOM 前提・ファイル冒頭コメント参照)。toggle-coalesce.ts / done-exit.ts と同じ規律で、
+// (DOM 前提・ファイル冒頭コメント参照)。toggle-coalesce.ts / completed-dedup.ts と同じ規律で、
 // 「状態合成のルール」だけを DOM・ネットワーク・module state から切り離した純関数として
 // ここに置き、todos-entry.ts はこれを import して module state(tasks/confirmedTasks/
 // currentCalendarId)へ適用するだけにする。
@@ -50,7 +50,9 @@ export function mergeTasksByCalendar<T extends CalendarTaggedItem>(
 	incomingCalendarId: string | null,
 	nextTasks: readonly T[],
 ): T[] {
-	if (incomingCalendarId === null) return nextTasks.slice();
+	// null(calendarId 省略の横断)と ALL_CALENDARS_ID(正規化した "all" の横断)はどちらも
+	// 「owner 全 VTODO を丸ごと運んできた応答」なので、保持中キャッシュを丸ごと置き換える(⑤ 是正)。
+	if (incomingCalendarId === null || incomingCalendarId === ALL_CALENDARS_ID) return nextTasks.slice();
 	// calendarId !== incomingCalendarId で十分(undefined も自然に「不一致」= 保持される)。
 	// 明示的に `t.calendarId !== undefined &&` を足さない: 足すと不明行まで「一致扱い」で除去されてしまい、
 	// 「所属不明行は誤って消さない」という契約(このファイル冒頭の JSDoc)に反する(実装時に一度踏んだ誤り)。
@@ -62,14 +64,25 @@ export function mergeTasksByCalendar<T extends CalendarTaggedItem>(
  * K3: renderAll のセクション計算に渡す直前で「今表示中のリスト」だけへ絞り込む。
  * calendarId が null(未選択。横断応答をまだ1件も受けていない・VTODO コレクションが無い等)の
  * ときは絞り込まず全件を返す(空表示より「とりあえず何か見せる」degrade を優先)。
- * calendarId が undefined の行(旧応答/フィクスチャ由来)は除外しない(取りこぼしより過剰表示の
- * 方が実害が小さい判断)。
+ *
+ * 【t.calendarId === undefined を一致扱いで残す件(2026-07-23 是正③・契約の明確化)】
+ * **サーバー契約では tasks[].calendarId は必須** — ListTodos.execute が横断/単一のどちらの経路でも
+ * `task.calendarId = collectionId` を必ず埋め、buildTodosViewModel(mutate 確定一覧を含む全経路)は
+ * その ListTodos を通す(list-todos.ts の Task.calendarId JSDoc・server.ts の buildTodosViewModel)。
+ * よって実運用の応答に undefined 行は現れない。ここで undefined を除外しない degrade は、あくまで
+ * 旧応答/テストフィクスチャ(calendarId 未設定)への後方互換であって、「所属不明が正常に起こりうる」
+ * という意味ではない(取りこぼしより過剰表示の方が実害が小さい安全側)。新しい経路を足すときは
+ * 「サーバーが calendarId を必ず埋める」を前提に設計してよい(この undefined 許容を根拠に
+ * 所属不明行を量産しない)。
  */
 export function filterTasksByCalendar<T extends CalendarTaggedItem>(
 	items: readonly T[],
 	calendarId: string | null,
 ): T[] {
-	if (calendarId === null) return items.slice();
+	// null(未選択)・ALL_CALENDARS_ID(横断表示)は絞り込まず全件。renderAll は横断表示のとき
+	// この関数を呼ばず baseTasks=全件にするが、防御的にここでも横断センチネルを no-filter にしておく
+	// (⑤ の「calendarId==="all"/"__all__" の行だけに絞って全消し」を構造的に起こさない)。
+	if (calendarId === null || calendarId === ALL_CALENDARS_ID) return items.slice();
 	return items.filter((t) => t.calendarId === undefined || t.calendarId === calendarId);
 }
 

@@ -149,7 +149,12 @@ import { shouldSkipDestructiveRender } from "./render-gate";
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
 // 完了トグル coalesce / 楽観復活の判定(純関数コア。> 2026-07-17 実機 FB「done→undo で完了が残る」監査修正)。
 // ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
-import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
+// 完了行の completedSummary 重複排除(所属判定)の純関数コア。> 2026-07-23 (d′) 裁定で
+// done-exit.ts(C0-a′ の3秒退場)を撤回した際、退場タイマー由来の重複排除(isDoneRowStillInPlace)を
+// 「positionMemory の所属判定」へ置換したもの(completed-dedup.ts 冒頭コメント参照)。
+import { completedRowIsInBody } from "./completed-dedup";
+// カードの版不整合(古いカードのキャッシュ描画)判定の純関数コア(④)。
+import { cardVersionIsStale } from "./card-version";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
 import {
 	mergeTasksByCalendar,
@@ -536,6 +541,13 @@ let pendingRenderAfterSheet = false;
 // calendarColor ヘルパーが resolveCalendarColor でハッシュパレットへフォールバックする)。
 let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[]; color?: string }> | null =
 	null;
+// calendarsFetchFailed(2026-07-23 是正②): 直近の ensureCalendars が失敗したか。
+// 【なぜ必要か(空メニュー固着バグ)】ensureCalendars は失敗時 calendarsCache を null のままにして
+// バナーを出すだけだった。renderListMenu は「null=まだ取得中」とみなして「読み込み中…」行を出し続ける
+// ため、list-calendars が一度落ちるとドロップダウンが永久にスピナーのまま(=空メニュー固着)になった。
+// このフラグで「null かつ失敗」を「null かつ取得中」と区別し、失敗時は "取得に失敗・タップで再試行" 行へ
+// 分岐させる。再試行時に false へ戻して再取得する(成功で calendarsCache が非 null になり以後は無関係)。
+let calendarsFetchFailed = false;
 // collectionSheet: コレクション詳細ページ(K2-UI②)の「カード内ページ遷移」状態。sheetState と同じ
 //   #root 直描き方式(v3 の踏襲)だが、sheetState は「タスク1件」に紐付く(id=task.id)のに対し、
 //   collectionSheet は「タスクとは無関係にカードそのものが今表示しているリスト一覧」に紐付く操作
@@ -568,95 +580,36 @@ let sheetTitleInput: HTMLInputElement | null = null;
 // becoming-gone が1描画だけ自然に出る(サーバー由来の静的マーキングに委ねる方がドクトリンと一貫)。
 const optimisticDeletes = new Set<string>();
 
-// --- C0-a′: iOS リマインダー準拠の完了退場(猶予 → 完了済みセクションへ移動)---------------------
-// 【旧 C0-a の経緯(2026-07-23 症状A・撤去)】旧実装は done タップ → タイトルのグレーフェード →
-// DONE_EXIT_GRACE_MS(3000ms)後に scheduleDoneExit → retireDoneRow が行を高さ0へ畳んで remove し、
-// retiredDoneIds へ入れて二度と再合成しないという「消す」設計だった(2026-07-17 設計05 §4)。これが
-// 「完了済み(1件)」を開いて見ている最中でも退場タイマーが容赦なく満了し、唯一のメンバーなら
-// <details> セクションごと消滅する実機バグ(症状A)を生んだため、いったん退場機構ごと丸ごと撤去し
-// 「完了は消す操作ではなく状態遷移」= 完了行を due セクションにその場で無期限残留させる設計にした。
-// 【今回の再裁定(2026-07-23・ユーザー)】completedSummary(server 常時計算の有界サマリ)が退場先を
-// 常時可視にしたことで、「消える」ではなく「完了済みセクションへ移動する」なら安全に退場を再導入
-// できる、という判断。iOS リマインダーも「チェック→短い猶予(undo 可)→完了済みへ移動」という体験。
-// 旧 C0-a との決定的な違い: 退場した行は消滅せず、completedSummary の <details> に必ず現れる
-// (退場先が常に見えているので、「セクションごと消える」という旧バグの前提条件そのものが成立しない)。
-// 旧撤去で消えた識別子(DONE_EXIT_GRACE_MS / retiredDoneIds / heldDoneExitIds / resumeHeldDoneExit /
-// cssEscapeId)は再利用せず、下記を新設(意味が「消す」から「移す」へ変わったため命名も変える)。
-//
-// 【二段階構成(退場アニメを持たせるため)】
-//   1. 猶予フェーズ(retiringDoneIds・COMPLETED_RETIRE_GRACE_MS=3000ms): done 確定直後〜満了まで。
-//      行は due セクションにその場でチェック済みのまま留まる(旧 C0-a のグレーフェードは実機 FB で
-//      「完了も追加もテキスト不要」裁定と共に既に廃止済みなので復活させない — 塗り丸だけで状態は
-//      十分伝わる)。この間に再タップ(undo)されたら cancelDoneExit で丸ごとキャンセルする。
-//   2. 退場アニメフェーズ(exitingDoneIds・COMPLETED_RETIRE_ANIM_MS=240ms): 猶予満了の瞬間、行は
-//      まだ実データ(positionMemory)上は本体セクションに居るが li.row-retiring(collapse+fade。
-//      todos-app.ts)を纏って1回だけ退場アニメを再生する。アニメが尽きた時点で初めて positionMemory/
-//      stickyData から本当に取り除く(finishDoneExit)。completedSummary 側は退場と入れ替わりに
-//      現れる必要があるため、猶予フェーズ・アニメフェーズの両方を通じて「本体側にまだ実体がある」
-//      ことを retiringDoneIds/exitingDoneIds で表し、completedSummary の描画(renderAll の
-//      sec-completed 構築部)がこれを見て同 id 行を重複表示しない(下記 isDoneRowStillInPlace)。
-//   両フェーズとも実データの書き換えは guardedRenderAll 経由でしか描画しない(render-gate.ts)ため、
-//   シート表示中に満了しても DOM 反映は保留され、シートを閉じた瞬間の pendingRenderAfterSheet flush
-//   でまとめて追いつく(仕様3)。
-const COMPLETED_RETIRE_GRACE_MS = 3000; // 旧 DONE_EXIT_GRACE_MS と同値(iOS の体感に合わせた undo 猶予)。
-const COMPLETED_RETIRE_ANIM_MS = 240; // todos-app.ts の li.row-retiring keyframes(row-collapse)と値を揃える。
-// retiringDoneIds: 猶予フェーズ中の id → setTimeout handle。undo(cancelDoneExit)はこれを clear する。
-const retiringDoneIds = new Map<string, ReturnType<typeof setTimeout>>();
-// exitingDoneIds: 退場アニメ再生中(猶予満了〜アニメ尽きるまで)の id 集合。renderRow がこれを見て
-// li.row-retiring を付ける。
-const exitingDoneIds = new Set<string>();
-/** completedSummary 側の重複排除(仕様1): 本体行がまだ画面上に実在する間(猶予中 or アニメ中)は
- *  completedSummary.recent 側の同 id 行を出さない(renderAll の sec-completed 構築部が使う)。
- *  判定そのもの(isDoneExitPending)は done-exit.ts の純関数へ抽出済み — ここは module state
- *  (Map/Set の .has)から入力を組み立てるだけの薄い配線。 */
-function isDoneRowStillInPlace(id: string): boolean {
-	return isDoneExitPending({ retiring: retiringDoneIds.has(id), exiting: exitingDoneIds.has(id) });
-}
-/** done 確定(server affected kind:"completed")を受けて退場猶予を仕込む。タップ由来・モデル発
- *  complete-todo push・外部同期 completed のいずれでも呼ばれる(applyStructuredContent 参照)。
- *  二重スケジュール判定(shouldScheduleDoneExit)は done-exit.ts の純関数へ抽出済み。 */
-function scheduleDoneExit(id: string): void {
-	if (!shouldScheduleDoneExit({ retiring: retiringDoneIds.has(id), exiting: exitingDoneIds.has(id) })) return;
-	const timer = setTimeout(() => {
-		retiringDoneIds.delete(id);
-		beginDoneExitAnimation(id);
-	}, COMPLETED_RETIRE_GRACE_MS);
-	retiringDoneIds.set(id, timer);
-}
-/** 退場をキャンセルしその場に留める(undo)。猶予中(未発火のタイマー)・アニメ中(発火済みで
- *  finishDoneExit 前)のどちらでも呼んでよい — アニメ中に undo が来るのは稀(猶予3秒+アニメ240ms の
- *  間の再タップ)だが、positionMemory はアニメ完了まで書き換えていないので exitingDoneIds を倒すだけで
- *  安全にその場へ復帰できる。 */
-function cancelDoneExit(id: string): void {
-	const timer = retiringDoneIds.get(id);
-	if (timer !== undefined) {
-		clearTimeout(timer);
-		retiringDoneIds.delete(id);
-	}
-	exitingDoneIds.delete(id);
-}
-/** 猶予満了 → 退場アニメ開始。prefers-reduced-motion では collapse+fade のフレームを経由せず
- *  即座に退場させる(wake-sweep 等の既存 becoming アニメと同じ規律。todos-app.ts 側の @keyframes
- *  row-collapse も defense-in-depth で reduced-motion を明示的に止めているが、そちらへ到達させない
- *  のが一次防御)。 */
-function beginDoneExitAnimation(id: string): void {
-	if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-		finishDoneExit(id);
-		return;
-	}
-	exitingDoneIds.add(id);
-	guardedRenderAll(); // li.row-retiring を新規挿入 → CSS animation は挿入時に自動再生される(wake-sweep と同型)。
-	setTimeout(() => finishDoneExit(id), COMPLETED_RETIRE_ANIM_MS);
-}
-/** 退場アニメ尽き → 実データを本体セクションから取り除く。positionMemory から外れると
- *  sectionizeManual の本体セクション組み立てに二度と乗らなくなり、completedSummary だけが表示
- *  チャンネルになる。stickyData も併せて捨てる(combinedGhosts 掃除と同じ理由 = 幽霊住人化防止)。 */
-function finishDoneExit(id: string): void {
-	exitingDoneIds.delete(id);
-	positionMemory.delete(id);
-	stickyData.delete(id);
-	guardedRenderAll();
-}
+// --- C0-a′(完了行の3秒退場)は撤回済み — その場残留 + クリーン再セクショニングだけが正 ------------
+// 【経緯の全体像(消さずに積層で残す)】この場所には時期によって3世代のコードが載っていた:
+//   ① 旧 C0-a(2026-07-17 設計05 §4): done → 3秒後に行を「消す」(高さ0へ畳んで remove・retiredDoneIds)。
+//      → 「完了済み(1件)」を開いて見ている最中に唯一のメンバーが消え <details> ごと消滅する実機
+//        バグ(症状A)を生み、退場機構ごと丸ごと撤去(aab68b6)。
+//   ② C0-a′(2026-07-23・1087c2e/0d6854f): 「消す」ではなく「完了済みセクションへ移す」として3秒退場を
+//      再導入(retiringDoneIds/exitingDoneIds/scheduleDoneExit/… の2相状態機械 + done-exit.ts)。
+//   ③ 【今回・2026-07-23 (d′) 裁定で ② を再撤回】docs/modeling/12 §7.8 v2.2 item 3 の裁可済みドクトリン
+//      「時間駆動の視覚イベントを型から排する」「done はその場で取消線」「完了済み <details> は
+//      インスタンス誕生時に既に完了だった項目専用」「クリーン再セクショニングはインスタンス境界
+//      (fresh render / view・calendar 切替)のみ」が正であり、② はこれと真正面から矛盾する再導入
+//      だった(architect 裁定)。
+// 【なぜ ② を捨て ③(その場残留)にするか — Why not タイマー駆動】
+//   - タイマー駆動の退場は「静的アーティファクト観」(v2.2 統括原理: フィードバックの振り付けは
+//     クライアントの固定タイマーで決めても、"完了は状態遷移であって時間で動くイベントではない")と
+//     §7.8 v2.2 item 3 に反する。行が勝手に動く時間駆動イベントを型(表示層)から排するのが裁可線。
+//   - ② は症状A(退場先が可視でも、猶予/アニメ中に別 push が絡むと二重表示・亡霊復活の温床)と
+//     退行#5(resetPositionMemory がタイマーを道連れにして「done 行が3秒後に移動しない」)を実際に
+//     生んだ実績があり、状態機械の複雑さに見合わない。
+//   - iOS リマインダーの「3秒猶予で完了済みへ移動」は魅力的な引き合いだが、その 3000ms という数値は
+//     一次資料(RFC/Apple 公開仕様)に根拠が無い観測ベースの模倣であり、ドクトリンを曲げる根拠には
+//     ならない(RFC 一次資料主義の精神を UI 挙動にも援用する)。
+// 【③ の最終仕様】チェック済み行はカードインスタンスの生存中その場に留まり(取消線・再タップで undo)、
+//   次の fresh render / リスト切替の「クリーン再セクショニング」で初めて完了済みへ移る。完了行が
+//   本体側(due セクション)に残っている間は completedSummary.recent 側の同 id 行を出さない重複排除だけ
+//   が必要で、それは退場タイマーではなく positionMemory の「所属判定」(下記 completedRowIsInBody・
+//   sec-completed 構築部)で純粋に決める。撤去した識別子: COMPLETED_RETIRE_GRACE_MS /
+//   COMPLETED_RETIRE_ANIM_MS / retiringDoneIds / exitingDoneIds / isDoneRowStillInPlace /
+//   scheduleDoneExit / cancelDoneExit / beginDoneExitAnimation / finishDoneExit / done-exit.ts /
+//   todos-app.ts の li.row-retiring CSS。
 
 // --- 並び順安定性(位置記憶。2026-07-14 ユーザー確定の仕様変更)---------------------------
 // 【なぜ位置記憶を持つか】完了操作でタスクが下(完了済みセクション)へ即移動するのは違和感がある、
@@ -687,29 +640,12 @@ function resetPositionMemory(): void {
 	positionMemory.clear();
 	stickyData.clear();
 	positionSeq = 0;
-	// 【2026-07-23 是正(退行#5): 猶予タイマー(retiringDoneIds/exitingDoneIds)はもう道連れに
-	// しない】旧実装(C0-a′ 再導入分のコメント参照)はここで setTimeout を clearTimeout して
-	// 掃除していたが、これが「done 行が3秒後に移動しない」回帰の直接原因だった。
-	// 【回帰の再現手順】① タスクを完了(scheduleDoneExit が 3000ms 後の finishDoneExit を予約)。
-	// ② 猶予中(3秒以内)に別のリストへ切り替える/エージェントが includeCompleted:true 等の
-	// 別ビューで list-todos を叩く push を受ける、のどちらかが起きると applyStructuredContent
-	// (viewChanged 分岐)か switchCalendar がこの resetPositionMemory を呼ぶ。③ 旧実装はここで
-	// 予約済みタイマーを clearTimeout して retiringDoneIds/exitingDoneIds を空にしていたため、
-	// finishDoneExit が二度と発火せず、その行は「完了済みチェックが付いたまま元の due セクションに
-	// 永遠に留まる」= 3秒後も完了済みセクションへ移動しない、という体験になっていた。
-	// 【なぜ道連れにする必要が無いか】retiringDoneIds/exitingDoneIds は id をキーにした「その完了操作
-	// 自体の状態」であって、positionMemory/stickyData(「今どのビューでどこに描くか」という描画位置の
-	// 記憶)とは別の関心事(todos-entry.ts 冒頭 C0-a′ の2段階構成コメント参照)。よってビュー切替で
-	// positionMemory を破棄しても、退場タイマーは無関係に生存させたままでよい —
-	// setTimeout のコールバック(beginDoneExitAnimation/finishDoneExit)は module 変数
-	// (retiringDoneIds/exitingDoneIds/positionMemory/stickyData)を直接読み書きし、発火時点の
-	// 状態(=切替後の新しいビュー)に対して安全に no-op 相当の掃除を行うだけ(positionMemory に
-	// 既に無い id への delete は no-op)。旧コメントが懸念していた「無意味な guardedRenderAll」は
-	// 実害が「先勝ちを待たず完了済みへ渡すはずだった行が永遠にその場に残る」というより大きな実害
-	// (退行#5)より軽微なので、掃除しない方を選ぶ。
-	// 【completedSummary との整合】タイマーを生かしたままでも、finishDoneExit が発火するまでは
-	// isDoneRowStillInPlace(id) が true のままなので completedSummary 側の重複表示は起きない
-	// (仕様1の不変条件は維持される)。発火後は正しく completedSummary 側だけの表示へ収束する。
+	// 【退場タイマー掃除は無い(C0-a′ 撤回済み・2026-07-23 (d′) 裁定)】ここには C0-a′ 時代に
+	// retiringDoneIds/exitingDoneIds の setTimeout 掃除の要否を巡る長い議論コメントが載っていたが、
+	// 退場機構そのものを撤回した(冒頭 C0-a′ 撤回コメント参照)ため議論ごと消えた。resetPositionMemory は
+	// このカードインスタンスの「クリーン再セクショニング」= 完了行を初めて完了済みへ移すための位置記憶
+	// リセットに純化する(実質別ビューへの切り替え = fresh render 相当)。§7.8 v2.2 item 3 の
+	// 「クリーン再セクショニングはインスタンス境界のみ」を満たす唯一の経路。
 }
 /** 位置記憶に無い新規行の自然セクション(due/completed 規則)。初出時の配置と、非 manual 経路の
  *  per-item ロジックに揃える。completed は "completed"(初出時に既に完了していた行だけがここに来て
@@ -793,6 +729,13 @@ let currentTimeZone: string | null = null;
 // UI 側は s.completed を無視してこの completedSummary だけを読めば、どんな view の push が
 // 来てもカードの完了済み表示が安定する(renderAll の sec-completed 構築部を参照)。
 let completedSummary: { total: number; recent: TaskSnapshot[] } | null = null;
+// ④ カードの版不整合可視化。serverUiHash = 直近応答が載せた現行デプロイの版ハッシュ(uiHash)。
+// cardBuildHash = このカード自身に焼き込まれた版ハッシュ(todos-app.ts が HTML へ注入・card-version.ts)。
+// 両者が食い違えば「claude.ai が古いカードをキャッシュ描画している」兆候なので、renderAll のヘッダ近くで
+// 控えめな1行を出す。cardBuildHash は起動時に一度だけ読む(HTML 注入なので実行中に変わらない)。
+let serverUiHash: string | null = null;
+const cardBuildHash: string | undefined =
+	typeof window !== "undefined" ? (window as { __CARD_BUILD_HASH__?: string }).__CARD_BUILD_HASH__ : undefined;
 // becoming(変化の中間状態)の元データ。応答を受け取るたびに丸ごと置き換える —
 // affected/removed の無い応答(list/refresh)が来れば空になり、becoming は自然に平常へ
 // 戻る(「次の描画まで」というライフサイクルを別タイマー等で管理しない。状態は応答が正)。
@@ -1291,11 +1234,9 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	// 拾うため。renderAll は #root を innerHTML で作り直すので毎描画で付け直す。
 	li.dataset.id = task.id;
 	if (task.completed) li.classList.add("done");
-	// C0-a′(2026-07-23): 退場アニメ再生中(exitingDoneIds)の本体行だけに li.row-retiring を付ける。
-	// completedSummary 側の同 id 行はこの間 isDoneRowStillInPlace で出していない(重複表示防止)ので、
-	// row-retiring は「本体側のこの1回の描画でだけ」新規挿入される — CSS animation は要素の新規挿入時に
-	// 自動再生される(li.becoming-in.inflight の wake-sweep と同じ技法。todos-app.ts 側コメント参照)。
-	if (exitingDoneIds.has(task.id)) li.classList.add("row-retiring");
+	// C0-a′ 撤去済み(2026-07-23 (d′) 裁定・冒頭コメント参照): ここで退場アニメ中(exitingDoneIds)の
+	// 行に li.row-retiring を付けていたが、3秒退場そのものを撤回したため不要になった。完了行は
+	// その場に取消線(li.done)で留まるだけで、退場アニメは持たない。
 	const sel = selectedId === task.id;
 	// ドラフト行(FAB で生やす未送信の新規行)。選択状態の見た目を流用しつつ、確定文法が「create」に
 	// なる・チェック無効・ⓘ が作成モード詳細を開く、の3点だけ通常の選択行と分岐する。
@@ -2844,9 +2785,13 @@ function collectSheetChanges(task: TodoItem, d: SheetDraft): UpdateTodoChanges {
 	return changes;
 }
 
-/** list-calendars を遅延取得してキャッシュする(リスト移動ページで使う)。失敗はバナー表示に degrade。 */
+/** list-calendars を遅延取得してキャッシュする(リスト移動ページ・リスト切替ドロップダウンで使う)。
+ *  失敗はバナー表示に degrade しつつ calendarsFetchFailed を立てる(メニューが「読み込み中…」で
+ *  固着せず "取得に失敗・タップで再試行" 行へ落ちる。renderListMenu 参照)。 */
 async function ensureCalendars(): Promise<void> {
 	if (calendarsCache !== null) return;
+	// 再試行に備えて着手時に失敗フラグを倒す(取得中は「読み込み中…」を出したいので null のまま false)。
+	calendarsFetchFailed = false;
 	try {
 		const result = await app.callServerTool({ name: "list-calendars", arguments: {} });
 		if (result.isError) {
@@ -2870,8 +2815,39 @@ async function ensureCalendars(): Promise<void> {
 			color: c.color,
 		}));
 	} catch (e) {
+		// calendarsCache は null のまま(=未取得)。フラグを立てて renderListMenu を再試行行へ分岐させる。
+		calendarsFetchFailed = true;
 		showBanner(`リストの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
 	}
+}
+
+/**
+ * 既定選択の決定化(K3 是正③・2026-07-23)。初回の owner 横断応答で currentCalendarId がまだ null の
+ * ときに「どのリストを既定表示にするか」を **タスクの並びに依存しない決定的な規則** で選ぶ。
+ *
+ * 【なぜ決定化が要るか(K3 既定選択バグ)】旧実装は
+ *   `mergedNextTasks.find(t => t.calendarId === "tasks")?.calendarId ?? mergedNextTasks[0]?.calendarId`
+ * で、"tasks" が無いと **横断結果の先頭タスクが属するリスト** へ倒していた。これは表示中タスクの中身に
+ * 依存する非決定的な選択で、reading-list(!!! 付きの本など)のタスクがたまたま先頭に来ると、そこが
+ * 既定として選ばれてしまう(「コレクション=文脈の境界」を破る症状そのもの)。既定は「今どんなタスクが
+ * あるか」ではなく「どんなリストがあるか」だけで決めるべき。
+ *
+ * 【規則(優先順)】
+ *   1. "tasks"(iOS 既定リマインダーリスト)が実在すれば必ずそれ — 決定的で文脈も自然。実在判定は
+ *      「そのリストにタスクがある(mergedNextTasks)」か「calendarsCache に VTODO リストとして居る」の
+ *      いずれか(空の "tasks" でも calendarsCache 取得済みなら拾える)。
+ *   2. calendarsCache 取得済みなら、その VTODO コレクション順(list-calendars の決定的な順)の先頭。
+ *   3. どちらも無ければ null — 未選択・空表示のままにしてユーザーをリスト切替メニューへ誘導する
+ *      (勝手にタスク先頭のリストへは入らない)。calendarsCache は ontoolresult の背景プリフェッチ
+ *      (是正②)で程なく埋まり、その完了時に再選択を試みる(下の prefetch .then 参照)。
+ */
+function pickDefaultCalendarId(tasks: TodoItem[]): string | null {
+	const tasksListExists =
+		tasks.some((t) => t.calendarId === "tasks") ||
+		(calendarsCache?.some((c) => c.id === "tasks" && c.components.includes("VTODO")) ?? false);
+	if (tasksListExists) return "tasks";
+	const firstFromCache = calendarsCache?.find((c) => c.components.includes("VTODO"))?.id;
+	return firstFromCache ?? null;
 }
 
 /** move-todo(タスクを別リストへ移動)。応答=移動元ビューの TodosViewModel + removed ghost。
@@ -3251,6 +3227,16 @@ function renderAll(): void {
 		return;
 	}
 	root.innerHTML = "";
+	// ④ カードの版不整合(claude.ai が古いカード HTML をキャッシュ描画している兆候)を控えめに1行で告げる。
+	// 一覧最上部=ヘッダ直下に置く。cardVersionIsStale は欠落時 false(誤検知回避)なので、旧サーバー
+	// (uiHash 無し)や版一致時は何も出ない(card-version.ts 参照)。
+	if (cardVersionIsStale(cardBuildHash, serverUiHash)) {
+		const notice = document.createElement("div");
+		notice.className = "card-stale-notice";
+		notice.setAttribute("role", "status");
+		notice.textContent = "カードが古い可能性があります — コネクタを再同期してください";
+		root.appendChild(notice);
+	}
 	// 選択行入力への参照を毎描画でリセットする(この描画で選択行が描かれれば renderRow が付け直す)。
 	// こうしておくと、選択行がフィルタ等で消えた描画では参照が古いまま残らない(commit の誤読を防ぐ)。
 	selTitleInput = null;
@@ -3280,22 +3266,17 @@ function renderAll(): void {
 	const affectedItems: TodoItem[] = [];
 	for (const a of affectedById.values()) {
 		// C0-a 撤去済み(2026-07-23): retiredDoneIds による除外はここにもあったが不要になった(上部コメント参照)。
-		// 【2026-07-23 是正(退行#5 の随伴修正): isDoneRowStillInPlace(猶予中 or 退場アニメ中)のときだけ合成する】
-		// 旧条件は `!taskIds.has(a.id)` だけだったため、finishDoneExit で退場が完了した(=もう表示すべきで
-		// ない)行の affectedById エントリが次の描画でも毎回ここに引っかかり、sectionizeManual の
-		// naturalSection(completed)経由で positionMemory の s.completed バケツ(renderAll がもう
-		// 描画に使わない死の経路)へ id が再び書き込まれ続ける「復活」が起きていた(実害は無いが不変条件
-		// 違反 = affected は本来「その完了操作1回きり」の一過性メタのはずが、次に applyStructuredContent
-		// が呼ばれて affectedById が丸ごと入れ替わるまで無期限に居座っていた)。isDoneRowStillInPlace で
-		// 「まだ本体側に実体があるべき期間(猶予中/退場アニメ中)」だけに絞ることで、退場完了後は
-		// 二度とこのループが id を拾わなくなり、completedSummary 側だけの表示へ正しく収束する
-		// (isDoneExitPending は done-exit.ts の純関数 — 冒頭 import 参照)。
-		if (
-			a.kind === "completed" &&
-			a.task !== undefined &&
-			!taskIds.has(a.id) &&
-			isDoneExitPending({ retiring: retiringDoneIds.has(a.id), exiting: exitingDoneIds.has(a.id) })
-		) {
+		// 【done-in-place の合成(§7.8 v2.2 item 3 の「done はその場で取消線」の実体)】
+		// 完了行は未完了ビュー(baseTasks)から抜けるので、tasks(taskIds)に見つからない completed 行だけ
+		// snapshot から擬似行を合成して本体セクションへ戻す。positionMemory が「初出時のセクション」に
+		// 留めるので、完了行はチェック済み(取消線)のままその場に残る。この合成は次に
+		// applyStructuredContent が affectedById を丸ごと入れ替えるまで続く(=カードインスタンス生存中は
+		// その場に残る)のが正しい仕様 — クリーン再セクショニングは resetPositionMemory(fresh render /
+		// view・calendar 切替)のときだけ起き、そこで初めて完了行が completedSummary 側だけの表示へ移る。
+		// 【C0-a′ 撤回で削除した条件(2026-07-23 (d′) 裁定)】C0-a′ 期は退場タイマー生存中だけ合成する
+		// isDoneRowStillInPlace ガードを足していたが、退場そのものを撤回したので pre-C0-a′ の
+		// `!taskIds.has(a.id)` 条件へ戻した(冒頭 C0-a′ 撤回コメント参照)。
+		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id)) {
 			// 【> 2026-07-17 実機 FB「done で notes が消える」修正】snapshot(TaskSnapshot は notes を持たない)から
 			// 作った最小行をそのまま synthDone にすると、sectionizeManual の liveById に載って notes まで揃った
 			// stickyData より優先され、完了行の notes が描画から消える。sticky を土台に merge して full な形を保つ
@@ -3388,12 +3369,18 @@ function renderAll(): void {
 		const completedRows: TodoItem[] = [];
 		for (const snap of completedSummary.recent) {
 			if (optimisticDeletes.has(snap.id)) continue; // 楽観削除中は出さない(他セクションと同じ規律)
-			// C0-a′(2026-07-23)の重複排除: 本体側にまだ実体がある(猶予中 or 退場アニメ中)行は
-			// completedSummary 側で出さない。server はミューテーション確定と同時に completedSummary を
-			// 加算済みで返してくる契約(仕様1)なので、これをしないと「本体に残ったまま + 完了済み
-			// セクションにも同じ行」の二重表示期間が生まれる(退場が完了した瞬間に初めてこちら側へ
-			// 現れ、本体側の行と入れ替わって見える=仕様1が求める体験そのもの)。
-			if (isDoneRowStillInPlace(snap.id)) continue;
+			// 【所属判定による重複排除(C0-a′ 撤回で退場タイマー判定から置換・2026-07-23 (d′) 裁定)】
+			// server はミューテーション確定と同時に completedSummary を加算済みで返す契約なので、
+			// 「このカードインスタンスの生存中に done してその場に残っている行」は本体側(due セクション)と
+			// completedSummary 側の両方に現れうる。二重表示を避けるため、positionMemory に「非 completed
+			// セクション」で実在する id は completedSummary 側でスキップする(=その行は本体に所属している)。
+			// 純粋な所属判定なので時間(退場タイマー)に一切依存しない。次の fresh render / リスト切替の
+			// クリーン再セクショニング(resetPositionMemory)で positionMemory がクリアされると、以後この
+			// id は本体に所属しなくなり completedSummary 側だけに現れる(=完了済みへ「移動」して見える)。
+			// 【born-completed は出す】positionMemory の section が "completed"(インスタンス誕生時に既に
+			// 完了だった行)や、そもそも positionMemory に無い行はスキップしない — それらは本体側に居ないので
+			// completedSummary が唯一の表示チャンネル(§7.8 v2.2 item 3 ⑥ の completed <details> の受け皿)。
+			if (completedRowIsInBody(positionMemory.get(snap.id)?.section)) continue;
 			const merged = mergeCompletedBase(stickyData.get(snap.id), snapshotToItem(snap, true));
 			const ov = optimisticToggle.get(snap.id);
 			const row: TodoItem = ov !== undefined ? { ...merged, completed: ov.completed, status: ov.status } : merged;
@@ -3621,70 +3608,86 @@ function applyInlineFold(): void {
 	// フッタの下に出る不自然さ=実機FB を、そもそも畳みの無い全件表示へ逃がして回避する・ユーザー提案)。
 	// 早期 return する経路(inline でない)は「畳んでいない」ので false のまま。
 	lastFoldActive = false;
-	// fullscreen 中はプレビュークランプしない(全件 + 内部スクロールは C3/applyHostContext の
-	// fullscreen-scroll が担う)。inline 以外(hostDisplayMode が null=displayMode 未送信のホスト等)は
-	// 早期 return = 従来どおり全件表示(退行ゼロ)。アクション行自体も出さない(2026-07-18 ユーザー
-	// 裁定: fullscreen では浮遊 FAB を復活させ、アクション行は畳みが無い fullscreen では冗長=出さない)。
-	// 【2026-07-17 C0-b: hostMaxHeightPx===null の早期 return を撤去】旧実装は maxHeight 未送信なら
-	// 早期 return して畳まなかったが、新モデルでは inline は maxHeight の有無に関わらず「上位 N 件
-	// プレビュー」に束ねる(N_MAX クランプは端末制約ではなくプロダクト方針)。maxHeight が null のときは
+	// 【⑦ 是正(2026-07-23 実機FB): + の入口は fullscreen 以外では必ず出す】
+	// 旧実装は `hostDisplayMode !== "inline"` で早期 return し、アクション行(+ を含む)ごと描画を
+	// スキップしていた。そのため hostDisplayMode が null(displayMode 未送信のホスト・host-context 受信前の
+	// 初回描画)のときは「fold フッタも浮遊 FAB(.fab-row は fullscreen でしか表示されない)も + も無い」
+	// 空白状態になり、新規作成した空リスト(未完了0件)で + が消える実機バグを生んだ。
+	// 正しい切り分け: **fullscreen のときだけ** action-row を出さない(浮遊 FAB #quick-add-fab が + を担う)。
+	// それ以外(inline も null も)は action-row を必ず出し、+ の入口を保証する。プレビュークランプ(fold)は
+	// inline のときだけ行い、null のときは全件表示のまま action-row(+ のみ)を出す(退行ゼロ)。
+	if (hostDisplayMode === "fullscreen") return;
+	// fold(上位 N 件プレビューへのクランプ)を行うのは inline のときだけ。null は計測せず全件表示。
+	// 【2026-07-17 C0-b: hostMaxHeightPx===null でも inline は N_MAX クランプする】maxHeight が null のときは
 	// computeInlineFit へ Infinity を渡す(full=全行フィット扱い)ことで、クランプは N_MAX だけが効く。
-	if (hostDisplayMode !== "inline") return;
+	const canFold = hostDisplayMode === "inline";
+	let folded = false;
+	let remaining = 0; // 「他 n 件」の n(folded のときだけ使う)。
+	if (canFold) {
+		// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、inline カードの描画頻度
+		// (ユーザー操作/ポーリング単位)なので実害は小さい。renderRow が li.dataset.id を付けているので
+		// セクション見出し(h2)は各行の offsetTop に押し下げとして織り込まれる(fold.ts の設計前提)。
+		const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
+		const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
+		// 2026-07-18 単純化: 旧「フッタ + 浮遊 FAB」の合計だった bottomChrome/fullHeight 先引きは、両者が
+		// 1つの action-row(常に flow 最終行として実在)へ統合されたことで「action-row 1つ分」に単純化
+		// された(measureActionRowBlockPx コメント参照)。
+		const actionRowBlock = measureActionRowBlockPx();
+		const fullHeight = root.scrollHeight + actionRowBlock;
+		const bottomChrome = actionRowBlock;
 
-	// root.scrollHeight 等の読み取りは強制同期レイアウト(reflow)を伴うが、inline カードの描画頻度
-	// (ユーザー操作/ポーリング単位)なので実害は小さい。renderRow が li.dataset.id を付けているので
-	// セクション見出し(h2)は各行の offsetTop に押し下げとして織り込まれる(fold.ts の設計前提)。
-	const rows = Array.from(root.querySelectorAll<HTMLLIElement>("section:not(.sec-completed) > ul > li"));
-	const rowBottoms = rows.map((li) => li.offsetTop + li.offsetHeight);
-	// 2026-07-18 単純化: 旧「フッタ + 浮遊 FAB」の合計だった bottomChrome/fullHeight 先引きは、両者が
-	// 1つの action-row(常に flow 最終行として実在)へ統合されたことで「action-row 1つ分」に単純化
-	// された(measureActionRowBlockPx コメント参照)。
-	const actionRowBlock = measureActionRowBlockPx();
-	const fullHeight = root.scrollHeight + actionRowBlock;
-	const bottomChrome = actionRowBlock;
-
-	// フィット件数: maxHeight 未送信は Infinity(=全行フィット)。full なら全行、folded なら visibleCount。
-	const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
-	const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
-	// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
-	const dynamicVisibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
-	// 【選択中は静止時の visibleCount に固定(上記 cachedStaticVisibleCount コメント参照)】
-	// selectedId===null の renderAll でだけ動的値を採用しキャッシュを更新する。選択中
-	// (selectedId!==null)は選択行が伸びて計算が縮んでも無視し、直近の静止時キャッシュを使う —
-	// これにより「タップした行が畳まれて消える」再発を構造的に防ぐ。キャッシュが無い(通常は
-	// 起こらない: 初回 renderAll は必ず selectedId===null で通る)場合のみ動的値へ防御的に
-	// フォールバックする。
-	let visibleCount = selectedId === null ? dynamicVisibleCount : (cachedStaticVisibleCount ?? dynamicVisibleCount);
-	if (selectedId === null) cachedStaticVisibleCount = visibleCount;
-	// 【監査 D: 選択中でも選択行が可視集合に入る保証】選択中は上の cachedStaticVisibleCount で
-	// 「件数」は固定しているが、外部更新(sync 由来の並び替え・新規行の挿入等)で rows の**メンバー
-	// シップ**が変わると、選択行が先頭 visibleCount の外へ押し出されて slice(visibleCount) で
-	// remove されうる(不変条件「タップ行は必ず見えたまま」を破る別経路 — cachedStaticVisibleCount
-	// は「件数」しか固定しないので、これだけでは選択行自体の残留は保証できない)。選択行が rows の
-	// 先頭 visibleCount に入っていなければ、選択行の index+1 まで visibleCount を拡大して必ず含める。
-	// maxHeight の予算を超えうるが、「編集中の行が見える」ことを優先する(キーボード回避はホスト側の
-	// 責務であってこのカード内 fold の関心事ではない)。
-	if (selectedId !== null) {
-		const selectedIndex = rows.findIndex((li) => li.dataset.id === selectedId);
-		if (selectedIndex >= visibleCount) visibleCount = selectedIndex + 1;
-	}
-	const folded = visibleCount < rows.length;
-	if (folded) {
-		lastFoldActive = true; // 実際に畳んで「他 N件」を出す(⊕ の fullscreen 昇格判定に使う)。
-		rows.slice(visibleCount).forEach((li) => li.remove());
-		// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
-		for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
-			const ul = section.querySelector("ul");
-			if (ul !== null && ul.children.length === 0) section.remove();
+		// フィット件数: maxHeight 未送信は Infinity(=全行フィット)。full なら全行、folded なら visibleCount。
+		const fit = computeInlineFit(rowBottoms, fullHeight, hostMaxHeightPx ?? Number.POSITIVE_INFINITY, bottomChrome);
+		const fitCount = fit.mode === "full" ? rows.length : fit.visibleCount;
+		// プレビュークランプ: プロダクト方針(高々 N_MAX 件)と端末制約(それでも溢れるなら更に減らす)の min。
+		const dynamicVisibleCount = Math.min(INLINE_PREVIEW_MAX, fitCount);
+		// 【選択中は静止時の visibleCount に固定(上記 cachedStaticVisibleCount コメント参照)】
+		// selectedId===null の renderAll でだけ動的値を採用しキャッシュを更新する。選択中
+		// (selectedId!==null)は選択行が伸びて計算が縮んでも無視し、直近の静止時キャッシュを使う —
+		// これにより「タップした行が畳まれて消える」再発を構造的に防ぐ。キャッシュが無い(通常は
+		// 起こらない: 初回 renderAll は必ず selectedId===null で通る)場合のみ動的値へ防御的に
+		// フォールバックする。
+		let visibleCount = selectedId === null ? dynamicVisibleCount : (cachedStaticVisibleCount ?? dynamicVisibleCount);
+		if (selectedId === null) cachedStaticVisibleCount = visibleCount;
+		// 【監査 D: 選択中でも選択行が可視集合に入る保証】選択中は上の cachedStaticVisibleCount で
+		// 「件数」は固定しているが、外部更新(sync 由来の並び替え・新規行の挿入等)で rows の**メンバー
+		// シップ**が変わると、選択行が先頭 visibleCount の外へ押し出されて slice(visibleCount) で
+		// remove されうる(不変条件「タップ行は必ず見えたまま」を破る別経路 — cachedStaticVisibleCount
+		// は「件数」しか固定しないので、これだけでは選択行自体の残留は保証できない)。選択行が rows の
+		// 先頭 visibleCount に入っていなければ、選択行の index+1 まで visibleCount を拡大して必ず含める。
+		// maxHeight の予算を超えうるが、「編集中の行が見える」ことを優先する(キーボード回避はホスト側の
+		// 責務であってこのカード内 fold の関心事ではない)。
+		if (selectedId !== null) {
+			const selectedIndex = rows.findIndex((li) => li.dataset.id === selectedId);
+			if (selectedIndex >= visibleCount) visibleCount = selectedIndex + 1;
 		}
+		folded = visibleCount < rows.length;
+		if (folded) {
+			lastFoldActive = true; // 実際に畳んで「他 N件」を出す(⊕ の fullscreen 昇格判定に使う)。
+			rows.slice(visibleCount).forEach((li) => li.remove());
+			// 空になった(=全行畳まれた)セクションは見出しだけ残らないよう畳む。
+			for (const section of Array.from(root.querySelectorAll<HTMLElement>("section:not(.sec-completed)"))) {
+				const ul = section.querySelector("ul");
+				if (ul !== null && ul.children.length === 0) section.remove();
+			}
+		}
+		remaining = rows.length - visibleCount; // = 「他 n 件」の n(folded でなければ使わない)
 	}
-
-	const totalCount = rows.length; // 畳み対象4セクション横断の合計行数(完了済み・ドラフトは対象外)
-	const remaining = totalCount - visibleCount; // = 「他 n 件」の n(folded でなければ使わない)
 	// 【2026-07-18 ユーザー裁定: アクション行は常設(畳みの有無に関わらず inline では必ず出す)】
 	// 旧実装は畳んだときだけフッタを append していたが、⊕ を統合した今は「畳みが無いときは左が
-	// 空の行」として常に出す(root の flow 最終行に置くことで浮遊 FAB を廃止できる — item1)。
-	root.appendChild(buildActionRow(folded ? remaining : null));
+	// 空の行」として常に出す。
+	// 【⑥ 是正(2026-07-23 実機FB): アクション行を完了済み <details> の「上」に置く】
+	// 旧実装は root.appendChild で flow 最終行(=完了済み <details> よりさらに下)に置いていたため、
+	// 「他 n件の未完了」フッタが完了済みセクションの下へ飛ばされ、完了済みがノイズとして未完了領域と
+	// フッタの間に挟まって見えた。あるべき順は「未完了セクション → (ドラフト) → 他 n件の未完了 +⊕ →
+	// 完了済み details」。完了済み <details>(.sec-completed)が居ればその直前へ挿入し、居なければ従来
+	// どおり末尾へ append する。ドラフト行(root 直下の <ul>)は完了済みより前に append 済みなので、
+	// この挿入でも「ドラフト行はアクション行の上」(item3)は保たれる。fold 予算(root.scrollHeight に
+	// 完了済みの高さを含める)はこの挿入位置変更では変わらない(measure は挿入前に済んでいる)。
+	const actionRow = buildActionRow(folded ? remaining : null);
+	const completedEl = root.querySelector(".sec-completed");
+	if (completedEl !== null) root.insertBefore(actionRow, completedEl);
+	else root.appendChild(actionRow);
 }
 
 /** 読込中スケルトン(行の影3本)。「(リマインダーはありません)」等のテキスト点滅より
@@ -3751,6 +3754,10 @@ interface TodosStructuredContent {
 	// なので旧応答/フィクスチャでは undefined(server.ts の TodosViewModel.generatedAt JSDoc・
 	// freshness.ts の shouldRevalidateOnPush 参照)。push 経路の鮮度判定にのみ使う。
 	generatedAt?: number;
+	// uiHash(2026-07-23 カードの版不整合可視化④): 現行デプロイの todos カード版ハッシュ。カード自身の
+	// 焼き込み値(window.__CARD_BUILD_HASH__)と食い違えば「カードが古い可能性」を表示する
+	// (server.ts の TodosViewModel.uiHash JSDoc・card-version.ts 参照)。additive・欠落時は非表示。
+	uiHash?: string;
 }
 
 /**
@@ -3848,7 +3855,15 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	// サーバー応答の到着ではないため)。
 	// incomingCalendarId: undefined(旧応答/フィクスチャで calendarId フィールド自体が無い)も
 	// null(owner 横断)と同じ「丸ごと置き換え」として扱う(mergeTasksByCalendar の契約)。
-	const incomingCalendarId = structuredContent?.calendarId ?? null;
+	// 【⑤ 是正(2026-07-23 実機FB): server の "all" echo を UI 横断センチネルへ正規化】
+	// server は横断を2通りで表しうる: (a) calendarId 省略 → echo null、(b) モデルが
+	// list-todos{calendarId:"all"} と明示 → server はそれを across-owner と解釈しつつ opts.calendarId を
+	// そのまま echo するので vm.calendarId="all" が届く。この "all" を UI 横断センチネル ALL_CALENDARS_ID
+	// ("__all__")へ寄せないと、isAllView(===ALL_CALENDARS_ID)が false のまま単一リスト経路へ入り、
+	// filterTasksByCalendar が「calendarId==="all" の行だけ」= 実在しない行 → 全未完了が消え
+	// 「すべて完了しました」+完了済みのみ、という誤表示(⑤)になる。null(省略の横断)は従来どおり。
+	const rawIncomingCalendarId = structuredContent?.calendarId ?? null;
+	const incomingCalendarId = rawIncomingCalendarId === "all" ? ALL_CALENDARS_ID : rawIncomingCalendarId;
 	const mergedNextTasks = mergeTasksByCalendar(confirmedTasks, incomingCalendarId, nextTasks);
 	// view 変更(実質別ビュー)判定。mutate 応答は view を持たない(undefined)ので誤検出しないよう、
 	// sc.view が明示されていて currentView と中身が違うときだけ「別ビュー」とみなす(2026-07-14 並び順安定性)。
@@ -3876,7 +3891,8 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	confirmedTasks = mergedNextTasks;
 	// K3: 横断応答(calendarId===null)を受け取ったら crossFetchDone を確定する。switchCalendar の
 	// 「初回だけ背景 fetch」判定がこのフラグを見る(crossFetchDone のコメント参照)。
-	if (incomingCalendarId === null) crossFetchDone = true;
+	// 横断応答(null=省略 or ALL_CALENDARS_ID=正規化した "all")なら crossFetchDone を確定する。
+	if (incomingCalendarId === null || incomingCalendarId === ALL_CALENDARS_ID) crossFetchDone = true;
 	// C0-a 撤去済み(2026-07-23): 「未完了で返ってきたら退場マークを解除する」処理はここにあったが、
 	// 退場機構そのものの撤去(上部コメント参照)に伴い不要になった。
 	// サーバー由来(ユーザー起因)+ システム由来(sync)の affected を統合。sync 側は sync:true を
@@ -3891,22 +3907,18 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	// in-flight の楽観トグル/仮行が失われないのは、この重ね直しがあるため(一貫性の要)。
 	serverAffectedBase = combinedAffected;
 	serverGhostsBase = combinedGhosts;
-	// 【C0-a′(2026-07-23 iOS リマインダー準拠で再導入)】combinedAffected の kind==="completed" 行に
-	// 退場猶予(scheduleDoneExit)を仕込み、kind==="reopened" 行は猶予/退場アニメを打ち消す
-	// (cancelDoneExit)。applyStructuredContent が ontoolresult(モデル発 complete-todo push を含む)/
-	// fetchLatest / mutation 成功のすべての経路の唯一の入口であることを利用し、タップ由来・モデル発
-	// push・外部同期(sync:true)を区別せず同じ規律で扱う(冒頭 C0-a′ コメント参照)。
-	for (const a of combinedAffected) {
-		if (a.kind === "completed") scheduleDoneExit(a.id);
-		else if (a.kind === "reopened") cancelDoneExit(a.id);
-	}
+	// 【C0-a′ 撤回済み(2026-07-23 (d′) 裁定・冒頭コメント参照)】ここには combinedAffected の
+	// kind:"completed"/"reopened" を見て退場猶予(scheduleDoneExit)/キャンセル(cancelDoneExit)を
+	// 仕込むループがあったが、3秒退場そのものを撤回したので不要になった。完了行は退場せず、
+	// done-in-place 合成(rebuildDisplay → sectionizeManual)がその場に取消線で描き続ける。
 	// 削除された id は位置記憶 / sticky から追い出す(2026-07-14 並び順安定性)。これをしないと、
 	// 削除で消えた行が stickyData の last-known データを頼りに「幽霊住人」として復活してしまう
 	// (ghost の becoming-gone は1描画で消えるが、位置記憶が残っていると次描画で sticky 経路が拾う)。
 	for (const g of combinedGhosts) {
 		positionMemory.delete(g.id);
 		stickyData.delete(g.id);
-		cancelDoneExit(g.id); // 削除された行に対する退場猶予/退場アニメが後から発火しないよう道連れに止める。
+		// C0-a′ 撤去済み(2026-07-23): ここにあった cancelDoneExit(g.id)(削除行の退場タイマー道連れ停止)は
+		// 退場機構ごと撤回したため不要。
 	}
 	rebuildDisplay(combinedAffected, combinedGhosts);
 	// currentView を「描画に使った vm の view」で更新する(vm.view ?? {})。E-2 view 状態非保持
@@ -3928,11 +3940,9 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 		currentCalendarId = incomingCalendarId;
 		appTitleEl.textContent = titleForCalendarId(currentCalendarId);
 	} else if (currentCalendarId === null) {
-		// 既定選択: "tasks" があればそれを、無ければ横断結果に含まれる最初の calendarId を選ぶ
-		// (mergedNextTasks は既に X-APPLE-SORT-ORDER 昇順で並んでいる list-todos の応答順を保つ)。
-		// 該当が無ければ(VTODO コレクション自体が無い等)null のまま = 未選択・空表示に degrade する。
-		const defaultId =
-			mergedNextTasks.find((t) => t.calendarId === "tasks")?.calendarId ?? mergedNextTasks[0]?.calendarId ?? null;
+		// 既定選択(K3 是正③・2026-07-23 決定化)。pickDefaultCalendarId が「タスクの並びに依存しない
+		// 決定的な既定リスト」を選ぶ。null(選べない)なら未選択・空表示のまま = メニュー誘導に degrade。
+		const defaultId = pickDefaultCalendarId(mergedNextTasks);
 		if (defaultId !== null) {
 			currentCalendarId = defaultId;
 			appTitleEl.textContent = titleForCalendarId(currentCalendarId);
@@ -3947,6 +3957,11 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	// このフィールドを持たない場合でも直前の値を保つ= ちらつき/消失防止)。
 	if (structuredContent?.completedSummary !== undefined) {
 		completedSummary = structuredContent.completedSummary;
+	}
+	// uiHash を保持(④ カードの版不整合可視化)。値が来たときだけ更新(欠落応答で消さない防御)。
+	// renderAll のヘッダ近くで cardVersionIsStale(自身の焼き込み版 ↔ この値)を見て古さ警告を出す。
+	if (structuredContent?.uiHash !== undefined) {
+		serverUiHash = structuredContent.uiHash;
 	}
 	// 【2026-07-23 SWR 完全形】push 経路(opts.push===true)のときだけ generatedAt の古さを見る。
 	// 古ければ(履歴復元級)markUpdated をスキップして「新鮮」を偽装せず、呼び出し側へ背景
@@ -4055,6 +4070,25 @@ app.ontoolresult = (r) => {
 		guardedRenderAll();
 		if (needsRevalidate) maybeRefetch();
 	});
+	// 【2026-07-23 是正②: リスト一覧の背景プリフェッチ】初回の list-todos 応答を適用したら、ユーザーが
+	// リスト切替ドロップダウンを開くのを待たずに list-calendars を背景取得しておく。以前は初回タップが
+	// 「ホスト↔Worker↔D1 の list-calendars 往復」をクリティカルパスに乗せていて、開いた瞬間に
+	// 「読み込み中…」を必ず一拍見せていた。connected 確認後・void で fire-and-forget(ensureCalendars は
+	// 自前で calendarsCache/失敗フラグを管理するので結果を待つ必要は無い。既に取得済みなら即 return)。
+	// 【是正③との連携】既定選択(pickDefaultCalendarId)は初回応答時点で calendarsCache が未取得だと
+	// null を返して空表示に落ちうる。プリフェッチ完了時にまだ未選択(currentCalendarId===null)なら
+	// calendarsCache から既定を決め直して描き直す(タスク先頭リストへは倒さない決定的な後追い選択)。
+	if (connected) {
+		void ensureCalendars().then(() => {
+			if (currentCalendarId !== null) return; // 既に選択済み(通常経路)なら何もしない。
+			const defaultId = pickDefaultCalendarId(confirmedTasks ?? []);
+			if (defaultId !== null) {
+				currentCalendarId = defaultId;
+				appTitleEl.textContent = titleForCalendarId(currentCalendarId);
+				guardedRenderAll();
+			}
+		});
+	}
 };
 // C1: host-context-changed の購読(設計04 §5 C1・SDK フック調査結果)。
 // 【SDK フック確認】node_modules/@modelcontextprotocol/ext-apps の app.d.ts に
@@ -4276,14 +4310,9 @@ async function toggleTask(task: TodoItem): Promise<void> {
 	// 望みの最終状態を desiredToggle に記録し、送信ループ(flushToggle)がそれを confirm まで追送する。
 	optimisticToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
 	desiredToggle.set(task.id, { completed: nextCompleted, status: nextStatus });
-	// C0-a′(2026-07-23 再導入): 未完了へ戻すタップ(undo)は、猶予/退場アニメ中の id を「サーバー確定
-	// (kind:"reopened")を待たず」即座にキャンセルする。applyStructuredContent 経由のキャンセルだけに
-	// 頼ると、往復の間に猶予タイマーが先に満了して1描画だけ退場アニメが再生されてから巻き戻る
-	// (「undo したのに一瞬消えかけた」という見た目のちらつき)実害が出るため、楽観段階で先に止める。
-	// 完了させる側(nextCompleted=true)は逆に、まだ server affected が来ていないのでここではまだ
-	// スケジュールしない(退場は必ず server 確定 kind:"completed" を根拠にする。applyStructuredContent
-	// 冒頭 C0-a′ コメント参照)。
-	if (!nextCompleted) cancelDoneExit(task.id);
+	// C0-a′ 撤去済み(2026-07-23 (d′) 裁定・冒頭コメント参照): ここにあった undo 時の cancelDoneExit
+	// (退場タイマーの楽観キャンセル)は退場機構ごと撤回したため不要。undo は optimisticToggle の
+	// completed:false への差し替えだけで、行はその場に留まったまま取消線が外れる(位置は不動)。
 	startCommitting(task.id); // §7.8: startedAt を積み、committing 満了タイマーを仕込む
 	clearBanner();
 	rebuildFromConfirmed();
@@ -5020,6 +5049,31 @@ function isListMenuOpen(): boolean {
 function renderListMenu(): void {
 	listMenuEl.textContent = "";
 	if (calendarsCache === null) {
+		if (calendarsFetchFailed) {
+			// 2026-07-23 是正②: 取得に失敗している間は「読み込み中…」で固着させず、タップで再試行できる
+			// 有効な行を出す(空メニュー固着バグの解消。calendarsFetchFailed のコメント参照)。
+			const retry = el("button", "menu-item") as HTMLButtonElement;
+			retry.type = "button";
+			const name = el("span", "name");
+			name.textContent = "取得に失敗しました — タップで再試行";
+			retry.append(el("span", "check-slot"), name);
+			retry.addEventListener("click", (e) => {
+				e.stopPropagation();
+				// 再取得中はプレースホルダを見せたいので、その場を「読み込み中…」へ差し替えてから叩く
+				// (ensureCalendars が着手時に calendarsFetchFailed を false へ戻すので renderListMenu が
+				// spinner 行を描く)。完了後に開いていれば描き直す(openListMenu の then と同じ規律)。
+				void ensureCalendars().then(() => {
+					if (isListMenuOpen()) {
+						renderListMenu();
+						applyMenuHeightGuard();
+						if (currentCalendarId !== null) appTitleEl.textContent = titleForCalendarId(currentCalendarId);
+					}
+				});
+				renderListMenu();
+			});
+			listMenuEl.appendChild(retry);
+			return;
+		}
 		// ensureCalendars 完了後に openListMenu の then が renderListMenu を呼び直す。
 		const loading = el("button", "menu-item") as HTMLButtonElement;
 		loading.type = "button";
@@ -5144,6 +5198,9 @@ function openListMenu(open: boolean): void {
 		if (calendarsCache === null) {
 			void ensureCalendars().then(() => {
 				// 取得完了までにユーザーが閉じている可能性があるので、まだ開いているときだけ描き直す。
+				// 【2026-07-23 是正②: 失敗パスもここで描き直す】ensureCalendars が失敗しても(calendarsCache は
+				// null のまま)この then は走るので、renderListMenu が calendarsFetchFailed を見て
+				// "取得に失敗・タップで再試行" 行を描く(成功/失敗どちらでも同じ再描画で正しい行へ収束)。
 				if (isListMenuOpen()) {
 					renderListMenu();
 					applyMenuHeightGuard();
