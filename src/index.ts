@@ -25,7 +25,7 @@
 // =============================================================================
 
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { app, mcpApiApp, resolveExternalTokenForMcp } from "./app";
+import { app, mcpApiApp, resolveExternalTokenForMcp, scheduled } from "./app";
 // R-6: OAuth scope 分離(read/write)。authorization server metadata の scopes_supported に
 // 両 scope を広告する。語彙は presentation/mcp/scopes.ts に一元化(強制側と同じ定義を使い、
 // 「広告した scope」と「強制する scope」がズレない — index.ts はコンポジションルートなので
@@ -33,7 +33,7 @@ import { app, mcpApiApp, resolveExternalTokenForMcp } from "./app";
 import { ALL_SCOPES } from "./presentation/mcp/scopes";
 
 // =============================================================================
-// OAuthProvider — Worker のエントリポイント(default export)
+// OAuthProvider — Worker のエントリポイント(fetch 側)
 // =============================================================================
 // 【なぜ index.ts だけがこの import を持つのか】
 // .dependency-cruiser.cjs のコメントどおり index.ts はコンポジションルート(全層を配線する
@@ -41,7 +41,15 @@ import { ALL_SCOPES } from "./presentation/mcp/scopes";
 // エントリポイントそのものを差し替える性質上(fetch ルーティングの最上位)、
 // infrastructure に隠さずここに直接置く(OAuthPropsAuth のような「ポートの実装」とは
 // 性質が違う — provider 自体はポート化しない)。
-export default new OAuthProvider<CloudflareBindings>({
+// 【なぜ const にして default export を分けたか(2026-07-23 #47 R2 cron 配線)】
+// 以前は `export default new OAuthProvider(...)` を直接 default export していたが、
+// OAuthProvider の型(dist/oauth-provider.d.ts)は fetch/purgeExpiredData しか持たず
+// scheduled を実装しない。Cron Trigger は Worker の default export に scheduled ハンドラを
+// 要求する(wrangler.jsonc の triggers.crons を足すと、scheduled 未実装の default export では
+// 実行時にディスパッチできない)。そこで provider インスタンスは const で保持し、
+// default export は「fetch は provider に委譲・scheduled は app.ts の purge cron」を持つ
+// 素の ExportedHandler オブジェクトへ組み替える(下部の `export default { ... }` 参照)。
+const oauthProvider = new OAuthProvider<CloudflareBindings>({
 	// /mcp 宛のリクエストだけを「有効なアクセストークンが必要な API」として扱う。
 	// それ以外(DAV/health/.well-known)は defaultHandler にそのまま素通しする。
 	apiRoute: "/mcp",
@@ -86,3 +94,15 @@ export default new OAuthProvider<CloudflareBindings>({
 	// ここではその関数をそのまま options に渡すだけの配線に徹する。
 	resolveExternalToken: resolveExternalTokenForMcp,
 });
+
+// =============================================================================
+// Worker のエントリポイント(default export)— fetch は provider に委譲・scheduled は R2 ゴミ箱 purge
+// =============================================================================
+// 【R2 ソフトデリート purge cron(2026-07-23 #47)】wrangler.jsonc の triggers.crons(日次1回)から
+// 呼ばれる。実体(30日 TTL・repositoriesFactory 経由の D1 アクセス)は app.ts の scheduled 関数に
+// 置く(provider 非依存を保つ app.ts の絶対ルールと矛盾しない — scheduled 関数のコメント参照)。
+// ここではそれをそのまま default export の scheduled フィールドへ配線するだけ。
+export default {
+	fetch: (request: Request, env: CloudflareBindings, ctx: ExecutionContext) => oauthProvider.fetch(request, env, ctx),
+	scheduled,
+};

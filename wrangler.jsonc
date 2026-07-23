@@ -13,11 +13,15 @@
   // 【secret binding(vars ではない)】CALDAV_PASSWORD / PROXY_SHARED_SECRET / MCP_TOKEN /
   // CONFIRM_SECRET は Wrangler secret として設定する(値は wrangler.jsonc にコミットしない)。
   //   - 本番: `.secrets.prod.json`(gitignore 済みの控え)→ `wrangler secret bulk .secrets.prod.json`。
-  //     単発なら `wrangler secret put <NAME>`。CONFIRM_SECRET は S1 確認カードの署名鍵(docs/modeling/14)。
+  //     単発なら `wrangler secret put <NAME>`。CONFIRM_SECRET は S1 確認トークンの署名鍵(docs/modeling/14)。
+  //     2026-07-23(#47): propose-delete-* とその確認カード(ui/confirm-app.ts)は撤去したが、
+  //     todos/agenda カードの swipe 削除が使う免除トークン発行(getCardToken)が引き続きこの鍵を
+  //     使うため required のまま残す(server.ts の McpAppDeps.confirmSecret コメント参照)。
   //   - dev/テスト: .dev.vars に置く(gitignore 対象)。型宣言は src/env.d.ts の CloudflareBindings。
   // 【secrets.required(2026-07-23 導入)】deploy 時に未設定 secret があるとビルドが失敗し、旧バージョンが
   // 動き続ける(設定漏れで本番の該当機能だけ静かに壊れる事故を構造的に防ぐ。CONFIRM_SECRET 未設定だと
-  // delete 系が安全側全拒否になる、を deploy 失敗として顕在化させる)。wrangler types の型生成もここが正。
+  // カード発の削除の免除トークンが発行できず、swipe 削除がエラーになる、を deploy 失敗として顕在化させる)。
+  // wrangler types の型生成もここが正。
   "secrets": {
     // #45 場所モデル: GOOGLE_MAPS_API_KEY(geocoding = Google Places Text Search)を追加。未設定でも
     // Worker 起動・他ツールは正常(search-location 呼び出し時のみ縮退エラー — google-places-geocoding.ts)
@@ -75,5 +79,13 @@
   // なのに wall が秒単位 — I/O 待ち支配の決定的証拠)。smart は実トラフィックの
   // サブリクエスト先(D1)を見て実行ロケーションを D1 側へ寄せ、往復を域内 RTT にする。
   // 注意: 効果はトラフィックの学習後に出る(即時ではない)。効果測定は {mcpTool, ms} ログで。
-  "placement": { "mode": "smart" }
+  "placement": { "mode": "smart" },
+  // 2026-07-23(#47) R2 ゴミ箱 purge cron: soft-delete(deleted_at)されたまま30日を超えた
+  // calendar_objects 行を物理削除する日次バッチ(src/app.ts の scheduled 関数・
+  // D1CalendarObjectResourceRepository.purgeDeletedBefore を参照)。"0 3 * * *" は UTC 03:00
+  // (深夜帯・JST では正午前後だが、単一ユーザー運用でトラフィックの谷を厳密に選ぶ必要は薄いので
+  // Workers Cron Trigger のドキュメント例に倣った素直な毎日1回)。時刻自体に強い意味は無く、
+  // 「1日1回・深夜寄り」が満たせればよい(ソフトデリートの可視ウィンドウは30日あるので数時間の
+  // ズレは実害が無い)。
+  "triggers": { "crons": ["0 3 * * *"] }
 }

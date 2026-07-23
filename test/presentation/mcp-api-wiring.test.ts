@@ -157,6 +157,9 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// 2026-07-23 R2 追記: list-deleted / restore-deleted(ソフトデリートのゴミ箱一覧 + 復元・docs/modeling/15)を追加。
 		// 2026-07-23 K2 追記: update-calendar(list-calendars/create-calendar/delete-calendar の対を埋める)を追加。
 		// 2026-07-23 #45 追記: search-location(geocoding。文字列 → 座標候補)を追加。
+		// 2026-07-23 #47 撤去: propose-delete-todo/event/calendar(確認 UI をホスト責務へ移行済みで
+		// 入口が不要になった。撤去理由は server.ts の撤去コメント参照)を削除。
+		// 2026-07-23 iOS 描画切り分け追記: diag-card(最小診断カードを出す一時ツール・切り分け後撤去予定)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
@@ -167,6 +170,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"delete-calendar",
 			"delete-event",
 			"delete-todo",
+			"diag-card",
 			"get-current-time",
 			"get-freebusy",
 			"list-calendars",
@@ -175,9 +179,6 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"list-known-locations",
 			"list-todos",
 			"move-todo",
-			"propose-delete-calendar",
-			"propose-delete-event",
-			"propose-delete-todo",
 			"refresh-events",
 			"refresh-todos",
 			"restore-deleted",

@@ -101,8 +101,9 @@ beforeEach(() => {
 			resourceRepo: repos.resources,
 			iterator: recurrenceIterator,
 			uow: repos.uow,
-			// S1(docs/modeling/14): 確認トークン署名鍵。テストは固定値で十分(propose→confirm の e2e が
-			// この鍵で署名したトークンを同じ鍵で検証する。CONFIRM_SECRET の実値は本番 secret)。
+			// S1(docs/modeling/14): カード発の免除トークン(getCardToken)の署名鍵。テストは固定値で
+			// 十分(cardToken() ヘルパーがこの鍵で署名したトークンを取得する用途のみ — #47 で
+			// propose-delete-* を撤去した後は検証には一切使われないので、値そのものは何でもよい)。
 			confirmSecret: CONFIRM_SECRET,
 			// 観測基盤 v1: ツール振る舞いテストなので計測は no-op(AE マッピングの検証は
 			// analytics-engine-telemetry.test.ts がフェイク dataset を注入して単体で行う)。
@@ -200,7 +201,13 @@ describe("/mcp", () => {
 	// 2026-07-23 K2 追記: update-calendar(list-calendars/create-calendar/delete-calendar の対を
 	// 埋める。MCP から表示名/色を変更できるようにした)を追加したため 25→26 に更新。
 	// 2026-07-23 #45 追記: search-location(geocoding。文字列 → 座標候補)を追加したため 26→27 に更新。
-	it("正しい Bearer で tools/list に27ツールが並ぶ(#45 search-location 追加分)", async () => {
+	// 2026-07-23 #47 撤去: propose-delete-todo/event/calendar(確認 UI はホスト責務へ移行済みで
+	// 確認カードの入口が不要になった。撤去理由は server.ts の buildMcpServer 冒頭近くのコメント参照)を
+	// 削除したため 27→24 に更新。
+	// 2026-07-23 iOS 描画切り分け追記: diag-card(最小診断カードを出す一時ツール。iOS で todos/agenda
+	// カードだけ描画失敗する原因を認証 vs バンドルサイズで切り分ける用。切り分け完了後に撤去予定)を
+	// 追加したため 24→25 に更新。
+	it("正しい Bearer で tools/list に25ツールが並ぶ(diag-card 追加後)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -215,6 +222,7 @@ describe("/mcp", () => {
 			"delete-calendar",
 			"delete-event",
 			"delete-todo",
+			"diag-card",
 			"get-current-time",
 			"get-freebusy",
 			"list-calendars",
@@ -223,9 +231,6 @@ describe("/mcp", () => {
 			"list-known-locations",
 			"list-todos",
 			"move-todo",
-			"propose-delete-calendar",
-			"propose-delete-event",
-			"propose-delete-todo",
 			"refresh-events",
 			"refresh-todos",
 			"restore-deleted",
@@ -270,8 +275,6 @@ describe("/mcp", () => {
 			idempotentHint: true,
 			openWorldHint: false,
 		});
-		// propose-delete-* は副作用が無いので readOnlyHint:true(猶予期間中も正しく申告する)。
-		expect(byName.get("propose-delete-todo")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
 		// update-calendar(K2): destructiveHint:true・idempotentHint:true(値は delete 系と同じだが
 		// 意味付けは独立に決めている — server.ts UPDATE_CALENDAR_ANNOTATIONS コメント参照)。
 		expect(byName.get("update-calendar")?.annotations).toEqual({
@@ -308,6 +311,71 @@ describe("/mcp", () => {
 		for (const name of ["list-deleted", "restore-deleted"]) {
 			expect(byName.get(name)?._meta?.ui?.resourceUri).toContain("ui://caldav/todos.");
 		}
+	});
+
+	// 2026-07-23 iOS 描画切り分けスパイク: diag-card ツールと ui://caldav/diag.html リソースの検証。
+	// このスパイクの本質は「todos/agenda と同じ登録経路を通しつつ、中身だけ極小(外部依存ゼロ・< 2KB)に
+	// する」こと。よってテストで固定するのは (1) tool が _meta.ui で diag リソースを紐付ける、
+	// (2) resources/read が HTML を返す、(3) HTML が 2KB 以下で外部 URL 参照ゼロ、の3点。
+	// 中身が肥大化/外部依存混入すると切り分けの意味(サイズ/内容説の対照)が崩れるので機械的に固定する。
+	describe("diag-card(iOS 描画切り分け用・最小カード)", () => {
+		it("tools/list の diag-card が _meta.ui.resourceUri で diag リソースを紐付ける", async () => {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+			const rpc = await jsonRpcResult(res);
+			const byName = new Map<string, { _meta?: { ui?: { resourceUri?: string } }; annotations?: Record<string, unknown> }>(
+				rpc.result.tools.map((t: { name: string }) => [t.name, t]),
+			);
+			const diag = byName.get("diag-card");
+			expect(diag).toBeDefined();
+			expect(diag?._meta?.ui?.resourceUri).toBe("ui://caldav/diag.html");
+			// 照会系(副作用なし)なので read-only 申告(todos の list-todos 等と同じ形)。
+			expect(diag?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+		});
+
+		it("resources/read が diag HTML を text/html;profile=mcp-app で返す", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: "ui://caldav/diag.html" },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			const content = rpc.result.contents[0];
+			expect(content.uri).toBe("ui://caldav/diag.html");
+			expect(content.mimeType).toBe("text/html;profile=mcp-app");
+			expect(content.text).toContain("診断カード");
+		});
+
+		it("diag HTML は 2KB 以下・外部 URL 参照ゼロ(切り分けの対照条件を機械的に固定)", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: "ui://caldav/diag.html" },
+			});
+			const rpc = await jsonRpcResult(res);
+			const html: string = rpc.result.contents[0].text;
+			// サイズ上限 2048 バイト(仮説 (b) モバイル上限説を切り分ける「小さいカード」の定義)。
+			expect(Buffer.byteLength(html, "utf8")).toBeLessThanOrEqual(2048);
+			// 外部依存ゼロ: http(s):// や //cdn 等のプロトコル/プロトコル相対 URL を含まない
+			// (App SDK・CDN・フォント等を一切引かないので、SDK 読込やネットワークが失敗要因から排除される)。
+			expect(html).not.toMatch(/https?:\/\//i);
+			expect(html).not.toMatch(/src\s*=\s*["']\/\//i);
+		});
+
+		it("diag-card 呼び出しが structuredContent { ok, generatedAt } を返す", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "diag-card", arguments: {} },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.structuredContent.ok).toBe(true);
+			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
+		});
 	});
 
 	it("initialize が単発でも成功する(stateless transport)", async () => {
@@ -1650,6 +1718,23 @@ describe("/mcp", () => {
 			const sc = await call("list-todos", {});
 			expect(sc.calendarId).toBeNull();
 		});
+
+		// 2026-07-23(#47) センチネル統一: calendarId:"all" は「省略」と同じ横断表示を意味する入力語彙
+		// (ListTodosInput.calendarId JSDoc)だが、**echo** はどちらも null に揃える。以前は
+		// opts.calendarId ?? null がそのまま "all" を素通ししていたため、UI(todos-entry.ts)側の
+		// rawIncomingCalendarId==="all" → ALL_CALENDARS_ID 正規化コードに依存していた。ここでは
+		// サーバー側の契約そのものを固定し、入力の受理語彙("all")は変えないことも合わせて確認する。
+		it('calendarId:"all" を明示指定しても横断応答になり、calendarId echo は null(省略と同じ)', async () => {
+			seedTwoLists();
+			await call("create-todo", { title: "牛乳を買う", calendarId: "tasks" });
+			await call("create-todo", { title: "本を返す", calendarId: "reading-list" });
+
+			const sc = await call("list-todos", { calendarId: "all" });
+			expect(sc.calendarId).toBeNull();
+			const byId = new Map(sc.tasks.map((t: { title: string; calendarId?: string }) => [t.title, t.calendarId]));
+			expect(byId.get("牛乳を買う")).toBe("tasks");
+			expect(byId.get("本を返す")).toBe("reading-list");
+		});
 	});
 
 	// =============================================================================
@@ -1746,10 +1831,14 @@ describe("/mcp", () => {
 	// (confirmToken は受け取っても無視する後方互換フィールド)。
 	// 何を保証するか(What):
 	//   - トークン無しの delete-todo は成功する(旧: 拒否されていた)。
-	//   - propose-delete-todo は引き続きトークン + プレビューを結果 _meta にだけ載せる(後方互換の
-	//     猶予期間中も壊さない)。
-	//   - 旧 propose 由来のトークンを添えて delete-todo を呼んでも(対象が一致しなくても)成功する
+	//   - 任意の confirmToken 文字列(中身が何であれ)を添えても delete-todo は成功する
 	//     (検証自体が無くなったのでトークンの中身は一切見ない)。
+	// 2026-07-23(#47): propose-delete-todo/-event/-calendar は撤去済み(確認 UI はホスト責務へ移行
+	// 済みで確認カードの入口が不要になった。撤去理由は server.ts の撤去コメント参照)。以下のテストは
+	// propose-delete-todo が発行するトークンで確認していた「トークンの中身を見ない」契約を、
+	// getCardToken(todos/agenda カードの swipe 削除が使う免除トークン発行)由来のトークンで代替する
+	// (cardToken() ヘルパーは describe ブロック外の共通ヘルパー。update-event 系テストの
+	// confirmToken: await cardToken() と同じ道具)。
 	describe("R1(delete-* の confirmToken 強制撤去)", () => {
 		const TASKS = collectionId("tasks");
 		function seedTasksCollection(): void {
@@ -1784,78 +1873,25 @@ describe("/mcp", () => {
 			expect(stillThere).toBeNull();
 		});
 
-		it("propose-delete-todo はトークン + プレビューを _meta にだけ載せ、content には載せない", async () => {
-			seedTasksCollection();
-			const id = await createTodo("牛乳を買う");
-			const res = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 3,
-				method: "tools/call",
-				params: { name: "propose-delete-todo", arguments: { id } },
-			});
-			const rpc = await jsonRpcResult(res);
-			expect(rpc.result.isError).toBeFalsy();
-			// _meta にトークン + 対象情報 + プレビュー。
-			const confirm = rpc.result._meta.confirm;
-			expect(typeof confirm.token).toBe("string");
-			expect(confirm.token.length).toBeGreaterThan(0);
-			expect(confirm.tool).toBe("delete-todo");
-			expect(confirm.id).toBe(id);
-			expect(confirm.preview.title).toBe("牛乳を買う");
-			// _meta.ui.resourceUri は確認カードの URI(ホストが確認カードを開く手掛かり)。
-			expect(rpc.result._meta.ui.resourceUri).toContain("ui://caldav/confirm.");
-			// content(モデルが読む面)にはトークンが漏れていない。
-			const contentText = rpc.result.content.map((c: { text?: string }) => c.text ?? "").join(" ");
-			expect(contentText).not.toContain(confirm.token);
-			// リソースは削除されていない(propose は副作用なし)。
-			expect(await repos.resources.findUriByUid(OWNER, TASKS, id)).not.toBeNull();
-		});
-
-		it("propose のトークンを渡すと delete-todo が実行される(確認済み経路)", async () => {
-			seedTasksCollection();
-			const id = await createTodo("消していいもの");
-			const proposeRes = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 4,
-				method: "tools/call",
-				params: { name: "propose-delete-todo", arguments: { id } },
-			});
-			const token = (await jsonRpcResult(proposeRes)).result._meta.confirm.token as string;
-			const delRes = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 5,
-				method: "tools/call",
-				params: { name: "delete-todo", arguments: { id, confirmToken: token } },
-			});
-			const delRpc = await jsonRpcResult(delRes);
-			expect(delRpc.result.isError).toBeFalsy();
-			// 実際に消えている。
-			expect(await repos.resources.findUriByUid(OWNER, TASKS, id)).toBeNull();
-		});
-
-		it("別対象向けに発行したトークンを添えても delete-todo は成功する(R1: 中身を検証しない)", async () => {
+		it("別対象向け(実体は無関係)のカードトークンを添えても delete-todo は成功する(R1: 中身を検証しない)", async () => {
 			seedTasksCollection();
 			const idA = await createTodo("A");
 			const idB = await createTodo("B");
-			// A 向けの propose トークンを取得(後方互換フィールドの値としてはそのまま残る)。
-			const proposeRes = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 6,
-				method: "tools/call",
-				params: { name: "propose-delete-todo", arguments: { id: idA } },
-			});
-			const tokenForA = (await jsonRpcResult(proposeRes)).result._meta.confirm.token as string;
-			// それを使って B を消す → R1 以降 confirmToken は無視されるので対象不一致でも成功する。
+			// カード発の免除トークン(getCardToken 由来。対象を特定しない汎用トークン)を取得する。
+			const tokenForCard = await cardToken();
+			// A ではなく B を消す → confirmToken の中身(対象特定情報)は元々持たないトークンだが、
+			// R1 以降 confirmToken は無視されるのでどのみち成功する。
 			const delRes = await fetchMcp({
 				jsonrpc: "2.0",
 				id: 7,
 				method: "tools/call",
-				params: { name: "delete-todo", arguments: { id: idB, confirmToken: tokenForA } },
+				params: { name: "delete-todo", arguments: { id: idB, confirmToken: tokenForCard } },
 			});
 			const delRpc = await jsonRpcResult(delRes);
 			expect(delRpc.result.isError).toBeFalsy();
-			// B は消えている。
+			// B は消えている。A は無関係なので残る。
 			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).toBeNull();
+			expect(await repos.resources.findUriByUid(OWNER, TASKS, idA)).not.toBeNull();
 		});
 	});
 

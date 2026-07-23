@@ -4025,12 +4025,19 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	// incomingCalendarId: undefined(旧応答/フィクスチャで calendarId フィールド自体が無い)も
 	// null(owner 横断)と同じ「丸ごと置き換え」として扱う(mergeTasksByCalendar の契約)。
 	// 【⑤ 是正(2026-07-23 実機FB): server の "all" echo を UI 横断センチネルへ正規化】
-	// server は横断を2通りで表しうる: (a) calendarId 省略 → echo null、(b) モデルが
+	// 元の症状: server は横断を2通りで表しうる: (a) calendarId 省略 → echo null、(b) モデルが
 	// list-todos{calendarId:"all"} と明示 → server はそれを across-owner と解釈しつつ opts.calendarId を
 	// そのまま echo するので vm.calendarId="all" が届く。この "all" を UI 横断センチネル ALL_CALENDARS_ID
 	// ("__all__")へ寄せないと、isAllView(===ALL_CALENDARS_ID)が false のまま単一リスト経路へ入り、
 	// filterTasksByCalendar が「calendarId==="all" の行だけ」= 実在しない行 → 全未完了が消え
-	// 「すべて完了しました」+完了済みのみ、という誤表示(⑤)になる。null(省略の横断)は従来どおり。
+	// 「すべて完了しました」+完了済みのみ、という誤表示(⑤)になる。
+	// 【2026-07-23(#47) 追記: サーバーは null に統一済み・この正規化は旧応答互換】
+	// server.ts の buildTodosViewModel は calendarId:"all" 入力でも echo を null に揃えるよう
+	// 是正した(横断は calendarId:null という単一契約。server.ts の該当コメント参照)。よって
+	// 新しいカード応答はもう "all" を echo しない。この正規化コードは「旧カードキャッシュ
+	// (localStorage 等に残った古い structuredContent)が rawIncomingCalendarId==="all" のまま
+	// 届くケース」への後方互換として残す(サーバーを直しても古いキャッシュが即座に消えるわけ
+	// ではないため、UI 側の受け口は緩いままにしておく方が安全)。
 	const rawIncomingCalendarId = structuredContent?.calendarId ?? null;
 	const incomingCalendarId = rawIncomingCalendarId === "all" ? ALL_CALENDARS_ID : rawIncomingCalendarId;
 	const mergedNextTasks = mergeTasksByCalendar(confirmedTasks, incomingCalendarId, nextTasks);

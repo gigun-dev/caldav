@@ -942,3 +942,35 @@ export async function resolveExternalTokenForMcp(input: {
 	const props: OAuthPrincipalProps = { username: input.env.CALDAV_USERNAME, scopes: [...ALL_SCOPES] };
 	return { props };
 }
+
+// =============================================================================
+// scheduled(R2 ゴミ箱 cron)— D1CalendarObjectResourceRepository.purgeDeletedBefore の配線
+// =============================================================================
+// 【なぜここに置くか(index.ts ではなく app.ts)】このファイルの絶対ルール(冒頭コメント)は
+// @cloudflare/workers-oauth-provider の値を import しないことだけで、`cloudflare:workers` の
+// import も無い。ScheduledController/ScheduledEvent は @cloudflare/workers-types が提供する
+// **グローバル ambient 型**(import せず使える)なので、この関数を置いてもファイルの
+// bun-test 安全性(provider 非依存)は壊れない。repositoriesFactory を経由することで、
+// リポジトリ生成の差し替え口(テスト用フェイク注入)を fetch 側の配線と共有できる。
+//
+// 【30日 TTL の根拠】iOS の「最近削除した項目」(写真アプリ等でおなじみの慣行)が30日保持な
+// ので、CalDAV 経由で消したリマインダー/予定もユーザー体験として同じ猶予期間に揃える
+// (docs/modeling/15 §A-3 R2 のソフトデリート設計もこの慣行を踏まえている)。
+export const PURGE_DELETED_AFTER_DAYS = 30;
+
+/**
+ * Workers Cron Trigger から呼ばれる scheduled ハンドラ本体。deleted_at が
+ * 30日より古い tombstone(ソフトデリート済み行)を物理 DELETE する(R2 の後続スライス)。
+ * 【なぜ event 引数を使わないか】単一の日次 cron しか登録しない想定なので、
+ * event.cron で分岐する必要が無い(将来 cron が増えたらここで分岐を足す)。
+ * 【観測性】purge 件数を console.log の1行 JSON で残す(server.ts の mcpTool 計測ログと
+ * 同じ「構造化 JSON 1行」規律。専用の TelemetryPort は今のところ無いので、Workers
+ * observability の $metadata.message から拾えるログで足りると判断した — 頻度が日次1回と
+ * 低く、AE のようなイベントストリームに逐次書く必要性が薄いため)。
+ */
+export async function scheduled(_event: ScheduledController, env: CloudflareBindings, _ctx: ExecutionContext): Promise<void> {
+	const cutoffMillis = Date.now() - PURGE_DELETED_AFTER_DAYS * 24 * 60 * 60 * 1000;
+	const repos = repositoriesFactory(env);
+	const purged = await repos.resources.purgeDeletedBefore(cutoffMillis);
+	console.log(JSON.stringify({ event: "r2_purge_deleted", purged, cutoffMillis }));
+}

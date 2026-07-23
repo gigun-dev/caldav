@@ -1136,3 +1136,12 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   再トリガー。
 - 残: iOS 実機確認(geo 無しイベントの LOCATION 表示・title\naddress の改行形式)。バックログ追加:
   list-known-locations の geo 無し emit 判断・quota 失敗時も消費する挙動の許容可否。
+
+## 2026-07-23 iOS描画切り分け用diag-card追加・deploy(swift-mcp-appセッションから)
+
+- claude.ai iOSでcaldavカードのみ描画失敗(TDRは描画可・webは両方可)の切り分けとして、
+  最小診断カード`diag-card`(ui://caldav/diag.html・1243 bytes・外部依存ゼロ・SDK不使用)を
+  todos/agendaと同一の登録経路・OAuth保護下で追加し、wrangler deploy --minify実施
+  (Version b7074f32)。working treeの未コミット作業(confirm/propose撤去ほか)も
+  ユーザー承認の上で相乗りdeploy。コミットはcaldav側セッションに委ねる。
+- 判定: iOSでdiag-cardが描画されればサイズ/内容説、失敗すれば認証説。結論後にdiag一式は撤去する。

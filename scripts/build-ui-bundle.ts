@@ -46,13 +46,10 @@ export const TARGETS = [
 		out: join(UI_DIR, "agenda-bundle.ts"),
 		constName: "AGENDA_BUNDLE_JS",
 	},
-	// S1(docs/modeling/14 確認カード): 破壊的操作の human-in-the-loop 確認カード。todos/agenda と
-	// 同じ生成規律で confirm-entry.ts → confirm-bundle.ts を出力する(TARGETS は配列なので1行足すだけ)。
-	{
-		entry: join(UI_DIR, "confirm-entry.ts"),
-		out: join(UI_DIR, "confirm-bundle.ts"),
-		constName: "CONFIRM_BUNDLE_JS",
-	},
+	// S1(docs/modeling/14 確認カード)は 2026-07-23(#47)に撤去した。propose-delete-* ツールが
+	// 確認 UI をホスト責務へ委ねる方針(docs/modeling/15)に統合され、確認カード(confirm-entry.ts →
+	// confirm-bundle.ts)を開く唯一の入口が消えたため、ここの TARGETS エントリごと削除した
+	// (server.ts 側の撤去理由コメント参照。docs/modeling/14 自体は歴史として残す)。
 ] as const;
 
 // generateBundleFileContent: 「エントリから *-bundle.ts の完全な中身(banner + body)を作る」
