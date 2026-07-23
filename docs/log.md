@@ -1047,3 +1047,13 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   「非空版識別子+残り構造」の契約へ更新し、配信HTML/URI/server用hashの配線テストも追加。
 - sandbox 外の完全な `make check` は boundary・tsc 3種・bun 953件・worker 34件すべてgreen。
   次は実ホスト目視後、直列キュー #43。
+
+## 2026-07-23(続き5・是正束デプロイと自動受け入れ検証)
+
+- 是正束7件をマージ・deploy(8f9fc13)。Inspector subagent による本番受け入れ検証を導入し
+  全10項目を検証 — 9 PASS・1 FAIL(コレクション詳細の保存不発)。
+- FAIL の根因: 「詳細へ」だけメニューを閉じず、残留した外タップ捕捉オーバーレイが保存タップを
+  吸っていた(update-calendar が一切発行されない)。修正 deploy(7c6b133)→ 再検証 PASS。
+  全10項目 PASS で受け入れ完了。R2 の delete→list-deleted→restore 一巡も本番で PASS(未検証層消化)。
+- 以後の運用: 実装 → deploy → Inspector subagent 受け入れ → FAIL 即修正、のループ。
+  ユーザー確認は自動化不能な範囲(キーボード体感・iOS 標準アプリ回帰・アニメ質感)のみ。
