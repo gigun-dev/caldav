@@ -211,6 +211,28 @@
   > **残実機確認(ユーザー)**: キーボード出現(#44 ⑤)・geo 無しイベントの iOS 表示(LOCATION の
   > title\naddress 改行形式)・search-location 経由の場所付き予定作成の一気通貫。
   > 次: #47 小粒バックログ(propose-delete 撤去・purge cron・all センチネル統一から着手)。
+- **swift-mcp-appセッションからの申し送り(2026-07-23夜・実機バグ2件+iOS切り分け結論+OAuth調査)**
+  > 経緯の生記録はdocs/log.md末尾2エントリ(同セッション追記・未コミット)。コミットはこちらに委ねる。
+  > **①fullscreen FABがclaude.ai iOSのcomposerに隠れる(実機スクショ確認済み・要修正)**:
+  > `resolveSafeBottomPx`の「bottomは深刻なocclusionを起こしにくいのでフォールバック無し」仮定の反証。
+  > claude.ai iOSはcomposerクローム分をsafeAreaInsets.bottomに申告していない模様。既存検証項目
+  > 「safeAreaInsets実測ログ」で実値を取り、topと同じfullscreen限定bottomフォールバック
+  > (1関数隔離・実測後に定数更新)を追加してほしい。
+  > **②⊕→fullscreen遷移でキーボード一瞬起動→即閉じの再発(実機確認済み・要修正)**:
+  > ce7d5aaのrender-gateは「シート表示中」のみ抑止のため、遷移時のhostcontextchanged起点renderAllが
+  > focus中のドラフトinputをDOMごと消す経路が残っている。shouldSkipDestructiveRenderの抑止条件を
+  > 「focus中のinputがある間」へ広げる方向を推奨(遅延focusワークアラウンド復活はmodeling/15 §Bボツ案)。
+  > **③iOS描画失敗の切り分け結論(diag-cardの役目)**: 正体はclaude.ai iOSカード描画パスの
+  > token未refresh(TTL 1時間失効後401 invalid_token→「サーバーに接続できません」。webはrefreshする)。
+  > コネクタ再作成で復旧・その後todos/agendaもiOS描画OK。サイズ説は棄却。既知issue
+  > claude-ai-mcp#228(proxyパスのrefresh未実装)と同根。diag-cardはAnthropic報告の再現材料として
+  > 当面残置し、報告完了後に撤去(#47で同梱コミット済み)。副産物: iOSレンダラーはui/initialize
+  > ハンドシェイク無しの素HTMLも表示するが、webは初期化完了まで非表示(diag-cardがwebで出ない理由)。
+  > **④OAuthベスプラ調査のcaldav側帰結(swift-mcp-app docs/design/08が正典・出典付き)**:
+  > accessTokenTTLは既定3600sを維持(TTL延長でiOSバグを凌ぐ案は却下: blast radius拡大・根本原因
+  > 隠蔽・TTL超過で再発)。refresh rotationはworkers-oauth-providerが仕様準拠実装済みで変更不要。
+  > 確認事項2点だけ: refresh token失効時にRFC 6749準拠の`invalid_grant`を返すこと、
+  > 401に`WWW-Authenticate: Bearer resource_metadata="..."`が付くこと(providerの挙動確認)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

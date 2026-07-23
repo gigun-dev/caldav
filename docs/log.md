@@ -1157,3 +1157,28 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   ユーザー承認の上で同コミットに正式化。切り分け結論後に一式撤去予定。
 - #47 残り: IAD 再計測 / D4 完了済み保持ポリシー / known-locations geo 無し emit 判断 /
   quota 失敗時消費の許容可否。
+
+## 2026-07-23 iOS描画切り分けの結論: claude.ai iOSカード描画パスのトークン未リフレッシュ
+
+- diag-card(最小HTML)がiOSで描画成功、直前の失敗はログ上401 invalid_token
+  (req_011CdK4EGbphwRXcNpmLbsPy・22:19 JST)。コネクタ再作成(新トークン)後は
+  todos/agendaカードもiOSで描画された=サイズ説棄却・認証説で確定。
+- 構図: workers-oauth-providerのaccessTokenTTL既定1時間で失効後、claude.ai webの
+  カード描画パスはリフレッシュして描画継続、iOSアプリのカード描画パスはリフレッシュせず
+  401→「サーバーに接続できません」。tools/callパスは両者ともリフレッシュされる。
+- 副産物: iOSカードレンダラーはui/initializeハンドシェイク無しの素のHTMLも表示するが、
+  webは初期化ハンドシェイク完了までカードを表示しない(diag-cardがwebで非表示の理由)。
+- diag-card一式はAnthropicへのバグ報告の再現材料として当面残す。報告完了後に撤去。
+
+## 2026-07-23 claude.ai iOS fullscreen実機バグ2件(swift-mcp-appセッションが記録・修正はcaldav側へ)
+
+- **FAB occlusion**: fullscreen右下の⊕FABがclaude.ai iOSのcomposerクロームの裏に隠れる
+  (実機スクショあり)。resolveSafeBottomPxの「bottomは深刻なocclusionを起こしにくいので
+  フォールバック無し」という仮定の反証。claude.ai iOSはcomposer分をsafeAreaInsets.bottomに
+  申告していない模様。対処: 既存検証項目「safeAreaInsets実測ログ」で実値を取り、topと同じ
+  fullscreen限定bottomフォールバック(1関数隔離)を追加する。
+- **キーボード一瞬起動→即閉じの再発**: ⊕→fullscreen遷移直後、ドラフトfocusでキーボードが
+  立ち上がった直後に閉じる。ce7d5aaのrender-gateは「シート表示中」のみ抑止のため、遷移に伴う
+  hostcontextchanged起点のrenderAllがfocus中inputをDOMごと消す経路が残っている。
+  対処方向: shouldSkipDestructiveRenderの抑止条件を「シート表示中」から「focus中のinputが
+  ある間」へ広げる(遅延focusワークアラウンドの復活はmodeling/15 §Bボツ案のため不採用)。
