@@ -152,6 +152,8 @@ import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } 
 import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
 import { mergeTasksByCalendar, filterTasksByCalendar } from "./todos-calendar-filter";
+// 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。freshness.ts 冒頭コメント参照。
+import { shouldRevalidateOnPush } from "./freshness";
 // 2026-07-23 K2-UI①②: カレンダー色の合成規則(実色優先・無ければハッシュパレット)とパレット定数。
 // パレット定数はコレクション詳細ページの色チップ選択 UI(下記 buildCollectionSheetPage)がそのまま
 // 選択肢として列挙する(agenda 側のフィルタメニューと同じ8色を選ばせる = 語彙を揃える)。
@@ -3585,6 +3587,10 @@ interface TodosStructuredContent {
 	// module state・renderAll の sec-completed 構築部を参照)— s.completed(sectionizeManual の
 	// positionMemory 駆動バケツ)はもう completed <details> の描画には使わない。
 	completedSummary?: { total: number; recent: TaskSnapshot[] };
+	// generatedAt(2026-07-23 SWR 完全形): server がこの vm を生成した時刻(epoch ms)。additive
+	// なので旧応答/フィクスチャでは undefined(server.ts の TodosViewModel.generatedAt JSDoc・
+	// freshness.ts の shouldRevalidateOnPush 参照)。push 経路の鮮度判定にのみ使う。
+	generatedAt?: number;
 }
 
 /**
@@ -3627,8 +3633,21 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
  * 3経路すべてがここを通ることで、「tasks と becoming メタは常に同じ応答のペア」という
  * 不変条件を守る(別々に更新すると、古い affected が新しい tasks に重なる事故が起きる)。
  * affected/removed が無い応答では Map/配列が空になる = becoming が消える(状態コメント参照)。
+ *
+ * 【2026-07-23 SWR 完全形: push 引数と戻り値の追加】
+ * opts.push=true は「この呼び出しが ontoolresult push 経路である」ことを呼び出し側
+ * (ingestStructuredContent)が明示するフラグ。fetchLatest/mutation 応答経路(push 省略= false
+ * 相当)は「自分で今取ったデータは新鮮」という現行方針のまま無条件 markUpdated する
+ * (freshness.ts 冒頭コメントの「無条件 revalidate をしない理由」と対で、mutation/fetchLatest
+ * 自身は既に IAD/D1 往復済みの最新値なので鮮度判定の対象にする理由が無い)。
+ * push=true のときだけ shouldRevalidateOnPush で generatedAt の古さを見て、古ければ
+ * markUpdated を **スキップ**(lastFetchAt を更新しない=次の maybeRefetch が staleTime に
+ * 阻まれず即座に走れる状態を保つ)し、戻り値 true で呼び出し側に「描画後に背景 revalidate を
+ * 1回スケジュールしてほしい」と伝える。この関数自身は DOM 描画も maybeRefetch の呼び出しも
+ * 行わない(「描画後に」の要件は呼び出し側の責務 — ingestStructuredContent の
+ * `.then(...)` チェーン参照)。
  */
-function applyStructuredContent(sc: unknown): void {
+function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean {
 	const structuredContent = sc as TodosStructuredContent | undefined;
 	const nextTasks = structuredContent?.tasks ?? [];
 	const serverAffected = structuredContent?.affected ?? [];
@@ -3769,8 +3788,15 @@ function applyStructuredContent(sc: unknown): void {
 	if (structuredContent?.completedSummary !== undefined) {
 		completedSummary = structuredContent.completedSummary;
 	}
-	markUpdated();
+	// 【2026-07-23 SWR 完全形】push 経路(opts.push===true)のときだけ generatedAt の古さを見る。
+	// 古ければ(履歴復元級)markUpdated をスキップして「新鮮」を偽装せず、呼び出し側へ背景
+	// revalidate を要求する true を返す。fetchLatest/mutation 経路(opts.push 省略)は従来どおり
+	// 無条件 markUpdated(関数冒頭 JSDoc 参照)。
+	const staleFromPush =
+		opts?.push === true && shouldRevalidateOnPush(structuredContent?.generatedAt, Date.now());
+	if (!staleFromPush) markUpdated();
 	announceBecoming();
+	return staleFromPush;
 }
 
 /**
@@ -3861,7 +3887,14 @@ app.ontoolresult = (r) => {
 	// renderAll だけ抑止する(render-gate.ts 冒頭コメント参照。iOS fullscreen でフォーカス中の入力から
 	// キーボードが閉じる実害の根治)。カード自身が起点の保存/作成フローは事前に closeSheet 等で
 	// sheetState を null にしてから callServerTool するため、この抑止に巻き込まれない。
-	void ingestStructuredContent(r?.structuredContent).then(() => guardedRenderAll());
+	// 【2026-07-23 SWR 完全形】ingestStructuredContent の戻り値(true=履歴復元級の古い push だった)
+	// を見て、描画が終わった **後** に maybeRefetch を1回スケジュールする(仕様の「描画後に」を
+	// 満たす順序。maybeRefetch 自身が持つ pending/staleTime ガードにそのまま乗るので、ここでは
+	// 呼ぶだけで良い — 新しい並行機構は作らない)。
+	void ingestStructuredContent(r?.structuredContent).then((needsRevalidate) => {
+		guardedRenderAll();
+		if (needsRevalidate) maybeRefetch();
+	});
 };
 // C1: host-context-changed の購読(設計04 §5 C1・SDK フック調査結果)。
 // 【SDK フック確認】node_modules/@modelcontextprotocol/ext-apps の app.d.ts に
@@ -3984,15 +4017,22 @@ async function reconcileViewAndCompose(sc: TodosStructuredContent): Promise<Todo
  * 【初回描画は対象外】tasks===null のときは currentView がまだ確立していない(既定 {} のまま)
  * ため isDefaultView が true になり needsViewReconcile 自体が false を返す — 明示の分岐を
  * 増やさず自然に対象外になる(仕様どおり)。
+ *
+ * 【2026-07-23 SWR 完全形: 戻り値の追加】applyStructuredContent(..., {push:true}) を通す唯一の
+ * 経路なので、その戻り値(古い push=背景 revalidate が必要)をそのまま呼び出し元(app.ontoolresult)
+ * へ返す。reconcileViewAndCompose を挟んだケース(composed)も「届いた vm 自体は push 由来」なので
+ * push:true のまま渡す — composed は refresh-todos の値(generatedAt を含まない)で組み直された
+ * ものなので、shouldRevalidateOnPush は generatedAt 欠落により自然に false へ degrade する
+ * (refetch 自体が今取れた新鮮なデータなので、二重に revalidate をスケジュールする必要が無い。
+ * これは意図した挙動であって取りこぼしではない)。
  */
-async function ingestStructuredContent(sc: unknown): Promise<void> {
+async function ingestStructuredContent(sc: unknown): Promise<boolean> {
 	const structuredContent = (sc as TodosStructuredContent | undefined) ?? {};
 	if (needsViewReconcile(currentView, structuredContent)) {
 		const composed = await reconcileViewAndCompose(structuredContent);
-		applyStructuredContent(composed);
-	} else {
-		applyStructuredContent(sc);
+		return applyStructuredContent(composed, { push: true });
 	}
+	return applyStructuredContent(sc, { push: true });
 }
 
 /**
