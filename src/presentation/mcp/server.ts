@@ -29,7 +29,7 @@ import type { Context } from "hono";
 // 一致させるべきなので、意図的に hono 側の型を使う(index.ts の mcpApiApp 配線側で
 // OAuthProvider の ExecutionContext 型との橋渡し=局所キャストを行う)。
 import type { ExecutionContext } from "hono";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 // R1(docs/modeling/15 §A-2): ToolAnnotations の型。registerTool の config.annotations に渡す
 // (SDK の mcp.d.ts で registerTool の第2引数が { ...; annotations?: ToolAnnotations } を受けることを確認済み)。
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -1691,6 +1691,75 @@ function buildMcpServer(
 		}),
 	);
 
+	// --- todos ui:// 「未知のハッシュ」への後方互換フォールバック(2026-07-23)-----------------
+	// 【背景】ハッシュ URI(ui://caldav/todos.<8hex>.html)は claude.ai web の resources/read
+	// キャッシュ(層Cとでも呼ぶべきもの — HTML 本体レベルのキャッシュ)を破るための唯一の手段なので
+	// 維持する。だが tools/list 自体も別途キャッシュされる(冒頭 TODOS_UI_URI_LEGACY コメントの層A)
+	// ため、「新→更に新」と HTML を2回更新すると、旧 tools/list を握ったままのホストは
+	// 「もう存在しない中間世代のハッシュ URI」への resources/read を送ってくる。上の
+	// TODOS_UI_URI_LEGACY エイリアスは"無ハッシュの静的 URI 1本"だけを救うので、この
+	// 「任意の旧ハッシュ」には対応できない(swift-mcp-host 実機・本番で -32602 再現済み)。
+	// 【対応】OpenAI Apps SDK が「発行済み URI を古いものも含めて生かし続ける」運用をしているのと
+	// 同型に倣い、ResourceTemplate で `ui://caldav/todos.{hash}.html` の任意 read に最新 HTML を
+	// 返す汎用フォールバックを足す。SEP-1865 は ui:// リソースの URI 安定性を規定していないので
+	// 「古い URI が今日読めても壊れない」設計は仕様に反しない。
+	// 【list には出さない】ResourceTemplate の第2引数 { list: undefined } は「このテンプレートを
+	// resources/list に列挙しない」ことを明示する必須フィールド(list を省略すると SDK 側の
+	// ドキュメントコメントいわく「うっかり忘れ」防止のため型上必須)。SEP-1865 は ui:// を
+	// resources/list から省略してよい(MAY omit)としているので、今回のテンプレートを list に
+	// 出さない判断は仕様適合。実際に列挙されるのは既存の「現行ハッシュ」「legacy 静的 URI」の
+	// 2エントリのみで変わらない(このテンプレート追加はテスト test/presentation/ 側で確認)。
+	// 【衝突しないことの確認(SDK 実装読み済み: node_modules/@modelcontextprotocol/sdk/dist/esm/
+	// server/mcp.js の setResourceRequestHandlers)】resources/read は「まず _registeredResources
+	// の完全一致 → 無ければ _registeredResourceTemplates を順に試す」という優先順位。現行ハッシュ・
+	// legacy 静的 URI は両方とも registerAppResource(= registerResource の静的 URI 形)で登録して
+	// いるので完全一致が先に当たり、このテンプレートには絶対に落ちてこない(=「現行ハッシュが
+	// 意図せず旧扱いされる」ことは起きない)。
+	// 【RFC 6570 マッチングの実挙動確認(同ファイル shared/uriTemplate.js)】単純展開 {hash} は
+	// 正規表現 `([^/,]+)` にコンパイルされ、テンプレート全体は "^ui://caldav/todos\.([^/,]+)\.html$"
+	// になる。JS 正規表現はデフォルトで貪欲だが後方一致のため自動バックトラックする ので、
+	// "todos.deadbeef.html" のようにハッシュ自体にドットを含まない値なら額面どおり 1 箇所の
+	// ".html" に噛み合って hash="deadbeef" が取れる(ハッシュは8hex固定でドットを含まないので
+	// 曖昧マッチの心配はない)。旧・静的 URI "ui://caldav/todos.html" はこのパターンに
+	// マッチしない(捕捉グループが最低1文字必要で、"todos." の直後に ".html" が続く形が
+	// 作れないため)— 上記の優先順位確認と合わせ二重の安全策としてテストに固定する。
+	// 【uiHash 表示との整合】カード側は structuredContent.uiHash(list-todos 等が返す "現在の
+	// 最新ハッシュ")と、自分が読み込まれた HTML に焼き込まれた TODOS_UI_HASH を比較して
+	// 不一致なら「再同期してください」バナーを出す(todos-app.ts 側の仕組み)。この後方互換は
+	// 「どの URI で読まれても常に最新 HTML(=最新 TODOS_UI_HASH)を返す」ので、旧ハッシュ URI
+	// 経由で読まれた場合も焼き込みハッシュは最新になり、tools/list からの structuredContent の
+	// uiHash とも一致する。つまりこの後方互換とバナー機構は干渉せず、旧 URI 越しでも正常表示に
+	// 収束する(バナーが誤って出ることはない)。
+	server.registerResource(
+		"Todos View (legacy hash fallback)",
+		new ResourceTemplate("ui://caldav/todos.{hash}.html", { list: undefined }),
+		{
+			title: "リマインダー一覧 UI",
+			description:
+				"list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI(旧ハッシュ URI・後方互換)",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async (uri) => ({
+			contents: [
+				{
+					uri: uri.toString(),
+					mimeType: RESOURCE_MIME_TYPE,
+					text: TODOS_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
 	// --- agenda ui:// リソース(E-3 スライス S2)------------------------------------
 	// list-events-expanded / refresh-events が _meta.ui.resourceUri で参照するアジェンダカードの
 	// HTML 本体を登録する(todos の "Todos View" と対称)。自己完結バンドルなので CSP 許可は不要。
@@ -1746,6 +1815,40 @@ function buildMcpServer(
 			contents: [
 				{
 					uri: AGENDA_UI_URI_LEGACY,
+					mimeType: RESOURCE_MIME_TYPE,
+					text: AGENDA_APP_HTML,
+					_meta: {
+						ui: {
+							prefersBorder: false,
+						},
+					},
+				},
+			],
+		}),
+	);
+
+	// --- agenda ui:// 「未知のハッシュ」への後方互換フォールバック(2026-07-23)-----------------
+	// 理由・SDK 挙動確認・list 非掲載・uiHash 整合は上の todos 版フォールバックと完全に対称
+	// (詳細コメントは重複させずそちら側を参照)。diag は対象外(裁定どおり・診断カードは
+	// キャッシュバスティング対象そのものではなく撤去前提の一時カードなので後方互換は不要)。
+	server.registerResource(
+		"Agenda View (legacy hash fallback)",
+		new ResourceTemplate("ui://caldav/agenda.{hash}.html", { list: undefined }),
+		{
+			title: "アジェンダ(予定一覧)UI",
+			description:
+				"list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI(旧ハッシュ URI・後方互換)",
+			mimeType: RESOURCE_MIME_TYPE,
+			_meta: {
+				ui: {
+					prefersBorder: false,
+				},
+			},
+		},
+		async (uri) => ({
+			contents: [
+				{
+					uri: uri.toString(),
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
 					_meta: {

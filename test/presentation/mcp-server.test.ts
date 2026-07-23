@@ -378,6 +378,108 @@ describe("/mcp", () => {
 		});
 	});
 
+	// 2026-07-23 旧ハッシュ URI 後方互換(裁定: ハッシュ URI は維持しつつ、未知のハッシュへの
+	// read には最新 HTML を返す)。背景は server.ts の「todos ui:// 「未知のハッシュ」への
+	// 後方互換フォールバック」コメント参照。ここで固定するのは (1) 旧ハッシュ風 URI が最新 HTML を
+	// 返す、(2) 現行ハッシュ・legacy 静的 URI も従来どおり読める(テンプレート追加で壊れていない)、
+	// (3) resources/list の内容が変わらない(テンプレートは MAY omit で列挙されない)、
+	// (4) diag への波及がない、の4点。
+	describe("ui:// 旧ハッシュ URI への後方互換フォールバック(2026-07-23)", () => {
+		it("todos: 存在しない旧ハッシュ風 URI への resources/read が最新 HTML を返す", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: "ui://caldav/todos.deadbeef.html" },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			const content = rpc.result.contents[0];
+			// 【SDK マッチング挙動の実測固定】RFC 6570 の単純展開 {hash} は正規表現 `([^/,]+)` に
+			// コンパイルされ `^ui://caldav/todos\.([^/,]+)\.html$` 全体にマッチする(node_modules/
+			// @modelcontextprotocol/sdk の shared/uriTemplate.js を読んで確認)。ここでは応答内容の
+			// echo で「読めた」ことそのものを確認する(uri は読まれた URI をそのまま echo する実装)。
+			expect(content.uri).toBe("ui://caldav/todos.deadbeef.html");
+			expect(content.mimeType).toBe("text/html;profile=mcp-app");
+			expect(content.text.length).toBeGreaterThan(0);
+			// diag ではなく todos の中身であることを機械的に固定(diag への波及が無いことの一部保証)。
+			expect(content.text).not.toContain("診断カード");
+		});
+
+		it("agenda: 存在しない旧ハッシュ風 URI への resources/read が最新 HTML を返す", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: "ui://caldav/agenda.cafebabe.html" },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			const content = rpc.result.contents[0];
+			expect(content.uri).toBe("ui://caldav/agenda.cafebabe.html");
+			expect(content.mimeType).toBe("text/html;profile=mcp-app");
+			expect(content.text.length).toBeGreaterThan(0);
+			expect(content.text).not.toContain("診断カード");
+		});
+
+		it("現行ハッシュ URI は従来どおり完全一致で読める(テンプレート追加で衝突しない)", async () => {
+			const listRes = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+			const listRpc = await jsonRpcResult(listRes);
+			const byName = new Map<string, { _meta?: { ui?: { resourceUri?: string } } }>(
+				listRpc.result.tools.map((t: { name: string }) => [t.name, t]),
+			);
+			const currentTodosUri = byName.get("list-todos")?._meta?.ui?.resourceUri;
+			expect(currentTodosUri).toMatch(/^ui:\/\/caldav\/todos\.[0-9a-f]{8}\.html$/);
+
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: currentTodosUri },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.contents[0].uri).toBe(currentTodosUri);
+		});
+
+		it("legacy 静的 URI(todos.html/agenda.html)も従来どおり読める", async () => {
+			for (const uri of ["ui://caldav/todos.html", "ui://caldav/agenda.html"]) {
+				const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "resources/read", params: { uri } });
+				expect(res.status).toBe(200);
+				const rpc = await jsonRpcResult(res);
+				expect(rpc.result.contents[0].uri).toBe(uri);
+			}
+		});
+
+		it("resources/list の内容は変わらない(現行ハッシュ + legacy 静的 URI + diag のみ・テンプレートは列挙されない)", async () => {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "resources/list", params: {} });
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			const uris: string[] = rpc.result.resources.map((r: { uri: string }) => r.uri);
+			// 旧ハッシュ風の任意 URI(テンプレート)は列挙されない。現行ハッシュ・legacy 静的・diag の
+			// 固定 URI 群だけが載っていることを確認する(SEP-1865 は ui:// の list 省略を MAY omit と
+			// しているので、テンプレートを列挙しない設計はここでも仕様適合)。
+			for (const uri of uris) {
+				expect(uri).toMatch(/^ui:\/\/caldav\/(todos\.[0-9a-f]{8}\.html|todos\.html|agenda\.[0-9a-f]{8}\.html|agenda\.html|diag\.html)$/);
+			}
+			expect(uris).toContain("ui://caldav/todos.html");
+			expect(uris).toContain("ui://caldav/agenda.html");
+			expect(uris).toContain("ui://caldav/diag.html");
+		});
+
+		it("diag への波及なし: diag.html は変わらず単独で読める", async () => {
+			const res = await fetchMcp({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "resources/read",
+				params: { uri: "ui://caldav/diag.html" },
+			});
+			expect(res.status).toBe(200);
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.contents[0].text).toContain("診断カード");
+		});
+	});
+
 	it("initialize が単発でも成功する(stateless transport)", async () => {
 		const res = await fetchMcp({
 			jsonrpc: "2.0",
