@@ -256,11 +256,38 @@ export const TODOS_APP_HTML = `<!doctype html>
     min-height: 44px; border: none; background: none; text-align: left; color: var(--fg);
     font: inherit; font-size: 15px; cursor: pointer;
   }
-  .menu-item + .menu-item { border-top: 1px solid var(--border); }
+  /* 【2026-07-23 K2-UI②: 罫線の基準を .menu-item から .menu-item-row/.menu-item-add へ変更】
+   * 各リスト行を「選択 button + 詳細へ button」の2ボタン構成(.menu-item-row でラップ)にしたため、
+   * 罫線を子孫の .menu-item に付けたままだと隣接セレクタ(+)が .menu-item-row 同士では効かず
+   * (兄弟は row であって item ではない)、行間の区切り線が消えてしまう。トップレベルの直接の子
+   * (.menu-item-row または末尾の単独 .menu-item-add)を基準に付け替える。 */
+  .menu-item-row + .menu-item-row,
+  .menu-item-row + .menu-item-add,
+  .menu-item-add { border-top: 1px solid var(--border); }
   .menu-item:active { background: var(--surface); }
   /* 現在行の check スロット(常に幅を確保して表示名の左端を揃える。check の有無で行がガタつかない)。 */
   .menu-item .check-slot { width: 16px; flex: none; color: var(--accent); display: flex; align-items: center; }
   .menu-item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 行ラッパ(選択 button + 詳細へ button を横並びにするだけ。見た目の padding/罫線は子に譲る)。 */
+  .menu-item-row { display: flex; align-items: stretch; }
+  .menu-item-row .menu-item { flex: 1; min-width: 0; }
+  /* 実色/パレット色の小さな丸(K2-UI①)。check-slot の隣・表示名の直前に置く。10px は 44px 行の中で
+   * check(16px アイコン)より控えめに、かつ視認できる最小サイズとして選んだ(agenda 側 .cal-circle が
+   * もっと大きい 18px 前後なのは「ON/OFF トグルの塗り分け」役割まで兼ねるためで、ここは識別だけなので
+   * 小さくてよい)。 */
+  .menu-color-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
+  /* 詳細へボタン(chevron のみ・アイコンボタン)。選択 button と同じ 44px 行高を保ちタップ領域を確保する。
+   * 罫線は付けない(隣接する選択 button と視覚的に一体の行に見せるため)。 */
+  .menu-item-edit {
+    flex: none; width: 36px; min-height: 44px; display: flex; align-items: center; justify-content: center;
+    border: none; background: none; color: var(--muted); cursor: pointer;
+  }
+  .menu-item-edit:active { background: var(--surface); }
+  /* 「新規リストを追加」行。accent 色でテキストリンク的な強調にする(モック collection-picker-v5 の
+   * 語彙には無い 2026-07-23 追加要素だが、他行と紛れず「別種の操作」だと分かるよう accent を使う —
+   * f-row の accent 使用箇所(.link-save 等)と同じトーン)。 */
+  .menu-item-add { color: var(--accent); font-weight: 600; }
+  .menu-item-add .check-slot { color: var(--accent); }
   /* 外タップ捕捉レイヤ(モックの .outside)。メニューが開いている間だけ全面を覆い、どこを
    * タップしても閉じる。position:fixed で #root のスクロールに追従しない全画面レイヤにする。
    * 【z-index の噛み合い(2026-07-22 重要)】このカードの .bar は position:sticky; z-index を
@@ -1502,6 +1529,25 @@ export const TODOS_APP_HTML = `<!doctype html>
   .pick-row:first-of-type { border-top: none; }
   /* 2026-07-15: 絵文字 "✓" から lucide "check" svg へ置換。 */
   .pick-row .check { display: flex; align-items: center; margin-left: auto; color: var(--accent); }
+
+  /* --- コレクション詳細ページの色チップ(2026-07-23 K2-UI②)---------------------------------------
+   * f-row の中に8色パレットを並べる。.chips(優先順位のテキストチップ)とは見た目の語彙が異なる
+   * (色そのものが情報なので背景色で塗る・ラベルテキストは持たない)ため、専用クラスにする。 */
+  .color-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .color-chip {
+    width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent;
+    padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    /* 選択中でない chip の枠は透明(背景色がそのまま円として見える)。 */
+  }
+  /* 選択中は白いリング1本ぶんの内枠 + 外枠を accent にして「選ばれている」ことを示す(iOS のカラー
+   * ピッカーの選択マーカーに近い二重リング)。border だけで表現し、check アイコン(色に対して常に
+   * コントラストが要る)は白固定にする — 淡い色(systemGreen 等)でも視認できるよう、アイコン色より
+   * box-shadow の白リングの方が安定した見た目を作れる。 */
+  .color-chip[aria-pressed="true"] {
+    border-color: var(--bg);
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .color-chip .lucide-icon { color: #fff; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6)); }
 
 </style>
 </head>

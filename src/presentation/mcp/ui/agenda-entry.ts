@@ -42,7 +42,10 @@ import { computeSyncDiff, type SyncDiff } from "./events-diff-client";
 // 絵文字/文字グリフを lucide のインライン SVG へ統一する(icons.ts 冒頭コメント参照)。
 import { createIcon } from "./icons";
 // 由来コレクション id → 表示色の決定的割当(2026-07-22 色ドット)。同 id→同色の純関数(単体テストあり)。
-import { colorForCalendarId } from "./calendar-colors";
+// 2026-07-23 K2-UI①: 直接使うのは resolveCalendarColor のみ(実色があれば優先し、無ければ内部で
+// colorForCalendarId へフォールバックする合成関数。下記 calendarColor ヘルパー参照)。
+// colorForCalendarId 自体はもうこのファイルから直接呼ばない(4箇所すべて calendarColor 経由に統一)。
+import { resolveCalendarColor } from "./calendar-colors";
 // 行同一性の合成キー(modeling/12 §7.1・2026-07-16 実機FB)。展開 occurrence の id は全行
 // マスター UID なので、選択/スワイプ/DOM 特定は id 単独でなく rowKey(id+recurrenceId)で引く。
 // 二層分離の理由(mutate 状態はマスター id のまま)は row-key.ts の冒頭コメント参照。
@@ -436,7 +439,10 @@ let listRange: { from: string; to: string } | null = null;
 // --- 表示カレンダーフィルタ(2026-07-22 collection-picker-v5)---------------------------------
 // list-calendars の結果キャッシュ(VEVENT を含むコレクションだけをフィルタメニューに列挙)。
 // todos-entry.ts の calendarsCache と同じ「メニューを開くまで遅延取得」方式。null=未取得。
-let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[] }> | null = null;
+// 2026-07-23 K2-UI①: color を追加(list-calendars 応答の実色。未設定/未取得なら undefined —
+// calendarColor ヘルパーが resolveCalendarColor でフォールバックする)。
+let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[]; color?: string }> | null =
+	null;
 // visibleCalendarIds: 表示 ON のコレクション id 集合。
 //   null = 「明示フィルタなし(全 ON・既定)」→ refreshArgs は calendarIds を送らない(=従来挙動)。
 //   Set  = 「一部 OFF のフィルタ適用中」→ refreshArgs が calendarIds:[...] を送る(server が calendarIds
@@ -866,7 +872,7 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 	// 左に小さく置き、走査時に色でカレンダーを即読みできるようにする。
 	if (showCalendarDots && ev.calendarId !== undefined) {
 		const dot = el("span", "cal-dot");
-		dot.style.background = colorForCalendarId(ev.calendarId);
+		dot.style.background = calendarColor(ev.calendarId);
 		dot.setAttribute("aria-hidden", "true");
 		rowMain.appendChild(dot);
 	}
@@ -1385,7 +1391,7 @@ function groupEventsByDay(items: EventItem[]): Map<string, EventItem[]> {
 
 /** 予定ドットの色 = 由来コレクション色(calendar-colors.ts)。由来不明(calendarId 無し)は accent へ degrade。 */
 function eventDotColor(ev: EventItem): string {
-	return ev.calendarId !== undefined ? colorForCalendarId(ev.calendarId) : "var(--accent)";
+	return ev.calendarId !== undefined ? calendarColor(ev.calendarId) : "var(--accent)";
 }
 
 /** 月ビュー本体を #root に描く(月ナビ + 曜日ヘッダ + 42 セルグリッド + 選択日リスト)。
@@ -3340,17 +3346,36 @@ async function ensureCalendars(): Promise<void> {
 			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
 		}
 		const sc = result.structuredContent as
-			| { calendars?: Array<{ id: string; displayName?: string; components?: readonly string[] }> }
+			| {
+					calendars?: Array<{
+						id: string;
+						displayName?: string;
+						components?: readonly string[];
+						color?: string;
+					}>;
+			  }
 			| undefined;
 		calendarsCache = (sc?.calendars ?? []).map((c) => ({
 			id: c.id,
 			displayName: c.displayName ?? c.id,
 			// components 欠落時は VEVENT 既定(agenda 文脈なので予定カレンダーと見なす)。
 			components: c.components ?? ["VEVENT"],
+			color: c.color,
 		}));
 	} catch (e) {
 		showBanner(`カレンダーの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
 	}
+}
+
+/** カレンダー id → 表示色。calendarsCache に実色(AppleColor)があればそれを優先し、
+ *  無ければ(未取得/未設定)id ハッシュのパレット色にフォールバックする(calendar-colors.ts
+ *  冒頭コメントの設計意図「実色を read できたら優先」の実装箇所)。
+ *  【2026-07-23 K2-UI①: このファイル内の色決定はすべてこの1関数を経由させる】
+ *  以前は colorForCalendarId を4箇所で直接呼んでいたが、実色対応で「calendarsCache 参照 + 合成」が
+ *  必要になったため一本化した(呼び出し側は id を渡すだけで実色/フォールバックの分岐を意識しない)。 */
+function calendarColor(calendarId: string): string {
+	const hit = calendarsCache?.find((c) => c.id === calendarId);
+	return resolveCalendarColor(hit?.color, calendarId);
 }
 
 /** フィルタ対象になりうるカレンダー(VEVENT を受理するコレクション)の id 一覧。
@@ -3383,7 +3408,7 @@ function renderCalDots(): void {
 	const shown = on.slice(0, 3);
 	for (const id of shown) {
 		const d = el("span", "d");
-		d.style.background = colorForCalendarId(id);
+		d.style.background = calendarColor(id);
 		calDotsEl.appendChild(d);
 	}
 	if (on.length > 3) {
@@ -3422,7 +3447,7 @@ function renderCalMenu(): void {
 		const item = el("button", "cal-menu-item") as HTMLButtonElement;
 		item.type = "button";
 		const on = onSet.has(c.id);
-		const color = colorForCalendarId(c.id);
+		const color = calendarColor(c.id);
 		const circle = el("span", "cal-circle");
 		circle.style.borderColor = color;
 		circle.style.background = on ? color : "transparent";

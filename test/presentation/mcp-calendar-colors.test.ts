@@ -9,7 +9,11 @@
 // =============================================================================
 
 import { describe, expect, test } from "bun:test";
-import { CALENDAR_PALETTE, colorForCalendarId } from "../../src/presentation/mcp/ui/calendar-colors";
+import {
+	CALENDAR_PALETTE,
+	colorForCalendarId,
+	resolveCalendarColor,
+} from "../../src/presentation/mcp/ui/calendar-colors";
 
 describe("colorForCalendarId", () => {
 	test("同じ id からは常に同じ色を返す(決定性)", () => {
@@ -29,5 +33,24 @@ describe("colorForCalendarId", () => {
 		const used = new Set<string>();
 		for (let i = 0; i < 200; i++) used.add(colorForCalendarId(`cal-${i}`));
 		expect(used.size).toBe(CALENDAR_PALETTE.length);
+	});
+});
+
+// 2026-07-23 K2-UI①: 実色(AppleColor)→ 無ければハッシュパレットへフォールバックする合成規則。
+describe("resolveCalendarColor", () => {
+	test("実色が指定されていればそれをそのまま返す(パレット色に丸めない)", () => {
+		expect(resolveCalendarColor("#112233", "work")).toBe("#112233");
+	});
+
+	test("8桁(アルファ付き)実色もそのまま透過する", () => {
+		expect(resolveCalendarColor("#11223344", "work")).toBe("#11223344");
+	});
+
+	test("実色が undefined ならパレットのフォールバック色(colorForCalendarId と一致)を返す", () => {
+		expect(resolveCalendarColor(undefined, "work")).toBe(colorForCalendarId("work"));
+	});
+
+	test("実色が空文字列なら未設定扱いでフォールバックする(誤った透明色描画を避ける安全側判定)", () => {
+		expect(resolveCalendarColor("", "work")).toBe(colorForCalendarId("work"));
 	});
 });

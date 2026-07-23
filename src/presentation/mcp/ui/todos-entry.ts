@@ -152,6 +152,10 @@ import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } 
 import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
 import { mergeTasksByCalendar, filterTasksByCalendar } from "./todos-calendar-filter";
+// 2026-07-23 K2-UI①②: カレンダー色の合成規則(実色優先・無ければハッシュパレット)とパレット定数。
+// パレット定数はコレクション詳細ページの色チップ選択 UI(下記 buildCollectionSheetPage)がそのまま
+// 選択肢として列挙する(agenda 側のフィルタメニューと同じ8色を選ばせる = 語彙を揃える)。
+import { CALENDAR_PALETTE, resolveCalendarColor } from "./calendar-colors";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -518,9 +522,25 @@ let sheetDraft: SheetDraft | null = null;
 // guardedRenderAll がシート表示中の renderAll() を抑止したとき true になり、シートを閉じた瞬間
 // (setSheetState(null))に1回だけ flush される。agenda-entry.ts と同型。
 let pendingRenderAfterSheet = false;
-// list-calendars の結果キャッシュ(リスト移動ページで列挙)。初回ナビゲーション時に遅延取得する
-//   (シートを開くたびに毎回叩かない。移動が起きればサーバー vm が来るのでキャッシュ鮮度は実害小)。
-let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[] }> | null = null;
+// list-calendars の結果キャッシュ(リスト移動ページ・リスト切替ドロップダウン・コレクション詳細ページで
+//   列挙)。初回ナビゲーション時に遅延取得する(シートを開くたびに毎回叩かない。移動/更新が起きれば
+//   サーバー応答が来るのでキャッシュ鮮度は実害小 — 更新系は反映後にこのキャッシュも直接書き換える)。
+// 2026-07-23 K2-UI①: color を追加(list-calendars 応答の実色。未設定/未取得なら undefined —
+// calendarColor ヘルパーが resolveCalendarColor でハッシュパレットへフォールバックする)。
+let calendarsCache: Array<{ id: string; displayName: string; components: readonly string[]; color?: string }> | null =
+	null;
+// collectionSheet: コレクション詳細ページ(K2-UI②)の「カード内ページ遷移」状態。sheetState と同じ
+//   #root 直描き方式(v3 の踏襲)だが、sheetState は「タスク1件」に紐付く(id=task.id)のに対し、
+//   collectionSheet は「タスクとは無関係にカードそのものが今表示しているリスト一覧」に紐付く操作
+//   (ヘッダのリスト切替ドロップダウンから開く)なので、意味の違うキー(task id ではなく calendarId)を
+//   別変数として持つ(sheetState を無理に流用して意味の違う id を詰めると、currentSheetTask 等
+//   タスク前提の既存コードが誤動作する)。
+//   calendarId: null = 新規作成モード(create-calendar) / string = 既存リストの編集モード(update-calendar)。
+//   null(このオプショナルの外側)= ページ非表示。
+let collectionSheet: { calendarId: string | null } | null = null;
+// collectionDraft: コレクション詳細ページの作業コピー(表示名 input は input イベントで同期、
+//   色はチップ選択で即代入 — sheetDraft と同じ「構造変化での再描画でもテキスト入力値を失わない」設計)。
+let collectionDraft: { displayName: string; color: string } | null = null;
 // 選択行のタイトル/メモ入力への参照。commitSelection が renderAll 前の DOM 値を読むために renderRow が
 //   選択行の描画時にセットする(renderAll は #root を innerHTML で作り直すので、再描画前に値を捕まえる)。
 let selTitleInput: HTMLInputElement | null = null;
@@ -1919,7 +1939,10 @@ function makeSheetDraft(task: TodoItem): SheetDraft {
  */
 function setSheetState(next: null): void {
 	sheetState = next;
-	if (pendingRenderAfterSheet) {
+	// 2026-07-23 K2-UI②: collectionSheet も同じ「フルスクリーンでの破壊的 renderAll 抑止」対象に
+	// 加えたため(下記 guardedRenderAll 参照)、flush 判定はここでも両方 null になっているかを見る
+	// (collectionSheet がまだ開いたままなら、その閉じ際 closeCollectionSheet 側で flush する)。
+	if (pendingRenderAfterSheet && collectionSheet === null) {
 		pendingRenderAfterSheet = false;
 		renderAll();
 	}
@@ -1933,7 +1956,9 @@ function setSheetState(next: null): void {
  * (setSheetState(null) が閉じた瞬間に1回 flush する)。agenda-entry.ts の同名関数と同型。
  */
 function guardedRenderAll(): void {
-	if (shouldSkipDestructiveRender(sheetState)) {
+	// 2026-07-23 K2-UI②: collectionSheet(コレクション詳細ページ)にも表示名 input があり同じ
+	// iOS フルスクリーンキーボード折れバグ経路が当てはまるため、sheetState と同様に抑止対象へ加える。
+	if (shouldSkipDestructiveRender(sheetState) || shouldSkipDestructiveRender(collectionSheet)) {
 		pendingRenderAfterSheet = true;
 		return;
 	}
@@ -2518,6 +2543,215 @@ function buildListPickerPage(task: TodoItem): HTMLElement {
 	return page;
 }
 
+// =============================================================================
+// コレクション詳細ページ(2026-07-23 K2-UI②)
+// =============================================================================
+// ヘッダのリスト切替ドロップダウン(collection-picker-v5)から各リストの「詳細へ」ボタン、または
+// 「新規リストを追加」行で開く、表示名+色だけの単純なフォームページ。buildListPickerPage と同じ
+// #root 直描きのページ差し替え方式を踏襲するが、対象がタスクではなくコレクションそのものなので
+// sheetState(task 前提)とは別の状態変数(collectionSheet/collectionDraft)を持つ(上の宣言コメント参照)。
+
+/** コレクション詳細ページを開く。calendarId===null は新規作成モード(表示名/色は既定値から)、
+ *  文字列なら既存リストの編集モード(calendarsCache から現在値を初期化)。
+ *  【なぜタスクの sheetState/swipe/selection も畳むか】カード内ページはどれか1つしか #root に描けない
+ *  (renderAll の早期 return 構造)。ヘッダのドロップダウンはタスク行の選択と独立に開けてしまうため、
+ *  行選択中に詳細ページへ入ると選択行が浮いたまま残る事故を避けるため、既存の「詳細/リスト選択へ入る
+ *  ときは選択を畳む」規律(openSheet/openCreateSheet と同じ)をここでも適用する。 */
+function openCollectionSheet(calendarId: string | null): void {
+	commitSelection();
+	draft = null;
+	selectedId = null;
+	closeSwipe();
+	sheetState = null; // タスク側のページ(詳細/リスト選択)が開いていたら畳む(排他)。
+	sheetDraft = null;
+	const existing = calendarId !== null ? calendarsCache?.find((c) => c.id === calendarId) : undefined;
+	collectionDraft = {
+		displayName: existing?.displayName ?? "",
+		// 新規作成の既定色はパレット先頭(systemBlue)。既存編集は実色があればそれを、無ければ
+		// 同じ合成規則(calendarColor)でフォールバック色を初期選択にする(「今の見た目」を尊重)。
+		color: calendarId !== null ? calendarColor(calendarId) : CALENDAR_PALETTE[0],
+	};
+	collectionSheet = { calendarId };
+	clearBanner(); // 前のページのエラーバナーを持ち込まない。
+	quickAddFab.hidden = true;
+	renderAll();
+	// 編集モードで calendarsCache がまだ無い(ドロップダウンを一度も開かずに来ることは今の導線上
+	// 無いはずだが、将来 他の入口が増えた場合の防御として)ときは取得してから displayName を補う。
+	if (calendarId !== null && calendarsCache === null) {
+		void ensureCalendars().then(() => {
+			if (collectionSheet?.calendarId === calendarId && collectionDraft !== null) {
+				const hit = calendarsCache?.find((c) => c.id === calendarId);
+				if (hit !== undefined) {
+					collectionDraft.displayName = hit.displayName;
+					collectionDraft.color = calendarColor(calendarId);
+					renderAll();
+				}
+			}
+		});
+	}
+}
+
+/** コレクション詳細ページを閉じて一覧ページへ戻る(保存後・「‹ 戻る」共通)。 */
+function closeCollectionSheet(): void {
+	collectionSheet = null;
+	collectionDraft = null;
+	quickAddFab.hidden = false;
+	// 2026-07-23: setSheetState(null) と同型の flush(guardedRenderAll コメント参照)。sheetState 側は
+	// 既に null のはずだが(排他)、両方 null になった時点でまとめて確認するのが安全側。
+	if (pendingRenderAfterSheet && sheetState === null) {
+		pendingRenderAfterSheet = false;
+	}
+	renderAll();
+}
+
+/** コレクション詳細ページ(表示名 input + 色チップ8つ + 保存/追加)。 */
+function buildCollectionSheetPage(): HTMLElement {
+	const state = collectionSheet;
+	const d = collectionDraft;
+	if (state === null || d === null) return el("div", "detail-page"); // 型ガード(renderAll 側で non-null 確認済み)。
+	const isCreate = state.calendarId === null;
+	const page = el("div", "detail-page");
+
+	const head = el("div", "page-head");
+	const back = document.createElement("button");
+	back.type = "button";
+	back.className = "link link-back";
+	back.appendChild(createIcon("chevron-left"));
+	back.appendChild(document.createTextNode("戻る"));
+	back.setAttribute("aria-label", "一覧へ戻る(変更を保存しない)");
+	back.addEventListener("click", () => closeCollectionSheet());
+	const save = document.createElement("button");
+	save.type = "button";
+	save.className = "link link-save";
+	// buildDetailPage の「追加」語彙選定(作成=完了と紛れない第三の語)をそのまま踏襲する。
+	save.textContent = isCreate ? "追加" : "保存";
+	save.setAttribute("aria-label", isCreate ? "この内容で新規リストを追加" : "表示名/色の変更を保存");
+	save.addEventListener("click", () => void saveCollectionSheet());
+	head.appendChild(back);
+	head.appendChild(save);
+	page.appendChild(head);
+
+	const body = el("div", "detail-body");
+
+	// --- 表示名 input(d-title と同じ見た目を流用。todo タイトルと語彙を揃える)------------------------
+	const nameInput = document.createElement("input");
+	nameInput.className = "d-title";
+	nameInput.type = "text";
+	nameInput.value = d.displayName;
+	nameInput.placeholder = "リスト名";
+	nameInput.setAttribute("aria-label", "表示名");
+	nameInput.addEventListener("input", () => {
+		d.displayName = nameInput.value;
+	});
+	body.appendChild(nameInput);
+	// 作成モードは detail ページと同じくフォーカス即当て(⊕ の流儀。todos-entry.ts 冒頭の
+	// 「カード UI 原則 (b) 是正②」対応と同じ理由 — fullscreen 昇格後にユーザーが即入力できるように)。
+	if (isCreate) sheetTitleInput = nameInput;
+
+	// --- 色チップ行(8色パレット。実色は「今その色を選んでいる」以外の表現手段が無いため、
+	//     チップ選択が実質「実色そのものを設定する」操作になる — 独立の色相選択 UI(カラーピッカー)は
+	//     設計04 §5 の「有界・軽量」原則に照らして過剰と判断し、既存の8色パレットに絞る) ------------
+	{
+		const row = el("div", "f-row");
+		const label = el("span", "f-label");
+		label.textContent = "色";
+		const value = el("span", "f-value");
+		const grid = el("span", "color-grid");
+		for (const swatch of CALENDAR_PALETTE) {
+			const chip = document.createElement("button");
+			chip.type = "button";
+			chip.className = "color-chip";
+			chip.style.background = swatch;
+			const selected = swatch.toLowerCase() === d.color.toLowerCase();
+			chip.setAttribute("aria-pressed", String(selected));
+			chip.setAttribute("aria-label", `色 ${swatch}`);
+			if (selected) chip.appendChild(createIcon("check", { label: "選択中" }));
+			chip.addEventListener("click", () => {
+				d.color = swatch;
+				renderAll();
+			});
+			grid.appendChild(chip);
+		}
+		value.appendChild(grid);
+		row.appendChild(label);
+		row.appendChild(value);
+		body.appendChild(row);
+	}
+
+	page.appendChild(body);
+	return page;
+}
+
+/** コレクション詳細ページの「保存/追加」。新規作成は create-calendar、既存編集は update-calendar を叩く。
+ *  エラー(K1 の同名重複等)はページを閉じずバナーで表示する(既存の showBanner 流儀。バナー要素は
+ *  #root の外にある静的 DOM なのでページ遷移を跨いでも消えない — todos-app.ts #banner 参照)。 */
+async function saveCollectionSheet(): Promise<void> {
+	const state = collectionSheet;
+	const d = collectionDraft;
+	if (state === null || d === null) return;
+	const name = d.displayName.trim();
+	if (name === "") {
+		showBanner("表示名を入力してください。");
+		return;
+	}
+	clearBanner();
+	try {
+		if (state.calendarId === null) {
+			// 新規作成: create-calendar。応答は TodosViewModel(server.ts コメント参照)なので、
+			// 作成した新リストへそのまま表示を切り替える(作った直後にそのリストを見るのが自然な導線)。
+			const result = await app.callServerTool({
+				name: "create-calendar",
+				arguments: { displayName: name, color: d.color, components: ["VTODO"] },
+			});
+			if (result.isError) {
+				const first = result.content?.[0];
+				throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+			}
+			// structuredContent(TodosViewModel)から新 calendarId を取り出す(vm.calendarId は
+			// buildTodosViewModel が常に含める契約 — create-todo 等の他ツールと同じ形)。
+			const vm = result.structuredContent as { calendarId?: string } | undefined;
+			const newId = vm?.calendarId;
+			closeCollectionSheet();
+			if (newId !== undefined) {
+				// キャッシュへ即追加(次にドロップダウンを開いたときの再取得を待たず一覧に出す)。
+				calendarsCache = [
+					...(calendarsCache ?? []),
+					{ id: newId, displayName: name, components: ["VTODO"], color: d.color },
+				];
+				currentCalendarId = newId;
+				currentView = {};
+				resetPositionMemory();
+				appTitleEl.textContent = name;
+			}
+			// applyStructuredContent は renderAll を自分では呼ばない(呼び出し側の責務 — 他の呼び出し元と
+			// 同じ流儀)。closeCollectionSheet が畳んだ直後の renderAll は「切替前」の tasks を見て描いた
+			// ものなので、ここで新 calendarId/tasks を反映した描画をもう一度行う。
+			applyStructuredContent(result.structuredContent);
+			renderAll();
+		} else {
+			// 既存編集: update-calendar。応答は素の {id,displayName,color,components}(TodosViewModel
+			// ではない — server.ts の update-calendar コメント (a) 参照)なので、カード側の再描画は
+			// このファイル側で calendarsCache を書き換えて手動反映する。
+			const targetId = state.calendarId;
+			const result = await app.callServerTool({
+				name: "update-calendar",
+				arguments: { id: targetId, displayName: name, color: d.color },
+			});
+			if (result.isError) {
+				const first = result.content?.[0];
+				throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+			}
+			calendarsCache =
+				calendarsCache?.map((c) => (c.id === targetId ? { ...c, displayName: name, color: d.color } : c)) ?? null;
+			if (currentCalendarId === targetId) appTitleEl.textContent = name;
+			closeCollectionSheet();
+		}
+	} catch (e) {
+		// K1(同名重複)を含め、失敗はページを閉じずバナーで告知する(入力をやり直せるように保持)。
+		showBanner(`保存に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
 /** シートの「保存」が update-todo へ渡す「変更フィールドだけ」を draft と task の差分から集める。 */
 function collectSheetChanges(task: TodoItem, d: SheetDraft): UpdateTodoChanges {
 	const changes: UpdateTodoChanges = {};
@@ -2572,12 +2806,20 @@ async function ensureCalendars(): Promise<void> {
 			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
 		}
 		const sc = result.structuredContent as
-			| { calendars?: Array<{ id: string; displayName?: string; components?: readonly string[] }> }
+			| {
+					calendars?: Array<{
+						id: string;
+						displayName?: string;
+						components?: readonly string[];
+						color?: string;
+					}>;
+			  }
 			| undefined;
 		calendarsCache = (sc?.calendars ?? []).map((c) => ({
 			id: c.id,
 			displayName: c.displayName ?? c.id,
 			components: c.components ?? ["VTODO"],
+			color: c.color,
 		}));
 	} catch (e) {
 		showBanner(`リストの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
@@ -2839,6 +3081,16 @@ function renderAll(): void {
 	// sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null(openSheet/openCreateSheet の
 	// 呼び出し前に commitSelection→selectedId=null を通る)なので、この1行だけで両状態を正しく畳める。
 	headerDoneEl.hidden = selectedId === null;
+	// --- コレクション詳細ページ(K2-UI②): collectionSheet はタスクと無関係のカードレベルページなので
+	// sheetState より先に見る(openCollectionSheet が sheetState を排他的に畳んでいるため通常は
+	// 同時に立たないが、判定順序自体もこの独立性を反映させておく)。--------------------------------
+	if (collectionSheet !== null && collectionDraft !== null) {
+		root.innerHTML = "";
+		selTitleInput = null;
+		selMemoInput = null;
+		root.appendChild(buildCollectionSheetPage());
+		return;
+	}
 	// --- カード内ページ遷移(v3): sheetState が立っていれば詳細/リスト選択ページを #root に描く --------
 	// 通常フローに描くので高さ=コンテンツ(iframe 自動リサイズと整合)。作業コピー(sheetDraft)は input
 	// イベントで同期済みなので、構造変化での再描画でもテキスト値は失われない(#sheet-root 廃止の代替)。
@@ -4538,6 +4790,15 @@ function titleForCalendarId(id: string): string {
 	return hit !== undefined && hit.displayName !== "" ? hit.displayName : id;
 }
 
+/** カレンダー id → 表示色。calendarsCache に実色(AppleColor)があればそれを優先し、無ければ
+ *  (未取得/未設定)id ハッシュのパレット色にフォールバックする(calendar-colors.ts 冒頭コメントの
+ *  設計意図「実色を read できたら優先」の実装箇所。agenda-entry.ts の同名ヘルパーと同型 —
+ *  両 entry は別バンドルなので共有せず写経する、この ui/ 配下の既存流儀に合わせる)。 */
+function calendarColor(calendarId: string): string {
+	const hit = calendarsCache?.find((c) => c.id === calendarId);
+	return resolveCalendarColor(hit?.color, calendarId);
+}
+
 /** メニューが開いているか(#list-menu の hidden 属性を真実の源にする — 状態変数を二重に持たない)。 */
 function isListMenuOpen(): boolean {
 	return !listMenuEl.hidden;
@@ -4561,6 +4822,10 @@ function renderListMenu(): void {
 	}
 	const lists = calendarsCache.filter((c) => c.components.includes("VTODO"));
 	if (lists.length === 0) {
+		// 2026-07-23 K2-UI②: 「リストがありません」の disabled 行を出したら以前は return していたが、
+		// 末尾の「新規リストを追加」行はどんな状態でも到達できる必要がある(0件のときこそ最初の
+		// リストを作る入口が要る)ため return を削除し、下の for(空ループ)を素通りして addRow まで
+		// 続ける形に変えた。
 		const empty = el("button", "menu-item") as HTMLButtonElement;
 		empty.type = "button";
 		empty.disabled = true;
@@ -4568,16 +4833,26 @@ function renderListMenu(): void {
 		name.textContent = "リストがありません";
 		empty.append(el("span", "check-slot"), name);
 		listMenuEl.appendChild(empty);
-		return;
 	}
 	for (const c of lists) {
+		// 【2026-07-23 K2-UI②: 行を「選択 button」+「詳細へ button」の2ボタン構成にする】
+		// 以前は行全体が1つの button(タップ=選択)だった。詳細ページへの導線を足すにあたり、
+		// <button> の入れ子は無効な HTML(ネストした button はブラウザにより挙動が不定)なので、
+		// 選択専用の button.menu-item(flex:1)と詳細専用の button.menu-item-edit(chevron)を
+		// 兄弟として横並びにし、外側を1行として見せる(モック collection-picker-v5 には無い追加要素
+		// だが、コレクション詳細ページ導線をこの task で新設するため必要な拡張)。
+		const row = el("div", "menu-item-row");
 		const item = el("button", "menu-item") as HTMLButtonElement;
 		item.type = "button";
 		const checkSlot = el("span", "check-slot");
 		if (c.id === currentCalendarId) checkSlot.appendChild(createIcon("check"));
+		// 実色/パレット色の小さな丸(K2-UI①)。check の有無に関わらず常に出す(色は識別情報であって
+		// 「現在地」情報ではないため check-slot とは別スロット)。
+		const dot = el("span", "menu-color-dot");
+		dot.style.background = calendarColor(c.id);
 		const name = el("span", "name");
 		name.textContent = c.displayName !== "" ? c.displayName : c.id;
-		item.append(checkSlot, name);
+		item.append(checkSlot, dot, name);
 		item.addEventListener("click", (e) => {
 			// メニュー内クリックは document click(選択解除)へ伝播させない。
 			e.stopPropagation();
@@ -4586,8 +4861,38 @@ function renderListMenu(): void {
 			if (c.id === currentCalendarId) return;
 			void switchCalendar(c.id);
 		});
-		listMenuEl.appendChild(item);
+		const editBtn = document.createElement("button");
+		editBtn.type = "button";
+		editBtn.className = "menu-item-edit";
+		editBtn.setAttribute("aria-label", `${name.textContent} の表示名/色を編集`);
+		editBtn.appendChild(createIcon("chevron-right"));
+		editBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openCollectionSheet(c.id);
+		});
+		row.append(item, editBtn);
+		listMenuEl.appendChild(row);
 	}
+	// 【2026-07-23 K2-UI②: 「+ 新規リストを追加」行を末尾に足す】
+	// 2026-07-22 導入時のコメント(冒頭「作成行は置かない」)はユーザー裁定「todos の作成は
+	// LLM/CalDAV クライアント経由」に基づいていたが、本タスクでコレクション詳細ページ(表示名+色の
+	// フォーム)自体をカード内に作るにあたり、その入り口をここに開通させる方針に転換した
+	// (タスク仕様「現状エージェント経由でしか作れないコレクション作成のカード内導線を、この
+	// ページで開通する」)。既存の裁定を覆す変更なので、上の古いコメントは「経緯」として残しつつ
+	// ここに転換の理由を積層する(消さない・積層するコメント規律)。
+	const addRow = el("button", "menu-item menu-item-add") as HTMLButtonElement;
+	addRow.type = "button";
+	const addIconSlot = el("span", "check-slot");
+	addIconSlot.appendChild(createIcon("plus"));
+	const addName = el("span", "name");
+	addName.textContent = "新規リストを追加";
+	addRow.append(addIconSlot, addName);
+	addRow.addEventListener("click", (e) => {
+		e.stopPropagation();
+		openListMenu(false);
+		openCollectionSheet(null);
+	});
+	listMenuEl.appendChild(addRow);
 }
 
 /** メニューの開閉。開くときは calendarsCache を遅延取得し、外タップ捕捉レイヤを表示、
@@ -4716,7 +5021,9 @@ menuOutsideEl.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
 	const target = e.target as HTMLElement;
 	// 詳細/リスト選択ページ表示中は、そのページ内のクリックを一覧の選択/スワイプ処理に巻き込まない。
-	if (sheetState !== null) return;
+	// 2026-07-23 K2-UI②: collectionSheet(コレクション詳細ページ)表示中も同様(#root がそのページに
+	// 差し替わっており li[data-id] が無いので実害は薄いが、明示しておく)。
+	if (sheetState !== null || collectionSheet !== null) return;
 	const row = target.closest("li[data-id]") as HTMLElement | null;
 	const rowId = row?.dataset.id ?? null;
 	// 選択解除=確定(auto-save): 選択行の外をタップしたら commit して選択を外す。ドラフト行なら

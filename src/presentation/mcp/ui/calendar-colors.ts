@@ -75,3 +75,26 @@ export function colorForCalendarId(calendarId: string): string {
 	const index = fnv1a32(calendarId) % CALENDAR_PALETTE.length;
 	return CALENDAR_PALETTE[index];
 }
+
+/**
+ * 【2026-07-23 K2-UI①: 実色対応】呼び出し側が「合成規則」を毎回書かなくて済むよう、上のファイル冒頭
+ * コメント(「将来: calendar-color プロパティ優先」)で予告していた合成をこの1関数にまとめる。
+ * list-calendars/create-calendar/update-calendar の応答は Apple 拡張 calendar-color(AppleColor)を
+ * `color` として運ぶようになった(server.ts 側の対応は既存済み)。ユーザーが iOS 側で明示的に選んだ
+ * 実色があるなら、id ハッシュの暫定パレット色より優先して尊重するのが正しい — 本モジュール冒頭の
+ * 「実色を read できたら優先」という設計意図をそのまま実装する。
+ *
+ * @param realColor list-calendars 等が返す実色("#RRGGBB"/"#RRGGBBAA")。未設定/取得前は undefined。
+ * @param calendarId フォールバック計算(colorForCalendarId)に使う id。
+ * @returns 実色があればそれをそのまま(AppleColor の toString() 表現を透過で返す。CSS の
+ *   background 等は 8桁 hex の下2桁(アルファ)も解釈できるためそのまま渡してよい)、
+ *   無ければ colorForCalendarId のパレット色にフォールバックする。
+ *
+ * 【空文字列も未設定扱いにする理由】JSON 往復や手動テストで `color: ""` が来るケース(サーバー側は
+ * 送らない設計だが、構造的に否定はできない)を「実色あり」と誤読して透明/無効な CSS 色を描画するのを
+ * 避ける安全側の判定(`!== undefined && !== ""` の2条件)。
+ */
+export function resolveCalendarColor(realColor: string | undefined, calendarId: string): string {
+	if (realColor !== undefined && realColor !== "") return realColor;
+	return colorForCalendarId(calendarId);
+}
