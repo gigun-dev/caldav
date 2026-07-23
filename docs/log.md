@@ -1239,3 +1239,16 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   sandbox/CSP は既定で全外部通信遮断で外界は callServerTool 一本・バンドルは iOS カード描画に直撃・
   Sentry も20KB未満最小構成を提示。Zenn 記事コメント欄の実務者指摘(計装コストのユーザー転嫁・
   非同期コンテキスト伝播の不在・PII)も同方向。
+
+## 2026-07-24(続き14・自動ジオ+ui://後方互換 受け入れ PASS)
+
+- deploy 80e445d の Inspector 受け入れ全8項目 PASS。A(自動ジオ): 「品川のホテルの叙々苑」→
+  X-APPLE-STRUCTURED-LOCATION + geo URI + X-TITLE を D1 生 ICS で裏取り(iOS 地図に出る形)/
+  解決不能は「地図ピンなし」で LOCATION テキストのみ degrade / 明示 structuredLocation は
+  自動解決バイパス。B(ui://後方互換): deadbeef 旧ハッシュ URI が最新 HTML(200)/現行・legacy も可/
+  通常描画回帰なし。quota 3/3・検証データ後始末済み。
+- 注記: geocoder のファジーマッチが想定より広く架空文字列が実在地に当たるケースあり(Google Places
+  の挙動・バグではない)。degrade の閾値は #51 で検討。
+- #52 実装着手: architect(fable)一次設計 → タスクA(server・implementer)/タスクB(ui・artisan)を
+  ファイル集合非交差で並列。Phase 1 = error/focus-probe/safe-area。instanceId で #50①(昇格時の
+  WebView 再生成 vs focus 喪失)を実機1操作で判別する設計。
