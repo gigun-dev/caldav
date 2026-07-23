@@ -127,15 +127,15 @@ import {
 	RestoreUidConflictError,
 } from "../../application/usecases";
 import type { RecurrenceIterator } from "../../domain/ical/recurrence";
-import type { CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
+import type { CalendarCollection, CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
 import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } from "../../domain/caldav";
 // list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
 // 別入口で呼ぶ(CLAUDE.md 長期ビジョン「複数入口」の具体例)。
 import {
 	CollectionAlreadyExistsError,
-	CollectionDisplayNameConflictError,
 	CreateCollection,
 	ListCollections,
+	normalizeDisplayNameForComparison,
 } from "../../application/usecases";
 // update-calendar(K2: MCP から表示名/色を変更する。DAV PROPPATCH(app.ts)と同じ
 // UpdateCollectionProperties UC を別入口から呼ぶ — CLAUDE.md 長期ビジョン「複数入口」の具体例)。
@@ -417,8 +417,10 @@ export function slugifyForCollectionId(displayName: string): string {
  * (crypto.subtle.digest)になり、slugifyForCollectionId を同期関数のまま保てなくなる
  * (呼び出し元 create-calendar ハンドラの構造を変えたくない)。FNV-1a は同期・依存ゼロ・
  * 数行で書ける決定的ハッシュとして「同じ displayName → 同じ id 候補」という目的に対して
- * 十分(id の衝突を完全排除する強度は求めていない — 衝突しても CollectionAlreadyExistsError /
- * CollectionDisplayNameConflictError が二重に拾う設計なので実害は薄い)。
+ * 十分(id の衝突を完全排除する強度は求めていない — 衝突しても CollectionAlreadyExistsError を
+ * create-calendar ハンドラが拾い、displayName まで一致すれば冪等返却・不一致なら接尾辞を振って
+ * 再試行する設計なので実害は薄い。2026-07-23: displayName 単位の重複検出
+ * (CollectionDisplayNameConflictError)は撤回済み — create-collection.ts 冒頭コメント参照)。
  */
 function fnv1aHex(input: string): string {
 	// FNV-1a 32bit の定数(FNV offset basis / FNV prime)。アルゴリズム仕様上の固定値。
@@ -452,18 +454,42 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true, openWorldHi
 // create 系: 新規リソースを作るだけで既存状態を破壊しない(destructiveHint:false)。
 // idempotentHint:false — 冪等ではない。同じ内容の重複作成を「同じ結果」とはみなさない。
 // 【2026-07-23 追記(K1)】create-todo 等は依然として同じ入力を2回叩けば2件できる(冪等でない
-// ことに変わりない)。一方 create-calendar だけは K1 で displayName 重複を明示的にエラー拒否
-// するようになった(CollectionDisplayNameConflictError — create-collection.ts 参照)ため、
-// 「2回叩くと2件できる」がそのまま成立しなくなった。とはいえ idempotentHint は「同じ呼び出しが
-// 同じ結果を安全に繰り返せる」ことを意味する hint であり、create-calendar の2回目呼び出しは
-// 「成功して同じものが返る」のではなく「エラーになる」ので、依然として idempotentHint:false が
-// 正しい(冪等 = no-op で同じ状態に収束、であって「エラーで弾かれる」は冪等の定義に含まれない)。
+// ことに変わりない)。create-calendar だけは別扱いになったので、下の CREATE_CALENDAR_ANNOTATIONS
+// 参照(この定数からは create-calendar を切り離した — 経緯はそちらのコメント)。
 // annotations はツール横断の共通定数のままにして、ツールごとの詳細な差分は各ツールの
 // description/コメントに書く方針を維持する。
 const CREATE_ANNOTATIONS: ToolAnnotations = {
 	readOnlyHint: false,
 	destructiveHint: false,
 	idempotentHint: false,
+	openWorldHint: false,
+};
+// create-calendar 専用の annotations。
+// 【経緯(すべて 2026-07-23 の1日の中で積層。最終形は末尾)】
+//   1. K1(午前): 非 ASCII displayName の slug 縮退で自動生成 id が毎回 crypto.randomUUID() に
+//      フォールバックし、同じ displayName で create-calendar を2回呼ぶと id 一致チェックを
+//      すり抜けて同名コレクションが複製される実害(「テストコレクション」が2件・両方ランダム
+//      UUID・空)が発覚。displayName の重複を UC 層で検出して拒否する
+//      CollectionDisplayNameConflictError を追加。この時点では「エラーで弾かれる」は冪等の定義に
+//      含まれないと判断し、CREATE_ANNOTATIONS のまま(idempotentHint:false)に留めた。
+//   2. 中盤: 「2回目がエラーになる」のは真の冪等ではないと指摘され、拒否ではなく「既存
+//      コレクションを成功として返す」方式に直し、idempotentHint:true 用の専用定数を切り出した。
+//   3. 終盤(ユーザー裁定・最終形): 上記2段階とも問題定義そのものが誤りだったと判明。実害の
+//      原因は「同じ名前で意図的に2つ作った」ことではなく「1回の依頼がランダム UUID のせいで
+//      再送のたびに別コレクションになった」こと(トランスポート/エージェント側のリトライ)。
+//      displayName の重複検出/矯正(拒否であれ既存への統合であれ)は iOS/iCloud が許す「同名の
+//      複数リスト作成」という正当な操作を妨げる誤った治療だったため全面撤回し、id 側の治療
+//      (K1 で既に入れていた安定 slug 化を土台に、id 省略時の自動生成 id を同じ displayName なら
+//      同じ id に収束させる)だけで冪等性を実現する設計にした。id 省略時に自動 id が既存と衝突し、
+//      かつ displayName も一致するなら「同一リクエストの再送」とみなして既存を成功で返す
+//      (真の no-op)。id を明示指定した場合の衝突は常にエラー(呼び手の具体的な意図を尊重し、
+//      黙って別物を返さない)。この最終形で create-calendar は idempotentHint:true と言える状態に
+//      なったため、CREATE_ANNOTATIONS から分離した専用定数のままにする(他の create 系は依然
+//      「2回叩くと2件できる」のままで idempotentHint:false — 変更しない)。
+const CREATE_CALENDAR_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: true,
 	openWorldHint: false,
 };
 // update/complete/move 系: destructiveHint:true とする。既存状態を不可逆に上書きする操作という
@@ -2124,71 +2150,130 @@ function buildMcpServer(
 			description:
 				"新規カレンダー/リマインダーリストを作成する(RFC 4791 MKCALENDAR と同じユースケース)。" +
 				'components を省略すると VTODO 用(リマインダーリスト)として作られる。作成後の id は' +
-				"create-todo/list-todos の calendarId としてそのまま使える。",
+				"create-todo/list-todos の calendarId としてそのまま使える。id を省略した場合、同じ" +
+				"displayName で呼び出すと同じ id に解決される(再送は同じコレクションに収束し安全に" +
+				"繰り返せる)。同じ displayName でもう1つ別のリストを意図的に作りたい場合は、id を" +
+				"明示的に指定すること(省略すると既存のものが返る)。",
 			inputSchema: createCalendarInputShape,
-			annotations: CREATE_ANNOTATIONS,
+			annotations: CREATE_CALENDAR_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
 				"openai/outputTemplate": TODOS_UI_URI,
 			},
 		},
 		async ({ id, displayName, components, color, timeZone }) => {
-			try {
-				const resolvedId = id ?? slugifyForCollectionId(displayName);
-				const supportedComponents: readonly ComponentKind[] = (components ?? ["VTODO"]) as readonly ComponentKind[];
-				const parsedColor = color !== undefined ? AppleColor.parse(color) : undefined;
-				const createCollection = new CreateCollection(deps.collectionRepo);
-				const { collection } = await createCollection.execute({
-					owner: principal,
-					collectionId: resolvedId,
-					displayName,
-					supportedComponents,
-					color: parsedColor,
-					// K1: MCP はエージェント(LLM)からの入口なので、同じ displayName の誤爆二重作成
-					// を拒否する(rejectDuplicateDisplayName:true)。DAV(MKCALENDAR)経路はこの UC の
-					// 既定値(false)のまま呼ぶため無改修 — iOS/iCloud が許す同名コレクション作成を
-					// 壊さない(create-collection.ts の【K1】コメント参照。2026-07-23 レビューで
-					// 「UC 無条件ガード」から opt-in に修正した経緯もそちら)。
-					rejectDuplicateDisplayName: true,
-				});
+			// 2026-07-23 再設計(ユーザー裁定・2回目): displayName 単位の重複検出/矯正は撤回し、
+			// 冪等性は「id の安定化」だけで実現する(create-collection.ts 冒頭コメント・
+			// CREATE_CALENDAR_ANNOTATIONS コメント参照)。
+			// 【成功応答の組み立てを共通化する理由】新規作成できた場合と、id 衝突を検出して
+			// 既存コレクションを返す場合(下の handleIdCollision)とで、result/structuredContent の
+			// 組み立てロジックが同じなので、ここでヘルパー化して重複を避ける。content のテキストは
+			// 「新規作成した」/「既存を返した」で出し分ける。
+			const buildSuccessResponse = async (collection: CalendarCollection, note: string | null) => {
 				const result = {
 					id: collection.id,
 					displayName: collection.displayName,
-					components: collection.supportedComponents ?? supportedComponents,
+					components: collection.supportedComponents ?? (["VTODO"] as const),
 					...(collection.color !== undefined ? { color: collection.color.toString() } : {}),
 				};
 				// structuredContent は TodosViewModel 契約(UI が読む形)にする。tasks を空配列で
 				// 決め打ちしない理由: 作成直後でも実在確認を兼ねて実際に ListTodos を1回通しておくと、
 				// 将来 CreateCollection が「既存タスクを引き継いだ複製」等になっても壊れない
-				// (buildTodosViewModel は他の mutate 系ツールと同じ経路なので挙動が揃う)。
-				// 現状は新規コレクションなので実質空配列が返るだけで、レイテンシコストは他の
-				// mutate 系ツール(create-todo 等)と同等(確定一覧の ListTodos 1回)。
+				// (buildTodosViewModel は他の mutate 系ツールと同じ経路なので挙動が揃う)。既存流用時
+				// (note !== null)もこの1回だけで済ませる(既存にタスクが既にあってもそのまま返せる)。
 				// カレンダーのメタ情報(displayName/components/color)は UI 契約に不要なので
 				// content(text)側にだけ残し、structuredContent には calendarId のみ載せる。
 				const vm = await buildTodosViewModel({ calendarId: collection.id, timeZone });
+				// content[0] は従来どおり JSON.stringify(result) だけにする(既存テスト/呼び出し元が
+				// content[0].text を JSON.parse する契約を壊さないため)。既存流用時の説明文
+				// (note)はモデル向けの補足情報として content[1] に別要素で足す — 同じ文字列に
+				// 混ぜると JSON.parse が壊れる(JSON の後ろに文字列が続くと構文エラーになる)。
 				return {
-					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					content: [
+						{ type: "text" as const, text: JSON.stringify(result) },
+						...(note !== null ? [{ type: "text" as const, text: note }] : []),
+					],
 					structuredContent: vm as unknown as { [key: string]: unknown },
 				};
+			};
+			try {
+				const supportedComponents: readonly ComponentKind[] = (components ?? ["VTODO"]) as readonly ComponentKind[];
+				const parsedColor = color !== undefined ? AppleColor.parse(color) : undefined;
+				const createCollection = new CreateCollection(deps.collectionRepo);
+				// id を明示指定したかどうかで「衝突時の扱い」を変える(下の CollectionAlreadyExistsError
+				// ハンドリング参照)。呼び出し元が id を渡した = 「この URL セグメントに作りたい」という
+				// 具体的な意図の表明なので、衝突は常にエラーとして呼び手に伝える(黙って別物を返さない)。
+				const idWasExplicit = id !== undefined;
+				// 【なぜ最大試行回数を設けたループにしたか(id 省略時の slug/hash 衝突対策)】
+				// slugifyForCollectionId は「同じ displayName → 同じ id」という安定性を優先して
+				// いるため(server.ts コメント参照)、正規化後に同じ slug/hash になる別の displayName
+				// (例: "Work!!!" と "Work???" は同じ "work" になる)が偶然ぶつかることがありうる。
+				// この場合は「同一リクエストの再送」ではなく「別物を同じ id で作ろうとした事故的衝突」
+				// なので、既存を横取りせず接尾辞を振って別 id で新規作成する(下のループ)。上限を
+				// 設けるのは、万一 findById が壊れて常に既存ヒットし続けるような異常系で無限ループに
+				// ならないようにするための安全装置(通常は1〜2回で空きが見つかる)。
+				const MAX_SUFFIX_ATTEMPTS = 20;
+				let candidateId = id ?? slugifyForCollectionId(displayName);
+				for (let attempt = 0; ; attempt++) {
+					try {
+						const { collection } = await createCollection.execute({
+							owner: principal,
+							collectionId: candidateId,
+							displayName,
+							supportedComponents,
+							color: parsedColor,
+						});
+						return await buildSuccessResponse(collection, null);
+					} catch (error) {
+						if (!(error instanceof CollectionAlreadyExistsError)) {
+							throw error;
+						}
+						const existing = await deps.collectionRepo.findById(principal, error.collectionId);
+						const sameRequest =
+							existing !== null &&
+							normalizeDisplayNameForComparison(existing.displayName) ===
+								normalizeDisplayNameForComparison(displayName);
+						if (idWasExplicit) {
+							// id を明示指定した衝突は常にエラー(displayName が一致していても)。
+							// 【仕様判断(親への報告事項)】id を明示するのは「この URL セグメントに
+							// 作りたい」という具体的な意図の表明であり、たまたま displayName まで
+							// 一致していても「id を指定したのに黙って既存が返ってくる」方が驚き最小の
+							// 原則に反すると判断した。同名でもう1つ意図的に作りたい場合は id を変えて
+							// もらう(そのための明示指定でもある)。
+							return toolError(error.message);
+						}
+						if (sameRequest) {
+							// id 省略時に自動生成した id が既存と衝突し、かつ displayName も一致 =
+							// 「同一リクエストの再送」とみなし、新規作成せず既存を成功として返す
+							// (真の冪等の核心 — ここが本タスクの主眼)。
+							return await buildSuccessResponse(
+								existing,
+								"既存のコレクションを返しました(新規作成していません)。" +
+									`id="${existing.id}" は既に同じ displayName で存在していました。` +
+									"同じ名前でもう1つ別のリストを作りたい場合は、id を明示的に指定して" +
+									"create-calendar を呼び直してください。",
+							);
+						}
+						// displayName が異なるのに id だけ衝突した = slug/hash 衝突。事故的な
+						// なりすましを避けるため、既存を横取りせず接尾辞付きの別 id で再試行する。
+						if (attempt + 1 >= MAX_SUFFIX_ATTEMPTS) {
+							return toolError(
+								`id の自動生成が ${MAX_SUFFIX_ATTEMPTS} 回連続で衝突しました。` +
+									`id を明示的に指定して create-calendar を呼び直してください。`,
+							);
+						}
+						const baseId = id ?? slugifyForCollectionId(displayName);
+						candidateId = `${baseId}-${attempt + 2}`;
+						continue;
+					}
+				}
 			} catch (error) {
 				// InvalidIdentifierError(id/自動生成 slug が不正 — 通常 slugify 側で防げるが id 手動
-				// 指定時は起きうる)/ CollectionAlreadyExistsError(id 衝突。MKCALENDAR の 405/409 相当を
-				// presentation でも「入力起因のエラー」としてそのまま返す。既存 create-todo と同じ
-				// toolError 流儀)/ AppleColor.parse の形式エラーもここに落ちる(Error のまま)。
-				if (error instanceof InvalidIdentifierError || error instanceof CollectionAlreadyExistsError) {
+				// 指定時は起きうる)/ AppleColor.parse の形式エラーはそのまま入力起因エラーとして返す
+				// (Error のまま)。CollectionAlreadyExistsError は上のループ内で処理済みなのでここには
+				// 届かない(ループが catch せず re-throw するのは CollectionAlreadyExistsError 以外)。
+				if (error instanceof InvalidIdentifierError) {
 					return toolError(error.message);
-				}
-				// K1: displayName 重複(id は別でも同名で既存)。単に拒否するだけだとモデルが同じ
-				// 入力でリトライを繰り返しかねないため、既存コレクションの id/displayName を文面に
-				// 含めて「これを使ってタスクを足せばよい」と判断できる形にする(list-todos の
-				// calendarId としてそのまま使える id を明示するのが目的)。
-				if (error instanceof CollectionDisplayNameConflictError) {
-					return toolError(
-						`同じ名前のカレンダー/リマインダーリストが既に存在します: ` +
-							`id="${error.existingCollectionId}", displayName="${error.existingDisplayName}"。` +
-							`新規作成せず、このリストに対して calendarId="${error.existingCollectionId}" で ` +
-							`create-todo/list-todos 等を呼んでください。`,
-					);
 				}
 				return toolError(error instanceof Error ? error.message : String(error));
 			}

@@ -275,6 +275,15 @@ describe("/mcp", () => {
 			idempotentHint: true,
 			openWorldHint: false,
 		});
+		// create-calendar だけ他の create 系と異なり idempotentHint:true(2026-07-23 ユーザー裁定:
+		// 同名 displayName の2回目呼び出しは拒否ではなく既存を成功として返す真の冪等に再設計した
+		// ため。server.ts CREATE_CALENDAR_ANNOTATIONS コメント参照)。
+		expect(byName.get("create-calendar")?.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		});
 	});
 
 	it("initialize が単発でも成功する(stateless transport)", async () => {
@@ -678,16 +687,144 @@ describe("/mcp", () => {
 			});
 		});
 
-		it("create-calendar: 既存 id との衝突は isError(CollectionAlreadyExistsError)", async () => {
+		// 2026-07-23 ユーザー裁定(最終形): id を明示指定した場合の衝突は displayName の一致に
+		// 関わらず常に isError(CollectionAlreadyExistsError)。id 明示は「この URL セグメントに
+		// 作りたい」という具体的な意図の表明であり、黙って既存を返すと呼び手の意図に反するため
+		// (server.ts create-calendar ハンドラの idWasExplicit 分岐コメント参照)。
+		it("create-calendar: id を明示指定して既存 id と衝突した場合は isError(displayName が一致していても)", async () => {
 			repos.collections.seed(new CalendarCollection({ id: collectionId("dup"), owner: OWNER, displayName: "Dup" }));
 			const res = await fetchMcp({
 				jsonrpc: "2.0",
 				id: 1,
 				method: "tools/call",
-				params: { name: "create-calendar", arguments: { id: "dup", displayName: "Dup2" } },
+				params: { name: "create-calendar", arguments: { id: "dup", displayName: "Dup" } },
 			});
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBe(true);
+		});
+
+		// 2026-07-23 ユーザー裁定(本タスクの主眼・最終形): displayName 単位の重複検出/矯正は撤回。
+		// 冪等性は「id 省略時、同じ displayName なら同じ id に安定して解決される」ことだけで実現する。
+		// id 省略時の自動生成 id が既存と衝突し、かつ displayName も一致するなら「同一リクエストの
+		// 再送」とみなし、新規作成せず既存を成功として返す(真の no-op)。
+		describe("id 省略時: 同じ displayName で2回叩いたときの真の冪等(安定 id への収束)", () => {
+			it("2回目は isError にならず既存の id をそのまま返す(新規作成されない)", async () => {
+				const first = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "テストコレクション" } },
+				});
+				const firstRpc = await jsonRpcResult(first);
+				expect(firstRpc.result.isError).toBeFalsy();
+				const firstResult = JSON.parse(firstRpc.result.content[0].text);
+
+				const beforeSecond = await repos.collections.findAllByOwner(OWNER);
+				const second = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "テストコレクション" } },
+				});
+				const secondRpc = await jsonRpcResult(second);
+				expect(secondRpc.result.isError).toBeFalsy();
+				const secondResult = JSON.parse(secondRpc.result.content[0].text);
+				expect(secondResult.id).toBe(firstResult.id);
+				expect(secondRpc.result.content[1].text).toContain("既存のコレクションを返しました");
+
+				// 新規作成されていない(総数不変) — 実害だった「テストコレクションが2件できる」の
+				// 再発防止を直接検証する。
+				const afterSecond = await repos.collections.findAllByOwner(OWNER);
+				expect(afterSecond.length).toBe(beforeSecond.length);
+			});
+
+			// 日本語 displayName でも同じ id(安定 hash slug fallback)に解決されることを確認する。
+			// K1 の実害(非 ASCII displayName が毎回 randomUUID にフォールバックしていたバグ)が
+			// 治っていることの直接的な証跡。
+			it("日本語 displayName でも安定 hash slug に解決され、2回目は既存を返す", async () => {
+				const first = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "読書リスト" } },
+				});
+				const firstRpc = await jsonRpcResult(first);
+				const firstResult = JSON.parse(firstRpc.result.content[0].text);
+				expect(firstResult.id).toMatch(/^list-[0-9a-f]{8}$/);
+
+				const second = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "読書リスト" } },
+				});
+				const secondRpc = await jsonRpcResult(second);
+				const secondResult = JSON.parse(secondRpc.result.content[0].text);
+				expect(secondResult.id).toBe(firstResult.id);
+			});
+
+			// 意図的に同名のリストをもう1つ作りたい場合は id を明示すれば作成できる(displayName の
+			// 一意性を強制しない、というユーザー裁定を直接検証する)。
+			it("同じ displayName でも id を明示指定すれば別コレクションとして新規作成できる", async () => {
+				const first = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "買い物リスト" } },
+				});
+				const firstRpc = await jsonRpcResult(first);
+				const firstResult = JSON.parse(firstRpc.result.content[0].text);
+
+				const second = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: {
+						name: "create-calendar",
+						arguments: { id: "shopping-2", displayName: "買い物リスト" },
+					},
+				});
+				const secondRpc = await jsonRpcResult(second);
+				expect(secondRpc.result.isError).toBeFalsy();
+				const secondResult = JSON.parse(secondRpc.result.content[0].text);
+				expect(secondResult.id).not.toBe(firstResult.id);
+				expect(secondResult.id).toBe("shopping-2");
+
+				const after = await repos.collections.findAllByOwner(OWNER);
+				expect(after.filter((c) => c.displayName === "買い物リスト").length).toBe(2);
+			});
+
+			// displayName が異なる自動生成 id が偶然衝突した(slug/hash 衝突)場合は、既存を横取り
+			// せず接尾辞付きの別 id で新規作成する(同一リクエストの再送ではないため)。
+			it("displayName が異なるのに自動生成 id が衝突した場合は接尾辞付きの別 id で新規作成する", async () => {
+				// slugifyForCollectionId は ASCII 以外を "-" に畳むため、記号違いの2つの displayName
+				// (どちらも [a-z0-9] の位置は同じ)は同じ slug "work" に収束する。
+				const first = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "Work!!!" } },
+				});
+				const firstRpc = await jsonRpcResult(first);
+				const firstResult = JSON.parse(firstRpc.result.content[0].text);
+				expect(firstResult.id).toBe("work");
+
+				const second = await fetchMcp({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: { name: "create-calendar", arguments: { displayName: "Work???" } },
+				});
+				const secondRpc = await jsonRpcResult(second);
+				expect(secondRpc.result.isError).toBeFalsy();
+				const secondResult = JSON.parse(secondRpc.result.content[0].text);
+				expect(secondResult.id).not.toBe("work");
+				expect(secondResult.id).toBe("work-2");
+				expect(secondResult.displayName).toBe("Work???");
+
+				const after = await repos.collections.findAllByOwner(OWNER);
+				expect(after.length).toBe(2);
+			});
 		});
 
 		it("create-calendar: 不正な color は isError", async () => {
