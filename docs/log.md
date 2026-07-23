@@ -1182,3 +1182,23 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   hostcontextchanged起点のrenderAllがfocus中inputをDOMごと消す経路が残っている。
   対処方向: shouldSkipDestructiveRenderの抑止条件を「シート表示中」から「focus中のinputが
   ある間」へ広げる(遅延focusワークアラウンドの復活はmodeling/15 §Bボツ案のため不採用)。
+
+## 2026-07-23(続き11・iOS 401 調査+自己診断ログ+ベスプラ確定)
+
+- iOS「MCPアプリの読み込みに失敗(server isn't responding)」の実測: 13:55〜13:57 UTC に
+  POST /mcp へ 401×6(5xx ゼロ)= 認証失敗をホストが接続障害と誤表示。1時間 TTL 説と
+  「コネクタ再作成から約38分で死んだ」観測が合わず、失効パターンは未確定。
+- 確定させるため 401/トークン発行の自己診断ログを実装・deploy(0c6aa84)。access_token の
+  SHA-256 指紋(16hex)を発行時(ts+expiresIn)と 401 時に1行 JSON で出し、突き合わせで
+  「TTL どおり/失効前 401/古いトークン使い回し」を一発判定(手順は src/index.ts コメント)。
+  次回発生時にログで確定する。落とし穴: request.clone() は provider の body 消費前に取る。
+- ベスプラ・事例調査(一次資料・URL は本エントリ末尾ではなく次段の要点に併記):
+  ①MCP 仕様はホストの 401→refresh を MUST にしておらず(typescript-sdk#2031 が open の
+  enhancement)、MCP Apps はカード読み込みパスの認証自体が未規定 — claude.ai の挙動は
+  未規定領域のホスト実装バグ(claude-ai-mcp#228 proxy パス refresh 未実装・open)。
+  ②同型事例多数(claude-code#46328/#65036/#43789/#29718、Atlassian 公式の既知制限、
+  ChatGPT Apps の widget パス別扱い)= 業界共通のホスト側課題。
+  ③RFC 9700(OAuth BCP)は短命トークン+refresh 原則で TTL 延長は逆行 — swift セッションの
+  TTL 延長却下を覆す根拠なし。④401 の resource_metadata 付与(SHOULD)は provider が準拠済み
+  (#48 確認)。→ 現実解: TTL 維持・#228 ウォッチ・診断ログで事実確定・Anthropic 報告。
+- ユーザー承認: OpenTelemetry のサーバーサイド導入(#49 起票。調査→設計→段階導入)。
