@@ -1097,6 +1097,23 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     justify-content: flex-end;
     z-index: 1;
   }
+  /* 【2026-07-23 #50 実機FB③: focus 中(ソフトキーボード表示中)は fullscreen の固定 FAB を隠す】
+   * 症状: fullscreen カードで行/入力に focus すると ⊕ が画面右上へ「飛ぶ」。根因は position:fixed 要素の
+   * iOS 実機挙動 — ソフトキーボード出現で visual viewport が縮むと、layout viewport 基準の fixed 要素が
+   * キーボード分ずれて意図しない位置(上方)へ描画される既知のバグ。--host-safe-bottom や fold の誤作動では
+   * なく「fixed FAB がキーボード表示中も可視のまま」という1点が直接原因(inline では .fab-row が
+   * display:none なので元々出ず、この症状は fullscreen 固定 FAB 限定)。
+   * 【対処(1箇所)】カード内の input/textarea に focus がある間だけ FAB を隠す。編集/作成中に追加ボタンを
+   * 使う場面は無い(既に1件を編集・作成している)ので、隠して安全側に倒すのは openSheet/openCreateSheet が
+   * quickAddFab.hidden=true にする既存思想の自然な延長。inline 編集にも同思想を :has() で宣言的に広げる。
+   * 【Why not JS(quickAddFab.hidden 切替)】focus 中は guardedRenderAll が破壊的 renderAll を握り潰す
+   * (#48 render-gate 条件②)ので、renderAll 経由の hidden 反映は焦点保持と両立しない。:has() は純 CSS で
+   * 焦点変化へ即応し renderAll に依存しない(iOS WebKit 15.4+ で :has 対応・claude.ai iOS の WebView は充足)。
+   * 【特異度】body(0,0,1)+:has(#root ...:focus)(1,1,1)+#root(1,0,0)+.fullscreen-scroll(0,1,0)+.fab-row(0,1,0)
+   * が上の display:flex 規則(1,2,0)を上回り、かつソース順で後方 = display:none が確実に勝つ。 */
+  body:has(#root :is(input, textarea):focus) #root.fullscreen-scroll ~ .fab-row {
+    display: none;
+  }
   /* 内部スクロールの最終行が fixed FAB の下に隠れないよう、スクロールコンテナの下端に
    * FAB 分の余白を予約する。40px(.fab の一辺)+16px(bottom)+8px(コンテンツとの余裕)を
    * 切り上げて 72px とした(厳密な誤差より安全側に倒す — 予約が少し多くても最終行が窮屈に

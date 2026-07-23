@@ -923,6 +923,10 @@ function renderRow(ev: EventItem, todayKey: string): HTMLLIElement {
 		ti.type = "text";
 		ti.value = ev.title;
 		ti.setAttribute("aria-label", "タイトル");
+		// #50 実機FB②(todos-entry.ts と同判断・同型): 単一行タイトルは iOS return キーを「完了」に。
+		// commit+解除は下の keydown(Enter → commitSelection → renderAll で選択行 input を外す)が担い、
+		// enterkeyhint はその導線を示すヒント。メモ(.memo-line)は複数行が正当なので付けない。
+		ti.setAttribute("enterkeyhint", "done");
 		if (isDraft) ti.placeholder = "新しい予定";
 		ti.addEventListener("keydown", (e) => {
 			if (e.key === "Enter" && !e.isComposing) {
@@ -3006,6 +3010,10 @@ function buildDetailPage(ev: EventItem, d: SheetDraft): HTMLElement {
 	titleInput.value = d.title;
 	titleInput.placeholder = "タイトル";
 	titleInput.setAttribute("aria-label", "タイトル");
+	// #50 実機FB②(todos-entry.ts と同判断): 単一行タイトルは iOS return キーを「完了」にする(メモは
+	// textarea = 複数行が正当なので付けない)。作成/詳細ページは保存ボタンで確定する設計のため、ここの done は
+	// 「キーボードを閉じる」affordance に徹する。
+	titleInput.setAttribute("enterkeyhint", "done");
 	titleInput.addEventListener("input", () => {
 		d.title = titleInput.value;
 	});
@@ -4487,6 +4495,10 @@ function buildCreatePage(d: SheetDraft): HTMLElement {
 	titleInput.value = d.title;
 	titleInput.placeholder = "タイトル";
 	titleInput.setAttribute("aria-label", "タイトル");
+	// #50 実機FB②(todos-entry.ts と同判断): 単一行タイトルは iOS return キーを「完了」にする(メモは
+	// textarea = 複数行が正当なので付けない)。作成/詳細ページは保存ボタンで確定する設計のため、ここの done は
+	// 「キーボードを閉じる」affordance に徹する。
+	titleInput.setAttribute("enterkeyhint", "done");
 	titleInput.addEventListener("input", () => {
 		d.title = titleInput.value;
 	});

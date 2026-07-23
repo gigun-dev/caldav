@@ -1426,6 +1426,15 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		ti.type = "text";
 		ti.value = task.title;
 		ti.setAttribute("aria-label", "タイトル");
+		// 【#50 実機FB②: iOS キーボードの確定(改行)で編集を終える】タイトルは単一行 field なので、
+		// iOS ソフトキーボードの return キーを「完了」ラベル(= 確定して閉じる)にする。enterkeyhint 自体は
+		// キーの見た目/意味づけのヒントで、実際の commit+解除は下の keydown(Enter → commitSelection →
+		// selectedId=null → renderAll で選択行 input を DOM から外す = 事実上の blur)が担う。属性はその
+		// 導線をユーザーに正しく示すために添える(メモ = .memo-line は「複数行が正当」なので下では付けない)。
+		// Why not blur() を明示追加: Enter 経路の renderAll が選択行(input)を作り直さず必ず外すため、
+		// 焦点は自然に抜ける。二重 blur を足すと(将来 blur 保存を配線した際に)保存経路が二重発火する温床に
+		// なるため、解除は「選択解除 = renderAll」の1経路に一本化しておく。
+		ti.setAttribute("enterkeyhint", "done");
 		// ドラフト行は空なので入力を促す placeholder を出す(iOS の新規行「新しいリマインダー」)。
 		if (isDraft) ti.placeholder = "新しいリマインダー";
 		// Enter=確定。通常行は選択解除で確定、ドラフト行は「確定→次の空ドラフト行」(iOS の Enter で次の行)。
@@ -2283,6 +2292,10 @@ function buildDetailPage(task: TodoItem, d: SheetDraft): HTMLElement {
 	titleInput.value = d.title;
 	titleInput.placeholder = "タイトル";
 	titleInput.setAttribute("aria-label", "タイトル");
+	// #50 実機FB②: 作成/詳細ページのタイトルも単一行なので return キーを「完了」に(下のメモは textarea =
+	// 複数行が正当なので付けない)。詳細ページは保存ボタンで確定する設計で Enter の commit 経路を持たないため、
+	// ここの done は「キーボードを閉じる」affordance(iOS 既定: 単一行 input の done で blur)に徹する。
+	titleInput.setAttribute("enterkeyhint", "done");
 	titleInput.addEventListener("input", () => {
 		d.title = titleInput.value;
 	});
@@ -5227,9 +5240,41 @@ function triggerQuickAdd(): void {
 	openCreateSheet(); // 同期 renderAll で作成ビューを描き、buildDetailPage(create)が sheetTitleInput を登録
 	focusSheetTitle(); // ← タップジェスチャ内の同期 focus(キーボード権の確保。450ms 遅延 focus は撤去した)
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
+		// 【#50 実機FB①: inline→fullscreen 昇格で focus/キーボードが失われる根因の切り分け証跡】
+		// 症状は「既に fullscreen なら ⊕ で focus/キーボードが出るが、inline から ⊕ を押すと fullscreen には
+		// なるが focus もキーボードも無い」。上記の順序(同期描画→同期 focus→requestDisplayMode)は既に守られて
+		// いて、guardedRenderAll が sheetState!==null で昇格後の破壊的 renderAll を抑止する(= sheetTitleInput は
+		// DOM から外れない)ので、カード側の JS 不変条件は満たされている。それでも focus が消えるなら、残る
+		// 疑いは「ホスト(claude.ai iOS)が昇格時に WebView/ドキュメントを作り直し、focus 済み要素ごと別 window に
+		// 差し替わる」= カード側では原理的に維持不能なケース。それを実機ログで確定/否定するための計測。
+		// (1) 昇格を投げる直前に window へ世代印を打つ。ドキュメントが作り直されれば新 window には印が無い。
+		// (2) 昇格解決後、同一 window か・sheetTitleInput が今も DOM 接続され activeElement のままかを記録する。
+		// iOS WebView にはコンソールが無いので、この console.log は実機ログ収集(proxy / observability)で拾う前提。
+		// 原因が確定したらこのブロックごと撤去してよい(safeAreaLogged と同じ暫定計測の位置づけ)。
+		interface PromoteProbeWindow extends Window {
+			__todosPromoteGen?: number;
+		}
+		const w = window as PromoteProbeWindow;
+		const gen = (w.__todosPromoteGen ?? 0) + 1;
+		w.__todosPromoteGen = gen;
+		const focusedBefore = document.activeElement === sheetTitleInput;
+		console.log("[todos] ⊕ promote start", { gen, hostDisplayMode, focusedBefore });
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
-			.then(() => applyHostContext()) // 非破壊のレイアウト調整のみ(focus は保持)
+			.then(() => {
+				applyHostContext(); // 非破壊のレイアウト調整のみ(focus は保持)
+				const w2 = window as PromoteProbeWindow;
+				const sameWindow = w2.__todosPromoteGen === gen; // false ならホストがドキュメントを作り直した証拠
+				const stillConnected = sheetTitleInput !== null && sheetTitleInput.isConnected;
+				const stillFocused = document.activeElement === sheetTitleInput;
+				console.log("[todos] ⊕ promote resolved", {
+					gen,
+					sameWindow,
+					stillConnected,
+					stillFocused,
+					activeTag: document.activeElement?.tagName ?? null,
+				});
+			})
 			.catch(() => {
 				// 拒否/失敗は握りつぶす — 作成ビューは inline のまま成立しているので追加処理は不要。
 			});

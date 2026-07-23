@@ -525,6 +525,14 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     justify-content: flex-end;
     z-index: 1;
   }
+  /* 【2026-07-23 #50 実機FB③(todos-app.ts と同判断・同型): focus 中は fullscreen 固定 FAB を隠す】
+   * position:fixed 要素は iOS のソフトキーボード出現時(visual viewport 縮小)に layout viewport 基準で
+   * ずれて上方へ飛ぶ既知バグがあり、これが「focus すると ⊕ が飛ぶ」FB の直接原因。編集/作成中は追加ボタンを
+   * 使う場面が無いので、カード内 input/textarea に focus がある間だけ :has() で隠す(JS 切替は focus 中の
+   * render 抑止=render-gate と両立しないため純 CSS で行う。詳細は todos-app.ts の同ブロックコメント参照)。 */
+  body:has(#root :is(input, textarea):focus) #root.fullscreen-scroll ~ .fab-row {
+    display: none;
+  }
   /* 内部スクロールの最終行が fixed FAB の下に隠れないよう、スクロールコンテナの下端に FAB 分の
    * 余白を予約する(40px の FAB 一辺 + 16px の bottom + 8px の余裕を切り上げ。todos-app.ts と同値
    * — 不足すると FAB が最終行に重なりタップミスを誘発するので安全側に倒す)。 */
