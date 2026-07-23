@@ -1217,3 +1217,25 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   Honeycomb free をダッシュボードで destination 作成後に config へ追記(2段構え)。
   Phase 2 = D1/外部 fetch の細粒度 span が必要になったら otel-cf-workers 再評価、
   traceparent は MCP RC 確定後。
+
+## 2026-07-23(続き13・自動ジオコーディング + ui:// 旧ハッシュ後方互換 + フロントテレメトリ裁定)
+
+- **場所のサーバー側自動解決(deploy 80e445d・5ee3048)**: claude.ai iOS(Haiku)が search-location を
+  呼ばず location テキストだけで create-event し「叙々苑で食事」が iOS 地図に出ない(D1 実測で
+  X-APPLE-STRUCTURED-LOCATION 無し)問題。description 誘導はモデル品質依存なので server 側で
+  structuredLocation 省略 + location 文字列時に known-locations(双方向部分一致)→ GeocodingPort
+  (quota 共有・limit1)で解決し昇格。失敗/quota 超過は握りつぶしテキスト登録(作成は失敗させない)。
+  応答に解決結果/ピンなしを明示。update は保存済み LOCATION 不変なら再解決しない。
+- **ui:// 旧ハッシュ後方互換(deploy 80e445d)**: swift-mcp-host 実機の「カードだけ読めない」の根因は
+  内容ハッシュ URI + ホストの tools/list キャッシュ(claude-ai-mcp#137 の platform バグ)で中間世代
+  ハッシュへの resources/read が -32602 になること。ResourceTemplate で未知ハッシュに最新 HTML を返す
+  (SDK は静的完全一致が先勝ち・テンプレは最後・resources/list には出さず SEP-1865 の MAY omit に適合)。
+  ハッシュ回転は維持(claude.ai web の resources/read キャッシュへの唯一のバスター)= 二面防御。
+  ベスプラ調査: SEP-1865 は URI 安定性・キャッシュ無効化を未規定、OpenAI は「旧 URI を生かし続けよ」、
+  mcp-ui は stable URI 慣行、MCP に ETag/TTL 無し(2026 半ば改訂で検討中)。「接続時 list_changed」は
+  Streamable HTTP との相性検証が要るため #47 バックログへ(効果不確実な変更を受け入れなしで混ぜない)。
+- **#52 フロントテレメトリ裁定(実装前)**: フル OTel はカードに積まない → 自前軽量ビーコン +
+  サーバー側で構造化。根拠: ブラウザ OTel は sdk-trace-web 以外 experimental(公式明言)・MCP Apps の
+  sandbox/CSP は既定で全外部通信遮断で外界は callServerTool 一本・バンドルは iOS カード描画に直撃・
+  Sentry も20KB未満最小構成を提示。Zenn 記事コメント欄の実務者指摘(計装コストのユーザー転嫁・
+  非同期コンテキスト伝播の不在・PII)も同方向。
