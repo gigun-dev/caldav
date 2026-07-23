@@ -137,6 +137,9 @@ import {
 	CreateCollection,
 	ListCollections,
 } from "../../application/usecases";
+// update-calendar(K2: MCP から表示名/色を変更する。DAV PROPPATCH(app.ts)と同じ
+// UpdateCollectionProperties UC を別入口から呼ぶ — CLAUDE.md 長期ビジョン「複数入口」の具体例)。
+import { UpdateCollectionProperties } from "../../application/usecases";
 // delete-calendar(検証運用で「作ったリストを消すツールが無く D1 直で消した」ことが動機。
 // DAV DELETE 経路とは別の薄い専用 UC — delete-collection.ts 冒頭コメント参照)。
 import { CollectionNotEmptyError, CollectionNotFoundError, DeleteCollection } from "../../application/usecases";
@@ -496,6 +499,24 @@ const RESTORE_ANNOTATIONS: ToolAnnotations = {
 	openWorldHint: false,
 };
 
+// update-calendar(K2): destructiveHint:true・idempotentHint:true という組み合わせは
+// DELETE_ANNOTATIONS と数値上は同じだが、意味付けは独立に決めている(仕様書の指示どおり)。
+// destructiveHint:true にする理由 — displayName/color を上書きすると旧値は失われ、R3(版履歴に
+// よる取り消し)が入るまで戻す手段が無い(DESTRUCTIVE_ANNOTATIONS の update/complete/move 系と
+// 同じ理屈)。idempotentHint:true にする理由 — 「同じ displayName/color を指定して update-calendar
+// を繰り返し呼ぶ」操作は、DELETE_ANNOTATIONS の delete-todo 等と同様に、常に同じ最終状態
+// (指定した displayName/color が設定された状態)に収束する = 副作用が繰り返しても増えない
+// (create 系の「2回叩くと2件できる」とは性質が異なる)。DESTRUCTIVE_ANNOTATIONS を流用しなかった
+// のは、そちらが idempotentHint:false(update-todo 等は「反復操作が同じ状態に収束する」保証が
+// 無い設計 — 例えば priority の相対変更のような将来拡張を想定した安全側の申告)であるのに対し、
+// update-calendar は displayName/color の絶対値上書きのみで反復可能性が異なるため。
+const UPDATE_CALENDAR_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: true,
+	openWorldHint: false,
+};
+
 // S1(docs/modeling/14): confirmToken は「確認カードで承認済み」を証明するトークン(§4 Tier A)。
 // モデルはこのトークンを知り得ない(propose-delete-* が _meta にだけ載せる)ので、モデルが
 // confirmToken 無しで直接叩くと拒否される。カード発の削除は免除トークンを渡す(getCardToken 参照)。
@@ -547,6 +568,28 @@ const deleteCalendarInputShape = {
 		),
 	// S1(docs/modeling/14): 確認トークン(§4 Tier A)。confirmTokenField 定義箇所コメント参照。
 	confirmToken: confirmTokenField,
+}
+
+// --- update-calendar(K2: list-calendars/create-calendar/delete-calendar の対を埋める。
+// PROPPATCH は iOS 側から表示名/色を変更できるが、MCP 経由(エージェント入口)には無かった) -----
+// 【displayName/color 両方省略を拒否する理由】UpdateCollectionProperties UC は各フィールドが
+// undefined なら「その属性は変更しない」という契約(withMetadata の各引数が undefined なら
+// 現在値を保つ — calendar-collection.ts の withMetadata 参照)。両方省略で呼ぶと UC 自体は
+// エラーにならず「何も変えない no-op 呼び出し」が成立してしまうが、それはツール呼び出しとして
+// 意味が無い(モデルが誤って空呼び出しをしても気づけるよう、ここで明示的に拒否する)。
+// 【order を MCP に出さない理由】仕様(タスク冒頭)が displayName/color のみを要求している。
+// order(calendar-order)は iOS の並び順プロパティで PROPPATCH 経由の変更のみサポートを維持し、
+// MCP からの need が今のところ無い(将来 need が出たら additive に足せる — UC 側は既に order を
+// 受けられる形になっている)。
+const updateCalendarInputShape = {
+	id: z.string().describe("更新するコレクション ID(list-calendars/create-calendar が返す id)。"),
+	displayName: z.string().optional().describe("新しい表示名(displayname)。省略時は変更しない。"),
+	color: z
+		.string()
+		.optional()
+		.describe(
+			'新しいカレンダー色(Apple 拡張)。"#RRGGBB" または "#RRGGBBAA"(8桁)。省略時は変更しない。',
+		),
 }
 
 // --- create-todo / list-todos(方向性 E-1 スライス①)---------------------------
@@ -2199,6 +2242,70 @@ function buildMcpServer(
 					error instanceof CollectionNotFoundError ||
 					error instanceof CollectionNotEmptyError
 				) {
+					return toolError(error.message);
+				}
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		},
+	);
+
+	// --- update-calendar(K2: list-calendars/create-calendar/delete-calendar の対を埋める。
+	// UI 無しの素の registerTool — create-calendar と違い、既存カードの再描画は目的ではなく
+	// 「メタデータを変えて確認結果を返す」だけの単発操作なので TODOS_UI_URI を紐付けない
+	// [下記 (a) を参照]) ---------------------------------------------------------------------
+	server.registerTool(
+		"update-calendar",
+		{
+			title: "Update calendar",
+			description:
+				"カレンダー/リマインダーリストの表示名(displayName)または色(color)を変更する" +
+				"(RFC 4918 PROPPATCH と同じユースケース。iOS 側からの変更と同じ経路)。" +
+				"displayName/color の少なくとも一方を指定すること(両方省略はエラー)。",
+			inputSchema: updateCalendarInputShape,
+			annotations: UPDATE_CALENDAR_ANNOTATIONS,
+		},
+		async ({ id, displayName, color }) => {
+			try {
+				// no-op ガード: 両方省略はツール呼び出しとして無意味(updateCalendarInputShape コメント
+				// 「displayName/color 両方省略を拒否する理由」参照)。UC を呼ぶ前にここで弾く。
+				if (displayName === undefined && color === undefined) {
+					return toolError(
+						"displayName と color のどちらも指定されていません。変更する項目を少なくとも" +
+							"一方指定してください(両方省略は変更対象が無く no-op になるため拒否します)。",
+					);
+				}
+				const targetId = mkCollectionId(id);
+				const updateCollectionProperties = new UpdateCollectionProperties(deps.collectionRepo);
+				// AppleColor.parse の形式エラーは UC 内部(execute)で投げられ、下の catch で
+				// InvalidIdentifierError と同様「入力起因エラー」として toolError に変換する
+				// (create-calendar の color 検証と同じ流儀 — AppleColor は他の hex 検証と同じ VO)。
+				const { collection } = await updateCollectionProperties.execute({
+					owner: principal,
+					collectionId: targetId,
+					displayName,
+					color,
+				});
+				// (a) structuredContent/content: create-calendar の TodosViewModel 流儀(空カードでも
+				// 見せる)は「作成直後に空リストを提示する」という create 特有の UX 目的のためのもの。
+				// update-calendar は既存カードの表示名/色が変わるだけで、カード側の再描画は
+				// K2-UI(次スライス、タスク仕様の「カード反映は次スライス」)の役割。ここでは
+				// list-calendars と対称な素の {id, displayName, color, components} を返すに留める
+				// (仕様が要求する応答形そのもの)。
+				const result = {
+					id: collection.id,
+					displayName: collection.displayName,
+					components: collection.supportedComponents ?? (["VEVENT", "VTODO", "VJOURNAL"] as const),
+					...(collection.color !== undefined ? { color: collection.color.toString() } : {}),
+				};
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(result) }],
+					structuredContent: result,
+				};
+			} catch (error) {
+				// InvalidIdentifierError(id が不正な文字列)/ CollectionNotFoundError(存在しない id)/
+				// AppleColor.parse の形式エラー(不正 hex)いずれも「入力起因のエラー」として
+				// メッセージをそのまま返す(create-calendar/delete-calendar と同じ toolError 流儀)。
+				if (error instanceof InvalidIdentifierError || error instanceof CollectionNotFoundError) {
 					return toolError(error.message);
 				}
 				return toolError(error instanceof Error ? error.message : String(error));

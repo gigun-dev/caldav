@@ -155,6 +155,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 		// 2026-07-18 C5 追記: list-known-locations(既知の場所ツール・設計 05)を追加。
 		// 2026-07-22 S1 追記: propose-delete-todo/event/calendar(確認カードの入り口・docs/modeling/14)を追加。
 		// 2026-07-23 R2 追記: list-deleted / restore-deleted(ソフトデリートのゴミ箱一覧 + 復元・docs/modeling/15)を追加。
+		// 2026-07-23 K2 追記: update-calendar(list-calendars/create-calendar/delete-calendar の対を埋める)を追加。
 		expect(names).toEqual([
 			"complete-todo",
 			"create-calendar",
@@ -179,6 +180,7 @@ describe("mcpApiApp(ctx.props 注入)", () => {
 			"refresh-events",
 			"refresh-todos",
 			"restore-deleted",
+			"update-calendar",
 			"update-event",
 			"update-todo",
 		]);
