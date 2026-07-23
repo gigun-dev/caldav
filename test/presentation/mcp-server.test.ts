@@ -626,7 +626,12 @@ describe("/mcp", () => {
 			// structuredContent: 作成直後の空のリストカード(実在確認を兼ねて実際に ListTodos を
 			// 通した結果なので tasks は空配列ハードコードではない)。completedSummary は
 			// buildTodosViewModel が常に付ける(2026-07-23 症状B対策)ので空でも {total:0,recent:[]} が載る。
-			expect(rpc.result.structuredContent).toEqual({
+			// generatedAt(2026-07-23 SWR 完全形): 応答直前の Date.now() が additive に載るため、
+			// 値そのものはテスト実行時刻依存で固定できない。「数値であること」だけ確認し、残りは
+			// toEqual の厳密比較から除く(freshness.ts / TodosViewModel.generatedAt JSDoc 参照)。
+			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
+			const { generatedAt: _personalGeneratedAt, ...personalStructuredContent } = rpc.result.structuredContent;
+			expect(personalStructuredContent).toEqual({
 				tasks: [],
 				calendarId: "personal",
 				timeZone: "UTC",
@@ -661,8 +666,11 @@ describe("/mcp", () => {
 			// server.ts slugifyForCollectionId コメント参照)。
 			expect(textResult.id).toMatch(/^list-[0-9a-f]{8}$/);
 			// structuredContent.calendarId は content 側の id(自動生成 slug/UUID)と一致する。
-			// completedSummary は常時付与(2026-07-23 症状B対策)。
-			expect(rpc.result.structuredContent).toEqual({
+			// completedSummary は常時付与(2026-07-23 症状B対策)。generatedAt は上のテストと同じ理由
+			// (SWR 完全形・実行時刻依存)で厳密比較から除く。
+			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
+			const { generatedAt: _slugGeneratedAt, ...slugStructuredContent } = rpc.result.structuredContent;
+			expect(slugStructuredContent).toEqual({
 				tasks: [],
 				calendarId: textResult.id,
 				timeZone: "UTC",

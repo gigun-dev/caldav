@@ -1947,6 +1947,10 @@ function buildMcpServer(
 						timeZone: zone,
 					},
 					truncated,
+					// 【2026-07-23 SWR 完全形】EventsViewModel.generatedAt JSDoc 参照。応答直前に取ることで
+					// D1 往復(ListOccurrencesAcrossOwner)の待ち時間まで含めた「見せてよい起点」を刻む
+					// (buildTodosViewModel と同じ判断・理由は todos 側コメント参照)。
+					generatedAt: Date.now(),
 				};
 			return {
 				content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -2640,7 +2644,18 @@ function buildMcpServer(
 		// 以降の refetch が単一コレクションへ静かに collapse する」のと同じ事故を招く。よって
 		// 省略/横断時は正直に null を返す(単一指定時のみその値を echo)。UI(todos-entry.ts)は
 		// この null/非 null を「今回の応答が横断か、特定リスト由来か」の判別に使う(K3 の設計判断参照)。
-		const vm: TodosViewModel = { tasks, calendarId: opts.calendarId ?? null, timeZone: zone };
+		// 【2026-07-23 SWR 完全形: generatedAt を常時付与(additive)】この view model を Worker が
+		// 生成した時刻(epoch ms)。TodosViewModel.generatedAt JSDoc / todos-entry.ts の
+		// shouldRevalidateOnPush 参照。ここで Date.now() を取る(=応答直前)ことで、ListTodos の
+		// D1 往復にかかった時間まで含めて「この結果を見せてよい鮮度の起点」を正確に刻める
+		// (呼び出し側 handler で先に取った時刻を使うと D1 の遅延分だけ古く見積もることになり、
+		// 鮮度判定が実態より辛めに倒れる=無害な方向だが、ここで取るほうが素直で理由がいらない)。
+		const vm: TodosViewModel = {
+			tasks,
+			calendarId: opts.calendarId ?? null,
+			timeZone: zone,
+			generatedAt: Date.now(),
+		};
 		vm.completedSummary = buildCompletedSummary(allTasksAcrossOwner, COMPLETED_RECENT_MAX);
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
 		if (opts.affected !== undefined) vm.affected = opts.affected;
@@ -3074,6 +3089,12 @@ function buildMcpServer(
 					calendarId: cid,
 					timeZone: timeZone ?? "UTC",
 					affected: [{ id: event.id, kind: "added", event: snapshotFromEvent(event) } satisfies AffectedEvent],
+					// 【2026-07-23 SWR 完全形】mutate 応答も additive に generatedAt を載せる(型契約を
+					// 参照系と揃える)。カード側(agenda-entry.ts)の mutation 応答経路は「自分で今取った
+					// データは新鮮」の現行方針のまま無条件 markUpdated なので、この値を鮮度判定に使う
+					// ことは無いが、EventsViewModel の全構築箇所で一貫させておく方が UI 側の型分岐が
+					// 単純になる(「mutate 応答にだけ無い」フィールドを増やさない)。
+					generatedAt: Date.now(),
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {
@@ -3135,6 +3156,8 @@ function buildMcpServer(
 					events: createdEvents,
 					calendarId: cid,
 					timeZone: timeZone ?? "UTC",
+					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
+					generatedAt: Date.now(),
 				};
 				if (succeeded.length > 0) vm.affected = succeeded;
 
@@ -3234,6 +3257,8 @@ function buildMcpServer(
 					calendarId: cid,
 					timeZone: timeZone ?? "UTC",
 					affected: [affected],
+					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
+					generatedAt: Date.now(),
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {
@@ -3264,6 +3289,8 @@ function buildMcpServer(
 					calendarId: cid,
 					timeZone: "UTC",
 					removed: [snapshotFromEvent(removed)] satisfies EventSnapshot[],
+					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
+					generatedAt: Date.now(),
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {

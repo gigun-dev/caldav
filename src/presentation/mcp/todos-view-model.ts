@@ -179,4 +179,23 @@ export interface TodosViewModel {
 	 * メモリでコレクションを絞る。server.ts の buildTodosViewModel コメント参照)。
 	 */
 	completedSummary?: { total: number; recent: TaskSnapshot[] };
+	/**
+	 * 【2026-07-23 SWR 完全形・鮮度モデル語彙】この view model をサーバー(Worker)が生成した
+	 * 時刻(epoch ms・`Date.now()`)。**SWR 判定にのみ使う語彙で、表示は任意**(UI がこの値を
+	 * ユーザーに見せる義務は無い)。
+	 *
+	 * 【なぜ必要か(ext-apps の穴)】MCP Apps 仕様はホストが履歴を復元してカードを再マウントする
+	 * ときの再実行/再可視化通知を規定していない。旧実装はカード側(todos-entry.ts の
+	 * applyStructuredContent)が push(ontoolresult)を受けた瞬間を無条件に「新鮮」とみなし
+	 * lastFetchAt=Date.now() にしていたため、履歴復元で数十分/数日前の古い structuredContent が
+	 * 再配送されても「たった今取れた」ことにされ、staleTime(2.5秒)の間 focus refetch まで
+	 * 抑止されていた(データの新鮮さの検知手段がカード側に一切無かった)。generatedAt はその
+	 * 「サーバーが生成した実時刻」をカードへ渡す唯一の材料。
+	 *
+	 * 【additive・後方互換】旧 UI/旧テストフィクスチャはこのキーの不在を前提に書かれているため
+	 * optional にしてあるが、buildTodosViewModel(server.ts)は実運用の全応答で必ず設定する
+	 * (省略されるのは既存の単体テストフィクスチャだけ)。UI 側は欠落時、旧来どおり push=新鮮の
+	 * 挙動へフォールバックする(todos-entry.ts の shouldRevalidateOnPush 参照)。
+	 */
+	generatedAt?: number;
 }

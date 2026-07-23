@@ -76,4 +76,11 @@ export interface EventsViewModel {
 	};
 	/** list-events-expanded で occurrence 上限に達して結果が切り詰められたか(既存 truncated と同義)。 */
 	truncated?: boolean;
+	/**
+	 * 【2026-07-23 SWR 完全形・鮮度モデル語彙】TodosViewModel.generatedAt と対称(JSDoc 全文はそちら
+	 * 参照)。この view model をサーバー(Worker)が生成した時刻(epoch ms)。**SWR 判定にのみ使う
+	 * 語彙で、表示は任意**。additive・欠落時は agenda-entry.ts が旧来の push=新鮮フォールバックへ
+	 * 落ちる(shouldRevalidateOnPush 参照)。
+	 */
+	generatedAt?: number;
 }

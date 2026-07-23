@@ -90,6 +90,8 @@ import { WEEKDAYS, localDateKey, localMidnightIso, wallDatePart, wallTimePart, d
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
 // 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
 import { shouldSkipDestructiveRender } from "./render-gate";
+// 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。todos-entry.ts と共有。
+import { shouldRevalidateOnPush } from "./freshness";
 // 月ビュー(2026-07-22 ロードマップ②)の日付算術。DOM 非依存の純関数として format.ts に置き
 // bun:test 済み(mcp-ui-month-grid.test.ts)。ここは結果を受け取って描画/レンジ算出に使うだけ。
 import { type YearMonth, addMonths, monthGridDays, monthGridRange, weekdayIndexOf, yearMonthOf } from "./format";
@@ -277,6 +279,10 @@ interface EventsStructuredContent {
 	removed?: EventSnapshot[];
 	range?: { from: string; to: string };
 	truncated?: boolean;
+	// generatedAt(2026-07-23 SWR 完全形): server がこの vm を生成した時刻(epoch ms)。additive
+	// なので旧応答/フィクスチャでは undefined(events-view-model.ts の EventsViewModel.generatedAt
+	// JSDoc・freshness.ts の shouldRevalidateOnPush 参照)。push 経路の鮮度判定にのみ使う。
+	generatedAt?: number;
 }
 
 // =============================================================================
@@ -3097,8 +3103,14 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
  * (preserveBecoming: true で呼ばれる)では **保持** する。以前は「affected の無い応答が来たら
  * 無条件で空に上書き」だったため、URL 追加直後に affected 無し refresh が挟まるとバッジが
  * 全消えして 🔁 が復活する、という実装ムラが出ていた。
+ *
+ * 【2026-07-23 SWR 完全形: opts.push と戻り値の追加】todos-entry.ts の applyStructuredContent と
+ * 対称の変更(理由の全文はそちら参照)。opts.push=true(ontoolresult 経路のみが立てる)のときだけ
+ * generatedAt の古さ(shouldRevalidateOnPush)を見て、古ければ markUpdated をスキップし戻り値
+ * true で「描画後に背景 revalidate してほしい」と呼び出し側(ingestStructuredContent)に伝える。
+ * fetchLatest/mutation 経路(push 省略)は従来どおり無条件 markUpdated。
  */
-function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean }): void {
+function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean; push?: boolean }): boolean {
 	const structuredContent = sc as EventsStructuredContent | undefined;
 	const nextEvents = structuredContent?.events ?? [];
 	let serverAffected = structuredContent?.affected ?? [];
@@ -3161,8 +3173,15 @@ function applyStructuredContent(sc: unknown, opts?: { preserveBecoming?: boolean
 	renderRangeLabel();
 	// 表示カレンダーの色ドットクラスタを更新(events の由来 id / calendarsCache から凡例を組む)。
 	renderCalDots();
-	markUpdated();
+	// 【2026-07-23 SWR 完全形】push 経路(opts.push===true)のときだけ generatedAt の古さを見る。
+	// 古ければ markUpdated をスキップして「新鮮」を偽装せず、呼び出し側へ背景 revalidate を要求
+	// する true を返す。fetchLatest/mutation 経路(opts.push 省略)は従来どおり無条件 markUpdated
+	// (関数冒頭 JSDoc 参照)。
+	const staleFromPush =
+		opts?.push === true && shouldRevalidateOnPush(structuredContent?.generatedAt, Date.now());
+	if (!staleFromPush) markUpdated();
 	announceBecoming();
+	return staleFromPush;
 }
 
 /** affected/removed から操作結果の読み上げ文を組み立てて aria-live(#live)へ流す。 */
@@ -3218,7 +3237,13 @@ app.ontoolresult = (r) => {
 	// renderAll だけ抑止する(render-gate.ts 冒頭コメント参照。iOS fullscreen でフォーカス中の入力から
 	// キーボードが閉じる実害の根治)。カード自身が起点の保存/作成フローは事前に closeSheet 等で
 	// sheetState を null にしてから callServerTool するため、この抑止に巻き込まれない。
-	void ingestStructuredContent(r?.structuredContent).then(() => guardedRenderAll());
+	// 【2026-07-23 SWR 完全形】ingestStructuredContent の戻り値(true=履歴復元級の古い push だった)
+	// を見て、描画が終わった **後** に maybeRefetch を1回スケジュールする(todos-entry.ts と同型。
+	// maybeRefetch 自身の pending/staleTime ガードにそのまま乗るので呼ぶだけで良い)。
+	void ingestStructuredContent(r?.structuredContent).then((needsRevalidate) => {
+		guardedRenderAll();
+		if (needsRevalidate) maybeRefetch();
+	});
 };
 // C1: host-context-changed の購読(設計04 §5 C1)。SDK が host-context-changed 受信のたびに内部
 // _hostContext へ merge した後にこのハンドラを呼ぶ(app.d.ts:723-727)ので、applyHostContext() を
@@ -3276,8 +3301,15 @@ function refreshArgs(): Record<string, unknown> {
  * agenda は applyStructuredContent が「range が来たときだけ currentRange を更新」する設計なので、
  * mutate 応答をそのまま適用しても currentRange は保たれる(events だけ差し替わる)。todos の
  * needsViewReconcile ほどの穴は無いため、ここでは calendarId 不一致のときだけ refresh で取り直す。
+ *
+ * 【2026-07-23 SWR 完全形: 戻り値の追加】applyStructuredContent(..., {push:true}) を通す唯一の
+ * 経路なので、その戻り値(古い push=背景 revalidate が必要)をそのまま呼び出し元(app.ontoolresult)
+ * へ返す。refresh-events で取り直した合成 vm は generatedAt を運ばない(rsc から個別フィールドを
+ * 拾って組み直しているだけで generatedAt を引き継いでいない)ため、shouldRevalidateOnPush は
+ * generatedAt 欠落により自然に false へ degrade する(refetch 自体が今取れた新鮮なデータなので
+ * 二重に revalidate をスケジュールする必要が無い。todos-entry.ts の同型コメント参照)。
  */
-async function ingestStructuredContent(sc: unknown): Promise<void> {
+async function ingestStructuredContent(sc: unknown): Promise<boolean> {
 	const structuredContent = (sc as EventsStructuredContent | undefined) ?? {};
 	// calendarId 不一致(ホストが別コレクションの結果を同一 App へ push した)→ 自分の期間/コレクションを取り直す。
 	if (
@@ -3290,21 +3322,23 @@ async function ingestStructuredContent(sc: unknown): Promise<void> {
 			const refreshed = await app.callServerTool({ name: "refresh-events", arguments: refreshArgs() });
 			if (!refreshed.isError) {
 				const rsc = refreshed.structuredContent as EventsStructuredContent | undefined;
-				applyStructuredContent({
-					events: rsc?.events ?? [],
-					calendarId: rsc?.calendarId ?? currentCalendarId,
-					timeZone: rsc?.timeZone,
-					range: rsc?.range,
-					affected: structuredContent.affected,
-					removed: structuredContent.removed,
-				});
-				return;
+				return applyStructuredContent(
+					{
+						events: rsc?.events ?? [],
+						calendarId: rsc?.calendarId ?? currentCalendarId,
+						timeZone: rsc?.timeZone,
+						range: rsc?.range,
+						affected: structuredContent.affected,
+						removed: structuredContent.removed,
+					},
+					{ push: true },
+				);
 			}
 		} catch {
 			// degrade: 取り直し失敗時は受け取った vm をそのまま適用(最新データを最優先。todos と同じ判断)。
 		}
 	}
-	applyStructuredContent(sc);
+	return applyStructuredContent(sc, { push: true });
 }
 
 /** refresh-events を呼んで状態をサーバー確定値で置き換える共通経路(focus refetch / mutation 後の取り直し)。 */
