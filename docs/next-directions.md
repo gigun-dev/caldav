@@ -202,6 +202,15 @@
   > 将来候補・Apple はポートの口のみ)。ToS は「サーバーはメタデータ保存のみ・表示はクライアント
   > 解釈」の立場+6.3.2 のユーザー別直接機能で整理。鍵受領後に GSI/Google/Apple の POI 精度ベンチ →
   > 実装。
+  > **2026-07-23 更新: ~~#45~~ ✅ 完了(deploy 7ea62c8・Inspector 受け入れ PASS。経緯 log 続き8〜9)。**
+  > 実測ベンチで Google Places 単段を確定(GSI は POI に誤答・Apple は必須クエリ0件)→
+  > search-location ツール+月次 quota ガード(D1 atomic 予約・既定 1000/月 = Pro SKU 無料枠 5,000 の
+  > 20%)+ geo 必須緩和(geo 無しは LOCATION へ degrade)+ picker geo 無し対応。受け入れで
+  > **本番のみ発現の fetch this 束縛バグを検出・修正**(スタブ fetch は this を見ないため
+  > make check green のまま落ちる)。GCP 整理・予算アラート(¥1,000)・GOOGLE_MAPS_API_KEY 本番投入済み。
+  > **残実機確認(ユーザー)**: キーボード出現(#44 ⑤)・geo 無しイベントの iOS 表示(LOCATION の
+  > title\naddress 改行形式)・search-location 経由の場所付き予定作成の一気通貫。
+  > 次: #47 小粒バックログ(propose-delete 撤去・purge cron・all センチネル統一から着手)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
