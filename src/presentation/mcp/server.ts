@@ -63,6 +63,7 @@ import { DIAG_APP_HTML, DIAG_UI_URI } from "./ui/diag-app";
 // 引き続き使うので残す(CONFIRM_APP_HTML/CONFIRM_UI_URI/PROPOSE_TOKEN_TTL_MS は propose-delete-*
 // 専用だったのでこの import からも落とした — 撤去の根拠は buildMcpServer 冒頭近くの撤去コメント参照)。
 import { CARD_TOKEN_TTL_MS, signConfirmToken } from "./confirm-token";
+import { LOCATION_MATCH_THRESHOLD, locationMatchScore } from "./location-match";
 
 import type { AuthenticationPort, CollectionUnitOfWork, TelemetryPort, GeocodingPort } from "../../application/ports";
 // #52 サーバー側テレメトリ受け: カード(todos/agenda)からの計測ポート。契約は
@@ -1085,10 +1086,35 @@ const structuredLocationInputSchema = z
 // quota を使い切っても create-event は落ちない)。
 // =============================================================================
 
+// 【score フィールドについて】#locationMatchQuality(geocoding 品質ゲート)。known 経路はユーザー
+// 本人の過去データ(matchesKnownLocation コメント参照・偽陽性の実害が小さい)なのでゲート対象外だが、
+// telemetry を素朴に集計できるよう score フィールド自体は known/failed にも(意味を持たない値として)
+// 持たせず、あえて省略可能にする(known は「ゲートしていない」ことが型からも読み取れるようにする
+// 判断・failed は候補が無いのでスコアの計算対象が無い)。rejected は geocoding 候補は得られたが
+// LOCATION_MATCH_THRESHOLD 未満で採用を見送ったケース(#51 の本番受け入れ FAIL の対策)。
 /** autoResolveLocation の結果種別(telemetry の locationAutoResolve 属性にもそのまま載せる)。 */
 type LocationAutoResolveOutcome =
-	| { kind: "known" | "geocoding"; structuredLocation: StructuredLocationInput; title: string; address: string | null }
-	| { kind: "failed" };
+	| { kind: "known"; structuredLocation: StructuredLocationInput; title: string; address: string | null }
+	| { kind: "geocoding"; structuredLocation: StructuredLocationInput; title: string; address: string | null; score: number }
+	| { kind: "failed" }
+	// 【rejected】geocoding が候補を返したが locationMatchScore が閾値未満だったケース。structuredLocation
+	// は持たせない(=採用しない)が、呼び出し側が候補名を応答メッセージに含められるよう title/address/score
+	// は保持する(#51 の「解決不能ならエラー」ガードが機能しなかった反省 — 何が起きたかユーザー/モデルに
+	// 見えるようにする)。
+	| { kind: "rejected"; title: string; address: string | null; score: number };
+
+/**
+ * telemetry(TELEMETRY_LOCATION_META_KEY 経由)に載せる locationAutoResolve の要約。
+ * outcome をそのまま載せず kind + score(あれば)だけに絞るのは、telemetry には structuredLocation の
+ * 生座標(ユーザーの居場所に近い情報)を載せたくないため(observability と個人情報最小化のトレードオフ)。
+ * score は geocoding/rejected のときだけ意味を持つ(上の LocationAutoResolveOutcome コメント参照)ので
+ * optional にする。
+ */
+type LocationAutoResolveDigest = { kind: LocationAutoResolveOutcome["kind"]; score?: number };
+
+function toLocationAutoResolveDigest(outcome: LocationAutoResolveOutcome): LocationAutoResolveDigest {
+	return outcome.kind === "geocoding" || outcome.kind === "rejected" ? { kind: outcome.kind, score: outcome.score } : { kind: outcome.kind };
+}
 
 /**
  * location 文字列が既知の場所(KnownLocation)の title/address と部分一致するか。
@@ -1154,6 +1180,15 @@ async function autoResolveLocation(
 		const candidates = await deps.geocoding.searchLocation(trimmed, { limit: 1 });
 		const top = candidates[0];
 		if (top !== undefined) {
+			// #locationMatchQuality: Google Places はゴミクエリでも必ず何かの候補を返すため
+			// (ファイル冒頭 autoResolveLocation コメント群と対称の理由づけ・本番受け入れ FAIL の実例は
+			// location-match.ts コメント参照)、候補を無条件採用せず locationMatchScore でゲートする。
+			// known-locations 経路(上の (a))はユーザー本人の過去データなので対象外(matchesKnownLocation
+			// コメント参照)。
+			const score = locationMatchScore(trimmed, top.title, top.address);
+			if (score < LOCATION_MATCH_THRESHOLD) {
+				return { kind: "rejected", title: top.title, address: top.address, score };
+			}
 			return {
 				kind: "geocoding",
 				structuredLocation: {
@@ -1164,6 +1199,7 @@ async function autoResolveLocation(
 				},
 				title: top.title,
 				address: top.address,
+				score,
 			};
 		}
 	} catch {
@@ -1187,21 +1223,56 @@ function describeAutoResolvedLocation(outcome: Extract<LocationAutoResolveOutcom
 // 得られる(search-location の description に誘導文を残す理由 — 要件4)。
 const LOCATION_AUTO_RESOLVE_FAILED_NOTE = "場所はテキストのみで登録しました(地図ピンなし)。";
 
+/**
+ * #locationMatchQuality: outcome.kind==="rejected"(候補は得られたが一致度が低く見送った)ときの
+ * 人間可読の一文。failed(候補ゼロ)と文言を分ける — rejected は「候補はあったが信用できない」ことを
+ * 明示し、search-location での確認導線を示す(#51 の反省: 黙って無関係な場所に地図ピンが付く事故の
+ * 再発防止として、何が起きたかを必ず可視化する)。イベント作成自体は failed と同じく落とさない
+ * (best-effort 不変条件は rejected でも維持)。
+ */
+function describeAutoResolveRejected(outcome: Extract<LocationAutoResolveOutcome, { kind: "rejected" }>): string {
+	const addressPart = outcome.address !== null ? `(${outcome.address})` : "";
+	return `候補『${outcome.title}${addressPart}』は指定した場所と一致度が低いため地図ピンは付けませんでした。search-location で確認できます。`;
+}
+
 // --- locationReminder の座標解決(#51 Phase 1)-------------------------------------------------
 // create-todo/update-todo の locationReminder 入力を domain の ProximityAlarmInput(geo 必須)へ写す。
 // structuredLocation 明示ならそれを、無ければ autoResolveLocation で location 文字列を座標へ解決する。
 // 解決不能なら例外を投げる(呼び出し側 handler の catch-all が toolError に変換 = 位置なし todo を作らない)。
 
-/** locationReminder が解決不能なとき投げるエラー(handler の catch-all がメッセージをそのまま返す)。 */
+/**
+ * locationReminder が解決不能なとき投げるエラー(handler の catch-all がメッセージをそのまま返す)。
+ *
+ * 【message を外から渡せる理由】#locationMatchQuality で rejected(候補はあるが一致度が低い)を
+ * 追加した際、failed(候補ゼロ)と文言を分けたくなった(rejected は候補名を見せて「一致しない」ことを
+ * 明示する方が親切 — 下の rejected 用ファクトリ参照)。共通の「search-location で候補確認 or 場所名を
+ * 具体化」という誘導部分は両方の呼び出し元で書くのではなくデフォルト文言として持たせ、rejected の
+ * ときだけ候補名入りの専用文言で上書きする形にした(要件は同じ「位置が確定できないリマインダーは
+ * 作成しない」という不変条件)。
+ */
 class LocationReminderUnresolvedError extends Error {
-	constructor(locationText: string) {
+	constructor(locationText: string, message?: string) {
 		// 「search-location で候補確認 or 場所名を具体化」を必ずメッセージに含める(#51 の要件)。
 		super(
-			`位置リマインダーの場所「${locationText}」を解決できませんでした。search-location で候補を確認するか、` +
-				"場所名をより具体的に指定してください(位置が確定できないリマインダーは作成しません)。",
+			message ??
+				`位置リマインダーの場所「${locationText}」を解決できませんでした。search-location で候補を確認するか、` +
+					"場所名をより具体的に指定してください(位置が確定できないリマインダーは作成しません)。",
 		);
 		this.name = "LocationReminderUnresolvedError";
 	}
+}
+
+/**
+ * #locationMatchQuality: outcome.kind==="rejected" のとき resolveLocationReminder が投げる専用文言。
+ * describeAutoResolveRejected(create/update-event 用)と姉妹関数だが、位置リマインダーは best-effort
+ * ではなく「解決不能なら作成しない」不変条件なので、「作成しませんでした」と言い切る点が異なる。
+ */
+function locationReminderRejectedMessage(outcome: Extract<LocationAutoResolveOutcome, { kind: "rejected" }>): string {
+	const addressPart = outcome.address !== null ? `(${outcome.address})` : "";
+	return (
+		`候補『${outcome.title}${addressPart}』は指定と一致しないため位置リマインダーを作成しませんでした。` +
+		"search-location で確認するか場所名を具体化してください。"
+	);
 }
 
 /** resolveLocationReminder の結果。proximity(ProximityAlarmInput)+ 応答 content 用の人間可読ノート。 */
@@ -1239,6 +1310,11 @@ async function resolveLocationReminder(
 	const outcome = await autoResolveLocation(deps, principal, input.location);
 	if (outcome.kind === "failed") {
 		throw new LocationReminderUnresolvedError(input.location);
+	}
+	// #locationMatchQuality: rejected(候補はあるが一致度が低い)は failed と同じく「解決不能」として
+	// 扱うが、候補名を見せられる分だけ専用メッセージにする(上の locationReminderRejectedMessage)。
+	if (outcome.kind === "rejected") {
+		throw new LocationReminderUnresolvedError(input.location, locationReminderRejectedMessage(outcome));
 	}
 	const sl = outcome.structuredLocation;
 	// autoResolveLocation の known/geocoding 経路は必ず lat/lon を埋める(StructuredLocationInput の
@@ -3424,11 +3500,12 @@ function buildMcpServer(
 	// 従来どおり vm の JSON、追加の説明文は content[1] 以降に積む(structuredContent の形を汚さない)。
 	// autoResolveDigest: telemetry 用の属性(要件5)。TELEMETRY_LOCATION_META_KEY 経由で argsDigest に
 	// マージされる(下の buildMcpServer 計測ラッパー参照)。undefined なら何も付けない(location 自動解決を
-	// 試みなかった呼び出しを telemetry で無駄に埋めない)。
+	// 試みなかった呼び出しを telemetry で無駄に埋めない)。#locationMatchQuality: kind だけでなく score も
+	// (geocoding/rejected のときだけ)一緒に運ぶため LocationAutoResolveDigest 型にした。
 	const eventsToolResponse = async (
 		vm: Record<string, unknown>,
 		extraNote?: string,
-		autoResolveDigest?: LocationAutoResolveOutcome["kind"],
+		autoResolveDigest?: LocationAutoResolveDigest,
 	) => ({
 		content: [
 			{ type: "text" as const, text: JSON.stringify(vm) },
@@ -3491,13 +3568,18 @@ function buildMcpServer(
 				// structuredLocation が渡された場合...は現状どおり」)。
 				let effectiveStructuredLocation = structuredLocation;
 				let autoResolveNote: string | undefined;
-				let autoResolveDigest: LocationAutoResolveOutcome["kind"] | undefined;
+				let autoResolveDigest: LocationAutoResolveDigest | undefined;
 				if (structuredLocation === undefined && location !== undefined && location.trim() !== "") {
 					const outcome = await autoResolveLocation(deps, principal, location);
-					autoResolveDigest = outcome.kind;
-					if (outcome.kind !== "failed") {
+					autoResolveDigest = toLocationAutoResolveDigest(outcome);
+					// #locationMatchQuality: rejected は failed と同じく structuredLocation を付けず
+					// テキスト LOCATION のまま登録する(イベント作成は絶対に失敗させない不変条件を維持)。
+					// ノートだけ候補名入りの専用文言にして、何が起きたか見えるようにする。
+					if (outcome.kind === "known" || outcome.kind === "geocoding") {
 						effectiveStructuredLocation = outcome.structuredLocation;
 						autoResolveNote = describeAutoResolvedLocation(outcome);
+					} else if (outcome.kind === "rejected") {
+						autoResolveNote = describeAutoResolveRejected(outcome);
 					} else {
 						autoResolveNote = LOCATION_AUTO_RESOLVE_FAILED_NOTE;
 					}
@@ -3583,7 +3665,11 @@ function buildMcpServer(
 						let effectiveStructuredLocation = item.structuredLocation;
 						if (item.structuredLocation === undefined && item.location !== undefined && item.location.trim() !== "") {
 							const outcome = await autoResolveLocation(deps, principal, item.location);
-							if (outcome.kind !== "failed") {
+							// #locationMatchQuality: rejected は failed 側のカウントに合流させる(バッチは
+							// 件数サマリのみを見せる方針 — 上のコメント「per-item のメッセージではなく件数だけ
+							// summaryLines に足す」参照。rejected/failed を summary 上で区別するとかえって
+							// ノイズになるため、どちらも「地図ピンなし」の1カウントにまとめる)。
+							if (outcome.kind === "known" || outcome.kind === "geocoding") {
 								effectiveStructuredLocation = outcome.structuredLocation;
 								autoResolvedCount++;
 							} else {
@@ -3693,7 +3779,7 @@ function buildMcpServer(
 				// スキャンを伴う known-locations 優先探索をしており、対称的な追加コストと捉えられる)。
 				let effectiveStructuredLocation = structuredLocation;
 				let autoResolveNote: string | undefined;
-				let autoResolveDigest: LocationAutoResolveOutcome["kind"] | undefined;
+				let autoResolveDigest: LocationAutoResolveDigest | undefined;
 				if (structuredLocation === undefined && location !== undefined && location !== null && location.trim() !== "") {
 					let currentLocation: string | null = null;
 					try {
@@ -3708,10 +3794,13 @@ function buildMcpServer(
 					}
 					if (currentLocation !== location) {
 						const outcome = await autoResolveLocation(deps, principal, location);
-						autoResolveDigest = outcome.kind;
-						if (outcome.kind !== "failed") {
+						autoResolveDigest = toLocationAutoResolveDigest(outcome);
+						// #locationMatchQuality: create-event と同じ rejected/failed の書き分け(上のコメント参照)。
+						if (outcome.kind === "known" || outcome.kind === "geocoding") {
 							effectiveStructuredLocation = outcome.structuredLocation;
 							autoResolveNote = describeAutoResolvedLocation(outcome);
+						} else if (outcome.kind === "rejected") {
+							autoResolveNote = describeAutoResolveRejected(outcome);
 						} else {
 							autoResolveNote = LOCATION_AUTO_RESOLVE_FAILED_NOTE;
 						}

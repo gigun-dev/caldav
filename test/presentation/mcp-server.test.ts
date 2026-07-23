@@ -2429,7 +2429,12 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 	describe("update-event: location 文字列が変わらない場合は再解決しない", () => {
 		it("同じ location 文字列での update は geocoding を呼ばない", async () => {
 			const app = buildApp();
-			behavior = async () => [{ title: "初回解決", address: null, geo: { lat: 1, lon: 1 } }];
+			// #locationMatchQuality: 2026-07-24 に geocoding 品質ゲートを追加して以降、フェイク候補の
+			// title はクエリと無関係だと locationMatchScore が閾値未満になり rejected へ落ちてしまう
+			// (structuredLocation が付かず再解決の比較対象も崩れる)。このテストの主眼(location 文字列が
+			// 変わらなければ再解決しない)には関わらないので、クエリを含む title にしてゲートを確実に
+			// 通す(candidate title の頭に query 文字列をそのまま含める)。
+			behavior = async () => [{ title: "同じ場所(初回解決)", address: null, geo: { lat: 1, lon: 1 } }];
 			const created = await callTool(app, "create-event", {
 				title: "予定",
 				start: "2026-07-21T19:00:00",
@@ -2440,27 +2445,29 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 			expect(callCount).toBe(1);
 			const id = JSON.parse(created.result.content[0].text).events[0].id;
 
-			// 【現在の LOCATION は "同じ場所" ではなく "初回解決" になっている点に注意】structuredLocation.title は
-			// LOCATION 表示テキストを上書きする(vevent-write.ts の author 規約・structuredLocationInputSchema
-			// describe 参照)ので、自動解決が起きた VEVENT の LOCATION は解決後の title に置き換わっている。
-			// 「location 文字列が変わらない」の比較対象は create-event に渡した生テキストではなく「現在の
-			// LOCATION」なので、再解決させずに済ませたい2回目の update はこの値をそのまま渡す(UI が現在の
-			// LOCATION 表示を読み取って無変更のまま送り返すケースに対応する自然な比較)。
-			behavior = async () => [{ title: "2回目の候補", address: null, geo: { lat: 2, lon: 2 } }];
+			// 【現在の LOCATION は "同じ場所" ではなく "同じ場所(初回解決)" になっている点に注意】
+			// structuredLocation.title は LOCATION 表示テキストを上書きする(vevent-write.ts の author
+			// 規約・structuredLocationInputSchema describe 参照)ので、自動解決が起きた VEVENT の LOCATION
+			// は解決後の title に置き換わっている。「location 文字列が変わらない」の比較対象は create-event
+			// に渡した生テキストではなく「現在の LOCATION」なので、再解決させずに済ませたい2回目の update
+			// はこの値をそのまま渡す(UI が現在の LOCATION 表示を読み取って無変更のまま送り返すケースに
+			// 対応する自然な比較)。
+			behavior = async () => [{ title: "同じ場所(2回目の候補)", address: null, geo: { lat: 2, lon: 2 } }];
 			const updated = await callTool(app, "update-event", {
 				id,
 				title: "予定(改題)",
-				location: "初回解決", // 現在の LOCATION(= 前回解決の title)と同じ値を渡す = 未変更。
+				location: "同じ場所(初回解決)", // 現在の LOCATION(= 前回解決の title)と同じ値を渡す = 未変更。
 			});
 			expect(updated.result.isError).toBeFalsy();
 			expect(callCount).toBe(1); // 再解決していない = geocoding 呼び出しは増えない。
 			const vm = JSON.parse(updated.result.content[0].text);
-			expect(vm.events[0].structuredLocation).toMatchObject({ title: "初回解決" }); // 前回の解決結果のまま。
+			expect(vm.events[0].structuredLocation).toMatchObject({ title: "同じ場所(初回解決)" }); // 前回の解決結果のまま。
 		});
 
 		it("location 文字列を変えた update は再解決する", async () => {
 			const app = buildApp();
-			behavior = async () => [{ title: "初回解決", address: null, geo: { lat: 1, lon: 1 } }];
+			// #locationMatchQuality: 上のテストと同じ理由でクエリを含む title のフェイク候補にする。
+			behavior = async () => [{ title: "元の場所(初回解決)", address: null, geo: { lat: 1, lon: 1 } }];
 			const created = await callTool(app, "create-event", {
 				title: "予定",
 				start: "2026-07-21T19:00:00",
@@ -2471,7 +2478,7 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 			expect(callCount).toBe(1);
 			const id = JSON.parse(created.result.content[0].text).events[0].id;
 
-			behavior = async () => [{ title: "新しい候補", address: null, geo: { lat: 3, lon: 3 } }];
+			behavior = async () => [{ title: "新しい場所(新しい候補)", address: null, geo: { lat: 3, lon: 3 } }];
 			const updated = await callTool(app, "update-event", {
 				id,
 				location: "新しい場所",
@@ -2479,8 +2486,139 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 			expect(updated.result.isError).toBeFalsy();
 			expect(callCount).toBe(2); // location が変わったので再解決した。
 			const vm = JSON.parse(updated.result.content[0].text);
-			expect(vm.events[0].structuredLocation).toMatchObject({ title: "新しい候補" });
+			expect(vm.events[0].structuredLocation).toMatchObject({ title: "新しい場所(新しい候補)" });
 		});
+	});
+});
+
+// =============================================================================
+// #locationMatchQuality: geocoding 解決品質ゲート(create-event/create-todo の locationReminder)
+// =============================================================================
+// 背景(2026-07-24): Google Places はゴミ文字列でも必ず候補を返す(実例:「まったく存在しない架空ZZZ
+// 検証場所」→「魚彩ダイニングまったく」京都)。#51 の「解決不能ならエラー」ガードは候補ゼロの
+// ケースにしか効かず、無関係な場所へ黙って位置リマインダー/地図ピンが付く FAIL が本番受け入れで
+// 出た。ここでは location-match.ts の locationMatchScore による閾値ゲートを、上の
+// 「location 自動解決(#locationAutoResolve)」describe と同じフェイク GeocodingPort の流儀で固定する。
+describe("geocoding 解決品質ゲート(#locationMatchQuality)", () => {
+	let behavior: (query: string) => Promise<import("../../src/application/ports").LocationCandidate[]>;
+	let capturedEvents: import("../../src/application/ports").TelemetryEvent[] = [];
+
+	function buildApp() {
+		const collections = new FakeCalendarCollectionRepository();
+		const resources = new FakeCalendarObjectResourceRepository();
+		const uow = new FakeCollectionUnitOfWork(resources, collections);
+		// create-event の既定保存先("calendar")と create-todo の既定保存先("tasks")の両方を用意する。
+		collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+		collections.seed(new CalendarCollection({ id: collectionId("tasks"), owner: OWNER, displayName: "Tasks" }));
+		return new Hono<{ Bindings: CloudflareBindings }>().route(
+			"/mcp",
+			createMcpApp(() => ({
+				auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+				collectionRepo: collections,
+				resourceRepo: resources,
+				iterator: recurrenceIterator,
+				uow,
+				confirmSecret: CONFIRM_SECRET,
+				telemetry: { record: (e) => capturedEvents.push(e) },
+				cardTelemetry: new NoopCardTelemetryAdapter(),
+				geocoding: { searchLocation: async (query: string) => behavior(query) },
+			})),
+		);
+	}
+
+	async function callTool(app: ReturnType<typeof buildApp>, name: string, args: Record<string, unknown>): Promise<any> {
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCP_TOKEN}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+			}),
+			ENV,
+		);
+		return jsonRpcResult(res);
+	}
+
+	beforeEach(() => {
+		capturedEvents = [];
+	});
+
+	// #51 の本番受け入れ FAIL の再現そのもの(query と無関係な候補)。
+	const lowMatchCandidate = { title: "魚彩ダイニングまったく", address: "京都府京都市", geo: { lat: 35.0, lon: 135.7 } };
+	const lowMatchQuery = "まったく存在しない架空ZZZ検証場所";
+	// query の文字列をそのまま含む高一致候補。
+	const highMatchQuery = "品川の叙々苑";
+	const highMatchCandidate = { title: "叙々苑 品川プリンスホテル店", address: "東京都港区高輪4-10-30", geo: { lat: 35.6285, lon: 139.7363 } };
+
+	it("VEVENT: 低一致候補は成功するが structuredLocation は付かずテキストのみ登録される", async () => {
+		const app = buildApp();
+		behavior = async () => [lowMatchCandidate];
+		const rpc = await callTool(app, "create-event", {
+			title: "低一致の予定",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: lowMatchQuery,
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toBeNull(); // 地図ピンは付かない。
+		expect(vm.events[0].location).toBe(lowMatchQuery); // テキストのみは維持される。
+		// note は failed とは異なる文言(候補名を見せて一致度が低いことを明示する)。
+		expect(rpc.result.content[1].text).toContain("魚彩ダイニングまったく");
+		expect(rpc.result.content[1].text).toContain("一致度が低い");
+	});
+
+	it("VEVENT: 高一致候補は structuredLocation が付与される", async () => {
+		const app = buildApp();
+		behavior = async () => [highMatchCandidate];
+		const rpc = await callTool(app, "create-event", {
+			title: "高一致の予定",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: highMatchQuery,
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toMatchObject({ title: "叙々苑 品川プリンスホテル店" });
+	});
+
+	it("低一致の telemetry(locationAutoResolve)に score が載る", async () => {
+		const app = buildApp();
+		behavior = async () => [lowMatchCandidate];
+		await callTool(app, "create-event", {
+			title: "低一致の予定",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: lowMatchQuery,
+		});
+		const ev = capturedEvents.find((e) => e.mcpTool === "create-event");
+		const digest = (ev?.argsDigest as Record<string, unknown> | undefined)?.locationAutoResolve as
+			| { kind: string; score?: number }
+			| undefined;
+		expect(digest?.kind).toBe("rejected");
+		expect(typeof digest?.score).toBe("number");
+		expect(digest?.score).toBeLessThan(0.3);
+	});
+
+	it("VTODO(locationReminder): 低一致候補は isError + 候補名入りメッセージで作成しない", async () => {
+		const app = buildApp();
+		behavior = async () => [lowMatchCandidate];
+		const rpc = await callTool(app, "create-todo", {
+			title: "低一致のリマインダー",
+			locationReminder: { location: lowMatchQuery, trigger: "arrive" },
+		});
+		expect(rpc.result.isError).toBe(true);
+		expect(rpc.result.content[0].text).toContain("魚彩ダイニングまったく");
+		expect(rpc.result.content[0].text).toContain("一致しない");
+	});
+
+	it("VTODO(locationReminder): 高一致候補は従来どおり成功する", async () => {
+		const app = buildApp();
+		behavior = async () => [highMatchCandidate];
+		const rpc = await callTool(app, "create-todo", {
+			title: "高一致のリマインダー",
+			locationReminder: { location: highMatchQuery, trigger: "arrive" },
+		});
+		expect(rpc.result.isError).toBeFalsy();
 	});
 });
 
