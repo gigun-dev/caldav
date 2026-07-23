@@ -144,6 +144,7 @@ import { INLINE_PREVIEW_MAX, boundPreviewList, canRequestFullscreen, computeInli
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
 // 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
 import { shouldSkipDestructiveRender } from "./render-gate";
+import { buildCollectionSheetUpdateArgs } from "./collection-sheet-save";
 // C2(設計 05 §2): proximity バッジ文言の生成を純関数に隔離(mcp-location-view.test.ts で境界固定)。
 // 型(StructuredLocationView / ProximityAlarmView)も location-view.ts の写経を共有する。
 import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } from "./location-view";
@@ -2722,9 +2723,22 @@ async function saveCollectionSheet(): Promise<void> {
 			// ではない — server.ts の update-calendar コメント (a) 参照)なので、カード側の再描画は
 			// このファイル側で calendarsCache を書き換えて手動反映する。
 			const targetId = state.calendarId;
+			// 2026-07-23: 差分が無ければ update-calendar を呼ばず no-op でページを閉じるだけにする
+			// (buildCollectionSheetUpdateArgs コメント参照。server.ts の no-op ガードは「両方省略」
+			// だけを見るので毎回送ってもサーバー側エラーにはならないが、変更していないのに毎回
+			// PROPPATCH 相当の書き込みを発行するのは無駄な副作用なので避ける)。
+			const existing = calendarsCache?.find((c) => c.id === targetId);
+			const updateArgs = buildCollectionSheetUpdateArgs(
+				{ displayName: existing?.displayName ?? "", color: existing !== undefined ? calendarColor(targetId) : d.color },
+				{ displayName: name, color: d.color },
+			);
+			if (updateArgs === null) {
+				closeCollectionSheet();
+				return;
+			}
 			const result = await app.callServerTool({
 				name: "update-calendar",
-				arguments: { id: targetId, displayName: name, color: d.color },
+				arguments: { id: targetId, displayName: updateArgs.displayName, color: updateArgs.color },
 			});
 			if (result.isError) {
 				const first = result.content?.[0];
@@ -5159,6 +5173,14 @@ function renderListMenu(): void {
 		editBtn.appendChild(createIcon("chevron-right"));
 		editBtn.addEventListener("click", (e) => {
 			e.stopPropagation();
+			// 2026-07-23 バグ修正: openListMenu(false) を呼び忘れると listMenuEl/menuOutsideEl が
+			// hidden=false のまま残る。menuOutsideEl はカード全面を覆う「外タップ捕捉レイヤ」なので、
+			// 開いたコレクション詳細ページの「保存」ボタンへのクリックがそこに奪われ
+			// (menuOutsideEl 自身の click ハンドラが stopPropagation + openListMenu(false) するだけで
+			// 終わる)、saveCollectionSheet が一切呼ばれない不具合になっていた(callServerTool の
+			// tools/call 履歴に何も残らない症状で発覚)。同じメニュー内の allRow/item/addRow は選択前に
+			// openListMenu(false) しているのに、この行だけ抜けていたのが原因。
+			openListMenu(false);
 			openCollectionSheet(c.id);
 		});
 		row.append(item, editBtn);
