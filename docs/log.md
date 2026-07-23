@@ -1252,3 +1252,19 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - #52 実装着手: architect(fable)一次設計 → タスクA(server・implementer)/タスクB(ui・artisan)を
   ファイル集合非交差で並列。Phase 1 = error/focus-probe/safe-area。instanceId で #50①(昇格時の
   WebView 再生成 vs focus 喪失)を実機1操作で判別する設計。
+
+## 2026-07-24(続き15・#52 Phase 1 デプロイ+受け入れ PASS)
+
+- カードテレメトリビーコン Phase 1 を deploy(1f00ca9)。architect(fable)一次設計 → タスクA
+  (server・implementer)/タスクB(ui・artisan)をファイル非交差で並列 → 統合 make check green。
+  CardTelemetryPort + AE 別 dataset(caldav_card_telemetry)+ report-card-telemetry(visibility:["app"])。
+  カード側は telemetry-beacon.ts(純関数: バッファ/デバウンス/dedup/30件上限/20件バッチ)+
+  telemetry-wire.ts(window.onerror 即時 flush・callServerTool・fire-and-forget)。error/focus-probe/
+  safe-area の3種。instanceId で #50①(昇格時 WebView 再生成 vs focus 喪失)を実機1操作で判別。
+- Inspector 受け入れ全 PASS: visibility:["app"] でモデル非露出・正常系 ok・21件/禁止フィールドを
+  strict zod 拒否・カード描画回帰なし・**wrangler tail で本番構造化ログ1行を捕捉(host はサーバー
+  付与・PII なし)= record 経路の実証**。カード自発の callServerTool 発火の可視化は未確認(サーバー
+  到達は正常系で代替確認済み)。
+- 以後: ユーザーが claude.ai iOS でカードを通常利用する間に #50①/#48 の実機シグナルが instanceId
+  付きで自動蓄積(特に「非 fullscreen から ⊕」操作で focus-probe が溜まる)。数日後に AE/ログを
+  読んで #50① 判定と #48 safe-area 実測差し替え。Phase 2 = mount/version-mismatch。
