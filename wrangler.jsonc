@@ -53,10 +53,20 @@
   // FROM 句に使う識別子。プロジェクト名の慣習に合わせ "caldav_" プレフィックス + 何のイベントか)。
   // AE は D1 と違い migrations 相当の仕組みが無く、dataset は初回 writeDataPoint 時に暗黙作成
   // される(Cloudflare 側の仕様)ので、ここでの追加だけでよく別途プロビジョニング操作は不要。
+  // #52 サーバー側テレメトリ受け(2026-07-24): カード(todos/agenda の HTML/JS)からの計測イベント
+  // (CardTelemetryEvent)を書く別 dataset。TELEMETRY(MCP ツール呼び出し計測)とは語彙が異なる
+  // 別ポート(CardTelemetryPort)なので dataset も分ける(application/ports/card-telemetry.ts
+  // 冒頭コメント参照)。binding 名 "CARD_TELEMETRY" は presentation/mcp/server.ts の
+  // McpAppDeps.cardTelemetry を組み立てる app.ts が読む(infrastructure/telemetry/
+  // analytics-engine-card-telemetry.ts が実装)。
   "analytics_engine_datasets": [
     {
       "binding": "TELEMETRY",
       "dataset": "caldav_mcp_events"
+    },
+    {
+      "binding": "CARD_TELEMETRY",
+      "dataset": "caldav_card_telemetry"
     }
   ],
   "kv_namespaces": [

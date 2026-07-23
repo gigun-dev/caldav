@@ -38,6 +38,10 @@ export * from "./telemetry";
 // #45 場所モデル: geocoding ポート(GeocodingPort / LocationCandidate)+ 月次 quota ポート
 // (GeocodingQuotaStore)+ 型付きエラー。契約の詳細は geocoding.ts のコメントを参照。
 export * from "./geocoding";
+// #52 サーバー側テレメトリ受け: カード(todos/agenda の HTML/JS)からの計測ポート
+// (CardTelemetryPort / CardTelemetryEvent)。契約の詳細は card-telemetry.ts のコメントを参照
+// (TelemetryPort とは語彙が異なる別ポート — なぜ分けるかは同ファイル冒頭コメント)。
+export * from "./card-telemetry";
 import type { ComponentKind } from "../../domain/caldav";
 import type { OccurrenceBounds } from "../../domain/ical/recurrence";
 

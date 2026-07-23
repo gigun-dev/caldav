@@ -65,6 +65,9 @@ import { DIAG_APP_HTML, DIAG_UI_URI } from "./ui/diag-app";
 import { CARD_TOKEN_TTL_MS, signConfirmToken } from "./confirm-token";
 
 import type { AuthenticationPort, CollectionUnitOfWork, TelemetryPort, GeocodingPort } from "../../application/ports";
+// #52 サーバー側テレメトリ受け: カード(todos/agenda)からの計測ポート。契約は
+// application/ports/card-telemetry.ts 冒頭コメント(TelemetryPort との使い分け・PII 境界)参照。
+import type { CardTelemetryPort } from "../../application/ports";
 import type { CalendarCollectionRepository, CalendarObjectResourceRepository } from "../../application/ports";
 // #45 場所モデル: search-location が catch して人間可読メッセージ + errKind へ写す型付きエラー。
 import { GeocodingNotConfiguredError, GeocodingQuotaExceededError } from "../../application/ports";
@@ -191,6 +194,10 @@ export interface McpAppDeps {
 	// 観測基盤 v1: 1 tool call = 1 イベントの計測ポート。実装アダプタ(AE / no-op)の選択は
 	// コンポジションルート(app.ts)が担う(env.TELEMETRY の有無で切り替え — app.ts コメント参照)。
 	readonly telemetry: TelemetryPort;
+	// #52 サーバー側テレメトリ受け: report-card-telemetry ツールが使うカード計測ポート。実装
+	// アダプタ(AE / no-op)の選択は telemetry と同じくコンポジションルート(app.ts)が担う
+	// (env.CARD_TELEMETRY の有無で切り替え — app.ts コメント参照)。
+	readonly cardTelemetry: CardTelemetryPort;
 	// #45 場所モデル: search-location ツールが使う geocoding ポート。app.ts は Google Places アダプタを
 	// 月次 quota デコレータ(QuotaLimitedGeocoding)で包んだものを注入する。プロバイダ・quota の詳細は
 	// server.ts からは見えない(GeocodingPort の語彙 title/address/geo と型付きエラーだけを扱う)。
@@ -3883,6 +3890,110 @@ function buildMcpServer(
 				if (error instanceof CollectionNotFoundError) return toolError(error.message);
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
+		},
+	);
+
+	// --- report-card-telemetry(#52 サーバー側テレメトリ受け)------------------------------
+	// 【なぜ TODOS_UI_URI に束縛するか】registerAppTool の第3引数 config._meta.ui.resourceUri は
+	// 「どのカードに紐付くツールか」の宣言だが、report-card-telemetry は todos/agenda 両カードから
+	// 呼ばれうる。agenda カードからの呼び出しも今回は TODOS_UI_URI 束縛のまま callServerTool できる
+	// 公算(ext-apps の callServerTool はホストが _meta.ui.resourceUri で描画中のカードから任意の
+	// app-visibility ツールを叩ける想定・visibility:["app"] は「モデルに見せない」の制御であって
+	// 「特定カードからしか呼べない」制約ではない)だが、統合検証(タスク B 側)で agenda から呼べない
+	// ことが判明したら AGENDA_UI_URI にも同じ handler を alias 登録すればよい(可逆・非破壊)。
+	// 【visibility:["app"] にする理由】refresh-todos/refresh-events と同じ理由(冒頭コメント参照): この
+	// ツールはカード自身の JS が callServerTool で叩く計測専用の配管で、モデルが自発的に呼んでも
+	// 何も意味がある動作をしない(むしろモデルが誤って呼ぶ余地を与えるだけ)。
+	// 【禁止フィールドを持たない形(zod スキーマ)】CardTelemetryPort 冒頭コメントの PII 境界どおり、
+	// メッセージ本文や自由記述文字列を運べるフィールドを定義しない。msgDigest はカード側で既に
+	// 要約・ハッシュ化済みの値という契約(呼び出し側=カード JS の責務。サーバー側はその値をそのまま
+	// 通すだけで、本文が紛れ込んでいないかまでは検証できない — 「型で運べる形を作らない」ことが
+	// このサーバー側にできる唯一の強制力)。
+	// 【.strict() で未知キーを拒否する理由】zod の .object() は既定で未知キーを黙って捨てる
+	// (strip)。だが「禁止フィールドを持たない」という契約は「送っても届かない」より「送ったら
+	// 気づける」方が事故の早期発見につながる(カード側の実装ミスで自由記述を送ろうとしたら zod
+	// バリデーションエラーとして即座に落ちてほしい)ので、各イベント形と全体の両方を .strict() にする。
+	const cardTelemetryErrorEventSchema = z
+		.object({
+			kind: z.literal("error"),
+			dt: z.number(),
+			name: z.string(),
+			msgDigest: z.string(),
+			frame: z.string().optional(),
+			count: z.number(),
+		})
+		.strict();
+	const cardTelemetryFocusProbeEventSchema = z
+		.object({
+			kind: z.literal("focus-probe"),
+			dt: z.number(),
+			phase: z.enum(["before", "after"]),
+			activeElementId: z.string().optional(),
+			sheetInputConnected: z.boolean(),
+			sheetInputActive: z.boolean(),
+		})
+		.strict();
+	const cardTelemetrySafeAreaEventSchema = z
+		.object({
+			kind: z.literal("safe-area"),
+			dt: z.number(),
+			top: z.number(),
+			right: z.number(),
+			bottom: z.number(),
+			left: z.number(),
+			fallbackTopApplied: z.boolean(),
+			fallbackBottomApplied: z.boolean(),
+		})
+		.strict();
+	const reportCardTelemetryInputShape = {
+		cardType: z.enum(["todos", "agenda"]).describe("計測イベントの発生元カード。"),
+		uiHash: z.string().describe("カード HTML のハッシュ(TODOS_UI_HASH 等の8桁)。どのビルドのカードかを特定する。"),
+		instanceId: z.string().describe("カードの描画インスタンス ID(8桁)。同一カードの複数インスタンスを区別する。"),
+		displayMode: z.enum(["inline", "fullscreen", "unknown"]).describe("バッチ送信時点のカード表示モード。"),
+		events: z
+			.array(z.discriminatedUnion("kind", [cardTelemetryErrorEventSchema, cardTelemetryFocusProbeEventSchema, cardTelemetrySafeAreaEventSchema]))
+			.max(20)
+			.describe("計測イベントのバッチ(最大20件。kind ごとにフィールドが異なる判別共用体)。"),
+	};
+	registerAppTool(
+		server,
+		"report-card-telemetry",
+		{
+			title: "Report card telemetry",
+			description:
+				"UI(todos/agenda カード)専用の計測受け口。カード内で観測したエラー/フォーカス状態/safe-area の" +
+				"バッチをサーバー側テレメトリ(CardTelemetryPort)へ記録する。モデルからは呼べない" +
+				'(visibility:["app"])— カード側 JS が callServerTool で叩く用。応答は結果を持たない(常に成功)。',
+			inputSchema: reportCardTelemetryInputShape,
+			annotations: READ_ONLY_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },
+			},
+		},
+		async ({ cardType, uiHash, instanceId, displayMode, events }, extra) => {
+			// host/sessionId は通常の tool call 計測(registerTool ラッパー)と同じ判定関数・同じ
+			// _meta キーを使う(telemetry-support.ts に判定ロジックを1関数へ集約する方針どおり —
+			// ここで別の判定を書くと2箇所が乖離する)。requestUserAgent は buildMcpServer の
+			// 引数として既に closure に来ている(通常ツール計測と同じ値)。
+			const host = classifyHost(requestUserAgent);
+			const sessionId = readSessionId((extra as { _meta?: Record<string, unknown> } | undefined)?._meta);
+			const receivedAt = Date.now();
+			for (const event of events) {
+				const completed = { ...event, cardType, uiHash, instanceId, displayMode, host, sessionId, receivedAt };
+				// 1行 JSON の構造化ログ(既存の計測点と同じ「console.log + Port.record」の二重書き分け
+				// 規律。CardTelemetryPort 冒頭コメントの PII 境界を通った値のみがここに来る)。
+				console.log(JSON.stringify({ cardTelemetry: completed }));
+				// CardTelemetryPort.record は fire-and-forget 契約(戻り値なし・例外を投げない契約)だが、
+				// 通常の TelemetryPort と同じ「二重の防御」(telemetry.ts の TelemetryPort コメント参照)
+				// として呼び出し側でも try/catch する。カード計測の失敗でこの tool call 自体(＝カード
+				// 操作のフィードバック)を壊すのは本末転倒なので、ここは特に厳格に握りつぶす。
+				try {
+					deps.cardTelemetry.record(completed);
+				} catch {
+					// 意図的に無視(fire-and-forget)。
+				}
+			}
+			return { content: [{ type: "text" as const, text: "ok" }], structuredContent: { ok: true } };
 		},
 	);
 

@@ -24,7 +24,13 @@
   // 置くだけでこの glob が自動的に拾う(tsconfig.json 側の exclude と対で編集不要にする)。
   // icons.ts(2026-07-15 追加): *-entry.ts から import される DOM 依存ヘルパー。tsconfig.json 側の
   // exclude と対で明示的に追加する(*-entry.ts の glob には掛からないファイル名のため)。
-  "include": ["src/presentation/mcp/ui/*-entry.ts", "src/presentation/mcp/ui/icons.ts"],
+  // telemetry-wire.ts(#52 タスクB): icons.ts と同じ DOM 依存ヘルパー。*-entry.ts の glob に掛からない
+  // ファイル名なので明示的に include へ足す(tsconfig.json 側の exclude と対で編集する)。
+  "include": [
+    "src/presentation/mcp/ui/*-entry.ts",
+    "src/presentation/mcp/ui/icons.ts",
+    "src/presentation/mcp/ui/telemetry-wire.ts"
+  ],
   // 主 tsconfig の exclude(まさにこのファイル群を除外している)を extends が継承すると
   // 「対象0件」エラーになるため、ここで空に上書きしてエントリを対象へ戻す。
   "exclude": []

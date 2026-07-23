@@ -28,7 +28,7 @@ import { createMcpApp } from "../../src/presentation/mcp/server";
 // S1(docs/modeling/14): delete-* はトークン必須化されたので、既存の delete 挙動テストは免除トークン
 // (kind:"card")を confirmToken に添えて実行する(確認フロー自体の e2e は下の describe「S1 確認カード」で別途検証)。
 import { signConfirmToken } from "../../src/presentation/mcp/confirm-token";
-import { StaticBearerAuth, IcaljsRRuleIterator, NoopTelemetryAdapter } from "../../src/infrastructure";
+import { StaticBearerAuth, IcaljsRRuleIterator, NoopTelemetryAdapter, NoopCardTelemetryAdapter } from "../../src/infrastructure";
 import { AppleColor, CalendarCollection, CalendarObjectResource, collectionId, principalPath, resourceUri } from "../../src/domain/caldav";
 import {
 	FakeCalendarCollectionRepository,
@@ -108,6 +108,9 @@ beforeEach(() => {
 			// 観測基盤 v1: ツール振る舞いテストなので計測は no-op(AE マッピングの検証は
 			// analytics-engine-telemetry.test.ts がフェイク dataset を注入して単体で行う)。
 			telemetry: new NoopTelemetryAdapter(),
+			// #52 サーバー側テレメトリ受け: このハーネスはツール振る舞い検証が目的なのでカード計測も
+			// no-op(report-card-telemetry 専用の検証は下の describe が capturing フェイクを注入する)。
+			cardTelemetry: new NoopCardTelemetryAdapter(),
 			// #45 場所モデル: この汎用ハーネスでは geocoding は使わない(search-location 専用の検証は
 			// 下の describe が専用 createMcpApp + フェイク GeocodingPort を組んで行う)。空候補スタブ。
 			geocoding: { searchLocation: async () => [] },
@@ -207,7 +210,9 @@ describe("/mcp", () => {
 	// 2026-07-23 iOS 描画切り分け追記: diag-card(最小診断カードを出す一時ツール。iOS で todos/agenda
 	// カードだけ描画失敗する原因を認証 vs バンドルサイズで切り分ける用。切り分け完了後に撤去予定)を
 	// 追加したため 24→25 に更新。
-	it("正しい Bearer で tools/list に25ツールが並ぶ(diag-card 追加後)", async () => {
+	// 2026-07-24 #52 追記: report-card-telemetry(カードからのサーバー側テレメトリ受け口。
+	// visibility:["app"] だが refresh-todos 等と同じく tools/list には出る)を追加したため 25→26 に更新。
+	it("正しい Bearer で tools/list に26ツールが並ぶ(report-card-telemetry 追加後)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -233,6 +238,7 @@ describe("/mcp", () => {
 			"move-todo",
 			"refresh-events",
 			"refresh-todos",
+			"report-card-telemetry",
 			"restore-deleted",
 			"search-location",
 			"update-calendar",
@@ -2129,6 +2135,7 @@ describe("観測基盤 v1: telemetry 失敗が tool call を壊さない", () =>
 				uow,
 				confirmSecret: CONFIRM_SECRET,
 				telemetry: throwingTelemetry,
+				cardTelemetry: new NoopCardTelemetryAdapter(),
 				geocoding: { searchLocation: async () => [] },
 			})),
 		);
@@ -2180,6 +2187,7 @@ describe("search-location(geocoding)", () => {
 				uow,
 				confirmSecret: CONFIRM_SECRET,
 				telemetry: { record: (e) => capturedEvents.push(e) },
+				cardTelemetry: new NoopCardTelemetryAdapter(),
 				geocoding: {
 					searchLocation: async (query: string) => {
 						callCount++;
@@ -2280,6 +2288,9 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 				uow,
 				confirmSecret: CONFIRM_SECRET,
 				telemetry: new NoopTelemetryAdapter(),
+				// #52 サーバー側テレメトリ受け: このハーネスはツール振る舞い検証が目的なのでカード計測も
+				// no-op(report-card-telemetry 専用の検証は下の describe が capturing フェイクを注入する)。
+				cardTelemetry: new NoopCardTelemetryAdapter(),
 				geocoding: {
 					searchLocation: async (query: string) => {
 						callCount++;
@@ -2470,5 +2481,136 @@ describe("location 自動解決(#locationAutoResolve)", () => {
 			const vm = JSON.parse(updated.result.content[0].text);
 			expect(vm.events[0].structuredLocation).toMatchObject({ title: "新しい候補" });
 		});
+	});
+});
+
+// =============================================================================
+// #52 サーバー側テレメトリ受け: report-card-telemetry(カードからの計測バッチ受け口)
+// =============================================================================
+// 汎用ハーネス(先頭 beforeEach)は cardTelemetry を NoopCardTelemetryAdapter に固定しているため、
+// ここでは capturing フェイク CardTelemetryPort を注入する専用 createMcpApp を組んで検証する
+// (search-location の describe と同じ流儀)。固定したい振る舞い:
+//   ① 正常なバッチは events 件数ぶん record() が呼ばれる
+//   ② 禁止フィールド(自由記述の余地を持つ未定義キー)を含む event は zod が拒否する(.strict())
+//   ③ 21件以上のバッチは拒否する(.max(20))
+//   ④ record() が同期的に throw しても tool call は成功する(fire-and-forget の二重防御)
+//   ⑤ CardTelemetryPort 未注入(no-op)でも tool call は成功する(既定フォールバックの確認)
+//   ⑥ tools/list で visibility:["app"](モデルには非露出)
+describe("report-card-telemetry(カードからのサーバー側テレメトリ受け)", () => {
+	let recorded: import("../../src/application/ports").CardTelemetryEvent[] = [];
+
+	function buildApp(cardTelemetry: import("../../src/application/ports").CardTelemetryPort) {
+		const collections = new FakeCalendarCollectionRepository();
+		const resources = new FakeCalendarObjectResourceRepository();
+		const uow = new FakeCollectionUnitOfWork(resources, collections);
+		return new Hono<{ Bindings: CloudflareBindings }>().route(
+			"/mcp",
+			createMcpApp(() => ({
+				auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+				collectionRepo: collections,
+				resourceRepo: resources,
+				iterator: recurrenceIterator,
+				uow,
+				confirmSecret: CONFIRM_SECRET,
+				telemetry: new NoopTelemetryAdapter(),
+				cardTelemetry,
+				geocoding: { searchLocation: async () => [] },
+			})),
+		);
+	}
+
+	async function callReportCardTelemetry(app: ReturnType<typeof buildApp>, args: Record<string, unknown>): Promise<any> {
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCP_TOKEN}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "report-card-telemetry", arguments: args } }),
+			}),
+			ENV,
+		);
+		return jsonRpcResult(res);
+	}
+
+	// safe-area 1件の最小バッチ引数(cardType/uiHash/instanceId/displayMode は3種の kind に共通)。
+	function minimalBatch(events: unknown[]): Record<string, unknown> {
+		return { cardType: "todos", uiHash: "abcd1234", instanceId: "12345678", displayMode: "inline", events };
+	}
+
+	it("① 正常なバッチは events 件数ぶん CardTelemetryPort.record が呼ばれる", async () => {
+		recorded = [];
+		const app = buildApp({ record: (e) => recorded.push(e) });
+		const rpc = await callReportCardTelemetry(
+			app,
+			minimalBatch([
+				{ kind: "error", dt: 1, name: "TypeError", msgDigest: "abc123", count: 1 },
+				{ kind: "safe-area", dt: 2, top: 44, right: 0, bottom: 34, left: 0, fallbackTopApplied: false, fallbackBottomApplied: true },
+			]),
+		);
+		expect(rpc.result.isError).toBeFalsy();
+		expect(recorded).toHaveLength(2);
+		// サーバー到達後の完成形として cardType/uiHash/instanceId/displayMode/host/receivedAt が付与されている。
+		expect(recorded[0]).toMatchObject({ cardType: "todos", uiHash: "abcd1234", instanceId: "12345678", displayMode: "inline", kind: "error" });
+		expect(typeof recorded[0].receivedAt).toBe("number");
+	});
+
+	it("② 禁止フィールド(未定義の自由記述キー)を含む event は zod が拒否する", async () => {
+		recorded = [];
+		const app = buildApp({ record: (e) => recorded.push(e) });
+		const rpc = await callReportCardTelemetry(
+			app,
+			minimalBatch([{ kind: "error", dt: 1, name: "TypeError", msgDigest: "abc123", count: 1, message: "自由記述が紛れ込んだケース" }]),
+		);
+		expect(rpc.result.isError).toBe(true);
+		expect(recorded).toHaveLength(0); // バリデーションで弾かれ record() まで到達しない。
+	});
+
+	it("③ 21件以上のバッチは拒否する(.max(20))", async () => {
+		recorded = [];
+		const app = buildApp({ record: (e) => recorded.push(e) });
+		const events = Array.from({ length: 21 }, (_, i) => ({ kind: "error" as const, dt: i, name: "Error", msgDigest: "x", count: 1 }));
+		const rpc = await callReportCardTelemetry(app, minimalBatch(events));
+		expect(rpc.result.isError).toBe(true);
+		expect(recorded).toHaveLength(0);
+	});
+
+	it("20件ちょうどのバッチは受理される(上限の境界値)", async () => {
+		recorded = [];
+		const app = buildApp({ record: (e) => recorded.push(e) });
+		const events = Array.from({ length: 20 }, (_, i) => ({ kind: "error" as const, dt: i, name: "Error", msgDigest: "x", count: 1 }));
+		const rpc = await callReportCardTelemetry(app, minimalBatch(events));
+		expect(rpc.result.isError).toBeFalsy();
+		expect(recorded).toHaveLength(20);
+	});
+
+	it("④ record() が同期的に throw しても tool call は成功する(fire-and-forget 二重防御)", async () => {
+		const app = buildApp({
+			record: () => {
+				throw new Error("card telemetry backend unavailable (simulated)");
+			},
+		});
+		const rpc = await callReportCardTelemetry(app, minimalBatch([{ kind: "error", dt: 1, name: "TypeError", msgDigest: "abc123", count: 1 }]));
+		expect(rpc.result.isError).toBeFalsy();
+	});
+
+	it("⑤ CardTelemetryPort が NoopCardTelemetryAdapter でも tool call は成功する(既定フォールバック)", async () => {
+		const app = buildApp(new NoopCardTelemetryAdapter());
+		const rpc = await callReportCardTelemetry(app, minimalBatch([{ kind: "safe-area", dt: 1, top: 0, right: 0, bottom: 0, left: 0, fallbackTopApplied: false, fallbackBottomApplied: false }]));
+		expect(rpc.result.isError).toBeFalsy();
+	});
+
+	it("⑥ tools/list で visibility:[\"app\"](モデルには非露出)", async () => {
+		const app = buildApp(new NoopCardTelemetryAdapter());
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCP_TOKEN}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+			}),
+			ENV,
+		);
+		const rpc = await jsonRpcResult(res);
+		const tool = rpc.result.tools.find((t: { name: string }) => t.name === "report-card-telemetry");
+		expect(tool).toBeDefined();
+		expect(tool._meta?.ui?.visibility).toEqual(["app"]);
 	});
 });

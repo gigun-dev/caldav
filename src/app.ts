@@ -66,11 +66,13 @@ import {
 	type PrincipalRepository,
 } from "./application/ports";
 import {
+	AnalyticsEngineCardTelemetryAdapter,
 	AnalyticsEngineTelemetryAdapter,
 	createD1Repositories,
 	D1GeocodingQuotaStore,
 	GooglePlacesGeocodingAdapter,
 	IcaljsRRuleIterator,
+	NoopCardTelemetryAdapter,
 	NoopTelemetryAdapter,
 	OAuthPropsAuth,
 	type OAuthPrincipalProps,
@@ -888,6 +890,11 @@ export const mcpApiApp = new Hono<{ Bindings: CloudflareBindings }>().route(
 			// 使わない利用者は env.TELEMETRY を bind しなければ自然に no-op へ落ちる
 			// (infrastructure/telemetry/noop-telemetry.ts 冒頭コメント参照)。
 			telemetry: env.TELEMETRY !== undefined ? new AnalyticsEngineTelemetryAdapter(env.TELEMETRY) : new NoopTelemetryAdapter(),
+			// #52 サーバー側テレメトリ受け: env.CARD_TELEMETRY(analytics_engine_datasets binding、
+			// wrangler.jsonc)があれば AE カード計測アダプタ、無ければ no-op を選ぶ。判定理由は
+			// telemetry(上記)と完全に対称(bun test の env には実体が無い/OSS 配布時は未 bind で
+			// 自然に no-op へ落ちる — infrastructure/telemetry/noop-card-telemetry.ts 冒頭コメント参照)。
+			cardTelemetry: env.CARD_TELEMETRY !== undefined ? new AnalyticsEngineCardTelemetryAdapter(env.CARD_TELEMETRY) : new NoopCardTelemetryAdapter(),
 			// #45 場所モデル: geocoding。Google Places アダプタ(env.GOOGLE_MAPS_API_KEY で認証・空文字なら
 			// 呼び出し時に GeocodingNotConfiguredError へ縮退)を、月次 quota デコレータ(D1 カウンタ)で包む。
 			// 【上限の既定 1000 の根拠(コーディネータ一次資料 2026-07-23)】geocoding は Google Places

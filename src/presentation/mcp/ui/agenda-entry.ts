@@ -92,6 +92,8 @@ import { WEEKDAYS, localDateKey, localMidnightIso, wallDatePart, wallTimePart, d
 // HostContext.safeAreaInsets → CSS 変数へ落とす px 値の決定(フォールバック込み)だけを担う純関数。
 // 実際に CSS 変数を当てる(setProperty)のは applyHostContext 側(todos-entry.ts と共通の分担)。
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
+// #52 タスクB: カード側テレメトリビーコン(todos-entry.ts と同型)。純粋コアは telemetry-beacon.ts。
+import { CardTelemetry } from "./telemetry-wire";
 // 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
 import { shouldSkipDestructiveRender } from "./render-gate";
 // 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。todos-entry.ts と共有。
@@ -162,6 +164,10 @@ let hostAvailableDisplayModes: readonly string[] | null = null;
 // 実機採寸(FULLSCREEN_SAFE_TOP_FALLBACK_PX の精度確認)が終わったらこのログごと削ってよい。
 let safeAreaLogged = false;
 
+// #52 タスクB: 1 mount = 1 CardTelemetry(todos-entry.ts と同型)。app 生成後に代入し install()。
+// 生成前に呼ばれる経路は cardTelemetry?.record… で安全に no-op。
+let cardTelemetry: CardTelemetry | null = null;
+
 /** ctx.safeAreaInsets → --host-safe-top / --host-safe-bottom への反映(applyHostContext の下請け)。
  *  「いくつにすべきか」の判断は safe-area.ts の純関数に委ね、ここは setProperty するだけ(How)。 */
 function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
@@ -177,6 +183,11 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 	const bottom = resolveSafeBottomPx(insets, hostDisplayMode);
 	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
 	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
+	// #52 タスクB: 適用値の変化時だけ safe-area テレメトリを積む(todos-entry.ts と同型・詳細はあちらのコメント)。
+	// fallbackApplied は resolveSafe*Px の分岐と同条件をここで再現(純関数は px しか返さないため)。
+	const fallbackTopApplied = hostDisplayMode === "fullscreen" && !(insets !== undefined && insets.top > 0);
+	const fallbackBottomApplied = hostDisplayMode === "fullscreen" && !(insets !== undefined && insets.bottom > 0);
+	cardTelemetry?.recordSafeArea(top, insets?.right ?? 0, bottom, insets?.left ?? 0, fallbackTopApplied, fallbackBottomApplied);
 }
 
 function applyHostContext(): void {
@@ -3577,6 +3588,18 @@ let gotResult = false;
 // 昇格フロー全体の前提)。第2引数が capabilities(spec.types.ts:404-412・AppOptions とは別引数。
 // app.d.ts:501 `constructor(_appInfo, _capabilities?, options?)`)。todos-entry.ts:2989 と同じ。
 const app = new App({ name: "caldav-agenda", version: "0.1.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
+// #52 タスクB: テレメトリ収集器を app 生成直後に用意し install()(todos-entry.ts と同型)。
+// 【実測未確認: agenda から report-card-telemetry を callServerTool で呼べるか】タスクA は当面この
+// ツールを TODOS_UI_URI に束ねている想定。agenda カードの callServerTool でも同名ツールが解決されるかは
+// 未確認 — 呼べない場合は callServerTool が reject し flush が握りつぶす(fire-and-forget なので UX 無害)。
+// 統合検証で確認し、不可なら A に agenda 用エイリアス(同一ハンドラ)を依頼する。
+cardTelemetry = new CardTelemetry({
+	app,
+	cardType: "agenda",
+	uiHash: cardBuildHash,
+	getDisplayMode: () => hostDisplayMode,
+});
+cardTelemetry.install();
 app.ontoolresult = (r) => {
 	gotResult = true;
 	clearStatus();
@@ -5246,9 +5269,28 @@ function triggerCreateEvent(): void {
 	focusSheetTitle(); // ← タップジェスチャ内の同期 focus(キーボード権の確保。450ms 遅延 focus は撤去した)
 	// 昇格を試みる(拒否/未対応ホストでも作成フォームは既に開いている — inline でも #root 内ページとして成立)。
 	if (canRequestFullscreen(hostAvailableDisplayModes)) {
+		// #52 タスクB: ⊕→fullscreen 昇格の focus 計測(todos-entry.ts と同型)。requestDisplayMode 直前に
+		// phase:"before"、解決後 600ms に phase:"after" を積む(iOS のホスト WebView 差し替えによる focus 喪失を
+		// 実機テレメトリで確定/否定するため)。activeElement.id は id 属性名のみ = PII 安全。
+		cardTelemetry?.recordFocusProbe(
+			"before",
+			document.activeElement?.id || undefined,
+			sheetTitleInput !== null && sheetTitleInput.isConnected,
+			document.activeElement === sheetTitleInput,
+		);
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
-			.then(() => applyHostContext()) // 非破壊のレイアウト調整のみ(focus は保持)
+			.then(() => {
+				applyHostContext(); // 非破壊のレイアウト調整のみ(focus は保持)
+				setTimeout(() => {
+					cardTelemetry?.recordFocusProbe(
+						"after",
+						document.activeElement?.id || undefined,
+						sheetTitleInput !== null && sheetTitleInput.isConnected,
+						document.activeElement === sheetTitleInput,
+					);
+				}, 600);
+			})
 			.catch(() => {
 				// 拒否/失敗は握りつぶす — 作成フォームは inline のまま成立しているので追加の処理は不要。
 			});

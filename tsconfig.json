@@ -31,5 +31,14 @@
   // (document.createElementNS 等を使う)。*-entry.ts と同じ理由で DOM lib が要るため、
   // *-entry.ts と揃えて主コンパイルから個別に除外し tsconfig.ui.json 側で見る
   // (ui/ 内の他ヘルパー todos-diff-client.ts は DOM 非依存の純関数なので対象外のまま)。
-  "exclude": ["test/worker", "src/presentation/mcp/ui/*-entry.ts", "src/presentation/mcp/ui/icons.ts"]
+  // 【2026-07-24 telemetry-wire.ts 追加(#52 タスクB)】*-entry.ts から import される DOM 依存ヘルパー
+  // (window.addEventListener / document / setTimeout でエラー捕捉と flush を張る)。icons.ts と同じ理由で
+  // DOM lib が要るため主コンパイルから個別除外し tsconfig.ui.json で見る。純粋コア telemetry-beacon.ts は
+  // DOM 非依存(判定・バッファ・dedup のみ)なので主コンパイル対象のまま = bun test で境界を固定する。
+  "exclude": [
+    "test/worker",
+    "src/presentation/mcp/ui/*-entry.ts",
+    "src/presentation/mcp/ui/icons.ts",
+    "src/presentation/mcp/ui/telemetry-wire.ts"
+  ]
 }

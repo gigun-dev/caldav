@@ -142,6 +142,10 @@ import { INLINE_PREVIEW_MAX, boundPreviewList, canRequestFullscreen, computeInli
 // 安全先頭(safe top)規約の共有カーネル(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)。
 // agenda-entry.ts と同じ純関数を使う(HostContext.safeAreaInsets → CSS 変数 px 値の決定だけを担う)。
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
+// #52 タスクB: カード側テレメトリビーコン。純粋コア(判定)は telemetry-beacon.ts、DOM/SDK 接着は
+// telemetry-wire.ts。ここでは1 mount = 1 CardTelemetry を持ち、error 即時 flush / safe-area 変化検出 /
+// ⊕→fullscreen 昇格の focus-probe を積む(ui/→ui/ import は mcp-ui-is-terminal の許可対象)。
+import { CardTelemetry } from "./telemetry-wire";
 // 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント参照)。
 import { shouldSkipDestructiveRender } from "./render-gate";
 import { buildCollectionSheetUpdateArgs } from "./collection-sheet-save";
@@ -332,6 +336,10 @@ let hostAvailableDisplayModes: readonly string[] | null = null;
 // 判断ロジック自体は safe-area.ts の純関数に集約済みなので二重管理の実害は無い)。
 let safeAreaLogged = false;
 
+// #52 タスクB: 1 mount = 1 CardTelemetry。app 生成後(下部)に代入し install() する。生成前に呼ばれる
+// 経路(applySafeAreaVars 等)は cardTelemetry?.record… で握るので TDZ/null どちらでも安全に no-op。
+let cardTelemetry: CardTelemetry | null = null;
+
 /** ctx.safeAreaInsets → --host-safe-top / --host-safe-bottom への反映(applyHostContext の下請け)。
  *  「いくつにすべきか」の判断は safe-area.ts の純関数に委ね、ここは setProperty するだけ(How)。
  *  agenda-entry.ts の同名関数と設計は完全同型(2026-07-23 カード UI 原則 (b) 是正①)。 */
@@ -347,6 +355,13 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 	const bottom = resolveSafeBottomPx(insets, hostDisplayMode);
 	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
 	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
+	// #52 タスクB: 適用値が変化したときだけ safe-area テレメトリを積む(変化検出は wire 側)。
+	// fallbackApplied は resolveSafe*Px の分岐と同条件(申告値 top/bottom が >0 でない かつ fullscreen)を
+	// ここで再現する — 純関数側は px 値だけ返し「フォールバックで埋めたか」を返さないため(実測で
+	// 「申告なし fullscreen の余白」と「申告値」を区別したい・safe-area.ts のフォールバック意図の検証)。
+	const fallbackTopApplied = hostDisplayMode === "fullscreen" && !(insets !== undefined && insets.top > 0);
+	const fallbackBottomApplied = hostDisplayMode === "fullscreen" && !(insets !== undefined && insets.bottom > 0);
+	cardTelemetry?.recordSafeArea(top, insets?.right ?? 0, bottom, insets?.left ?? 0, fallbackTopApplied, fallbackBottomApplied);
 }
 
 function applyHostContext(): void {
@@ -4275,6 +4290,16 @@ let gotResult = false;
 // (McpUiAppCapabilities・spec.types.ts:404-412、AppOptions とは別引数。app.d.ts:501
 // `constructor(_appInfo, _capabilities?, options?)`)。
 const app = new App({ name: "caldav-todos", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
+// #52 タスクB: テレメトリ収集器を app 生成直後に用意し install()(できるだけ早く = 初期化中の
+// 未捕捉エラーも拾うため)。uiHash は焼き込み版ハッシュ(cardBuildHash)。displayMode は送信時点の
+// hostDisplayMode を都度読む(closure)。callServerTool 契約は TelemetryApp(seam)を満たす。
+cardTelemetry = new CardTelemetry({
+	app,
+	cardType: "todos",
+	uiHash: cardBuildHash,
+	getDisplayMode: () => hostDisplayMode,
+});
+cardTelemetry.install();
 // ハンドラは connect 前に登録する(登録前に来た通知を取りこぼさないため。SDK 推奨。
 // ext-apps は「connect 完了後の登録」を警告する _assertHandlerTiming を持つ)。
 app.ontoolresult = (r) => {
@@ -5259,6 +5284,16 @@ function triggerQuickAdd(): void {
 		w.__todosPromoteGen = gen;
 		const focusedBefore = document.activeElement === sheetTitleInput;
 		console.log("[todos] ⊕ promote start", { gen, hostDisplayMode, focusedBefore });
+		// #52 タスクB: 上の console 計測(実機コンソールが無い iOS では拾えない)の telemetry 版。
+		// requestDisplayMode 直前に phase:"before" を積む(この時点で focus はジェスチャ内で確保済みのはず)。
+		// activeElement.id は id 属性名のみ(コード命名の識別子 = PII 安全。空文字は undefined 化)。
+		const activeIdBefore = document.activeElement?.id || undefined;
+		cardTelemetry?.recordFocusProbe(
+			"before",
+			activeIdBefore,
+			sheetTitleInput !== null && sheetTitleInput.isConnected,
+			document.activeElement === sheetTitleInput,
+		);
 		app
 			.requestDisplayMode({ mode: "fullscreen" })
 			.then(() => {
@@ -5274,6 +5309,18 @@ function triggerQuickAdd(): void {
 					stillFocused,
 					activeTag: document.activeElement?.tagName ?? null,
 				});
+				// #52 タスクB: phase:"after" は昇格解決の **600ms 後** に読む(設計指定)。解決直後だと
+				// ホスト側の WebView 差し替え/レイアウト確定が済んでおらず focus 喪失を取りこぼしうるため、
+				// 一拍置いてから activeElement/sheetTitleInput の接続・focus 状態を確定値として記録する。
+				setTimeout(() => {
+					const activeIdAfter = document.activeElement?.id || undefined;
+					cardTelemetry?.recordFocusProbe(
+						"after",
+						activeIdAfter,
+						sheetTitleInput !== null && sheetTitleInput.isConnected,
+						document.activeElement === sheetTitleInput,
+					);
+				}, 600);
 			})
 			.catch(() => {
 				// 拒否/失敗は握りつぶす — 作成ビューは inline のまま成立しているので追加処理は不要。

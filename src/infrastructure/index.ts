@@ -6,6 +6,10 @@ export { OAuthPropsAuth, type OAuthPrincipalProps } from "./auth/oauth-props-aut
 // 各ファイル冒頭参照。
 export { AnalyticsEngineTelemetryAdapter } from "./telemetry/analytics-engine-telemetry";
 export { NoopTelemetryAdapter } from "./telemetry/noop-telemetry";
+// #52 サーバー側テレメトリ受け: CardTelemetryPort の2アダプタ(AE 本番実装 / no-op)。
+// 契約・設計判断のコメントは各ファイル冒頭参照(analytics-engine-telemetry.ts と対だが別 dataset)。
+export { AnalyticsEngineCardTelemetryAdapter } from "./telemetry/analytics-engine-card-telemetry";
+export { NoopCardTelemetryAdapter } from "./telemetry/noop-card-telemetry";
 // #45 場所モデル: geocoding アダプタ(Google Places 実装 + D1 月次 quota ストア)。
 export { GooglePlacesGeocodingAdapter } from "./geocoding/google-places-geocoding";
 export { D1GeocodingQuotaStore } from "./geocoding/d1-geocoding-quota-store";
