@@ -96,13 +96,146 @@ const oauthProvider = new OAuthProvider<CloudflareBindings>({
 });
 
 // =============================================================================
+// 401 / トークン発行の自己診断ログ(2026-07-23 iOS claude.ai カード 401 切り分け)
+// =============================================================================
+// 【背景】docs/log.md の「iOS描画切り分けの結論」で判明した構図は「provider の
+// accessTokenTTL 既定 1時間で失効後、claude.ai web のカード描画パスはリフレッシュして
+// 継続するが、iOS アプリのカード描画パスはリフレッシュせず 401 のまま『サーバーに
+// 接続できません』になる」。ただしこれは診断カード(diag-card)1件の再現で得た仮説であり、
+// 「本当に 1時間 TTL どおりに切れているのか」「もっと短い周期(iOS 側の何らかの事情)で
+// 切れているのか」「そもそも古いコネクタの失効済みトークンを掴んだまま再試行していて
+// 発行記録自体が無いのか」を区別する一次データが無い。この節はそれを埋めるための
+// 自己診断ログ(Workers Logs に出すだけ・機能に影響しない)。
+//
+// 【なぜ SHA-256 の指紋だけをログに出すか】トークン値そのもの・Authorization ヘッダ生値を
+// ログに残すと、Workers Logs(7日保持だが閲覧可能な人間がアクセス制御外に増える)経由で
+// 実質的に有効なアクセストークンが漏洩する。指紋(先頭16 hex)は「同一トークンかどうかの
+// 突き合わせ」には十分で、元のトークン値を復元できない(ハッシュの原像計算困難性)。
+//
+// 【判定手順(このログの読み方)】
+//  1. Workers Logs から diag:"tokenIssued" を全件集め、tokenFp → { ts, expiresIn } の表を作る。
+//  2. diag:"auth401" の tokenFp をその表と突き合わせる。
+//     - 表に無い(発行記録が無い) → そのトークンは今回のログ観測期間より前に発行された
+//       ものか、無効なトークンを最初から掴んでいる(コネクタの古いトークン再利用説の証拠)。
+//     - 表にあり、401.ts >= issued.ts + expiresIn*1000 → 申告どおりの TTL 失効
+//       (1時間 TTL 失効説を裏付け)。
+//     - 表にあり、401.ts < issued.ts + expiresIn*1000 → TTL 内での 401 = provider 側の
+//       別要因(KV 未反映・失効操作・invalid_token 以外の理由)。expiresIn 未満での早期失効を
+//       示すので「もっと短い周期説」の裏付けになる。
+//  3. 期間中に diag:"tokenIssued" が1件も無いのに diag:"auth401" が出ている場合、iOS が
+//     このデプロイ以降トークンを一度も新規発行していない = 古いセッション/コネクタが
+//     ずっと同じ(既に失効済みの)トークンを使い回している可能性が高い。
+//
+// 【Workers Logs の保持期間について】既定 7日保持で、TTL 1時間 vs もっと短い周期かを
+// 見分けるには十分な解像度(1時間单位の事象を7日分追える)。
+// =============================================================================
+
+/** Bearer トークン文字列から SHA-256 先頭16 hex の指紋を作る(生値はログに出さない)。 */
+async function fingerprintToken(token: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+	const hex = Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+	return hex.slice(0, 16);
+}
+
+/** Authorization: Bearer <token> ヘッダから指紋を作る。ヘッダ無し/形式不正は "none"。 */
+async function fingerprintAuthHeader(request: Request): Promise<string> {
+	const header = request.headers.get("authorization") ?? request.headers.get("Authorization");
+	if (!header) return "none";
+	const match = /^Bearer\s+(.+)$/i.exec(header);
+	if (!match) return "none";
+	return await fingerprintToken(match[1]);
+}
+
+/**
+ * provider.fetch を診断ログでラップする。診断ログの実装ミスが本経路を絶対に壊さないよう
+ * 関数全体を try/catch で包み、失敗時は診断をスキップして素のレスポンスをそのまま返す
+ * (診断ログは「あれば嬉しい」であって「無いと困る」ではない — 本番の可用性を優先)。
+ */
+async function fetchWithAuthDiagnostics(request: Request, env: CloudflareBindings, ctx: ExecutionContext): Promise<Response> {
+	// 【なぜ provider.fetch を呼ぶ「前」に request.clone() するか(実装時に踏んだ罠)】
+	// Request.clone() は body ストリームが未消費でないと呼べない(呼ぶと
+	// "Body has already been used" で例外)。oauthProvider.fetch(request, ...) は
+	// /oauth/token のような POST リクエストの body を内部で読んでしまうため、
+	// provider.fetch を呼んだ**後**に request.clone() しようとすると必ず例外になり、
+	// この関数全体を包む try/catch に静かに飲まれて診断ログが1件も出ない
+	// (この壊れ方は「ログが出ない」以外の症状が無く気づきにくい — worker テストの
+	// (c) で実際に踏んで気づいた)。よって「後で clone するかもしれない」判断が
+	// できる時点(= provider.fetch を呼ぶ前)でリクエストの複製を確保しておく。
+	const requestForDiagnostics = request.clone();
+	const response = await oauthProvider.fetch(request, env, ctx);
+
+	try {
+		const url = new URL(request.url);
+
+		// --- ①401 応答の観測(/mcp の invalid_token 401 が主対象だが、パス限定はせず
+		//     provider が 401 を返した全リクエストを拾う。診断対象を広めに取ることで
+		//     「/mcp 以外の経路でも 401 切れが起きているか」まで併せて確認できる) ---
+		if (response.status === 401) {
+			const tokenFp = await fingerprintAuthHeader(request);
+			const userAgent = request.headers.get("user-agent") ?? "";
+			console.log(
+				JSON.stringify({
+					diag: "auth401",
+					path: url.pathname,
+					method: request.method,
+					ua: userAgent.slice(0, 80),
+					tokenFp,
+					ts: Date.now(),
+				}),
+			);
+		}
+
+		// --- ②トークン発行の観測(POST /oauth/token が 200 を返したとき) ---
+		if (url.pathname === "/oauth/token" && request.method === "POST" && response.status === 200) {
+			// grant_type は request body(form-urlencoded)から読む。関数冒頭で確保した
+			// requestForDiagnostics(provider.fetch に渡す前に clone 済み)を使う理由は
+			// requestForDiagnostics 定義のコメント参照(ここで request.clone() すると
+			// 既に body 消費済みで例外になる)。
+			const grantType = new URLSearchParams(await requestForDiagnostics.text()).get("grant_type") ?? undefined;
+
+			// レスポンス body は clone() してから読む。clone しないと呼び出し元(実際に
+			// この Response を使う側)がボディを読めなくなり、診断ログの追加が本経路を
+			// 壊してしまう(この関数の最優先事項 = 素通しを壊さないこと)。
+			const body = (await response.clone().json()) as {
+				access_token?: string;
+				refresh_token?: string;
+				expires_in?: number;
+			};
+			const tokenFp = body.access_token ? await fingerprintToken(body.access_token) : "none";
+			const refreshFp = body.refresh_token ? await fingerprintToken(body.refresh_token) : undefined;
+			console.log(
+				JSON.stringify({
+					diag: "tokenIssued",
+					tokenFp,
+					refreshFp,
+					grantType,
+					expiresIn: body.expires_in,
+					ts: Date.now(),
+				}),
+			);
+		}
+	} catch {
+		// 診断ログ自体の失敗(JSON パース失敗・想定外のボディ形状等)は握りつぶす。
+		// 本経路の応答(response)には一切触れていないので、ここに来ても呼び出し元への
+		// 影響はゼロ。
+	}
+
+	return response;
+}
+
+// =============================================================================
 // Worker のエントリポイント(default export)— fetch は provider に委譲・scheduled は R2 ゴミ箱 purge
 // =============================================================================
 // 【R2 ソフトデリート purge cron(2026-07-23 #47)】wrangler.jsonc の triggers.crons(日次1回)から
 // 呼ばれる。実体(30日 TTL・repositoriesFactory 経由の D1 アクセス)は app.ts の scheduled 関数に
 // 置く(provider 非依存を保つ app.ts の絶対ルールと矛盾しない — scheduled 関数のコメント参照)。
 // ここではそれをそのまま default export の scheduled フィールドへ配線するだけ。
+// fetch は診断ログ付きの fetchWithAuthDiagnostics 経由にする(2026-07-23 iOS 401 切り分け用。
+// 上のコメントブロック参照)。診断ログは判定材料が揃い次第(1時間 TTL 失効どおりか確定次第)
+// 撤去する想定 — 恒久機能ではない。
 export default {
-	fetch: (request: Request, env: CloudflareBindings, ctx: ExecutionContext) => oauthProvider.fetch(request, env, ctx),
+	fetch: (request: Request, env: CloudflareBindings, ctx: ExecutionContext) => fetchWithAuthDiagnostics(request, env, ctx),
 	scheduled,
 };
