@@ -1098,3 +1098,19 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   Google Places Text Search 単段(GSI は住所形前処理の将来候補・Apple はポートの口のみ)。
   実測: Nominatim は道玄坂2-1-1 ゼロ件・GSI は番レベル解決。次: 鍵受領後に GSI/Google/Apple の
   POI クエリ精度ベンチ → #45 実装。
+
+## 2026-07-23(続き8・geocoding プロバイダ実測ベンチ)
+
+- #45 に先立ち GSI / Google Places Text Search (New) / Apple Maps Server API を LLM ユーザー想定の
+  18クエリ(「品川の叙々苑」必須指定含む)で実測比較(詳細: docs/research/geocoding-bench-2026-07-23.md)。
+- 解決率 Google 18/18・Apple 17/18・GSI 16/18。ただし数字以上に質の差が大きい:
+  GSI は住所検索専用で POI 名に**部分一致の無関係住所を返す**(「東京駅」→ 北海道札幌市東区、
+  833km 乖離)— チェーンの前段に置くと誤答を高確度で混入させる危険があり前段採用は不可。
+  Apple は必須クエリ「品川の叙々苑」が search/geocode とも 0 件・チェーン店曖昧クエリで地域名止まり・
+  住所クエリで無関係 POI(番地→ドンキ)と、主力にならず。Google は POI/住所とも安定し
+  displayName/formattedAddress/location が structuredLocation の3点セットにそのまま写像できる。
+- 裁定(第3版)を実測で確定: **known-locations 先引き → Google Places Text Search 単段**。
+  GSI は「住所クエリの裏取り・座標相互検証」の補助価値のみ(初版は入れない)。
+- 鍵の受け渡し完了: .secrets.local.json(GOOGLE_MAPS_API_KEY / APPLE_MAPS_TOKEN /
+  APPLE_MAPS_KEY_ID / APPLE_MAPS_TEAM_ID)+ AuthKey_*.p8(gitignore 済み)。
+  Google プロジェクトは Places/Geocoding の2 API に整理・キーも2 API 制限済み。
