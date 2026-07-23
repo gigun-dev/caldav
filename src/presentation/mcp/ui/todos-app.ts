@@ -264,6 +264,11 @@ export const TODOS_APP_HTML = `<!doctype html>
   .menu-item-row + .menu-item-row,
   .menu-item-row + .menu-item-add,
   .menu-item-add { border-top: 1px solid var(--border); }
+  /* 【2026-07-23 是正】「すべて」行(menu-all-row)と単一コレクション行群の区切り線。上の隣接セレクタは
+   * 「前の兄弟が .menu-item-row であること」を要求するため、リスト先頭に置く「すべて」行の直後には
+   * 効かない(すべて行自身は .menu-item-row でラップしていない単独 button のため)。この行専用に
+   * border-bottom で区切る(自己完結させることで、以後 addRow 等の挿入順が変わっても壊れにくくする)。 */
+  .menu-all-row { border-bottom: 1px solid var(--border); }
   .menu-item:active { background: var(--surface); }
   /* 現在行の check スロット(常に幅を確保して表示名の左端を揃える。check の有無で行がガタつかない)。 */
   .menu-item .check-slot { width: 16px; flex: none; color: var(--accent); display: flex; align-items: center; }
@@ -362,6 +367,27 @@ export const TODOS_APP_HTML = `<!doctype html>
     text-transform: none;
   }
   section.sec-overdue h2 { color: var(--danger); }
+  /* 【2026-07-23 是正】「すべて」表示(コレクションごとのグループ表示)のグループ見出し。
+   * 期日セクション見出し(h2・上記)とは別の情報軸(「いつ」ではなく「どのリスト」)なので h2 は
+   * 再利用せず専用クラスにする。色ドット+リスト名+件数の並びはメニュー(.menu-item .menu-color-dot)と
+   * 同じ視覚語彙に揃え、ユーザーがメニューで見た色とグループ見出しの色を素直に対応付けられるようにする。 */
+  .cal-group-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  /* 色ドットはメニューの .menu-color-dot と同寸(10px)にし、「同じ色を指している」ことが一目で
+   * 分かるようにする(サイズを変えると別の意味の色に見えてしまう)。 */
+  .cal-group-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
+  .cal-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-group-count { flex: none; color: var(--muted); font-weight: 400; }
+  /* グループ内の「他 n件」(有界原則・グループごとの折り畳み)。既存の .fold-more(未完了/完了済みの
+   * 折り畳みと同じ視覚言語)をそのまま流用し、余白だけグループ内に収まるよう詰める。 */
+  .cal-group-more { margin: 2px 0 0; padding: 2px 2px 2px; }
   /* 完了済みは <details> で折り畳み(既定閉)。summary をセクション見出しと同格の見た目に。 */
   details > summary {
     cursor: pointer;

@@ -138,7 +138,7 @@ import { FEEDBACK, isCommitting } from "./feedback";
 // C1+C2(設計04 §5・swift-mcp-app 側 docs/design/04-display-mode-and-card-height.md): inline
 // displayMode の「畳み」判定は DOM に触れない純関数として切り出す(feedback.ts / row-key.ts と
 // 同じ規律)。DOM 操作(li 間引き・「残り n 件」ノードの挿入)は renderAll 側(このファイル)で行う。
-import { INLINE_PREVIEW_MAX, canRequestFullscreen, computeInlineFit } from "./fold";
+import { INLINE_PREVIEW_MAX, boundPreviewList, canRequestFullscreen, computeInlineFit } from "./fold";
 // 安全先頭(safe top)規約の共有カーネル(2026-07-23 カード UI 原則 (b) 是正①・modeling/15 §B-3)。
 // agenda-entry.ts と同じ純関数を使う(HostContext.safeAreaInsets → CSS 変数 px 値の決定だけを担う)。
 import { resolveSafeTopPx, resolveSafeBottomPx, type SafeAreaInsets } from "./safe-area";
@@ -151,7 +151,12 @@ import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } 
 // ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
 import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
-import { mergeTasksByCalendar, filterTasksByCalendar } from "./todos-calendar-filter";
+import {
+	mergeTasksByCalendar,
+	filterTasksByCalendar,
+	groupTasksByCalendar,
+	ALL_CALENDARS_ID,
+} from "./todos-calendar-filter";
 // 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。freshness.ts 冒頭コメント参照。
 import { shouldRevalidateOnPush } from "./freshness";
 // 2026-07-23 K2-UI①②: カレンダー色の合成規則(実色優先・無ければハッシュパレット)とパレット定数。
@@ -682,13 +687,29 @@ function resetPositionMemory(): void {
 	positionMemory.clear();
 	stickyData.clear();
 	positionSeq = 0;
-	// C0-a′(2026-07-23 再導入分): インスタンス境界(fresh render / calendarId・view 切替)では
-	// 猶予タイマーも道連れに掃除する。掃除しないと、切替後の新しい positionMemory に対して
-	// 古い id の finishDoneExit が後から発火し(delete は no-op で実害は薄いが)無意味な
-	// guardedRenderAll が起きる — クリーン切替の意味(要件4)に反するため明示的に止める。
-	for (const timer of retiringDoneIds.values()) clearTimeout(timer);
-	retiringDoneIds.clear();
-	exitingDoneIds.clear();
+	// 【2026-07-23 是正(退行#5): 猶予タイマー(retiringDoneIds/exitingDoneIds)はもう道連れに
+	// しない】旧実装(C0-a′ 再導入分のコメント参照)はここで setTimeout を clearTimeout して
+	// 掃除していたが、これが「done 行が3秒後に移動しない」回帰の直接原因だった。
+	// 【回帰の再現手順】① タスクを完了(scheduleDoneExit が 3000ms 後の finishDoneExit を予約)。
+	// ② 猶予中(3秒以内)に別のリストへ切り替える/エージェントが includeCompleted:true 等の
+	// 別ビューで list-todos を叩く push を受ける、のどちらかが起きると applyStructuredContent
+	// (viewChanged 分岐)か switchCalendar がこの resetPositionMemory を呼ぶ。③ 旧実装はここで
+	// 予約済みタイマーを clearTimeout して retiringDoneIds/exitingDoneIds を空にしていたため、
+	// finishDoneExit が二度と発火せず、その行は「完了済みチェックが付いたまま元の due セクションに
+	// 永遠に留まる」= 3秒後も完了済みセクションへ移動しない、という体験になっていた。
+	// 【なぜ道連れにする必要が無いか】retiringDoneIds/exitingDoneIds は id をキーにした「その完了操作
+	// 自体の状態」であって、positionMemory/stickyData(「今どのビューでどこに描くか」という描画位置の
+	// 記憶)とは別の関心事(todos-entry.ts 冒頭 C0-a′ の2段階構成コメント参照)。よってビュー切替で
+	// positionMemory を破棄しても、退場タイマーは無関係に生存させたままでよい —
+	// setTimeout のコールバック(beginDoneExitAnimation/finishDoneExit)は module 変数
+	// (retiringDoneIds/exitingDoneIds/positionMemory/stickyData)を直接読み書きし、発火時点の
+	// 状態(=切替後の新しいビュー)に対して安全に no-op 相当の掃除を行うだけ(positionMemory に
+	// 既に無い id への delete は no-op)。旧コメントが懸念していた「無意味な guardedRenderAll」は
+	// 実害が「先勝ちを待たず完了済みへ渡すはずだった行が永遠にその場に残る」というより大きな実害
+	// (退行#5)より軽微なので、掃除しない方を選ぶ。
+	// 【completedSummary との整合】タイマーを生かしたままでも、finishDoneExit が発火するまでは
+	// isDoneRowStillInPlace(id) が true のままなので completedSummary 側の重複表示は起きない
+	// (仕様1の不変条件は維持される)。発火後は正しく completedSummary 側だけの表示へ収束する。
 }
 /** 位置記憶に無い新規行の自然セクション(due/completed 規則)。初出時の配置と、非 manual 経路の
  *  per-item ロジックに揃える。completed は "completed"(初出時に既に完了していた行だけがここに来て
@@ -727,7 +748,32 @@ const sortMode: "manual" = "manual";
 // 単一コレクション応答(vm.calendarId が非 null)のときだけ、その値で currentCalendarId を
 // 確立/追随する(mutate 系は常にこの経路 — 自分が作成/操作した先のリストに追随するのは自然)。
 // ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未選択。
+// 【2026-07-23 是正: ALL_CALENDARS_ID(「すべて」)を追加】K3 の既定選択が「全コレクション合流」を
+// 無言の既定にしていた実害(reading-list の本が tasks の一覧に貫通)を受け、横断表示はユーザーが
+// 切替メニューで明示的に選んだときだけの非既定オプションへ格下げした。currentCalendarId が
+// ALL_CALENDARS_ID を持つ状態は「ユーザーが明示的に横断表示を選んだ」ことを意味し、null(まだ何も
+// 選ばれていない)とは値・意味とも明確に区別する(todos-calendar-filter.ts の ALL_CALENDARS_ID
+// コメント参照)。
 let currentCalendarId: string | null = null;
+/** currentCalendarId が「実在する単一コレクションの ID」か(= ALL_CALENDARS_ID でも null でもないか)。
+ *  create/update/delete/move-todo の calendarId 引数は実在コレクションにしか送れない(サーバーに
+ *  "__all__" という架空のコレクション ID を渡すと 404/バリデーションエラーになる)ため、mutate 系の
+ *  引数組み立てはすべてこのガードを通す(旧 `currentCalendarId !== null` を置き換え)。 */
+function isConcreteCalendarId(id: string | null): id is string {
+	return id !== null && id !== ALL_CALENDARS_ID;
+}
+
+/** update/delete/move-todo の calendarId 引数を決める(2026-07-23 是正)。
+ *  「すべて」表示中(currentCalendarId===ALL_CALENDARS_ID)でも、操作対象の task 自身は必ず実在する
+ *  単一コレクションに属している(server の Task.calendarId は横断/単一どちらの応答でも常にセットする
+ *  契約 — todos-calendar-filter.ts の CalendarTaggedItem コメント参照)ので、まず task.calendarId を
+ *  優先する。task.calendarId が無い(旧応答/フィクスチャ由来の所属不明行)ときだけ currentCalendarId
+ *  (実在コレクションのときのみ)にフォールバックし、どちらも無ければ undefined(引数省略 = server 既定
+ *  へ degrade)を返す。 */
+function resolveMutationCalendarId(task: TodoItem): string | undefined {
+	if (task.calendarId !== undefined) return task.calendarId;
+	return isConcreteCalendarId(currentCalendarId) ? currentCalendarId : undefined;
+}
 // crossFetchDone(K3): owner 配下の全 VTODO コレクションを横断取得済みか。false の間だけ
 // switchCalendar が背景で1回 fetchLatest(cross)を行い、以降は真にネットワーク往復ゼロで
 // クライアント側フィルタだけに徹する(switchCalendar のコメント参照)。cross 応答
@@ -2836,7 +2882,12 @@ async function moveTodo(task: TodoItem, toCalendarId: string): Promise<void> {
 	clearBanner();
 	try {
 		const args: Record<string, unknown> = { id: task.id, toCalendarId };
-		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		// 【2026-07-23 是正】calendarId は「移動元コレクション」。「すべて」表示中(currentCalendarId ===
+		// ALL_CALENDARS_ID)はこの task 自身が実在する実コレクション(task.calendarId)へフォールバックする
+		// (currentCalendarId をそのまま送ると架空の "__all__" がサーバーへ渡ってしまう — 下記
+		// resolveMutationCalendarId のコメント参照)。
+		const moveSourceCalendarId = resolveMutationCalendarId(task);
+		if (moveSourceCalendarId !== undefined) args.calendarId = moveSourceCalendarId;
 		// 【2026-07-17 TZ グラウンディング】move 応答は移動元ビューの確定一覧を組み直すので、
 		// 時刻付き DUE が UTC 落ちしないよう閲覧デバイスのゾーンを常時送る(refreshArgs と対称)。
 		args.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -3075,6 +3126,87 @@ function appendSection(
 	parent.appendChild(section);
 }
 
+/**
+ * 【2026-07-23 是正・仕様②】「すべて」表示: 期日セクション(overdue/today/upcoming/noDue)を
+ * コレクションごとのグループへ組み替えて描画する。
+ *
+ * 【入力の作り方】s(sectionizeManual の結果)は「未完了行の due 優先順」を4バケツに分けたもの
+ * なので、overdue→today→upcoming→noDue の順で1本に連結すれば「due 優先順を保った全行の並び」に
+ * なる。これを groupTasksByCalendar(純関数・todos-calendar-filter.ts)で calendarId ごとに
+ * 分けるだけで、各グループ内の順序は自動的に「due 優先順」= 仕様が言う「既存の並び規則」を
+ * 保ったまま引き継がれる(groupTasksByCalendar は並べ替えない契約 — 同ファイルの JSDoc 参照)。
+ * completed(s.completed)はこの連結に含めない — sectionizeManual の s.completed は死の描画経路
+ * (renderAll は completedSummary という別チャンネルを使う。sectionizeManual の JSDoc 8 参照)であり、
+ * 完了済みセクションは「すべて」表示でも仕様どおり1つ(owner 全体の completedSummary のまま)にする。
+ *
+ * 【グループの表示順】calendarsCache(VTODO のみ・メニューと同じ順)を優先し、未取得/未知の
+ * calendarId は末尾に回す(groupTasksByCalendar の calendarOrder 引数 — 省略時は初出順)。
+ *
+ * 【有界原則(仕様②)】グループごとに boundPreviewList(fold.ts・INLINE_PREVIEW_MAX=5)で先頭 N 件
+ * だけを表示し、残りは「他 n件」(既存の .fold-more 語彙を流用)で件数だけ示す。renderAll 末尾の
+ * applyInlineFold(高さベースの全体クランプ)はこの後もそのまま動く — 両者は排他ではなく「グループ
+ * 単位の有界化(件数ベース)」+「カード全体の有界化(高さベース)」の二段防御として重なる。
+ *
+ * 【仕様④: 行単位の色は付けない(判断)】グループ見出し(cal-group-dot)が既にそのグループ全行の
+ * 所属コレクション色を1回で示しているため、renderRow が組み立てる各 <li> に重ねて同じ色を
+ * もう一度出すのは冗長情報の重複になる(1グループ内で行ごとに色が変わることは無い=見出しの色が
+ * グループ全体に対して常に真)。agenda(仕様③)が行ごとに実色を要求するのは「1リスト内に複数
+ * カレンダーの予定が入り混じる」構造(日付見出し配下に異なるカレンダーの occurrence が混在しうる)
+ * だからで、todos の「すべて」はコレクション単位でグループそのものを分けている以上、行の中に
+ * 複数コレクションが混在する場面が構造的に存在しない。よって行単位の色は実装しない。
+ */
+function appendCollectionGroups(parent: HTMLElement, s: Sections, todayKey: string): void {
+	const flattened = s.overdue.concat(s.today, s.upcoming, s.noDue);
+	const calendarOrder = calendarsCache?.filter((c) => c.components.includes("VTODO")).map((c) => c.id);
+	const groups = groupTasksByCalendar(flattened, calendarOrder);
+	for (const group of groups) {
+		if (group.tasks.length === 0) continue;
+		const section = document.createElement("section");
+		section.className = "sec-cal-group";
+		const head = document.createElement("div");
+		head.className = "cal-group-head";
+		// calendarId === ""(旧応答由来の所属不明行の受け皿)は色ドット無し・「そのほか」表記にする
+		// (架空の calendarId で calendarColor/titleForCalendarId を呼ぶと id ハッシュ色/生 id 文字列が
+		// 出て「変な色・変な名前のリスト」に見えてしまうため、意味のある専用ラベルに倒す)。
+		const isUnknown = group.calendarId === "";
+		if (!isUnknown) {
+			const dot = document.createElement("span");
+			dot.className = "cal-group-dot";
+			dot.style.background = calendarColor(group.calendarId);
+			head.appendChild(dot);
+		}
+		const name = document.createElement("span");
+		name.className = "cal-group-name";
+		name.textContent = isUnknown ? "そのほか" : titleForCalendarId(group.calendarId);
+		head.appendChild(name);
+		const count = document.createElement("span");
+		count.className = "cal-group-count";
+		count.textContent = `(${group.tasks.length}件)`;
+		head.appendChild(count);
+		section.appendChild(head);
+
+		const { visible, remaining } = boundPreviewList(group.tasks, INLINE_PREVIEW_MAX);
+		const ul = document.createElement("ul");
+		for (const t of visible) ul.appendChild(renderRow(t, todayKey));
+		section.appendChild(ul);
+		if (remaining > 0) {
+			// completedSummary の「他 n件」(受動・タップ不可)と同じ視覚語彙。グループ単位の全件閲覧
+			// 導線(タップして展開等)は今回のスコープ外 — 有界原則の最小実装として件数だけ示す
+			// (①③④と同様、過剰実装を避ける判断。将来ニーズが出れば group タップで単一コレクション
+			// 表示へ切り替える導線を足す拡張余地として残す)。
+			const more = document.createElement("div");
+			more.className = "fold-more cal-group-more";
+			more.appendChild(document.createTextNode("他 "));
+			const moreCount = document.createElement("span");
+			moreCount.className = "fold-more-count";
+			moreCount.textContent = `${remaining}件`;
+			more.appendChild(moreCount);
+			section.appendChild(more);
+		}
+		parent.appendChild(section);
+	}
+}
+
 /** 全体描画。#root を作り直す唯一の関数(一方向データフロー)。sheetState に応じて
  *  一覧ページ / 詳細ページ / リスト選択ページのどれかを描く(v3 カード内ページ遷移)。 */
 function renderAll(): void {
@@ -3128,7 +3260,11 @@ function renderAll(): void {
 	// filterTasksByCalendar により「今表示中のリスト」(currentCalendarId)だけへ絞り込む
 	// (仕様「セクション計算に calendarId フィルタを一段挟む」)。以降のセクション計算・
 	// 件数表示はすべてこの絞り込み後の baseTasks を土台にする。
-	const baseTasks = filterTasksByCalendar(tasks ?? [], currentCalendarId);
+	// 【2026-07-23 是正: 「すべて」(ALL_CALENDARS_ID)は絞り込まない】ユーザーが横断表示を明示的に
+	// 選んだときだけ、フィルタを掛けずに全コレクションの行を baseTasks へ通す — 下の appendSection/
+	// appendCollectionGroups の分岐で「単一セクション表示 / コレクションごとグループ表示」を切り替える。
+	const isAllView = currentCalendarId === ALL_CALENDARS_ID;
+	const baseTasks = isAllView ? (tasks ?? []).slice() : filterTasksByCalendar(tasks ?? [], currentCalendarId);
 	const todayKey = localDateKey(new Date());
 	// 【C0-c: 削除ゴースト(ghostItems)の合流を廃止(2026-07-17 ユーザー裁定)】旧実装はここで
 	// ghosts(removed 由来)を擬似 TodoItem に変換し通常セクションへ合流させ、renderRow が破線ボックス
@@ -3144,7 +3280,22 @@ function renderAll(): void {
 	const affectedItems: TodoItem[] = [];
 	for (const a of affectedById.values()) {
 		// C0-a 撤去済み(2026-07-23): retiredDoneIds による除外はここにもあったが不要になった(上部コメント参照)。
-		if (a.kind === "completed" && a.task !== undefined && !taskIds.has(a.id)) {
+		// 【2026-07-23 是正(退行#5 の随伴修正): isDoneRowStillInPlace(猶予中 or 退場アニメ中)のときだけ合成する】
+		// 旧条件は `!taskIds.has(a.id)` だけだったため、finishDoneExit で退場が完了した(=もう表示すべきで
+		// ない)行の affectedById エントリが次の描画でも毎回ここに引っかかり、sectionizeManual の
+		// naturalSection(completed)経由で positionMemory の s.completed バケツ(renderAll がもう
+		// 描画に使わない死の経路)へ id が再び書き込まれ続ける「復活」が起きていた(実害は無いが不変条件
+		// 違反 = affected は本来「その完了操作1回きり」の一過性メタのはずが、次に applyStructuredContent
+		// が呼ばれて affectedById が丸ごと入れ替わるまで無期限に居座っていた)。isDoneRowStillInPlace で
+		// 「まだ本体側に実体があるべき期間(猶予中/退場アニメ中)」だけに絞ることで、退場完了後は
+		// 二度とこのループが id を拾わなくなり、completedSummary 側だけの表示へ正しく収束する
+		// (isDoneExitPending は done-exit.ts の純関数 — 冒頭 import 参照)。
+		if (
+			a.kind === "completed" &&
+			a.task !== undefined &&
+			!taskIds.has(a.id) &&
+			isDoneExitPending({ retiring: retiringDoneIds.has(a.id), exiting: exitingDoneIds.has(a.id) })
+		) {
 			// 【> 2026-07-17 実機 FB「done で notes が消える」修正】snapshot(TaskSnapshot は notes を持たない)から
 			// 作った最小行をそのまま synthDone にすると、sectionizeManual の liveById に載って notes まで揃った
 			// stickyData より優先され、完了行の notes が描画から消える。sticky を土台に merge して full な形を保つ
@@ -3185,10 +3336,19 @@ function renderAll(): void {
 		root.appendChild(empty);
 	}
 
-	appendSection(root, "sec-overdue", "期限切れ", s.overdue, todayKey);
-	appendSection(root, "sec-today", "今日", s.today, todayKey);
-	appendSection(root, "sec-upcoming", "今後", s.upcoming, todayKey);
-	appendSection(root, "sec-nodue", "期日なし", s.noDue, todayKey);
+	// 【2026-07-23 是正・仕様②】「すべて」表示は期日セクション(期限切れ/今日/今後/期日なし)ではなく
+	// コレクションごとのグループ見出しで分けて表示する — ユーザー裁定「コレクションは分離して基本表示。
+	// 横断表示はニーズがあれば良いが、その場合はコレクションごとに(グルーピングして)表示」の理由:
+	// 期日でマージした表示は reading-list の本(!!! 付き)が tasks の一覧に貫通して混ざって見える実害
+	// (K3 の既定選択バグの症状そのもの)を生む——「コレクション = 文脈の境界」を期日マージが壊すため。
+	if (isAllView) {
+		appendCollectionGroups(root, s, todayKey);
+	} else {
+		appendSection(root, "sec-overdue", "期限切れ", s.overdue, todayKey);
+		appendSection(root, "sec-today", "今日", s.today, todayKey);
+		appendSection(root, "sec-upcoming", "今後", s.upcoming, todayKey);
+		appendSection(root, "sec-nodue", "期日なし", s.noDue, todayKey);
+	}
 
 	// --- ドラフト行(FAB で生やした未送信の新規行)を一覧末尾(期日なしの下)に選択状態で描く ------------
 	// sectionize に混ぜず末尾へ直接置くのは、空タイトルの draft を compareTasks に通すと localeCompare で
@@ -4157,7 +4317,8 @@ async function flushToggle(task: TodoItem): Promise<void> {
 				// null(初回応答前)のときだけ省略して server 既定に委ねる。timeZone は時刻付き DUE の UTC 落ち
 				// 防止で常時送る(refreshArgs と同様)。
 				const updateArgs: Record<string, unknown> = { id, status: desired.status };
-				if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+				const toggleCalendarId = resolveMutationCalendarId(task);
+				if (toggleCalendarId !== undefined) updateArgs.calendarId = toggleCalendarId;
 				updateArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 				result = await app.callServerTool({ name: "update-todo", arguments: updateArgs });
 				if (result.isError) {
@@ -4315,7 +4476,8 @@ async function deleteTask(task: TodoItem): Promise<void> {
 	try {
 		// calendarId は必ず渡す(2026-07-14 実機バグ修正の監査対象。null のときだけ省略)。
 		const deleteArgs: Record<string, unknown> = { id: task.id };
-		if (currentCalendarId !== null) deleteArgs.calendarId = currentCalendarId;
+		const deleteCalendarId = resolveMutationCalendarId(task);
+		if (deleteCalendarId !== undefined) deleteArgs.calendarId = deleteCalendarId;
 		// 【2026-07-17 TZ グラウンディング】delete 応答も確定一覧(残った行)を組み直すので、
 		// 一覧の時刻付き DUE が UTC 落ちしないよう閲覧デバイスのゾーンを常時送る(refreshArgs と対称)。
 		deleteArgs.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -4471,7 +4633,8 @@ async function saveEdit(task: TodoItem, changes: UpdateTodoChanges): Promise<voi
 		// calendarId は必ず currentCalendarId を渡す(仕様B-4・先日のバグ再発防止)。null(初回応答前)の
 		// ときだけ省略して server 既定に委ねる。変更フィールドだけを載せる(undefined は送らない=部分更新)。
 		const updateArgs: Record<string, unknown> = { id: task.id };
-		if (currentCalendarId !== null) updateArgs.calendarId = currentCalendarId;
+		const editCalendarId = resolveMutationCalendarId(task);
+		if (editCalendarId !== undefined) updateArgs.calendarId = editCalendarId;
 		// timeZone は常時送る(件3 TZ グラウンディング 2026-07-17): 2つの役割を兼ねる —
 		//  ① 時刻付き due を送るとき DTSTART;TZID/DUE;TZID + VTIMEZONE の解釈ゾーン(下の due 分岐で必須)、
 		//  ② update-todo 応答 vm.timeZone の表示ゾーン(「時間帯」行が UTC に落ちないための grounding)。
@@ -4636,10 +4799,16 @@ function enqueueQuickAdd(title: string, details: QuickAddDetails): void {
 /** 仮行 optimisticId に対応する create-todo を裏で実行し、成功/失敗で仮行を回収する。 */
 async function createTodoFor(optimisticId: string, title: string, details: QuickAddDetails): Promise<void> {
 	try {
-		// calendarId は今表示中のコレクション(currentCalendarId)に作る。未受領(null)なら引数を
-		// 省いて server 既定("tasks")に委ねる(ヘッダがプレースホルダ表示中に投入された場合の安全側)。
+		// calendarId は今表示中のコレクション(currentCalendarId)に作る。未受領(null)/「すべて」表示中
+		// (ALL_CALENDARS_ID・作成先として実在しない架空コレクション)なら引数を省いて server 既定
+		// ("tasks")に委ねる(ヘッダがプレースホルダ表示中に投入された場合の安全側と同じ degrade)。
+		// 【Why not: 「すべて」表示中の作成先をユーザーに選ばせる専用 UI を作らなかったか】このカードの
+		// 作成導線(⊕)は「今見ているリストへ素早く1件足す」ための最小 UI という位置づけ(冒頭「作成行は
+		// 置かない」判断の系譜)。「すべて」表示は複数リストを俯瞰するための閲覧モードであり、そこから
+		// 新規作成する操作自体が稀(かつ「どのリストに入れるか」を選ばせる追加ステップは有界・軽量の
+		// 設計方針に反する)と判断し、単一リスト表示時と同じ「server 既定へ degrade」に倒す。
 		const args: Record<string, unknown> = { title };
-		if (currentCalendarId !== null) args.calendarId = currentCalendarId;
+		if (isConcreteCalendarId(currentCalendarId)) args.calendarId = currentCalendarId;
 		// 段階的開示の詳細を create-todo の due 判別 union の形に正確に合わせる(仕様A-3):
 		//   due が終日 → "YYYY-MM-DD"(timeZone 不要) / 時刻付き → "YYYY-MM-DDTHH:MM:SS" + timeZone。
 		//   timeZone は閲覧デバイスの IANA ゾーン(create-todo は時刻付き due に timeZone 必須)。
@@ -4826,6 +4995,7 @@ headerDoneEl.addEventListener("click", () => {
  *  初回応答〜メニュー未展開の間はキャッシュが無い。その間はヘッダに raw id が出る(従来と同じ挙動=
  *  後方互換の degrade)。メニューを開けば ensureCalendars がキャッシュを埋め、以降 displayName に揃う。 */
 function titleForCalendarId(id: string): string {
+	if (id === ALL_CALENDARS_ID) return "すべて"; // 2026-07-23: 横断表示の見出し(切替メニューの語彙と一致)。
 	const hit = calendarsCache?.find((c) => c.id === id);
 	return hit !== undefined && hit.displayName !== "" ? hit.displayName : id;
 }
@@ -4873,6 +5043,33 @@ function renderListMenu(): void {
 		name.textContent = "リストがありません";
 		empty.append(el("span", "check-slot"), name);
 		listMenuEl.appendChild(empty);
+	}
+	// 【2026-07-23 是正】「すべて」行(横断表示・コレクションごとグループ表示)。単一コレクション行の
+	// 手前に置く — 「基本は単一コレクション、横断は選べるオプション」という優先順位をメニューの視覚順にも
+	// 反映する(既定は単一コレクションのまま。この行を選んだときだけ ALL_CALENDARS_ID になる)。
+	// リストが1つも無い(lists.length===0)ときは「すべて」を出す意味が無い(束ねる対象が無い)ので省く。
+	if (lists.length > 0) {
+		// menu-all-row: 単一コレクション行群との視覚的な区切り線(border-bottom)を付けるための追加クラス。
+		// 既存の罫線規則(.menu-item-row 隣接セレクタ)はこの行の直後の最初の .menu-item-row には効かない
+		// (隣接セレクタが「前の兄弟が .menu-item-row であること」を要求するため)ので、この行専用に
+		// border-bottom を持たせる(todos-app.ts .menu-all-row 参照)。
+		const allRow = el("button", "menu-item menu-all-row") as HTMLButtonElement;
+		allRow.type = "button";
+		const allCheckSlot = el("span", "check-slot");
+		if (currentCalendarId === ALL_CALENDARS_ID) allCheckSlot.appendChild(createIcon("check"));
+		// 色ドットは付けない(判断・item④のコメントと対の理由): 「すべて」はどれか1つの実色を代表しない
+		// 合成概念なので、単色ドットを置くと「このリストの色」と誤読されうる。色は各グループ見出し側
+		// (renderAll の appendCollectionGroups)が個別に示すので、メニュー行では省略してよい。
+		const allName = el("span", "name");
+		allName.textContent = "すべて";
+		allRow.append(allCheckSlot, allName);
+		allRow.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openListMenu(false);
+			if (currentCalendarId === ALL_CALENDARS_ID) return;
+			void switchCalendar(ALL_CALENDARS_ID);
+		});
+		listMenuEl.appendChild(allRow);
 	}
 	for (const c of lists) {
 		// 【2026-07-23 K2-UI②: 行を「選択 button」+「詳細へ button」の2ボタン構成にする】
