@@ -68,8 +68,10 @@ export class GooglePlacesGeocodingAdapter implements GeocodingPort {
 		// `this` が globalThis でないと "Illegal invocation" を投げる(Inspector E2E で全クエリ失敗)。
 		// bun test のスタブ fetch は this を見ないため green で、本番だけ落ちる典型パターン。
 		// `.bind(globalThis)` ではなくアロー括りにしたのは、ブラウザ/Node/workerd いずれでも同義で
-		// 束縛意図が見た目に残るため。
-		private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
+		// 束縛意図が見た目に残るため。型を `typeof fetch` にしないのは、Bun の fetch 型が
+		// `preconnect` プロパティ付きの関数オブジェクトでアローが型不一致になるため(呼び出し
+		// シグネチャだけに絞る)。
+		private readonly fetchImpl: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response> = (...args) => fetch(...args),
 	) {}
 
 	async searchLocation(query: string, opts?: SearchLocationOptions): Promise<LocationCandidate[]> {
