@@ -1145,3 +1145,15 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   (Version b7074f32)。working treeの未コミット作業(confirm/propose撤去ほか)も
   ユーザー承認の上で相乗りdeploy。コミットはcaldav側セッションに委ねる。
 - 判定: iOSでdiag-cardが描画されればサイズ/内容説、失敗すれば認証説。結論後にdiag一式は撤去する。
+
+## 2026-07-23(続き10・#47 前半: propose撤去+purge cron+all統一)
+
+- #47 のコード3件を implementer で実装・deploy(545920f)・Inspector 受け入れ全 PASS。
+  ①propose-delete 3種+確認カード(confirm-app/entry/bundle)撤去(参照が propose 系のみと
+  grep で確認。カード内削除の免除トークン経路は別系統のため confirm-token.ts / CONFIRM_SECRET 残置)
+  ②scheduled + crons("0 3 * * *")で 30 日超 soft delete を purge(worker テストで backdate 検証)
+  ③横断 echo を null に統一("all" 入力受理は維持・UI 正規化は旧カード互換で残置)。
+- swift-mcp-app セッションの diag-card(iOS 描画切り分けスパイク・相乗り deploy 済み)を
+  ユーザー承認の上で同コミットに正式化。切り分け結論後に一式撤去予定。
+- #47 残り: IAD 再計測 / D4 完了済み保持ポリシー / known-locations geo 無し emit 判断 /
+  quota 失敗時消費の許容可否。
