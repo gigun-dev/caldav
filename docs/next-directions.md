@@ -117,6 +117,22 @@
   > **次の候補**: K2/K3(#38)・propose-delete 撤去スライス・purge cron 配線・
   > IAD 再計測(claude.ai トラフィック待ち)・実機確認(キーボード維持/C4 編集/リスト選択/
   > done 行移動/safeAreaInsets 実測ログ)。
+  > **2026-07-23 更新: K シリーズ完了 ✅(#38 クローズ)。** K3(6a1a850: todos 切替を横断
+  > 1クエリ+in-memory フィルタで往復ゼロ化・completedSummary は due 窓に加え calendarId
+  > スコープからも独立)・K2-server(update-calendar ツール)・K2-UI(de88ae7: 実色
+  > resolveCalendarColor+コレクション詳細ページ = 名前・8色チップ編集/新規作成)。
+  > **鮮度モデルの裁定(architect 一次資料調査)**: ext-apps 仕様は履歴復元時のホスト再実行・
+  > 再可視化通知を規定しない=鮮度はカード自身の責務。claude.ai の履歴復元は楽観復元
+  > (実測: 履歴遡り複数回で tool call ほぼゼロ・focus 時のみカード自身の refetch)。
+  > 穴: markUpdated が push でも lastFetchAt=now とし古い replay が新鮮を装う。
+  > 対策 = SWR 完全形(#42 実装中): view model に generatedAt を additive 追加し、
+  > 60秒超の古い push は背景 revalidate(非ブロッキング)。
+  > **swift-mcp への申し送り(#41 改)**: 履歴カードの fail-closed ゲート(hint プロトコル)は
+  > 撤去推奨 — ①ホスト固有プロトコルでサードパーティカードが全滅(汎用ホスト不成立)
+  > ②RFC 5861 の SWR 思想(stale を出して背景検証)の逆 ③ext-apps に標準化の足場なし
+  > ④カード操作は封鎖に見合う不可逆高リスクではない。ホストの責務は素の focus/visibility
+  > イベント配送のみ(それが無くてもカードの generatedAt 判定だけで成立する)。
+  > caldav 側の hint 対応は不要と裁定。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
