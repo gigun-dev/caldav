@@ -1013,3 +1013,13 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   既存 141 行全生存を D1 読み取りでスモーク確認。
 - セッション上限で 2 エージェントが途中終了 → SendMessage で transcript 再開・完走
   (再開プロトコルが機能した記録)。
+
+## 2026-07-23(続き3・K シリーズ+SWR 鮮度モデル)
+
+- K2-server(update-calendar)・K2-UI(実色+コレクション詳細ページ de88ae7)・
+  K3(todos 切替往復ゼロ化 6a1a850)で #38 クローズ。
+- 鮮度モデル: claude.ai の履歴復元が楽観復元であることをログ実測で確認(履歴遡り複数回で
+  tool call ほぼゼロ・focus 時のみカード自身の refetch)。architect 一次資料調査の裁定で
+  SWR 完全形(generatedAt+60秒超 push の背景 revalidate)を実装・deploy(56551ac)。
+  swift の fail-closed ゲートは撤去推奨として申し送り(#41)。
+- マージ済み worktree を掃除。
