@@ -40,6 +40,27 @@ export interface SafeAreaInsets {
 export const FULLSCREEN_SAFE_TOP_FALLBACK_PX = 56;
 
 /**
+ * 【暫定値・実機採寸前】claude.ai iOS の下部 composer クローム(メッセージ入力欄)に削られる分の
+ * 暫定フォールバック(px)。top(liquid glass ヘッダ)と同じ思想の bottom 版。
+ *
+ * 【なぜ bottom にもフォールバックが要るのか(2026-07-23 実機バグ・docs/log.md 該当エントリ)】
+ * 当初の resolveSafeBottomPx は「bottom はホームインジケータ程度で top ほど深刻な occlusion を
+ * 起こさない」という仮定でフォールバックを持たなかった。だが claude.ai iOS の fullscreen では
+ * 画面下部に composer クロームが常駐し、その分を safeAreaInsets.bottom に申告しない実測反証が出た
+ * — fullscreen 右下の ⊕ FAB / action-row / フッタが composer の裏に隠れてタップできない
+ * (実機スクショあり)。top の occlusion(ヘッダに操作対象が隠れる)と全く同じ実害なので、top と
+ * 対称に「モバイル fullscreen 限定・未申告時のみ」のフォールバックを設ける。
+ *
+ * 【値の根拠と更新手順】60px は composer クローム高さの未実測時点の保守的な仮値
+ * (top の 56px と並ぶ経験オーダー。iOS の composer は入力欄+左右アイコンでおおよそこの高さ)。
+ * 「safeAreaInsets 実測ログ」(既存の検証項目)で claude.ai iOS の実 bottom composer 高さが取れ次第、
+ * この定数だけを更新すればよい(判定を resolveSafeBottomPx 1関数に隔離してある理由)。
+ * 過大でも「FAB がやや浮く」程度の実害だが、不足すると FAB が composer に食われてタップ不能になる
+ * ため、実測が来るまでは安全側(やや大きめ)へ倒す。
+ */
+export const FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX = 60;
+
+/**
  * fullscreen コンテナへ適用すべき padding-top(px)を決める。
  * 優先順位: (1) insets.top が申告されていて 0 より大きければそれを採用。
  *           (2) 申告が無い(undefined)か 0(=「安全領域なし」と「未申告」を区別できないホスト)
@@ -58,10 +79,22 @@ export function resolveSafeTopPx(insets: SafeAreaInsets | undefined, displayMode
 }
 
 /**
- * fullscreen コンテナへ適用すべき padding-bottom(px)。bottom はホームインジケータ等のクロームで、
- * top ほど深刻な occlusion(ヘッダに操作対象が隠れる)を起こしにくいため、フォールバックは設けず
- * 申告があるときだけ反映する(未申告時は 0 = 従来どおり無余白)。
+ * fullscreen コンテナへ適用すべき padding-bottom(px)。
+ * 優先順位は resolveSafeTopPx と対称:
+ *   (1) insets.bottom が申告されていて 0 より大きければそれを採用(申告済みホストではフォールバック
+ *       を絶対に使わない — 二重余白を避ける)。
+ *   (2) 未申告(undefined)か 0 のときに限り、displayMode==="fullscreen" ならフォールバック値を使う。
+ *   (3) それ以外(inline 等)は 0(= 従来どおり無余白)。
+ * 【2026-07-23 変更: displayMode 引数を additive 追加】旧実装はフォールバックを持たず引数も insets のみ
+ * だったが、claude.ai iOS の composer occlusion 実測反証(FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX コメント
+ * 参照)を受け top と対称化した。displayMode 省略時(既存呼び出し・テスト)は undefined → 非 fullscreen
+ * 扱いで従来どおり 0 を返すので後方互換。
+ * 【Why not: bottom===0 を明示ゼロ申告として尊重する案】resolveSafeTopPx と同じ理由で却下
+ * (「composer 分を含めない実装のたまたま 0」と「クローム無しの 0」を区別するシグナルが無い。
+ * occlusion の実害 > フォールバック不要な稀ホストで数十px 余る実害、として 0 は未申告側へ寄せる)。
  */
-export function resolveSafeBottomPx(insets: SafeAreaInsets | undefined): number {
-	return insets !== undefined && insets.bottom > 0 ? insets.bottom : 0;
+export function resolveSafeBottomPx(insets: SafeAreaInsets | undefined, displayMode?: string | null): number {
+	if (insets !== undefined && insets.bottom > 0) return insets.bottom;
+	if (displayMode === "fullscreen") return FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX;
+	return 0;
 }

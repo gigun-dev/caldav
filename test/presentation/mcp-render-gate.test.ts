@@ -28,4 +28,28 @@ describe("shouldSkipDestructiveRender", () => {
 	test("create:true のシートも抑止対象(型の違いに関わらず null かどうかだけを見る)", () => {
 		expect(shouldSkipDestructiveRender({ id: "draft:1", page: "detail", create: true })).toBe(true);
 	});
+
+	// 【2026-07-23 追加: focus 中 input の抑止条件② のマトリクス】
+	// ⊕→fullscreen 昇格直後の作成ビューは sheetState===null だが input に focus 中 → 抑止したい。
+	// hasFocusedInput 引数は additive で、省略時は従来どおり sheetState だけで判定する(後方互換)。
+	test("hasFocusedInput 省略時は sheetState だけで判定(既存契約は不変)", () => {
+		expect(shouldSkipDestructiveRender(null)).toBe(false);
+		expect(shouldSkipDestructiveRender({ id: "x", page: "detail" })).toBe(true);
+	});
+
+	test("シート無し × focus 無し → 抑止しない", () => {
+		expect(shouldSkipDestructiveRender(null, false)).toBe(false);
+	});
+
+	test("シート無し × focus 中 input あり → 抑止する(昇格直後の作成ビュー focus 折れ対策)", () => {
+		expect(shouldSkipDestructiveRender(null, true)).toBe(true);
+	});
+
+	test("シート表示中 × focus 無し → 抑止する(sheetState 側の条件で成立)", () => {
+		expect(shouldSkipDestructiveRender({ id: "x", page: "detail" }, false)).toBe(true);
+	});
+
+	test("シート表示中 × focus 中 input あり → 抑止する(両条件成立)", () => {
+		expect(shouldSkipDestructiveRender({ id: "x", page: "detail" }, true)).toBe(true);
+	});
 });

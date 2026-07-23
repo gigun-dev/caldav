@@ -1085,7 +1085,14 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     display: flex;
     position: fixed;
     right: 16px;
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    /* 2026-07-23 実機バグ(composer occlusion)修正: FAB の bottom を env(safe-area-inset-bottom)から
+     * --host-safe-bottom へ切り替える。iframe 内では env(safe-area-inset-*) は効かない
+     * (トップレベルドキュメント基準・safe-area.ts 冒頭コメント)ため、旧 env() 版は実質 16px 固定で
+     * claude.ai iOS の下部 composer クロームに FAB が食われていた。--host-safe-bottom は
+     * applySafeAreaVars が申告値 or fullscreen フォールバック(60px)を落とす変数なので、これに
+     * 16px を足せば composer の上に FAB が乗る。padding-bottom(下の #root.fullscreen-scroll)も
+     * 同じ変数で予約済みなので、最終行が FAB の下に隠れることもない。 */
+    bottom: calc(16px + var(--host-safe-bottom, 0px));
     margin: 0;
     justify-content: flex-end;
     z-index: 1;

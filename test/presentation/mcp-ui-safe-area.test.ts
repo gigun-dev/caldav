@@ -8,7 +8,12 @@
 // =============================================================================
 
 import { describe, expect, test } from "bun:test";
-import { FULLSCREEN_SAFE_TOP_FALLBACK_PX, resolveSafeBottomPx, resolveSafeTopPx } from "../../src/presentation/mcp/ui/safe-area";
+import {
+	FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX,
+	FULLSCREEN_SAFE_TOP_FALLBACK_PX,
+	resolveSafeBottomPx,
+	resolveSafeTopPx,
+} from "../../src/presentation/mcp/ui/safe-area";
 
 describe("resolveSafeTopPx", () => {
 	test("申告値がある(top>0)ならそれを採用する(displayMode に関わらず)", () => {
@@ -37,11 +42,27 @@ describe("resolveSafeTopPx", () => {
 });
 
 describe("resolveSafeBottomPx", () => {
-	test("申告値(bottom>0)があればそれを使う", () => {
+	test("申告値(bottom>0)があればそれを使う(displayMode に関わらず)", () => {
 		expect(resolveSafeBottomPx({ top: 0, right: 0, bottom: 34, left: 0 })).toBe(34);
+		expect(resolveSafeBottomPx({ top: 0, right: 0, bottom: 34, left: 0 }, "fullscreen")).toBe(34);
 	});
 
-	test("未申告 or 0 ならフォールバック無しで 0(bottom はフォールバックを持たない)", () => {
+	// 【2026-07-23 追加: composer occlusion フォールバック】claude.ai iOS の下部 composer クロームは
+	// safeAreaInsets.bottom に申告されない実測反証を受け、top と対称のフォールバックを設けた。
+	test("未申告(undefined) かつ fullscreen ならフォールバック値を使う", () => {
+		expect(resolveSafeBottomPx(undefined, "fullscreen")).toBe(FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX);
+	});
+
+	test("bottom===0 の申告も未申告側へ寄せる(fullscreen ならフォールバック)", () => {
+		expect(resolveSafeBottomPx({ top: 0, right: 0, bottom: 0, left: 0 }, "fullscreen")).toBe(
+			FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX,
+		);
+	});
+
+	test("未申告でも inline / null / displayMode 省略ではフォールバックを発動しない(後方互換)", () => {
+		expect(resolveSafeBottomPx(undefined, "inline")).toBe(0);
+		expect(resolveSafeBottomPx(undefined, null)).toBe(0);
+		// displayMode 引数を省略した既存呼び出しは undefined → 非 fullscreen 扱いで従来どおり 0。
 		expect(resolveSafeBottomPx(undefined)).toBe(0);
 		expect(resolveSafeBottomPx({ top: 0, right: 0, bottom: 0, left: 0 })).toBe(0);
 	});

@@ -172,7 +172,9 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 		console.log("[agenda] hostcontext.safeAreaInsets =", insets, "displayMode =", hostDisplayMode);
 	}
 	const top = resolveSafeTopPx(insets, hostDisplayMode);
-	const bottom = resolveSafeBottomPx(insets);
+	// 2026-07-23: bottom も top と同様 hostDisplayMode を渡す(todos-entry.ts と同型)。fullscreen かつ
+	// 未申告のときだけ composer occlusion フォールバックを発動させる(resolveSafeBottomPx コメント参照)。
+	const bottom = resolveSafeBottomPx(insets, hostDisplayMode);
 	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
 	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
 }
@@ -2403,11 +2405,37 @@ function setSheetState(next: null): void {
  * 抑止対象ではない(抑止したいのは「シートを開いたまま裏で来る」再描画だけ)。
  */
 function guardedRenderAll(): void {
-	if (shouldSkipDestructiveRender(sheetState)) {
+	// 2026-07-23(FAB occlusion 修正と同スライス): ⊕→fullscreen 昇格直後の作成ビューは sheetState===null
+	// のまま input へ同期 focus するため、focus 中 input の有無も抑止条件に加える(render-gate.ts の
+	// hasFocusedInput 引数)。todos-entry.ts の同名関数と同型。
+	const focused = hasFocusedEditableInCard();
+	if (shouldSkipDestructiveRender(sheetState, focused)) {
 		pendingRenderAfterSheet = true;
 		return;
 	}
 	renderAll();
+}
+
+/** カードの #root 配下に focus 中の input/textarea があるか(render-gate 抑止条件②の DOM 判定・How)。
+ *  純関数 shouldSkipDestructiveRender を DOM 非依存に保つため判定を外へ出す。todos-entry.ts と同型。 */
+function hasFocusedEditableInCard(): boolean {
+	const el = document.activeElement;
+	if (el === null) return false;
+	const tag = el.tagName;
+	if (tag !== "INPUT" && tag !== "TEXTAREA") return false;
+	const root = document.getElementById("root");
+	return root !== null && root.contains(el);
+}
+
+/**
+ * 2026-07-23: focus による renderAll 抑止(guardedRenderAll の条件②)で取りこぼした再描画を、
+ * blur/submit で focus が抜けた瞬間に1回 flush する(setSheetState(null) がシート閉で flush するのと
+ * 対称・todos-entry.ts と同型)。シート表示中(sheetState 非 null)はまだ抑止すべきなので flush しない。 */
+function flushPendingRenderIfIdle(): void {
+	if (pendingRenderAfterSheet && sheetState === null && !hasFocusedEditableInCard()) {
+		pendingRenderAfterSheet = false;
+		renderAll();
+	}
 }
 
 /** 詳細ページを開く(既存イベントの ⓘ から)。 */
@@ -3579,6 +3607,13 @@ app.ontoolresult = (r) => {
 app.addEventListener("hostcontextchanged", () => {
 	applyHostContext();
 	guardedRenderAll();
+});
+
+// 2026-07-23: focus が抜けた瞬間に focus 抑止で取りこぼした renderAll を1回 flush する
+// (todos-entry.ts と同型・flushPendingRenderIfIdle コメント参照)。focusout はバブルするので
+// document 1箇所で拾える。別 input への focus 移動は 0ms 後の activeElement 判定でスキップされる。
+document.addEventListener("focusout", () => {
+	setTimeout(flushPendingRenderIfIdle, 0);
 });
 
 showStatus("接続中…");

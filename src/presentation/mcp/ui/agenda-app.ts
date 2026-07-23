@@ -516,7 +516,11 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     display: flex;
     position: fixed;
     right: 16px;
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    /* 2026-07-23 実機バグ(composer occlusion)修正: FAB の bottom を env(safe-area-inset-bottom)から
+     * --host-safe-bottom へ切り替える(todos-app.ts と同判断・同型)。iframe 内では env() が効かず
+     * 旧版は実質 16px 固定で claude.ai iOS の下部 composer に FAB が食われていた。--host-safe-bottom は
+     * applySafeAreaVars が申告値 or fullscreen フォールバック(60px)を落とす変数。 */
+    bottom: calc(16px + var(--host-safe-bottom, 0px));
     margin: 0;
     justify-content: flex-end;
     z-index: 1;

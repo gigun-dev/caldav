@@ -28,10 +28,29 @@
 // =============================================================================
 
 /**
- * シート(詳細ページ / リスト選択ページ)表示中は破壊的 renderAll() を抑止すべきか。
+ * 破壊的 renderAll() を抑止すべきか。抑止条件は次の OR(どちらか成立で抑止):
+ *   (1) シート(詳細 / リスト選択ページ)表示中 = sheetState !== null。
+ *   (2) カードの root 配下に focus 中の input/textarea がある = hasFocusedInput === true。
+ *
+ * 【(2) を 2026-07-23 に additive 追加した理由(iOS 実機バグ再発)】
+ * ce7d5aa の初版は (1) だけを見ていた。だが ⊕→fullscreen 昇格「直後」のドラフト作成ビューは
+ * シートではなく本体リスト上の行(sheetState===null)であり、この状態で input に同期 focus した
+ * 直後、昇格に伴う hostcontextchanged 起点の renderAll が focus 中の input を DOM ごと消す経路が
+ * 残っていた(キーボードが一瞬立ち上がって即閉じる)。焦点の有無を直接見れば、シートかどうかに
+ * 依らず「focus 中の要素を破壊する renderAll」を全経路で塞げる。
+ *
+ * 【Why not: 遅延 focus(昇格アニメ後に focus を投げ直す)ワークアラウンドの復活】modeling/15 §B の
+ * ボツ案。iOS はプログラム的な再 focus をユーザー操作直後でないとソフトキーボードで開き直さないため
+ * 体感が直らない(render-gate.ts 冒頭 Why not 案C と同根)。抑止側で塞ぐのが筋。
+ *
+ * 【注意: 「focus がある間ずっと renderAll を握り潰す」副作用】focus 中は push 反映が止まるので、
+ * 抑止で取りこぼした再描画は blur/submit 時に1回 flush する必要がある(setSheetState(null) が
+ * シート閉時に flush するのと対称。配線は *-entry.ts の pendingRenderAfterSheet / flush 経路)。
+ *
  * sheetState は todos-entry.ts / agenda-entry.ts で型が違う({id,...} / {key,...})ので unknown で
- * 受け、null かどうかだけを判定する(両カードとも「シート無し」は sheetState===null で表す規約)。
+ * 受け、null かどうかだけを判定する。hasFocusedInput は DOM 依存(document.activeElement 判定)なので
+ * この純関数の外(呼び出し側)で算出して boolean で渡す — ここは DOM 非依存を保つ(bun:test 可能)。
  */
-export function shouldSkipDestructiveRender(sheetState: unknown): boolean {
-	return sheetState !== null;
+export function shouldSkipDestructiveRender(sheetState: unknown, hasFocusedInput: boolean = false): boolean {
+	return sheetState !== null || hasFocusedInput;
 }

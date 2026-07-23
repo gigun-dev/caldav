@@ -342,7 +342,9 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 		console.log("[todos] hostcontext.safeAreaInsets =", insets, "displayMode =", hostDisplayMode);
 	}
 	const top = resolveSafeTopPx(insets, hostDisplayMode);
-	const bottom = resolveSafeBottomPx(insets);
+	// 2026-07-23: bottom も top と同様 hostDisplayMode を渡す。fullscreen かつ未申告のときだけ
+	// composer occlusion フォールバックを発動させるため(resolveSafeBottomPx コメント参照)。
+	const bottom = resolveSafeBottomPx(insets, hostDisplayMode);
 	document.documentElement.style.setProperty("--host-safe-top", `${top}px`);
 	document.documentElement.style.setProperty("--host-safe-bottom", `${bottom}px`);
 }
@@ -1968,11 +1970,46 @@ function setSheetState(next: null): void {
 function guardedRenderAll(): void {
 	// 2026-07-23 K2-UI②: collectionSheet(コレクション詳細ページ)にも表示名 input があり同じ
 	// iOS フルスクリーンキーボード折れバグ経路が当てはまるため、sheetState と同様に抑止対象へ加える。
-	if (shouldSkipDestructiveRender(sheetState) || shouldSkipDestructiveRender(collectionSheet)) {
+	// さらに 2026-07-23(FAB occlusion 修正と同スライス): ⊕→fullscreen 昇格直後のドラフト作成ビューは
+	// シートではなく本体リスト上の行(sheetState/collectionSheet とも null)なので、focus 中 input の
+	// 有無も抑止条件に加える(render-gate.ts の hasFocusedInput 引数)。これで昇格直後の
+	// hostcontextchanged 起点 renderAll が focus 中 input を DOM ごと消す最後の経路を塞ぐ。
+	const focused = hasFocusedEditableInCard();
+	if (shouldSkipDestructiveRender(sheetState, focused) || shouldSkipDestructiveRender(collectionSheet)) {
 		pendingRenderAfterSheet = true;
 		return;
 	}
 	renderAll();
+}
+
+/** カードの #root 配下に focus 中の input/textarea があるか(render-gate 抑止条件②の DOM 判定・How)。
+ *  判定を純関数 shouldSkipDestructiveRender の外へ出しておくことで、あちらは DOM 非依存を保てる
+ *  (bun:test で境界を固定できる)。agenda-entry.ts の同名関数と同型。 */
+function hasFocusedEditableInCard(): boolean {
+	const el = document.activeElement;
+	if (el === null) return false;
+	const tag = el.tagName;
+	if (tag !== "INPUT" && tag !== "TEXTAREA") return false;
+	const root = document.getElementById("root");
+	return root !== null && root.contains(el);
+}
+
+/**
+ * 2026-07-23: focus による renderAll 抑止(guardedRenderAll の条件②)で取りこぼした再描画を、
+ * blur/submit で focus が抜けた瞬間に1回 flush する(setSheetState(null) がシート閉で flush するのと
+ * 対称)。focus 中ずっと push 反映を握り潰す副作用への対処 — これが無いと作成ビューを離れるまで
+ * ホスト push が画面へ出ない。シートが開いている間(sheetState/collectionSheet 非 null)は
+ * まだ抑止すべきなので flush しない(その閉じ際に既存経路が flush する)。 */
+function flushPendingRenderIfIdle(): void {
+	if (
+		pendingRenderAfterSheet &&
+		sheetState === null &&
+		collectionSheet === null &&
+		!hasFocusedEditableInCard()
+	) {
+		pendingRenderAfterSheet = false;
+		renderAll();
+	}
 }
 
 /** 詳細ページを開く(既存タスクの ⓘ から)。draft を初期化し detail ページへ遷移する。 */
@@ -4293,6 +4330,15 @@ app.addEventListener("hostcontextchanged", () => {
 	// (sheetState 中の詳細/リスト選択ページはこの再描画では畳み対象外 = renderAll 内の早期
 	// return で自然にスキップされる)。
 	guardedRenderAll();
+});
+
+// 2026-07-23: focus が抜けた瞬間に、focus 抑止で取りこぼした renderAll を1回 flush する
+// (guardedRenderAll の条件② / flushPendingRenderIfIdle コメント参照)。focusout は blur と違い
+// バブルするので document 1箇所で全 input/textarea を拾える。focus が別の input へ移った場合
+// (作成ビュー内でのフィールド移動)は flushPendingRenderIfIdle 側の hasFocusedEditableInCard 判定で
+// スキップされる — そのため activeElement が確定する次のタスクまで待ってから判定する(0ms タイマー)。
+document.addEventListener("focusout", () => {
+	setTimeout(flushPendingRenderIfIdle, 0);
 });
 
 showStatus("接続中…");
