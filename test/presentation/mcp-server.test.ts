@@ -286,6 +286,25 @@ describe("/mcp", () => {
 		});
 	});
 
+	// ②③(2026-07-24)カード紐付けは tools/list の _meta.ui.resourceUri(ext-apps の outputTemplate)で
+	// ホストへ宣言される(registerAppTool が config._meta.ui を tools/list に載せる)。event の mutate
+	// 一式(③)がアジェンダカードを、list-deleted/restore-deleted(②)が todos カードを紐付けることを固定する。
+	it("tools/list の _meta.ui が event mutate=agenda・trash=todos カードを紐付ける(②③)", async () => {
+		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+		const rpc = await jsonRpcResult(res);
+		const byName = new Map<string, { _meta?: { ui?: { resourceUri?: string } } }>(
+			rpc.result.tools.map((t: { name: string }) => [t.name, t]),
+		);
+		// ③ event mutate 一式 → アジェンダカード(実機 swift ホストで mutate 応答にカードが出なかった穴を塞ぐ)。
+		for (const name of ["create-event", "create-events", "update-event", "delete-event"]) {
+			expect(byName.get(name)?._meta?.ui?.resourceUri).toContain("ui://caldav/agenda.");
+		}
+		// ② ゴミ箱系 → todos カード。
+		for (const name of ["list-deleted", "restore-deleted"]) {
+			expect(byName.get(name)?._meta?.ui?.resourceUri).toContain("ui://caldav/todos.");
+		}
+	});
+
 	it("initialize が単発でも成功する(stateless transport)", async () => {
 		const res = await fetchMcp({
 			jsonrpc: "2.0",
@@ -652,7 +671,7 @@ describe("/mcp", () => {
 				tasks: [],
 				calendarId: "personal",
 				timeZone: "UTC",
-				completedSummary: { total: 0, recent: [] },
+				completedSummary: { total: 0, recent: [], byCalendar: {} },
 			});
 			// content(text)側にカレンダーのメタ情報が残る(従来の応答契約を維持)。
 			const textResult = JSON.parse(rpc.result.content[0].text);
@@ -699,7 +718,7 @@ describe("/mcp", () => {
 				tasks: [],
 				calendarId: textResult.id,
 				timeZone: "UTC",
-				completedSummary: { total: 0, recent: [] },
+				completedSummary: { total: 0, recent: [], byCalendar: {} },
 			});
 		});
 
@@ -1832,6 +1851,113 @@ describe("/mcp", () => {
 			expect(delRpc.result.isError).toBeFalsy();
 			// B は消えている。
 			expect(await repos.resources.findUriByUid(OWNER, TASKS, idB)).toBeNull();
+		});
+	});
+
+	// ②(2026-07-24)削除/復元/ゴミ箱のカード化。list-deleted/restore-deleted の view model 契約を固定する。
+	// 【What】(1) list-deleted 応答は todos カードを紐付け(_meta.ui)、structuredContent に deletedItems を
+	// ゴミ箱ビューとして載せる。(2) content(モデル向けテキスト)には URI を素で晒さない。(3) restore-deleted は
+	// 復元後の通常 todos vm(affected に復元行=added)を返し、deletedItems は載せない。
+	describe("② 削除/復元/ゴミ箱のカード化(list-deleted / restore-deleted)", () => {
+		const TASKS = collectionId("tasks");
+		function seedTasksCollection(): void {
+			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
+		}
+		async function createTodo(title: string): Promise<string> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-todo", arguments: { title } } });
+			const rpc = await jsonRpcResult(res);
+			expect(rpc.result.isError).toBeFalsy();
+			return rpc.result.structuredContent.affected[0].id as string;
+		}
+		async function deleteTodo(id: string): Promise<void> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "delete-todo", arguments: { id } } });
+			expect((await jsonRpcResult(res)).result.isError).toBeFalsy();
+		}
+		async function callTool(name: string, args: Record<string, unknown>): Promise<any> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } });
+			return (await jsonRpcResult(res)).result;
+		}
+
+		it("list-deleted は todos カードを紐付け、structuredContent.deletedItems にゴミ箱ビューを載せる", async () => {
+			seedTasksCollection();
+			const id = await createTodo("捨てるもの");
+			await deleteTodo(id);
+
+			const result = await callTool("list-deleted", {});
+			expect(result.isError).toBeFalsy();
+			// deletedItems: uri(復元キー)・calendarId・title(summary)・deletedAtMillis を持つ1行。
+			const items = result.structuredContent.deletedItems;
+			expect(items).toHaveLength(1);
+			expect(items[0].calendarId).toBe("tasks");
+			expect(items[0].title).toBe("捨てるもの");
+			expect(typeof items[0].uri).toBe("string");
+			expect(typeof items[0].deletedAtMillis).toBe("number");
+			// 下敷きの通常一覧も一緒に返す(deletedItems だけの vm でカードの tasks キャッシュを空にしないため)。
+			expect(Array.isArray(result.structuredContent.tasks)).toBe(true);
+		});
+
+		it("list-deleted の content(モデル向けテキスト)には URI を素で晒さない", async () => {
+			seedTasksCollection();
+			const id = await createTodo("URI を晒さない");
+			await deleteTodo(id);
+
+			const result = await callTool("list-deleted", {});
+			const uri = result.structuredContent.deletedItems[0].uri as string;
+			const contentText = result.content.map((c: { text?: string }) => c.text ?? "").join("\n");
+			// 実機で「URI: a4de4fc2-….ics」がユーザーに見えた症状の回帰防止 — content には uri が出ない。
+			expect(contentText).not.toContain(uri);
+			// 代わりに人間可読の要約(タイトル)が出る。
+			expect(contentText).toContain("URI を晒さない");
+		});
+
+		it("restore-deleted は復元後の通常 todos vm(affected=added)を返し deletedItems は載せない", async () => {
+			seedTasksCollection();
+			const id = await createTodo("戻すもの");
+			await deleteTodo(id);
+			const uri = (await callTool("list-deleted", {})).structuredContent.deletedItems[0].uri as string;
+
+			const result = await callTool("restore-deleted", { uri, calendarId: "tasks" });
+			expect(result.isError).toBeFalsy();
+			// 通常 todos vm: 復元行が affected に "added" として載る(どれが戻ったか分かる)。
+			const sc = result.structuredContent;
+			expect(sc.affected.some((a: { id: string; kind: string }) => a.id === id && a.kind === "added")).toBe(true);
+			// 確定一覧 tasks にも復元行が生存で現れる。
+			expect(sc.tasks.some((t: { id: string }) => t.id === id)).toBe(true);
+			// ゴミ箱ビューは載せない(このツールはゴミ箱ページを開く合図を出さない)。
+			expect("deletedItems" in sc).toBe(false);
+		});
+	});
+
+	// ①(2026-07-24)completedSummary のコレクション別内訳。list-todos 応答の byCalendar 契約を固定する
+	// (計算そのものの純関数テストは mcp-todos-diff.test.ts。ここは server 応答に byCalendar が載ることの固定)。
+	describe("① completedSummary.byCalendar(コレクション別内訳の echo)", () => {
+		function seedTwoLists(): void {
+			repos.collections.seed(new CalendarCollection({ id: collectionId("tasks"), owner: OWNER, displayName: "Tasks" }));
+			repos.collections.seed(new CalendarCollection({ id: collectionId("reading"), owner: OWNER, displayName: "Reading" }));
+		}
+		async function createTodoIn(title: string, calendarId: string): Promise<string> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create-todo", arguments: { title, calendarId } } });
+			return (await jsonRpcResult(res)).result.structuredContent.affected[0].id as string;
+		}
+		async function completeTodo(id: string, calendarId: string): Promise<void> {
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "complete-todo", arguments: { id, calendarId } } });
+			expect((await jsonRpcResult(res)).result.isError).toBeFalsy();
+		}
+
+		it("owner 横断の list-todos は byCalendar にコレクション別の完了件数を載せる", async () => {
+			seedTwoLists();
+			const t1 = await createTodoIn("tasks の完了", "tasks");
+			await completeTodo(t1, "tasks");
+			const r1 = await createTodoIn("reading の完了", "reading");
+			await completeTodo(r1, "reading");
+
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list-todos", arguments: { includeCompleted: true } } });
+			const sc = (await jsonRpcResult(res)).result.structuredContent;
+			// total は owner 全体(2件)、byCalendar はリスト別内訳。
+			expect(sc.completedSummary.total).toBe(2);
+			expect(sc.completedSummary.byCalendar).toEqual({ tasks: 1, reading: 1 });
+			// recent の各要素に由来 calendarId が載る(カードの単一リストフィルタ用)。
+			expect(sc.completedSummary.recent.every((r: { calendarId?: string }) => typeof r.calendarId === "string")).toBe(true);
 		});
 	});
 });

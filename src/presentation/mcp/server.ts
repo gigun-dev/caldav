@@ -235,6 +235,27 @@ const DEFAULT_MAX_EVENTS = 250;
 // todos-entry.ts 側の COMPLETED_RECENT_MAX(UI 定数・同名で揃えている)と値を一致させること。
 const COMPLETED_RECENT_MAX = 5;
 
+/**
+ * 【② 2026-07-24 ゴミ箱のカード化】list-deleted の content(モデル向けテキスト)用に、削除時刻を
+ * 人間可読の相対表記へ整形する。カード側(ui/trash-view.ts の formatDeletedRelative)と同じ段階分けだが、
+ * ui は末端で server から import できない(層境界。.dependency-cruiser の mcp-ui-is-terminal)ため、
+ * この短いロジックだけを意図的に複製する(task-dto.ts が offset ISO 正規表現を複製するのと同じ判断)。
+ * content はモデルが「何をいつ消したか」を人間可読に要約するためのもので、URI は晒さない(list-deleted
+ * の description が「ユーザーに URI を見せない」を誘導する)。
+ */
+function formatDeletedAgoForContent(deletedAtMillis: number, nowMillis: number): string {
+	const diff = nowMillis - deletedAtMillis;
+	const MIN = 60_000;
+	const HOUR = 60 * MIN;
+	const DAY = 24 * HOUR;
+	if (diff < 0) return new Date(deletedAtMillis).toISOString().slice(0, 10);
+	if (diff < MIN) return "たった今";
+	if (diff < HOUR) return `${Math.floor(diff / MIN)}分前`;
+	if (diff < DAY) return `${Math.floor(diff / HOUR)}時間前`;
+	if (diff < 7 * DAY) return `${Math.floor(diff / DAY)}日前`;
+	return new Date(deletedAtMillis).toISOString().slice(0, 10);
+}
+
 // --- get-freebusy -------------------------------------------------------------
 
 const getFreeBusyInputShape = {
@@ -3135,7 +3156,14 @@ function buildMcpServer(
 		error instanceof InvalidConferenceUrlError ||
 		error instanceof EventNotFoundError;
 
-	server.registerTool(
+	// 【③ 2026-07-24 アジェンダカード紐付け】create-event/create-events/update-event/delete-event を
+	// registerAppTool 化し _meta.ui=AGENDA_UI_URI を付ける。実機(swift ホスト)で mutate 応答にカードが
+	// 出ずテキストのみだった原因は、これらが素の registerTool で _meta.ui を持たなかったこと(S1 の時点で
+	// ui:// 紐付けを list-events-expanded の S2 へ後回しにした名残)。agenda カードは affected/removed の
+	// 合成に既に対応済み(eventsToolResponse が structuredContent へ affected を載せている)なので、
+	// ui を宣言するだけで list-events-expanded と同じカードが mutate 応答でも描かれる。
+	registerAppTool(
+		server,
 		"create-event",
 		{
 			title: "Create event",
@@ -3146,6 +3174,10 @@ function buildMcpServer(
 				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
 			inputSchema: createEventInputShape,
 			annotations: CREATE_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
 		},
 		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes, structuredLocation, conference }) => {
 			try {
@@ -3193,7 +3225,8 @@ function buildMcpServer(
 		},
 	);
 
-	server.registerTool(
+	registerAppTool(
+		server,
 		"create-events",
 		{
 			title: "Create events (batch)",
@@ -3202,6 +3235,10 @@ function buildMcpServer(
 				"各 item は create-event と同じ語彙(title/start 必須)。calendarId/timeZone は全 item 共通。",
 			inputSchema: createEventsInputShape,
 			annotations: CREATE_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
 		},
 		async ({ items, calendarId, timeZone }) => {
 			try {
@@ -3266,7 +3303,8 @@ function buildMcpServer(
 		},
 	);
 
-	server.registerTool(
+	registerAppTool(
+		server,
 		"update-event",
 		{
 			title: "Update event",
@@ -3277,6 +3315,10 @@ function buildMcpServer(
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
 			annotations: DESTRUCTIVE_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
 		},
 		async ({
 			id,
@@ -3359,13 +3401,18 @@ function buildMcpServer(
 		},
 	);
 
-	server.registerTool(
+	registerAppTool(
+		server,
 		"delete-event",
 		{
 			title: "Delete event",
 			description: "VEVENT(予定)を削除する。常に無条件削除(ETag 条件なし — delete-event.ts 冒頭コメント参照)。",
 			inputSchema: deleteEventInputShape,
 			annotations: DELETE_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: AGENDA_UI_URI },
+				"openai/outputTemplate": AGENDA_UI_URI,
+			},
 		},
 		async ({ id, calendarId }) => {
 			try {
@@ -3420,28 +3467,63 @@ function buildMcpServer(
 	);
 
 	// --- list-deleted / restore-deleted(R2 ソフトデリート・docs/modeling/15 §A-3)----------------
-	// 【なぜ registerTool(素の)か】ゴミ箱は現状 UI カードを持たない(todos/agenda カードとは別関心)。
-	// list-deleted は「復元候補を確定するための下ごしらえ」、restore-deleted は「復元の実行」であり、
-	// list-calendars/create-calendar と同じく素の registerTool に留める(UI 化は将来のスライス)。
-	server.registerTool(
+	// 【② 2026-07-24 カード化: registerAppTool 化して todos カードにゴミ箱ビューを載せる】
+	// 旧実装は素の registerTool で structuredContent に生の entries(uri 等)を載せるだけだったため、
+	// モデルが応答をなぞって「URI: a4de4fc2-….ics」をユーザーに晒す実害が出た(実機観測)。カードに
+	// 「ゴミ箱ページ」を描かせ、モデル向け content は人間可読の要約(タイトル・リスト名・相対削除時刻)に
+	// する。uri は restore-deleted の引数に必須なので structuredContent(deletedItems)には残すが、
+	// content には出さない(description で「ユーザーに URI を見せない」を誘導)。
+	registerAppTool(
+		server,
 		"list-deleted",
 		{
 			title: "List deleted (trash)",
 			description:
-				"ソフトデリート済み(ゴミ箱にある)予定/リマインダーを一覧する。各エントリは uri(復元キー)・" +
-				"uid・種別・タイトル・削除時刻・calendarId を持つ。復元したいときは restore-deleted に uri と " +
-				"calendarId を渡す。iOS/CalDAV からは見えない MCP 専用のゴミ箱ビュー。",
-			inputSchema: {},
+				"ソフトデリート済み(ゴミ箱にある)予定/リマインダーを一覧する。カードにゴミ箱ページが開き、" +
+				"各行に「復元」ボタンが出る(ユーザーはそこから復元できる)。iOS/CalDAV からは見えない MCP 専用の" +
+				"ゴミ箱ビュー。【重要】応答の uri は復元用の内部識別子。ユーザーへの返答に URI/ファイル名を" +
+				"書き出さないこと(ユーザーはカードのボタンで操作する。あなたはタイトル・リスト名・削除時刻で言及する)。",
+			inputSchema: {
+				// カードの下敷き一覧(通常 todos vm)の due 表示ゾーン。省略時 UTC(deletedItems の相対時刻は
+				// クライアントの Date.now() で出すので timeZone 非依存 — ここは下敷き tasks の due 用)。
+				timeZone: z.string().optional().describe("下敷きに再取得する通常一覧の due 表示に使う IANA タイムゾーン。省略時 UTC。"),
+			},
 			annotations: READ_ONLY_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
-		async () => {
+		async ({ timeZone }) => {
 			try {
 				const listDeleted = new ListDeleted(deps.resourceRepo);
 				const { entries } = await listDeleted.execute({ owner: principal });
-				const vm = { entries };
+				// 下敷きの通常一覧(横断)も一緒に返す。こうしておくと復元でゴミ箱を閉じたとき最新の一覧が
+				// 見える & applyStructuredContent の tasks マージが空応答でキャッシュを消さない(deletedItems
+				// だけの vm を送ると横断 tasks=空 とみなされ他リストが消える事故を避ける — todos-entry.ts の
+				// mergeTasksByCalendar 参照)。deletedItems を additive に載せてゴミ箱ページを開かせる。
+				const vm = await buildTodosViewModel({ timeZone });
+				vm.deletedItems = entries.map((e) => ({
+					uri: e.uri,
+					calendarId: e.calendarId,
+					title: e.summary ?? "",
+					deletedAtMillis: e.deletedAtMillis,
+				}));
+				// content(モデル向け): 人間可読の要約。URI は出さない(description の誘導どおり)。
+				const now = Date.now();
+				const lines =
+					entries.length === 0
+						? ["ゴミ箱は空です。"]
+						: [`ゴミ箱に ${entries.length} 件あります:`].concat(
+								entries.map(
+									(e) =>
+										`- 「${e.summary ?? "(無題)"}」(${e.calendarId})— ${formatDeletedAgoForContent(e.deletedAtMillis, now)}に削除`,
+								),
+							);
 				return {
-					content: [{ type: "text" as const, text: JSON.stringify(vm) }],
-					structuredContent: vm as { [key: string]: unknown },
+					content: [{ type: "text" as const, text: lines.join("\n") }],
+					structuredContent: vm as unknown as { [key: string]: unknown },
+					_meta: { confirm: { cardToken: await getCardToken() } },
 				};
 			} catch (error) {
 				return toolError(error instanceof Error ? error.message : String(error));
@@ -3449,29 +3531,45 @@ function buildMcpServer(
 		},
 	);
 
-	server.registerTool(
+	// 【② 2026-07-24 カード化】restore-deleted も registerAppTool 化。復元後の通常 todos vm を返し
+	// (affected に復元行=added を載せて「どれが戻ったか」を UI/モデルが分かる形にする)、カードは
+	// 通常一覧を更新する(ゴミ箱ページ側は callServerTool 発なので、カード内で該当行を抜いて閉じる)。
+	registerAppTool(
+		server,
 		"restore-deleted",
 		{
 			title: "Restore deleted",
 			description:
 				"ソフトデリート済み(ゴミ箱の)予定/リマインダーを復元する。list-deleted が返した uri と " +
 				"calendarId を渡す。前提: 同じ UID の生存リソースが既にある場合は復元できない(衝突相手を示す" +
-				"エラーになる)。元の uri が再利用されていれば新しい uri を採番して復元する。",
+				"エラーになる)。元の uri が再利用されていれば新しい uri を採番して復元する。" +
+				"【重要】uri は内部識別子。ユーザーへの返答に URI/ファイル名を書き出さないこと。",
 			inputSchema: {
 				uri: z.string().describe("復元対象の uri(list-deleted が返した uri)。"),
 				calendarId: z.string().optional().describe('所属コレクション ID。省略時は "tasks"。'),
+				timeZone: z.string().optional().describe("復元後に返す一覧の due 表示に使う IANA タイムゾーン。省略時 UTC。"),
 			},
 			annotations: RESTORE_ANNOTATIONS,
+			_meta: {
+				ui: { resourceUri: TODOS_UI_URI },
+				"openai/outputTemplate": TODOS_UI_URI,
+			},
 		},
-		async ({ uri, calendarId }) => {
+		async ({ uri, calendarId, timeZone }) => {
 			try {
 				const restoreDeleted = new RestoreDeleted(deps.collectionRepo, deps.resourceRepo, deps.uow);
 				const restored = await restoreDeleted.execute({ owner: principal, resourceUri: uri, calendarId });
-				const vm = { restored };
-				return {
-					content: [{ type: "text" as const, text: JSON.stringify(vm) }],
-					structuredContent: vm as { [key: string]: unknown },
+				// 復元行を affected:"added" として載せる(復元=一覧に再出現なので、mutate 系の「追加」と
+				// 同じ差分レンズで「どれが戻ったか」を表せる)。TaskSnapshot は最小情報(title=summary・
+				// 由来 calendarId)で足りる — 確定一覧 tasks 側に本物の行が居るので UI はそこも参照できる。
+				const restoredSnapshot: TaskSnapshot = {
+					id: restored.uid,
+					title: restored.summary ?? "",
+					calendarId: restored.calendarId,
 				};
+				const affected: AffectedTask[] = [{ id: restored.uid, kind: "added", task: restoredSnapshot }];
+				const vm = await buildTodosViewModel({ calendarId: restored.calendarId, timeZone, affected });
+				return toTodosToolResponse(vm);
 			} catch (error) {
 				// RestoreTargetNotFoundError(404 相当)/ RestoreUidConflictError(UID 衝突・conflictUri を
 				// 含む)/ CollectionNotFoundError いずれもメッセージが自己説明的なので toolError に写す。

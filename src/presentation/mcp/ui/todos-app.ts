@@ -1404,6 +1404,42 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
   .link-back { color: var(--muted); }
   .link-save { color: var(--accent); font-weight: 600; }
 
+  /* ② ゴミ箱ページ(2026-07-24)。詳細/リスト選択ページと同じヘアライン言語(枠なし・行区切り)。 */
+  .trash-list { padding: 2px 0 6px; }
+  .trash-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-hair);
+  }
+  .trash-main { min-width: 0; } /* flex 子の省略を効かせる(長いタイトルで復元ボタンを押し出さない)。 */
+  .trash-title {
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trash-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  /* 復元ボタン: accent の縁取り小型ボタン(makeSwitch の .sw とは別形状だが同じ accent 語彙)。
+   * .sw を base に付けているが幅/高さ/丸を上書きして「テキストボタン」にする(トグルではないため)。 */
+  .trash-restore {
+    flex: none;
+    width: auto;
+    height: auto;
+    border-radius: 6px;
+    padding: 5px 12px;
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .trash-restore::after { content: none; } /* .sw の擬似ノブを消す(テキストボタン化)。 */
+
   .detail-body { padding: 2px 0 6px; }
   /* タイトル・メモ: 枠なし入力。ヘアラインで区切るだけ(inset 箱は作らない)。 */
   .d-title {

@@ -43,6 +43,36 @@ export interface TaskSnapshot {
 	/** formatPriorityDisplay 済みの表示語("高"/"中"/"低")。未設定(0)は省略。 */
 	priority?: string;
 	isAllDay?: boolean;
+	/**
+	 * 【2026-07-24 ① completedSummary のコレクション別内訳】この行が由来するコレクション ID
+	 * (VTODO コレクション)。snapshotFromTask が Task.calendarId から埋める(横断取得では常に付く)。
+	 *
+	 * 【なぜ TaskSnapshot 自体に持たせるか】completedSummary.recent はカードが「単一リスト表示では
+	 * そのリスト出身の完了行だけを見せる」ためにフィルタする(byCalendar と対の情報)。recent の各
+	 * 要素は owner 横断で計算された全完了行の直近 N 件なので、由来コレクションを行ごとに知らないと
+	 * カードが currentCalendarId でフィルタできない(byCalendar は総数だけで、どの行がどのリスト
+	 * 由来かは表現しない)。affected/removed 経路の snapshot でも一貫して埋める(横断/単一いずれの
+	 * 応答でも同じフィールドで由来を判別できるようにするため。Task.calendarId JSDoc と対称)。
+	 * 【additive・後方互換】Task.calendarId が無い旧応答/フィクスチャでは undefined のまま
+	 * (カード側は undefined を「所属不明」として扱い、単一リストのフィルタからは落とす)。
+	 */
+	calendarId?: string;
+}
+
+/**
+ * 【2026-07-24 ② ゴミ箱ビューの1行】list-deleted が TodosViewModel.deletedItems に載せる、
+ * soft-delete 済みリソースの表示用スナップショット(ListDeleted UC の DeletedEntry を、カードが
+ * 描くのに必要な最小フィールドへ絞ったもの)。
+ */
+export interface DeletedItemView {
+	/** 復元キー(restore-deleted の uri 引数)。モデル向け content には素で晒さない。 */
+	uri: string;
+	/** 所属コレクション ID(restore-deleted の calendarId 引数・リスト名の解決にも使う)。 */
+	calendarId: string;
+	/** タイトル(SUMMARY)。無題は空文字("")で載せる(カード側で「(無題)」に degrade)。 */
+	title: string;
+	/** 削除時刻(epoch ms)。カードは相対表記(「3分前」等)へ整形する。 */
+	deletedAtMillis: number;
 }
 
 /**
@@ -178,7 +208,42 @@ export interface TodosViewModel {
 	 * コレクション横断(allTasksAcrossOwner)から計算する(tasks 側だけが calendarId 指定時に
 	 * メモリでコレクションを絞る。server.ts の buildTodosViewModel コメント参照)。
 	 */
-	completedSummary?: { total: number; recent: TaskSnapshot[] };
+	/**
+	 * 【2026-07-24 ① コレクション別内訳を additive 拡張】byCalendar は「コレクション ID → その
+	 * コレクションの完了済み件数」の内訳。total(owner 全体の完了総数)/ recent(owner 横断の直近
+	 * completedAt 降順スナップショット・各要素に calendarId 付き)はそのまま維持し、byCalendar を
+	 * 足しただけ(既存の {total, recent} を読む旧カードは byCalendar を無視して従来どおり動く)。
+	 *
+	 * 【なぜ内訳が必要か(実機の実害)】K3 でカードが単一リスト(例 reading list)を表示していても、
+	 * completedSummary.total は owner 全体の完了総数(実機で115件)を出していたため、そのリスト由来
+	 * でない完了行まで「完了済み(115件)」としてノイズになった。カードは単一リスト表示のとき
+	 * byCalendar[currentCalendarId] ?? 0 を総数として表示し、recent も calendarId でフィルタする
+	 * (completed-summary-view.ts の scopeCompletedSummary)。「すべて」表示では従来どおり total/recent。
+	 *
+	 * 【push 不変条件の精緻化(症状B の治療原則の維持)】completedSummary は依然 due 窓・calendarId
+	 * スコープから独立(常に owner 配下の全 VTODO コレクション横断=allTasksAcrossOwner から計算)。
+	 * よって「どんな view の push が来ても completedSummary 自体は不変」だが、その内訳(byCalendar)を
+	 * 持たせたことで、カードは表示中リストに対応する内訳だけを見て「同一スコープの表示は push で
+	 * 揺れない」を満たせる(不変条件を「サマリ全体が不変」から「表示に使う内訳がスコープごとに
+	 * 安定」へ精緻化した — buildCompletedSummary の JSDoc も参照)。
+	 */
+	completedSummary?: { total: number; recent: TaskSnapshot[]; byCalendar: { [calendarId: string]: number } };
+	/**
+	 * 【2026-07-24 ② 削除/復元/ゴミ箱のカード化】list-deleted 応答が todos カードへ「ゴミ箱ビュー」
+	 * として載せる、soft-delete 済み(ゴミ箱の)リソースの一覧。カードは受信時に fullscreen の
+	 * 「ゴミ箱」ページを開き、各行に「復元」ボタン(callServerTool restore-deleted)を出す。
+	 *
+	 * 【なぜ tasks とは別チャンネルか】ゴミ箱は生存タスク一覧(tasks)とは別のビューで、tasks に
+	 * 混ぜると通常一覧にゴースト行が復活して見える(C0-c で削除ゴーストの本文合流を廃止した経緯と
+	 * 同じ轍)。よって deletedItems という独立フィールドにし、カードは「このフィールドが載っている
+	 * 応答=ゴミ箱ページを開け」の合図として扱う(list-deleted だけが載せる。他のツールは付けない)。
+	 * 【uri を持つ理由(モデルには見せない識別子)】restore-deleted は uri を復元キーに要求する。
+	 * カードの「復元」ボタンはこの uri を callServerTool の引数へ渡すが、モデル向け content には
+	 * uri を素で晒さない(list-deleted の description で「ユーザーに URI を見せない」を誘導する)。
+	 * 【additive・後方互換】通常の todos 応答(list/create/complete/...)はこのフィールドを載せない
+	 * ので、旧カードも新カードも「deletedItems 不在=ゴミ箱ページを開かない」で従来どおり degrade する。
+	 */
+	deletedItems?: DeletedItemView[];
 	/**
 	 * 【2026-07-23 SWR 完全形・鮮度モデル語彙】この view model をサーバー(Worker)が生成した
 	 * 時刻(epoch ms・`Date.now()`)。**SWR 判定にのみ使う語彙で、表示は任意**(UI がこの値を

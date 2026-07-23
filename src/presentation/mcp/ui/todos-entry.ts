@@ -154,6 +154,12 @@ import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } 
 // done-exit.ts(C0-a′ の3秒退場)を撤回した際、退場タイマー由来の重複排除(isDoneRowStillInPlace)を
 // 「positionMemory の所属判定」へ置換したもの(completed-dedup.ts 冒頭コメント参照)。
 import { completedRowIsInBody } from "./completed-dedup";
+// ①(2026-07-24): completedSummary を「今表示中のリスト」スコープへ絞る純関数(単一リスト表示では
+// byCalendar[currentCalendarId] を総数にし recent をその出身のみへフィルタ・completed-summary-view.ts 参照)。
+import { scopeCompletedSummary } from "./completed-summary-view";
+// ②(2026-07-24): list-deleted 応答のゴミ箱ビュー行を表示用へ整形する純関数(相対削除時刻・無題
+// フォールバック・新しい順ソート。trash-view.ts 参照)。DOM 側はリスト名だけ calendarsCache から当てる。
+import { buildTrashRows } from "./trash-view";
 // カードの版不整合(古いカードのキャッシュ描画)判定の純関数コア(④)。
 import { cardVersionIsStale } from "./card-version";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
@@ -269,6 +275,10 @@ interface TaskSnapshot {
 	due?: string;
 	priority?: string;
 	isAllDay?: boolean;
+	// calendarId(① 2026-07-24): 由来コレクション ID。completedSummary.recent の各要素が持ち、
+	// scopeCompletedSummary が単一リスト表示のフィルタに使う(server.ts の TaskSnapshot.calendarId
+	// と同型。横断取得では常に付き、旧応答/フィクスチャでは undefined)。
+	calendarId?: string;
 	// sync(E-2 スライス④): このゴーストがシステム起因(外部削除)由来か。true なら
 	// renderGhostRow のラベルを中立の「同期(削除)」にする。サーバー由来(ユーザー起因)の
 	// removed には付かない(= undefined)。server の TaskSnapshot には無い client 専用フィールド。
@@ -531,6 +541,12 @@ let sheetState: { id: string; page: "detail" | "list"; create?: boolean } | null
 //   ここに持ち、テキスト入力(title/notes/location)は input イベントでここへ同期する — 構造変化での
 //   シート再描画(メニュー選択等)でテキスト入力値が失われないようにするため。null=シート閉。
 let sheetDraft: SheetDraft | null = null;
+// trashItems(② 2026-07-24): ゴミ箱ページの表示状態。null=ゴミ箱を開いていない(通常一覧)。非 null=
+//   list-deleted 応答が届いてゴミ箱ページを開いている(その配列を各行として描く)。sheetState/
+//   collectionSheet と同じ「カード内ページ」状態の一種で、renderAll がこれを最優先で見て #root へ
+//   ゴミ箱ページを描く。復元(callServerTool restore-deleted)成功で該当行をこの配列から抜き、
+//   空になったら「ゴミ箱は空です」を出す(閉じるボタンで通常一覧へ戻る)。
+let trashItems: DeletedItemView[] | null = null;
 // pendingRenderAfterSheet: 2026-07-23 iOS fullscreen キーボード折れ対策(render-gate.ts 冒頭コメント)。
 // guardedRenderAll がシート表示中の renderAll() を抑止したとき true になり、シートを閉じた瞬間
 // (setSheetState(null))に1回だけ flush される。agenda-entry.ts と同型。
@@ -729,7 +745,9 @@ let currentTimeZone: string | null = null;
 // 111件が出現する原因)。新設計はサーバーが常に「カード向けの有界な形」を計算して渡すので、
 // UI 側は s.completed を無視してこの completedSummary だけを読めば、どんな view の push が
 // 来てもカードの完了済み表示が安定する(renderAll の sec-completed 構築部を参照)。
-let completedSummary: { total: number; recent: TaskSnapshot[] } | null = null;
+// byCalendar(① 2026-07-24): コレクション別完了件数の内訳。単一リスト表示のとき総数と recent の
+// フィルタに使う(scopeCompletedSummary)。additive なので旧応答では undefined でも壊れない。
+let completedSummary: { total: number; recent: TaskSnapshot[]; byCalendar?: { [calendarId: string]: number } } | null = null;
 // ④ カードの版不整合可視化。serverUiHash = 直近応答が載せた現行デプロイの版ハッシュ(uiHash)。
 // cardBuildHash = このカード自身に焼き込まれた版ハッシュ(todos-app.ts が HTML へ注入・card-version.ts)。
 // 両者が食い違えば「claude.ai が古いカードをキャッシュ描画している」兆候なので、renderAll のヘッダ近くで
@@ -2864,6 +2882,105 @@ function pickDefaultCalendarId(tasks: TodoItem[]): string | null {
 	return firstFromCache ?? null;
 }
 
+/**
+ * ゴミ箱ページ(② 2026-07-24)。list-deleted 応答(deletedItems)が届いたときに renderAll が
+ * #root へ直接描く「カード内ページ」(sheetState/collectionSheet と同じ v3 方式)。有界ページ・
+ * 原則(b)準拠 = 浮遊レイヤーを作らず通常フローに描いて iframe 自動リサイズと整合させる。
+ *
+ * 【各行の構成】タイトル(無題は "(無題)")+ サブ情報(リスト名 · 相対削除時刻)+「復元」ボタン。
+ * 復元ボタンは callServerTool restore-deleted へ {uri, calendarId} を渡す(uri はモデルに見せず
+ * カード内でのみ扱う識別子)。復元成功で該当行を trashItems から抜いて即再描画する。
+ */
+function buildTrashPage(items: DeletedItemView[]): HTMLElement {
+	const page = el("div", "list-page");
+	const head = el("div", "page-head");
+	// 「閉じる」= 通常一覧へ戻る(trashItems を畳む)。list picker の「詳細へ戻る」と同じ .link-back 語彙。
+	const back = document.createElement("button");
+	back.type = "button";
+	back.className = "link link-back";
+	back.appendChild(createIcon("chevron-left"));
+	back.appendChild(document.createTextNode("閉じる"));
+	back.addEventListener("click", () => {
+		trashItems = null;
+		renderAll();
+	});
+	const title = document.createElement("span");
+	title.style.fontSize = "13px";
+	title.style.fontWeight = "600";
+	title.textContent = "ゴミ箱";
+	const spacer = document.createElement("span");
+	spacer.style.width = "3em"; // 戻るリンクとタイトルを中央寄せするバランサ(list picker と同型)。
+	head.appendChild(back);
+	head.appendChild(title);
+	head.appendChild(spacer);
+	page.appendChild(head);
+
+	// リスト名の解決に calendarsCache が要る。未取得なら背景取得して完了後に描き直す(list picker と同型 —
+	// 取得中も uri/相対時刻は描けるので行自体は出す。名前だけ後から埋まる)。
+	if (calendarsCache === null) void ensureCalendars().then(() => { if (trashItems !== null) renderAll(); });
+
+	const listWrap = el("div", "trash-list");
+	if (items.length === 0) {
+		const empty = el("div", "empty");
+		empty.textContent = "ゴミ箱は空です";
+		listWrap.appendChild(empty);
+		page.appendChild(listWrap);
+		return page;
+	}
+
+	// 表示用行(相対削除時刻・無題フォールバック・新しい順)は純関数 buildTrashRows に委譲(trash-view.ts)。
+	for (const row of buildTrashRows(items, Date.now())) {
+		const item = el("div", "trash-row");
+		const main = el("div", "trash-main");
+		const t = el("div", "trash-title");
+		t.textContent = row.title;
+		const sub = el("div", "trash-sub");
+		// リスト名 · 相対削除時刻。リスト名は titleForCalendarId(calendarsCache→displayName、未取得は id)。
+		sub.textContent = `${titleForCalendarId(row.calendarId)} · ${row.deletedRelative}`;
+		main.appendChild(t);
+		main.appendChild(sub);
+		const restore = document.createElement("button");
+		restore.type = "button";
+		restore.className = "sw trash-restore"; // accent の小型 button.sw(makeSwitch と同じ視覚言語)。
+		restore.textContent = "復元";
+		restore.addEventListener("click", () => void restoreDeletedItem(row.uri, row.calendarId));
+		item.appendChild(main);
+		item.appendChild(restore);
+		listWrap.appendChild(item);
+	}
+	page.appendChild(listWrap);
+	return page;
+}
+
+/**
+ * ゴミ箱行の「復元」= callServerTool restore-deleted。成功で該当 uri を trashItems から抜いて即再描画
+ * (行が消える)。応答は復元後の通常 todos vm(deletedItems は載らない)なので applyStructuredContent
+ * で通常一覧を更新しておく(ゴミ箱を閉じたとき復元行が一覧に現れる)— trashItems は非 null のまま
+ * なので画面はゴミ箱ページを保つ(閉じるのはユーザーの明示操作だけ)。失敗はバナーに degrade。
+ */
+async function restoreDeletedItem(uri: string, calendarId: string): Promise<void> {
+	clearBanner();
+	try {
+		const result = await app.callServerTool({ name: "restore-deleted", arguments: { uri, calendarId } });
+		if (result.isError) {
+			const first = result.content?.[0];
+			throw new Error(first !== undefined && first.type === "text" ? first.text : "(詳細不明)");
+		}
+		// 復元成功: ゴミ箱ページから該当行を抜く(uri で同定)。
+		if (trashItems !== null) trashItems = trashItems.filter((d) => d.uri !== uri);
+		// 復元後の通常 todos vm を下敷きの一覧へ反映(閉じたときに復元行が見える)。deletedItems は
+		// 載っていないので applyStructuredContent は trashItems を触らない(下の deletedItems 反映を参照)。
+		applyStructuredContent(result.structuredContent);
+		// applyStructuredContent は renderAll を呼ばない契約なので、ゴミ箱ページの再描画はここで行う。
+		renderAll();
+	} catch (e) {
+		showBanner(
+			`復元に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+			() => void restoreDeletedItem(uri, calendarId),
+		);
+	}
+}
+
 /** move-todo(タスクを別リストへ移動)。応答=移動元ビューの TodosViewModel + removed ghost。
  *  ツールが未実装の環境では isError でバナーに degrade する(UI は壊れない。モック要件6)。 */
 async function moveTodo(task: TodoItem, toCalendarId: string): Promise<void> {
@@ -3205,6 +3322,18 @@ function renderAll(): void {
 	// sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null(openSheet/openCreateSheet の
 	// 呼び出し前に commitSelection→selectedId=null を通る)なので、この1行だけで両状態を正しく畳める。
 	headerDoneEl.hidden = selectedId === null;
+	// --- ゴミ箱ページ(② 2026-07-24): trashItems はタスク/コレクションと無関係のカードレベルページ。
+	// list-deleted 応答が届いた瞬間に開く最優先ページなので、他のページ判定より先に見る(復元中の
+	// callServerTool 応答=通常 todos vm が届いても deletedItems は載らないので trashItems は保たれ、
+	// ゴミ箱ページは閉じない。閉じるのはユーザーの「閉じる」ボタンだけ=明示操作)。--------------------
+	if (trashItems !== null) {
+		root.innerHTML = "";
+		selTitleInput = null;
+		selMemoInput = null;
+		headerDoneEl.hidden = true; // ゴミ箱では行選択 Done を出さない。
+		root.appendChild(buildTrashPage(trashItems));
+		return;
+	}
 	// --- コレクション詳細ページ(K2-UI②): collectionSheet はタスクと無関係のカードレベルページなので
 	// sheetState より先に見る(openCollectionSheet が sheetState を排他的に畳んでいるため通常は
 	// 同時に立たないが、判定順序自体もこの独立性を反映させておく)。--------------------------------
@@ -3319,7 +3448,11 @@ function renderAll(): void {
 	// positionMemory 駆動バケツ・カード lifecycle 中に初出した born-completed 行しか持たない)ではなく
 	// completedSummary.total(server が常に計算する真の総数)を正とする。下の sec-completed 構築部と
 	// 合わせて参照。
-	const completedTotal = completedSummary?.total ?? 0;
+	// ①(2026-07-24): 単一リスト表示では owner 全体ではなくそのリスト由来だけの完了サマリを見せる。
+	// scopeCompletedSummary が currentCalendarId(実在 ID=単一リスト / ALL_CALENDARS_ID・null=すべて)に
+	// 応じて {total, recent} を絞る(completed-summary-view.ts 参照)。「すべて」表示は従来どおり owner 全体。
+	const scopedCompleted = scopeCompletedSummary(completedSummary, currentCalendarId);
+	const completedTotal = scopedCompleted?.total ?? 0;
 	// ドラフト行(FAB で生やした未送信の新規行)があるときは「タスクはありません」を出さない
 	// (空でも一番下にドラフト行を出すので、空メッセージとドラフト行の同居は誤解を招く)。
 	if (activeCount === 0 && draft === null) {
@@ -3374,14 +3507,18 @@ function renderAll(): void {
 	// 変えず、表示側(completedSummary という別チャンネル)を独立させて直した。
 	// 【5件の根拠】完了直後の undo とフィードバックが目的で、履歴閲覧は includeCompleted:true 経由の
 	// エージェント側の役割(カードは「今の操作の結果が見える」最小の窓に絞る。2026-07-23 ユーザー裁定)。
-	if (completedSummary !== null && completedTotal > 0) {
+	// ①: scopedCompleted!==null(サマリ受領済み)かつ completedTotal>0(このスコープに完了行あり)の
+	// ときだけセクションを描く。単一リスト表示でそのリストの完了が 0 件なら completedTotal===0 になり
+	// セクションごと非表示になる(仕様「0件ならセクション非表示」)。recent も scopedCompleted 側の
+	// フィルタ済み配列を使う(そのリスト出身のみ)。
+	if (scopedCompleted !== null && completedTotal > 0) {
 		// completedSummary.recent は TaskSnapshot(最小フィールド)なので、affectedItems 合成
 		// (synthDone)と同じ手法 = mergeCompletedBase で sticky(あれば notes 等 full data)を土台に
 		// する(2026-07-13「done で notes が消える」修正の教訓をそのまま踏襲)。楽観トグル(タップで
 		// un-complete した直後)は optimisticToggle を重ねて即時反映する — recent はサーバー確定値
 		// なので、ここで重ねないと undo の見た目が次の往復まで1テンポ遅れてしまう。
 		const completedRows: TodoItem[] = [];
-		for (const snap of completedSummary.recent) {
+		for (const snap of scopedCompleted.recent) {
 			if (optimisticDeletes.has(snap.id)) continue; // 楽観削除中は出さない(他セクションと同じ規律)
 			// 【所属判定による重複排除(C0-a′ 撤回で退場タイマー判定から置換・2026-07-23 (d′) 裁定)】
 			// server はミューテーション確定と同時に completedSummary を加算済みで返す契約なので、
@@ -3763,7 +3900,12 @@ interface TodosStructuredContent {
 	// カードの完了済み <details> セクションはこのフィールドだけを見て描く(下の completedSummary
 	// module state・renderAll の sec-completed 構築部を参照)— s.completed(sectionizeManual の
 	// positionMemory 駆動バケツ)はもう completed <details> の描画には使わない。
-	completedSummary?: { total: number; recent: TaskSnapshot[] };
+	// byCalendar(① 2026-07-24): コレクション別完了件数の内訳(additive)。scopeCompletedSummary が
+	// 単一リスト表示の総数/フィルタに使う(server.ts の TodosViewModel.completedSummary JSDoc 参照)。
+	completedSummary?: { total: number; recent: TaskSnapshot[]; byCalendar?: { [calendarId: string]: number } };
+	// deletedItems(② 2026-07-24): list-deleted 応答が載せる「ゴミ箱ビュー」。このフィールドが載った
+	// 応答=fullscreen のゴミ箱ページを開く合図(server.ts の TodosViewModel.deletedItems JSDoc 参照)。
+	deletedItems?: DeletedItemView[];
 	// generatedAt(2026-07-23 SWR 完全形): server がこの vm を生成した時刻(epoch ms)。additive
 	// なので旧応答/フィクスチャでは undefined(server.ts の TodosViewModel.generatedAt JSDoc・
 	// freshness.ts の shouldRevalidateOnPush 参照)。push 経路の鮮度判定にのみ使う。
@@ -3772,6 +3914,14 @@ interface TodosStructuredContent {
 	// 焼き込み値(window.__CARD_BUILD_HASH__)と食い違えば「カードが古い可能性」を表示する
 	// (server.ts の TodosViewModel.uiHash JSDoc・card-version.ts 参照)。additive・欠落時は非表示。
 	uiHash?: string;
+}
+
+/** ゴミ箱ページの1行(server の TodosViewModel.deletedItems と同型・ui 末端なのでローカルに写経)。 */
+interface DeletedItemView {
+	uri: string;
+	calendarId: string;
+	title: string;
+	deletedAtMillis: number;
 }
 
 /**
@@ -3971,6 +4121,16 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	// このフィールドを持たない場合でも直前の値を保つ= ちらつき/消失防止)。
 	if (structuredContent?.completedSummary !== undefined) {
 		completedSummary = structuredContent.completedSummary;
+	}
+	// deletedItems(② 2026-07-24 ゴミ箱): list-deleted 応答だけがこのフィールドを載せる。届いた瞬間に
+	// ゴミ箱ページを開く(trashItems 非 null 化)。他ツール応答(restore-deleted の通常 todos vm 等)は
+	// deletedItems を載せないので trashItems は保たれる(=ゴミ箱を勝手に閉じない)。fullscreen 昇格を
+	// 要求してゴミ箱を全画面で見せる(有界ページ・原則(b))。requestDisplayMode の戻りは待たず
+	// (hostcontext 経由で hostDisplayMode が更新される)、失敗はカードを壊さないよう握りつぶす
+	// (下部の ⊕ 昇格経路と同じ扱い)。
+	if (structuredContent?.deletedItems !== undefined) {
+		trashItems = structuredContent.deletedItems.slice();
+		void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
 	}
 	// uiHash を保持(④ カードの版不整合可視化)。値が来たときだけ更新(欠落応答で消さない防御)。
 	// renderAll のヘッダ近くで cardVersionIsStale(自身の焼き込み版 ↔ この値)を見て古さ警告を出す。

@@ -74,6 +74,10 @@ export function snapshotFromTask(task: Task): TaskSnapshot {
 		...(due !== undefined ? { due } : {}),
 		...(priority !== undefined ? { priority } : {}),
 		isAllDay: task.isAllDay,
+		// ① completedSummary の内訳(2026-07-24): 由来コレクションを行ごとに運ぶ。Task.calendarId は
+		// 横断取得では常に付く(list-todos.ts で必ずセット)が、旧応答/フィクスチャ由来で無いときは
+		// キーごと省いて後方互換を保つ(TaskSnapshot.calendarId JSDoc の「所属不明は undefined」規律)。
+		...(task.calendarId !== undefined ? { calendarId: task.calendarId } : {}),
 	};
 }
 
@@ -89,11 +93,21 @@ export function snapshotFromTask(task: Task): TaskSnapshot {
  * 入ること」(complete-todo の affected 合成との整合)は、この関数を Task フィクスチャで
  * 単体テストするだけで確実に固定できる(D1/principal を用意する統合テストが要らない)。
  *
+ * 【2026-07-24 ① byCalendar 内訳を additive 追加】total/recent は不変のまま、byCalendar
+ * (コレクション ID → 完了件数)を足す。カードが単一リスト表示のとき byCalendar[currentCalendarId]
+ * を総数として使い、recent を calendarId でフィルタする(todos-view-model.ts の completedSummary
+ * JSDoc・completed-summary-view.ts 参照)。calendarId が無い完了行(旧応答/フィクスチャ由来の所属
+ * 不明行)は byCalendar のどのキーにも数えない(total には数える — total は所属に依らない真の総数)。
+ *
  * @param tasks ListTodos が includeCompleted:true 相当で返した全件(未完了+完了)。
  * @param max completedSummary.recent に載せる最大件数(呼び出し側の COMPLETED_RECENT_MAX)。
- * @returns total = 完了済みの総数。recent = completedAt 降順(新しい順)で先頭 max 件のスナップショット。
+ * @returns total = 完了済みの総数。recent = completedAt 降順(新しい順)で先頭 max 件のスナップショット
+ *          (各要素に calendarId 付き)。byCalendar = コレクション別の完了件数。
  */
-export function buildCompletedSummary(tasks: Task[], max: number): { total: number; recent: TaskSnapshot[] } {
+export function buildCompletedSummary(
+	tasks: Task[],
+	max: number,
+): { total: number; recent: TaskSnapshot[]; byCalendar: { [calendarId: string]: number } } {
 	const completed = tasks.filter((t) => t.completed);
 	// completedAt 降順(新しい順)。ISO 文字列の辞書順=時刻順(同一形式前提。formatDueDisplay と同じ
 	// 前提を踏襲)。completedAt が同値(まれ・同時刻完了)なら id でタイブレークして結果を決定的にする
@@ -104,7 +118,14 @@ export function buildCompletedSummary(tasks: Task[], max: number): { total: numb
 		if (ca !== cb) return ca < cb ? 1 : -1;
 		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 	});
-	return { total: completed.length, recent: completed.slice(0, max).map(snapshotFromTask) };
+	// byCalendar: 由来コレクションごとの完了件数。calendarId が無い行は所属不明として内訳には数えない
+	// (total は所属に依らない全件なので、内訳の合計 ≤ total になりうる=正しい)。
+	const byCalendar: { [calendarId: string]: number } = {};
+	for (const t of completed) {
+		if (t.calendarId === undefined) continue;
+		byCalendar[t.calendarId] = (byCalendar[t.calendarId] ?? 0) + 1;
+	}
+	return { total: completed.length, recent: completed.slice(0, max).map(snapshotFromTask), byCalendar };
 }
 
 /**

@@ -84,3 +84,49 @@ describe("buildCompletedSummary(完了済みサマリの計算・症状B対策)"
 		expect(summary.recent[0]).toEqual({ id: "x", title: "task-x", isAllDay: false });
 	});
 });
+
+// ①(2026-07-24)completedSummary のコレクション別内訳。symptom B の治療原則(total/recent は owner
+// 横断で不変)を保ったまま、byCalendar でカードが単一リスト表示のスコープを引けることを固定する。
+function makeTaskIn(id: string, completedAt: string | null, calendarId: string | undefined): Task {
+	const t = makeTask(id, completedAt !== null, completedAt);
+	t.calendarId = calendarId;
+	return t;
+}
+
+describe("buildCompletedSummary の byCalendar 内訳(① コレクション別)", () => {
+	test("byCalendar は完了行を calendarId ごとに数える(未完了は数えない)", () => {
+		const tasks = [
+			makeTaskIn("a", "2026-07-20T10:00:00Z", "tasks"),
+			makeTaskIn("b", "2026-07-21T10:00:00Z", "tasks"),
+			makeTaskIn("c", "2026-07-21T11:00:00Z", "reading"),
+			makeTaskIn("d", null, "tasks"), // 未完了 → 数えない
+		];
+		const summary = buildCompletedSummary(tasks, 5);
+		expect(summary.total).toBe(3);
+		expect(summary.byCalendar).toEqual({ tasks: 2, reading: 1 });
+	});
+
+	test("calendarId の無い完了行(所属不明)は byCalendar に数えないが total には数える", () => {
+		const tasks = [
+			makeTaskIn("a", "2026-07-20T10:00:00Z", "tasks"),
+			makeTaskIn("orphan", "2026-07-20T11:00:00Z", undefined),
+		];
+		const summary = buildCompletedSummary(tasks, 5);
+		expect(summary.total).toBe(2); // total は所属に依らない真の総数
+		expect(summary.byCalendar).toEqual({ tasks: 1 }); // 内訳の合計 ≤ total は正しい
+	});
+
+	test("recent の各要素に由来 calendarId が載る(カードの単一リストフィルタ用)", () => {
+		const summary = buildCompletedSummary(
+			[makeTaskIn("a", "2026-07-20T10:00:00Z", "reading")],
+			5,
+		);
+		expect(summary.recent[0]?.calendarId).toBe("reading");
+	});
+
+	test("完了行が無ければ byCalendar は空オブジェクト(total:0)", () => {
+		const summary = buildCompletedSummary([makeTaskIn("a", null, "tasks")], 5);
+		expect(summary.total).toBe(0);
+		expect(summary.byCalendar).toEqual({});
+	});
+});
