@@ -211,6 +211,20 @@
   > **残実機確認(ユーザー)**: キーボード出現(#44 ⑤)・geo 無しイベントの iOS 表示(LOCATION の
   > title\naddress 改行形式)・search-location 経由の場所付き予定作成の一気通貫。
   > 次: #47 小粒バックログ(propose-delete 撤去・purge cron・all センチネル統一から着手)。
+  > **2026-07-24 更新: geocoding 解決品質ゲート再受け入れ(前回 FAIL の是正確認)**: Inspector
+  > proxy 経由の直接 JSON-RPC POST(フォームの locationReminder/recurrence 併存シリアライズ不具合
+  > 回避)で4項目実施・**全 PASS**。①VTODO ゴミ弾き(架空場所): 今回はツールがエラーを返し
+  > (isError:true)D1 に行が作られない(前回 FAIL → 今回 PASS。ただし応答文言に弾いた候補名は
+  > 含まれず「解決できませんでした」の一般文言のみ — VEVENT 側の rejected 文言とは非対称。
+  > 要望通りの文言仕様なら軽微な是正余地)。②VTODO 正当クエリ(叙々苑): 成功・D1 raw ICS に
+  > X-APPLE-PROXIMITY:ARRIVE + geo + X-APPLE-RADIUS=100 確認(#51 回帰 OK)。③VEVENT ゴミは
+  > degrade: エラーにならず作成・`_meta["gigun.dev/locationAutoResolve"]` が
+  > `{kind:"rejected",score:0.1875}`・応答文言「一致度が低いため地図ピンは付けませんでした。
+  > search-location で確認できます」(failed と区別された文言)・D1 に structuredLocation 無し
+  > LOCATION テキストのみ。④VEVENT 正当クエリ: `{kind:"geocoding",score:0.5}`・D1 に
+  > X-APPLE-STRUCTURED-LOCATION(geo+X-TITLE)確認(#45 回帰 OK)。検証データは delete-todo/
+  > delete-event で後始末(ソフトデリート=trash 行き。ハード削除ではなく設計どおり)。
+  > geocoding quota 使用量 2026-07: 16(このセッションの Google 呼び出しは2回のみ消費)。
 - **swift-mcp-appセッションからの申し送り(2026-07-23夜・実機バグ2件+iOS切り分け結論+OAuth調査)**
   > 経緯の生記録はdocs/log.md末尾2エントリ(同セッション追記・未コミット)。コミットはこちらに委ねる。
   > **①fullscreen FABがclaude.ai iOSのcomposerに隠れる(実機スクショ確認済み・要修正)**:

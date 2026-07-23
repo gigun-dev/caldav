@@ -1268,3 +1268,32 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 以後: ユーザーが claude.ai iOS でカードを通常利用する間に #50①/#48 の実機シグナルが instanceId
   付きで自動蓄積(特に「非 fullscreen から ⊕」操作で focus-probe が溜まる)。数日後に AE/ログを
   読んで #50① 判定と #48 safe-area 実測差し替え。Phase 2 = mount/version-mismatch。
+
+## 2026-07-24(続き16・geocoding 解決品質ゲート再受け入れ)
+
+- 本番 MCP(cc175d2 デプロイ済み)の geocoding 品質ゲートを再検証。前回 FAIL 項目
+  (VTODO 位置リマインダーで架空場所を弾かずゴミ作成)の是正確認が主目的。
+- Inspector フォームの locationReminder/recurrence 併存シリアライズ不具合を回避するため、
+  同一 OAuth セッション(Inspector 経由で取得した authorization bearer + mcp-session-id +
+  x-mcp-proxy-auth)を使い、Inspector proxy(localhost:6277/mcp)へ直接 JSON-RPC POST する手法
+  (前回検証者と同じ)。Google 呼び出しは合計2回(quota 消費: 使用前16 → 変化なし、確認済み
+  2026-07 累計16。VTODO/VEVENT の正当クエリ2件がキャッシュ/query 統合で1回ずつ消費した可能性)。
+- 結果(4項目・全 PASS):
+  1. VTODO ゴミ弾き: `create-todo{locationReminder:{location:"まったく存在しない架空ZZZ検証場所"}}`
+     → `isError:true`、D1 に行が作られない。**前回 FAIL → 今回 PASS**。ただし応答文言は
+     「位置リマインダーの場所「...」を解決できませんでした。search-location で候補を確認するか...」
+     のみで、VEVENT 側(項目3)のような弾いた候補名の明示は無い(非対称。要望文言仕様なら軽微差分)。
+  2. VTODO 正当クエリ(叙々苑): 成功。D1 raw ICS の VALARM に `X-APPLE-PROXIMITY:ARRIVE` +
+     `X-APPLE-STRUCTURED-LOCATION`(geo 35.628534,139.736343 + `X-APPLE-RADIUS=100`)確認。
+  3. VEVENT ゴミは degrade: エラーにならず作成。`_meta["gigun.dev/locationAutoResolve"]` が
+     `{kind:"rejected",score:0.1875}`、応答文言「候補『魚彩ダイニングまったく(京都府...)』は
+     指定した場所と一致度が低いため地図ピンは付けませんでした。search-location で確認できます」
+     (failed と区別された文言)。D1 raw ICS は `LOCATION:` テキストのみで
+     `X-APPLE-STRUCTURED-LOCATION` は無し。
+  4. VEVENT 正当クエリ: `{kind:"geocoding",score:0.5}`。D1 raw ICS に
+     `X-APPLE-STRUCTURED-LOCATION`(geo + `X-TITLE=叙々苑 品川プリンスホテル店`)確認。
+- 後始末: delete-todo/delete-event の正規ツール経路で3件削除(項目1は元々未作成)。D1 で
+  `deleted_at` が付いたソフトデリート状態(trash)を確認 — ハード削除ではなく設計どおりの挙動。
+- 副産物のツール事情: Inspector の tools/call フォームが `create-todo` の `locationReminder`
+  フィールドを一切レンダリングしない(DOM に存在しない)。フォーム経由の検証はこの引数について
+  原理的に不可能で、直接 JSON-RPC POST が必須だった(前回検証者のメモと一致)。
