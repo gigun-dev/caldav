@@ -46,3 +46,5 @@ src/presentation/mcp/ui/*-bundle.ts
 
 # 本番 secrets の控え(wrangler secret bulk 用・絶対にコミットしない)
 .secrets.prod.json
+# ローカル検証用 secrets(geocoding ベンチ等・絶対にコミットしない)
+.secrets.local.json
