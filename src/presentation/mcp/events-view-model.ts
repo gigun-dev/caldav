@@ -83,4 +83,11 @@ export interface EventsViewModel {
 	 * 落ちる(shouldRevalidateOnPush 参照)。
 	 */
 	generatedAt?: number;
+	/**
+	 * 【2026-07-23 カードの版不整合可視化(④)】現行デプロイの agenda カード HTML の版ハッシュ
+	 * (agenda-app.ts の AGENDA_UI_HASH)。TodosViewModel.uiHash と対称(理由・仕組みの全文はそちら
+	 * および card-version.ts 参照)。agenda カードは焼き込み版ハッシュ(window.__CARD_BUILD_HASH__)と
+	 * この値を突き合わせ、食い違えば「カードが古い可能性」を控えめに表示する。additive・欠落時は非表示。
+	 */
+	uiHash?: string;
 }

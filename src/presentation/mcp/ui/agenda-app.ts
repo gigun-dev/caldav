@@ -18,12 +18,14 @@
 
 import { AGENDA_BUNDLE_JS } from "./agenda-bundle";
 import { fnv1aHex } from "./content-hash";
+import { injectCardBuildHash } from "./card-version";
 
 /**
  * list-events-expanded の structuredContent(EventsViewModel)を受け取り、アジェンダとして描画する HTML。
  * 静的骨格(ヘッダ・バナー・ステータス行・#root・FAB・aria-live)はここ、動的な中身は agenda-entry.ts。
  */
-export const AGENDA_APP_HTML = `<!doctype html>
+// AGENDA_APP_HTML_CORE: 版ハッシュ注入前の完成 HTML(④・todos-app.ts と同型。card-version.ts 参照)。
+const AGENDA_APP_HTML_CORE = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
@@ -437,6 +439,13 @@ export const AGENDA_APP_HTML = `<!doctype html>
 
   /* --- 空/スケルトン --- */
   .empty { color: var(--muted); padding: 12px 0; }
+  /* ④ カードの版不整合警告(todos-app.ts と同型・控えめな1行)。card-version.ts / agenda-entry.ts 参照。 */
+  .card-stale-notice {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--hairline, rgba(0,0,0,0.08));
+  }
   .skel { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
   .skel-circle { width: 22px; height: 22px; border-radius: 50%; background: var(--surface); margin: 0 11px; }
   .skel-line { height: 12px; border-radius: 6px; background: var(--surface); }
@@ -773,4 +782,7 @@ ${AGENDA_BUNDLE_JS}
  *  content-address 化。定義順(HTML → hash → URI)・旧静的 URI のエイリアス方針も同一なので
  *  詳細は todos-app.ts の TODOS_UI_URI コメントを参照(重複させない)。
  *  server.ts の _meta.ui.resourceUri と registerAppResource(uri) の両方に同じ文字列を使う。 */
-export const AGENDA_UI_URI = `ui://caldav/agenda.${fnv1aHex(AGENDA_APP_HTML)}.html`;
+// AGENDA_UI_HASH(④ カードの版ハッシュ・todos-app.ts と同型)。core HTML の hash を server の uiHash に載せる。
+export const AGENDA_UI_HASH = fnv1aHex(AGENDA_APP_HTML_CORE);
+export const AGENDA_APP_HTML = injectCardBuildHash(AGENDA_APP_HTML_CORE, AGENDA_UI_HASH);
+export const AGENDA_UI_URI = `ui://caldav/agenda.${AGENDA_UI_HASH}.html`;

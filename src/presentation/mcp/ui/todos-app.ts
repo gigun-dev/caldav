@@ -59,6 +59,7 @@
 
 import { TODOS_BUNDLE_JS } from "./todos-bundle";
 import { fnv1aHex } from "./content-hash";
+import { injectCardBuildHash } from "./card-version";
 
 /**
  * list-todos の structuredContent(`{ tasks: Task[], calendarId, timeZone }`)を受け取り、
@@ -74,7 +75,10 @@ import { fnv1aHex } from "./content-hash";
  * `${...}` で埋め込む。変数補間なので中身の文字がテンプレート構文として再解釈されることは
  * 無く安全(バンドル側の `</script>` エスケープは scripts/build-ui-bundle.ts が生成時に処理済み)。
  */
-export const TODOS_APP_HTML = `<!doctype html>
+// TODOS_APP_HTML_CORE: 版ハッシュ注入前の完成 HTML(CSS+骨格+inline バンドル)。④ の版ハッシュは
+// この core から算出し(下記 TODOS_UI_HASH)、その値を injectCardBuildHash で最終 HTML へ焼き込む。
+// core と最終を分けるのは循環回避のため(card-version.ts 冒頭コメント参照)。
+const TODOS_APP_HTML_CORE = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
@@ -811,30 +815,10 @@ export const TODOS_APP_HTML = `<!doctype html>
   /* ゴースト行は row-main 直下の row-head を減光する(2026-07-14 UI フィードバック対応で .texts 廃止)。 */
   li.becoming-gone .row-head { opacity: 0.45; padding: 6px 0; }
 
-  /* row-retiring: C0-a′(2026-07-23 iOS リマインダー準拠の完了退場・todos-entry.ts 冒頭コメント参照)の
-   * 退場アニメ(高さ collapse + fade)。完了は「消える」のではなく「完了済みセクションへ移る」ので、
-   * becoming-gone(破線ボックスで恒久的に減光したまま残る削除ゴースト)とは違い、このクラスは
-   * COMPLETED_RETIRE_ANIM_MS(todos-entry.ts)の一瞬だけ効き、アニメが尽きたら行自体が DOM から
-   * 消えて completedSummary 側に現れる(入れ替わりの中継アニメ)。li.becoming-in.inflight の
-   * wake-sweep と同じ「新規挿入要素に animation を直付けすると自動再生される」技法を使う
-   * (renderAll が #root を毎回作り直す全消し設計と相性が良い唯一の CSS アニメ手法・同コメント参照)。
-   * max-height は 2 行(タイトル+meta)+notes アイコン等が乗っても収まる余裕を持たせた概算値
-   * (実測ではなく概算で十分 — collapse の目的は「畳まれつつある」体感で、厳密な高さ一致は不要)。 */
-  li.row-retiring {
-    animation: row-collapse 240ms ease-out forwards;
-    overflow: hidden;
-  }
-  @keyframes row-collapse {
-    from { opacity: 1; max-height: 120px; }
-    to { opacity: 0; max-height: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border-bottom-width: 0; }
-  }
-  /* 【JS 側が一次防御(beginDoneExitAnimation)】prefers-reduced-motion 環境では JS がこのクラス自体を
-   * 付けずに即時退場させるため通常はここへ到達しないが、他の @keyframes(wake-sweep 等)と同じく
-   * CSS 側にも明示の停止を置く defense-in-depth(matchMedia 判定と実際の描画の間に非同期な取りこぼしが
-   * 生じても、アニメだけは確実に止まる)。 */
-  @media (prefers-reduced-motion: reduce) {
-    li.row-retiring { animation: none; }
-  }
+  /* row-retiring / @keyframes row-collapse は撤去済み(2026-07-23 (d′) 裁定・C0-a′ 撤回)。
+   * 完了行の3秒退場(→ 完了済みセクションへ collapse+fade して移る中継アニメ)を持たせていたが、
+   * docs/modeling/12 §7.8 v2.2 item 3「done はその場で取消線・時間駆動の視覚イベントを型から排する」を
+   * 正に戻したため、退場アニメ自体が不要になった(todos-entry.ts 冒頭 C0-a′ 撤回コメント参照)。 */
 
   /* --- 操作結果の読み上げ(視覚非表示の aria-live)-------------------------------
    * becoming は視覚専用の表現なので、スクリーンリーダー向けには #live に
@@ -854,6 +838,15 @@ export const TODOS_APP_HTML = `<!doctype html>
 
   /* --- 空/スケルトン ----------------------------------------------------------- */
   .empty { color: var(--muted); padding: 12px 0; }
+  /* ④ カードの版不整合(古いカードのキャッシュ描画)警告。控えめな1行(muted・小さめ)で、
+   * ヘッダ直下(一覧最上部)に出す。誤検知を避ける判定(cardVersionIsStale)を通った時だけ描画されるので、
+   * ここは見た目だけを地味に整える(エラーバナーほど強い赤にはしない=恒常表示ではなく稀な注意喚起)。 */
+  .card-stale-notice {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--hairline, rgba(0,0,0,0.08));
+  }
   /* C2(設計04 §5): inline maxHeight を超えたときの「残り n 件」受動表示。ボタンではない
    * (タップ不可・cursor は既定のまま) — 昇格(すべて表示→requestDisplayMode)は C3 で
    * このノードをボタンに置換する予定(2026-07-16 更新「C2→C3 へ移動」方針、entry.ts 側コメント参照)。
@@ -1674,4 +1667,11 @@ ${TODOS_BUNDLE_JS}
  *  旧・静的 URI(`ui://caldav/todos.html`)は server.ts 側で後方互換のエイリアス登録をする
  *  (このファイルからは触れない。ローカル定数として server.ts に専用で持つ設計 — 詳細は
  *  server.ts の resource 登録コメント参照)。 */
-export const TODOS_UI_URI = `ui://caldav/todos.${fnv1aHex(TODOS_APP_HTML)}.html`;
+// TODOS_UI_HASH(④ カードの版ハッシュ): 注入前 core HTML(CSS+骨格+バンドル)の hash。CSS/骨格/バンドルの
+// どれが変わっても変わる「配信内容の版」。server が view model の uiHash に載せ、カードは焼き込み値
+// (window.__CARD_BUILD_HASH__)と突き合わせて不整合を検知する(card-version.ts 参照)。
+export const TODOS_UI_HASH = fnv1aHex(TODOS_APP_HTML_CORE);
+// 実際に配信する HTML。core に版ハッシュ(window.__CARD_BUILD_HASH__)を1行注入する。注入で HTML は
+// 変わるが URI hash は core の hash(TODOS_UI_HASH)をそのまま使い、注入後を再 hash しない(循環回避)。
+export const TODOS_APP_HTML = injectCardBuildHash(TODOS_APP_HTML_CORE, TODOS_UI_HASH);
+export const TODOS_UI_URI = `ui://caldav/todos.${TODOS_UI_HASH}.html`;

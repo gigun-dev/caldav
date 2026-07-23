@@ -13,6 +13,7 @@
 // =============================================================================
 import { describe, expect, test } from "bun:test";
 import {
+	ALL_CALENDARS_ID,
 	mergeTasksByCalendar,
 	filterTasksByCalendar,
 	groupTasksByCalendar,
@@ -53,6 +54,15 @@ describe("mergeTasksByCalendar", () => {
 		const next: Item[] = [{ id: "a", calendarId: "tasks" }];
 		expect(mergeTasksByCalendar(null, "tasks", next)).toEqual(next);
 	});
+
+	// ⑤ 是正(2026-07-23): 横断センチネル ALL_CALENDARS_ID は null と同じ「丸ごと置き換え」。
+	// これを単一コレクション扱いにすると「calendarId==="__all__" の行だけ差し替え = 実在しない → prev を
+	// 全保持 + next を concat」で重複が出る(横断応答なのに置き換わらない)ため、cross として扱う。
+	test("ALL_CALENDARS_ID(横断表示)は null と同じく prev を無視して丸ごと置き換える", () => {
+		const prev: Item[] = [{ id: "a", calendarId: "tasks" }, { id: "b", calendarId: "reading-list" }];
+		const next: Item[] = [{ id: "c", calendarId: "tasks" }, { id: "d", calendarId: "reading-list" }];
+		expect(mergeTasksByCalendar(prev, ALL_CALENDARS_ID, next)).toEqual(next);
+	});
 });
 
 describe("filterTasksByCalendar", () => {
@@ -72,6 +82,13 @@ describe("filterTasksByCalendar", () => {
 
 	test("calendarId が null(未選択)のときは絞り込まず全件を返す(degrade)", () => {
 		expect(filterTasksByCalendar(items, null)).toEqual(items);
+	});
+
+	// ⑤ 是正(2026-07-23): 横断センチネル ALL_CALENDARS_ID は絞り込まず全件。防御的なガード —
+	// これが無いと「calendarId==="__all__" の行だけ」= 実在しない行に絞り、全未完了が消えて
+	// 「すべて完了しました」誤表示になる(実機バグ⑤の構造)。
+	test("ALL_CALENDARS_ID(横断表示)は絞り込まず全件を返す", () => {
+		expect(filterTasksByCalendar(items, ALL_CALENDARS_ID)).toEqual(items);
 	});
 });
 

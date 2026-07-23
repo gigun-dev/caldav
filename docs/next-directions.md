@@ -172,6 +172,14 @@
   > D4 保持ポリシー(完了済み115件累積の根本)。
   > **swift 申し送り(#34/#41)**: swift-mcp-app/docs/next-directions.md に追記済み(未コミット・
   > Desktop セッションに委ねる)。
+  > **2026-07-23 更新: 是正束7件の実装・静的検証完了 ✅。** C0-a′ の2相退場機構/
+  > `done-exit.ts` を撤去し、positionMemory 所属判定による完了済み重複排除へ置換。Todos/Agenda
+  > 共通で list-calendars 失敗時の再試行行+背景プリフェッチ、todos 既定リストの決定化、
+  > `"all"` echo の横断センチネル正規化、未完了フッタを完了済みより前へ移動、displayMode 未申告/
+  > 空リストでも action-row の + を常設。配信 HTML の焼き込みhashとserver `uiHash`を比較する
+  > 版不整合警告を両カードへ追加し、create-calendar 応答を含む配線テストも固定した。
+  > `make check` green(境界・tsc 3種・bun 953 tests・worker 34 tests)。**未実施は実ホスト目視**:
+  > コネクタ再同期後の swift/claude.ai で7症状の再確認。次の実装スライスは予定どおり #43。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

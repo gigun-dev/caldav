@@ -47,10 +47,10 @@ import { z } from "zod";
 // todos-app.ts → todos-bundle.ts(自動生成)の依存を経由する。ここ(server.ts)から
 // ui/ 配下への import は許可される(.dependency-cruiser.cjs の mcp-ui-is-terminal は
 // 「ui/ から他 src への import」だけを禁止する末端ルールで、ui/ へ入る import は対象外)。
-import { TODOS_APP_HTML, TODOS_UI_URI } from "./ui/todos-app";
+import { TODOS_APP_HTML, TODOS_UI_HASH, TODOS_UI_URI } from "./ui/todos-app";
 // E-3 スライス S2: list-events-expanded が描画するアジェンダカードの ui:// URI と HTML 本体
 // (agenda-app.ts → agenda-bundle.ts 自動生成を経由)。todos と同じく server.ts から ui/ への import は許可。
-import { AGENDA_APP_HTML, AGENDA_UI_URI } from "./ui/agenda-app";
+import { AGENDA_APP_HTML, AGENDA_UI_HASH, AGENDA_UI_URI } from "./ui/agenda-app";
 // S1(docs/modeling/14 確認カード): 破壊的操作の human-in-the-loop 確認カード(ui://)。
 import { CONFIRM_APP_HTML, CONFIRM_UI_URI } from "./ui/confirm-app";
 // S1: 確認トークンの生成/検証(HMAC-SHA256・canonical JSON・TTL)。層は presentation/mcp に閉じる
@@ -1977,6 +1977,7 @@ function buildMcpServer(
 					// D1 往復(ListOccurrencesAcrossOwner)の待ち時間まで含めた「見せてよい起点」を刻む
 					// (buildTodosViewModel と同じ判断・理由は todos 側コメント参照)。
 					generatedAt: Date.now(),
+					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
 			return {
 				content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -2740,6 +2741,8 @@ function buildMcpServer(
 			calendarId: opts.calendarId ?? null,
 			timeZone: zone,
 			generatedAt: Date.now(),
+			// ④ カードの版不整合可視化: 現行デプロイの todos カード版ハッシュ(TodosViewModel.uiHash JSDoc 参照)。
+			uiHash: TODOS_UI_HASH,
 		};
 		vm.completedSummary = buildCompletedSummary(allTasksAcrossOwner, COMPLETED_RECENT_MAX);
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
@@ -3180,6 +3183,7 @@ function buildMcpServer(
 					// ことは無いが、EventsViewModel の全構築箇所で一貫させておく方が UI 側の型分岐が
 					// 単純になる(「mutate 応答にだけ無い」フィールドを増やさない)。
 					generatedAt: Date.now(),
+					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {
@@ -3243,6 +3247,7 @@ function buildMcpServer(
 					timeZone: timeZone ?? "UTC",
 					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
 					generatedAt: Date.now(),
+					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
 				if (succeeded.length > 0) vm.affected = succeeded;
 
@@ -3344,6 +3349,7 @@ function buildMcpServer(
 					affected: [affected],
 					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
 					generatedAt: Date.now(),
+					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {
@@ -3376,6 +3382,7 @@ function buildMcpServer(
 					removed: [snapshotFromEvent(removed)] satisfies EventSnapshot[],
 					// SWR 完全形: create-event と同じく additive(上のコメント参照)。
 					generatedAt: Date.now(),
+					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
 				return eventsToolResponse(vm);
 			} catch (error) {
