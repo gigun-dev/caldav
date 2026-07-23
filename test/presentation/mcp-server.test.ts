@@ -2146,3 +2146,227 @@ describe("search-location(geocoding)", () => {
 		expect(rpc.result.content[0].text).toContain("GOOGLE_MAPS_API_KEY");
 	});
 });
+
+// =============================================================================
+// #locationAutoResolve: create-event/create-events/update-event のサーバー側自動ジオコーディング
+// =============================================================================
+// 実機で確定した問題(claude.ai iOS(Haiku 4.5)が search-location を呼ばず create-event
+// {location:"..."} を直に呼び、地図に出ないイベントができた事故)の対策。ここでは:
+//   ① 明示的に structuredLocation を渡した場合は自動解決を試みない(上書きしない)
+//   ② location だけを渡した場合、known-locations 優先 → geocoding フォールバックの順で解決する
+//   ③ どちらも解決できなくても create-event 自体は失敗しない(best-effort)
+//   ④ update-event は location 文字列が変わらない限り再解決しない(quota 節約)
+// を search-location と同じ流儀(フェイク GeocodingPort + callCount)で固定する。
+describe("location 自動解決(#locationAutoResolve)", () => {
+	let behavior: (query: string) => Promise<import("../../src/application/ports").LocationCandidate[]>;
+	let callCount = 0;
+
+	function buildApp() {
+		const collections = new FakeCalendarCollectionRepository();
+		const resources = new FakeCalendarObjectResourceRepository();
+		const uow = new FakeCollectionUnitOfWork(resources, collections);
+		// create-event/create-events/update-event が書き込む既定コレクション("calendar")を
+		// 事前に用意する(event 系ツールテストの seedCalendarCollection と同じ最小セット)。
+		collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+		return new Hono<{ Bindings: CloudflareBindings }>().route(
+			"/mcp",
+			createMcpApp(() => ({
+				auth: new StaticBearerAuth({ mcpToken: MCP_TOKEN, username: USERNAME }),
+				collectionRepo: collections,
+				resourceRepo: resources,
+				iterator: recurrenceIterator,
+				uow,
+				confirmSecret: CONFIRM_SECRET,
+				telemetry: new NoopTelemetryAdapter(),
+				geocoding: {
+					searchLocation: async (query: string) => {
+						callCount++;
+						return behavior(query);
+					},
+				},
+			})),
+		);
+	}
+
+	async function callTool(app: ReturnType<typeof buildApp>, name: string, args: Record<string, unknown>): Promise<any> {
+		const res = await app.fetch(
+			new Request("https://example.com/mcp", {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCP_TOKEN}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+			}),
+			ENV,
+		);
+		return jsonRpcResult(res);
+	}
+
+	beforeEach(() => {
+		callCount = 0;
+		behavior = async () => [];
+	});
+
+	it("known-locations に部分一致があれば geocoding を呼ばずそちらを採用する", async () => {
+		const app = buildApp();
+		// 既知の場所を仕込む: structuredLocation を明示した create-event(要件① の経路そのもの)。
+		const seed = await callTool(app, "create-event", {
+			title: "既存の予定",
+			start: "2026-07-20T10:00:00",
+			timeZone: "Asia/Tokyo",
+			structuredLocation: { title: "叙々苑", address: "東京都港区高輪3-13-1", lat: 35.63, lon: 139.74 },
+		});
+		expect(seed.result.isError).toBeFalsy();
+
+		// geocoding が呼ばれたら known-locations とは違う候補を返すよう仕込む(採用元を区別するため)。
+		behavior = async () => [{ title: "別の店", address: null, geo: { lat: 0, lon: 0 } }];
+
+		const rpc = await callTool(app, "create-event", {
+			title: "品川で会食",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: "品川のホテルの叙々苑",
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toMatchObject({ title: "叙々苑", geo: { lat: 35.63, lon: 139.74 } });
+		expect(callCount).toBe(0); // known-locations だけで解決できたので geocoding には到達しない。
+		expect(rpc.result.content[1].text).toContain("叙々苑");
+	});
+
+	it("known-locations に一致が無ければ geocoding の先頭候補を採用する", async () => {
+		const app = buildApp();
+		behavior = async () => [
+			{ title: "東京タワー", address: "東京都港区芝公園4-2-8", geo: { lat: 35.6586, lon: 139.7454 } },
+			{ title: "別候補", address: null, geo: { lat: 1, lon: 1 } },
+		];
+		const rpc = await callTool(app, "create-event", {
+			title: "展望台",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: "東京タワー",
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toMatchObject({ title: "東京タワー", geo: { lat: 35.6586, lon: 139.7454 } });
+		expect(callCount).toBe(1);
+		expect(rpc.result.content[1].text).toContain("東京タワー");
+	});
+
+	it("known-locations も geocoding も解決できなくても create-event 自体は失敗しない(best-effort)", async () => {
+		const app = buildApp();
+		behavior = async () => []; // 0件
+		const rpc = await callTool(app, "create-event", {
+			title: "謎の場所で",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: "どこか知らない場所",
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toBeNull();
+		expect(vm.events[0].location).toBe("どこか知らない場所"); // テキストのみで登録される。
+		expect(rpc.result.content[1].text).toContain("テキストのみで登録");
+	});
+
+	it("geocoding が例外を投げても(quota 超過等)create-event は失敗しない(握りつぶす)", async () => {
+		const { GeocodingQuotaExceededError } = await import("../../src/application/ports");
+		const app = buildApp();
+		behavior = async () => {
+			throw new GeocodingQuotaExceededError("2026-07", 1000);
+		};
+		const rpc = await callTool(app, "create-event", {
+			title: "枠切れ",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: "枠切れの場所",
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toBeNull();
+	});
+
+	it("structuredLocation を明示指定した場合は自動解決を試みない(上書きしない)", async () => {
+		const app = buildApp();
+		const rpc = await callTool(app, "create-event", {
+			title: "明示指定",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+			location: "これはテキストのみのはず",
+			structuredLocation: { title: "指定した場所", lat: 10, lon: 20 },
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		const vm = JSON.parse(rpc.result.content[0].text);
+		expect(vm.events[0].structuredLocation).toMatchObject({ title: "指定した場所", geo: { lat: 10, lon: 20 } });
+		expect(callCount).toBe(0); // geocoding は呼ばれない。
+		// 自動解決の note は付かない(content は JSON のみ)。
+		expect(rpc.result.content.length).toBe(1);
+	});
+
+	it("location が無ければ自動解決を試みない(従来どおり)", async () => {
+		const app = buildApp();
+		const rpc = await callTool(app, "create-event", {
+			title: "場所無し",
+			start: "2026-07-21T19:00:00",
+			timeZone: "Asia/Tokyo",
+		});
+		expect(rpc.result.isError).toBeFalsy();
+		expect(callCount).toBe(0);
+		expect(rpc.result.content.length).toBe(1);
+	});
+
+	describe("update-event: location 文字列が変わらない場合は再解決しない", () => {
+		it("同じ location 文字列での update は geocoding を呼ばない", async () => {
+			const app = buildApp();
+			behavior = async () => [{ title: "初回解決", address: null, geo: { lat: 1, lon: 1 } }];
+			const created = await callTool(app, "create-event", {
+				title: "予定",
+				start: "2026-07-21T19:00:00",
+				timeZone: "Asia/Tokyo",
+				location: "同じ場所",
+			});
+			expect(created.result.isError).toBeFalsy();
+			expect(callCount).toBe(1);
+			const id = JSON.parse(created.result.content[0].text).events[0].id;
+
+			// 【現在の LOCATION は "同じ場所" ではなく "初回解決" になっている点に注意】structuredLocation.title は
+			// LOCATION 表示テキストを上書きする(vevent-write.ts の author 規約・structuredLocationInputSchema
+			// describe 参照)ので、自動解決が起きた VEVENT の LOCATION は解決後の title に置き換わっている。
+			// 「location 文字列が変わらない」の比較対象は create-event に渡した生テキストではなく「現在の
+			// LOCATION」なので、再解決させずに済ませたい2回目の update はこの値をそのまま渡す(UI が現在の
+			// LOCATION 表示を読み取って無変更のまま送り返すケースに対応する自然な比較)。
+			behavior = async () => [{ title: "2回目の候補", address: null, geo: { lat: 2, lon: 2 } }];
+			const updated = await callTool(app, "update-event", {
+				id,
+				title: "予定(改題)",
+				location: "初回解決", // 現在の LOCATION(= 前回解決の title)と同じ値を渡す = 未変更。
+			});
+			expect(updated.result.isError).toBeFalsy();
+			expect(callCount).toBe(1); // 再解決していない = geocoding 呼び出しは増えない。
+			const vm = JSON.parse(updated.result.content[0].text);
+			expect(vm.events[0].structuredLocation).toMatchObject({ title: "初回解決" }); // 前回の解決結果のまま。
+		});
+
+		it("location 文字列を変えた update は再解決する", async () => {
+			const app = buildApp();
+			behavior = async () => [{ title: "初回解決", address: null, geo: { lat: 1, lon: 1 } }];
+			const created = await callTool(app, "create-event", {
+				title: "予定",
+				start: "2026-07-21T19:00:00",
+				timeZone: "Asia/Tokyo",
+				location: "元の場所",
+			});
+			expect(created.result.isError).toBeFalsy();
+			expect(callCount).toBe(1);
+			const id = JSON.parse(created.result.content[0].text).events[0].id;
+
+			behavior = async () => [{ title: "新しい候補", address: null, geo: { lat: 3, lon: 3 } }];
+			const updated = await callTool(app, "update-event", {
+				id,
+				location: "新しい場所",
+			});
+			expect(updated.result.isError).toBeFalsy();
+			expect(callCount).toBe(2); // location が変わったので再解決した。
+			const vm = JSON.parse(updated.result.content[0].text);
+			expect(vm.events[0].structuredLocation).toMatchObject({ title: "新しい候補" });
+		});
+	});
+});

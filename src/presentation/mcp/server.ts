@@ -124,8 +124,12 @@ import {
 	InvalidStructuredLocationError,
 	InvalidConferenceUrlError,
 	eventFromOccurrence,
-	// C5(設計 05): 既知の場所ツール。
+	// C5(設計 05): 既知の場所ツール。#locationAutoResolve(自動ジオコーディング)も同じ UC を再利用する。
 	ListKnownLocations,
+	type KnownLocation,
+	// #locationAutoResolve: update-event が「location 文字列が変わったか」を判定するために現在の
+	// VEVENT を1回だけ読む(UpdateEvent.execute 内部と同じ関数を再利用・二重実装しない)。
+	lookupEvent,
 	// R2(docs/modeling/15 §A-3): ソフトデリートのゴミ箱一覧 + 復元。
 	ListDeleted,
 	RestoreDeleted,
@@ -133,6 +137,15 @@ import {
 	RestoreUidConflictError,
 } from "../../application/usecases";
 import type { RecurrenceIterator } from "../../domain/ical/recurrence";
+// #locationAutoResolve(自動ジオコーディング): create/update-event の structuredLocation 入力と
+// application 層 UC が受け取る StructuredLocationInput は同一の shape(title/address?/lat?/lon?/radius?)。
+// application/usecases バレルには re-export されていない(create-event.ts が domain から直接 import する
+// 内部型のため)ので、ここでも同じ domain モジュールから直接引く。
+import type { StructuredLocationInput } from "../../domain/ical/semantics";
+// #locationAutoResolve: update-event が「location 文字列が変わったか」を判定するために現在の
+// VEVENT.location(生 TEXT)を decodeText した意味的文字列と比較する(event-dto.ts の readEventMeta と
+// 同じ decodeText の使い方)。
+import { decodeText } from "../../domain/ical/values";
 import type { CalendarCollection, CollectionId, ComponentKind, PrincipalRef } from "../../domain/caldav";
 import { AppleColor, InvalidIdentifierError, collectionId as mkCollectionId } from "../../domain/caldav";
 // list-calendars / create-calendar(方向性直近タスク): DAV MKCALENDAR と同じ UC を MCP から
@@ -982,6 +995,131 @@ const structuredLocationInputSchema = z
 			'自由記述のテキストだけを設定したい場合は location フィールドを使うこと(structuredLocation は "その場所そのもの" を表す)。',
 	);
 
+// =============================================================================
+// #locationAutoResolve — create-event/create-events/update-event のサーバー側自動ジオコーディング
+// =============================================================================
+// 【背景・実機で確定した問題】claude.ai iOS(Haiku 4.5)が search-location を呼ばず
+// create-event {location:"品川のホテルの叙々苑"} を直に呼び、素の LOCATION テキストだけの iOS で
+// 地図に出ないイベントができた(D1 実測: 9681d4a0-… は X-APPLE-STRUCTURED-LOCATION 無し)。
+// description でのツール誘導(search-location を先に呼べ)はモデル品質に依存し確実ではないため、
+// structuredLocation が渡されず location(文字列)だけ渡されたときはサーバー側で自動的に
+// structuredLocation へ昇格させる(モデルの協力に頼らない構造的な対策)。
+//
+// 【絶対に守る不変条件】場所解決は best-effort。known-locations 走査の失敗・geocoding の quota 超過/
+// キー未設定/プロバイダ障害はすべてここで握りつぶし、例外を外へ投げない。イベント作成/更新自体を
+// 場所解決の失敗で失敗させることは絶対にしない(下の autoResolveLocation が例外を投げない設計に
+// なっているのはこのため — 呼び出し側の create-event/update-event ハンドラは try/catch すら不要)。
+//
+// 【優先順位: known-locations → geocoding】要件2-a/b。known-locations(ユーザー自身が過去に確定させた
+// 構造化場所)の方が地図検索の先頭候補より信頼できる、という判断は search-location ツールの
+// description(「まず list-known-locations を見る」)と同じ思想。geocoding は search-location と
+// 同じ GeocodingPort インスタンス(app.ts で quota ガード済みのものが配線される)を使うので、
+// 自動解決も月次 quota を消費する(quota 超過時は (c) の「失敗」に落ちてテキストのみ登録になる —
+// quota を使い切っても create-event は落ちない)。
+// =============================================================================
+
+/** autoResolveLocation の結果種別(telemetry の locationAutoResolve 属性にもそのまま載せる)。 */
+type LocationAutoResolveOutcome =
+	| { kind: "known" | "geocoding"; structuredLocation: StructuredLocationInput; title: string; address: string | null }
+	| { kind: "failed" };
+
+/**
+ * location 文字列が既知の場所(KnownLocation)の title/address と部分一致するか。
+ * 【なぜ「部分一致」という素朴な基準か】ユーザーは「品川のホテルの叙々苑」のように、known の title
+ * (例「叙々苑 品川店」)を含む/含まれる自由な言い回しで location を埋めてくる想定なので、完全一致は
+ * 厳しすぎて何もヒットしない。逆に類似度スコアリング等の高度なマッチングは過剰(known-locations は
+ * ユーザー本人の過去データなので偽陽性の実害が小さい上、誤マッチしても structuredLocation.title が
+ * LOCATION 表示を上書きするだけなので気付きやすい — geocoding よりよほど安全側)。address 側にも
+ * 同じ基準を適用する(「東京都千代田区」のような住所断片一致にも対応するため)。
+ */
+function matchesKnownLocation(locationText: string, known: KnownLocation): boolean {
+	const loc = locationText.trim();
+	if (loc === "") return false;
+	const title = known.title.trim();
+	if (title !== "" && (loc.includes(title) || title.includes(loc))) return true;
+	const address = known.address?.trim();
+	if (address !== undefined && address !== "" && (loc.includes(address) || address.includes(loc))) return true;
+	return false;
+}
+
+/**
+ * location(自由記述テキスト)から structuredLocation を自動解決する(ファイル冒頭コメント参照)。
+ * 呼び出し側は「structuredLocation が明示されておらず、location だけが渡された」場合にのみ呼ぶこと
+ * (明示的な structuredLocation を上書きしない・要件2)。
+ */
+async function autoResolveLocation(
+	deps: McpAppDeps,
+	principal: PrincipalRef,
+	locationText: string,
+): Promise<LocationAutoResolveOutcome> {
+	const trimmed = locationText.trim();
+	if (trimmed === "") return { kind: "failed" };
+
+	// (a) known-locations 優先。calendarId を絞らず owner 配下全体を走査する(ListKnownLocations の
+	// 既定 = list-known-locations ツールと同じ「場所は予定/リマインダーどちらにあるか事前に分からない」
+	// 判断を踏襲)。D1 障害等で例外が飛んでも geocoding フォールバックへ続行する(不変条件: 例外を外に
+	// 投げない)。
+	try {
+		const listKnownLocations = new ListKnownLocations(deps.collectionRepo, deps.resourceRepo);
+		const { locations } = await listKnownLocations.execute({ owner: principal });
+		const hit = locations.find((loc) => matchesKnownLocation(trimmed, loc));
+		if (hit !== undefined) {
+			return {
+				kind: "known",
+				structuredLocation: {
+					title: hit.title,
+					...(hit.address !== null ? { address: hit.address } : {}),
+					lat: hit.lat,
+					lon: hit.lon,
+					...(hit.radius !== null ? { radius: hit.radius } : {}),
+				},
+				title: hit.title,
+				address: hit.address,
+			};
+		}
+	} catch {
+		// known-locations 走査の失敗は無視して (b) へ続行(best-effort・上のファイル冒頭コメント参照)。
+	}
+
+	// (b) geocoding フォールバック。search-location ツールと同じ deps.geocoding インスタンス
+	// (quota ガード込み)を使うため、自動解決も quota を消費する(ファイル冒頭コメント)。
+	try {
+		const candidates = await deps.geocoding.searchLocation(trimmed, { limit: 1 });
+		const top = candidates[0];
+		if (top !== undefined) {
+			return {
+				kind: "geocoding",
+				structuredLocation: {
+					title: top.title,
+					...(top.address !== null ? { address: top.address } : {}),
+					lat: top.geo.lat,
+					lon: top.geo.lon,
+				},
+				title: top.title,
+				address: top.address,
+			};
+		}
+	} catch {
+		// (c) quota 超過・キー未設定・プロバイダ障害いずれも握りつぶす。search-location と違い、
+		// ここは create-event/update-event の付随処理なので isError にしてはいけない
+		// (不変条件: 場所解決の失敗でイベント作成/更新自体を失敗させない)。
+	}
+
+	return { kind: "failed" };
+}
+
+/** autoResolveLocation の成功時、人間可読の一文を組み立てる(要件3)。 */
+function describeAutoResolvedLocation(outcome: Extract<LocationAutoResolveOutcome, { kind: "known" | "geocoding" }>): string {
+	const addressPart = outcome.address !== null ? `(${outcome.address})` : "";
+	return `場所「${outcome.title}」を解決しました${addressPart}。`;
+}
+
+// 失敗時(0件・quota 超過・キー未設定・プロバイダ障害いずれも区別せず「解決できなかった」として
+// 同一メッセージにまとめる — quota 超過等の詳細を create-event の応答で逐一説明すると本題(予定作成)
+// から気を逸らすノイズになるため。詳細を知りたい場合は search-location を明示的に呼べば個別メッセージが
+// 得られる(search-location の description に誘導文を残す理由 — 要件4)。
+const LOCATION_AUTO_RESOLVE_FAILED_NOTE = "場所はテキストのみで登録しました(地図ピンなし)。";
+
 // C8(設計 05 §1-c・§2「会議」スロット): conference の shape(create/update 共通)。
 const conferenceInputSchema = z
 	.object({
@@ -1008,7 +1146,13 @@ const createEventItemFieldsShape = {
 		'終了(DTEND・省略可・排他的終端)。start と同じ2形態で、値型(終日/時刻付き)は start と一致させること。' +
 			"start より後でなければならない。終日1日イベントや開始のみのイベントは end を省略してよい。",
 	),
-	location: z.string().optional().describe("LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義。"),
+	location: z.string().optional().describe(
+		"LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義。" +
+			"structuredLocation を省略してこのフィールドだけ渡すと、サーバーが自動的に既知の場所/地図検索で" +
+			"座標を解決して structuredLocation へ昇格させる(#locationAutoResolve・失敗時はテキストのまま登録され、" +
+			"作成/更新自体が失敗することはない)。地図ピンを確実に付けたい・複数候補から選びたい場合は" +
+			"search-location で事前に解決して structuredLocation を明示してもよい。",
+	),
 	url: z.string().optional().describe(
 		"URL(§3.8.4.6・URI 値型)。予定に紐づく詳細ページ/ミーティングリンク等。空文字は未設定と同義。",
 	),
@@ -1079,7 +1223,10 @@ const updateEventInputShape = {
 		'start/end が時刻付きのときの IANA タイムゾーン名。create-event と同じ制約(省略時エラー・DST 未対応)。',
 	),
 	location: z.string().nullable().optional().describe(
-		"LOCATION。省略=変更しない / null=場所を外す / 文字列=差し替え。",
+		"LOCATION。省略=変更しない / null=場所を外す / 文字列=差し替え。" +
+			"structuredLocation を省略してこのフィールドだけで場所を変えると、サーバーが自動的に structuredLocation へ" +
+			"昇格を試みる(#locationAutoResolve・create-event と同じ挙動。ただし変更前と同じ文字列に差し替えたときは" +
+			"再解決しない)。",
 	),
 	url: z.string().nullable().optional().describe(
 		"URL(§3.8.4.6)。省略=変更しない / null=URL を外す / 文字列=差し替え。",
@@ -1265,6 +1412,16 @@ function toWireEvent(event: Event, calendarId: string, isRecurring: boolean): Re
 // 具体的な値へ上書きする。_meta はモデルへの content ではないので、この分類値が会話に露出しない。
 export const TELEMETRY_ERRKIND_META_KEY = "gigun.dev/errKind";
 
+// #locationAutoResolve(自動ジオコーディング要件5): errKind と同じ _meta 経由の運搬パターンを転用した
+// telemetry 属性キー。【なぜ errKind をそのまま使わないか】errKind は isError:true(または例外)の
+// ときしか registerTool ラッパーの finally が読まない(下の「try { const result = await cb(...) }」
+// 参照)。だが自動ジオコーディングは create-event/update-event 自体を絶対に失敗させない(この
+// ファイルの create-event/update-event ハンドラ冒頭コメント参照)ので、成功応答(isError:false)でも
+// 「known-locations で解決できた/geocoding で解決できた/失敗して素のテキストのまま」を観測したい。
+// よって別キーを設け、ラッパー側で ok/errKind に関わらず常に読んで argsDigest へマージする
+// (= 新しい mcpTool 名を増やさず、既存 argsDigest の属性として表現する要件5の裁定)。
+export const TELEMETRY_LOCATION_META_KEY = "gigun.dev/locationAutoResolve";
+
 /**
  * MCP ツールハンドラの共通エラー整形。isError:true + content にメッセージを詰める。
  *
@@ -1382,6 +1539,9 @@ function buildMcpServer(
 			// 過剰かつメッセージにユーザー入力がエコーされている可能性があり避けたい —
 			// TelemetryEvent.errKind コメントの「メッセージ本文は載せない」規律と対称)。
 			let errKind: string | undefined;
+			// #locationAutoResolve(要件5): argsDigest へマージする追加属性。errKind と違い ok/isError に
+			// 関わらず読む(TELEMETRY_LOCATION_META_KEY 定義コメント参照)。
+			let locationAutoResolveDigest: Record<string, unknown> | undefined;
 			try {
 				const result = await cb(...args);
 				if (typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true) {
@@ -1392,6 +1552,10 @@ function buildMcpServer(
 					const metaErrKind = (result as { _meta?: Record<string, unknown> })._meta?.[TELEMETRY_ERRKIND_META_KEY];
 					errKind = typeof metaErrKind === "string" ? metaErrKind : "ToolError";
 				}
+				const metaLocation = (result as { _meta?: Record<string, unknown> } | null)?._meta?.[TELEMETRY_LOCATION_META_KEY];
+				if (typeof metaLocation === "object" && metaLocation !== null) {
+					locationAutoResolveDigest = metaLocation as Record<string, unknown>;
+				}
 				return result;
 			} catch (error) {
 				ok = false;
@@ -1399,6 +1563,11 @@ function buildMcpServer(
 				throw error;
 			} finally {
 				const ms = Date.now() - startedAtMs;
+				// #locationAutoResolve(要件5): 引数由来の argsDigest(summarizeArgsDigest)へ
+				// locationAutoResolveDigest を additive にマージする(新しい mcpTool 名を増やさず
+				// create-event/create-events/update-event の既存イベントの属性として表現する)。
+				const mergedArgsDigest =
+					locationAutoResolveDigest !== undefined ? { ...(argsDigest ?? {}), ...locationAutoResolveDigest } : argsDigest;
 				// 1行 JSON(mcpTool 名 + ms + colo + ok/errKind + requestId)。タスク内容等の
 				// 個人データは決して載せない(argsDigest は要約のみ・summarizeArgsDigest 参照)。
 				// colo は「実行場所 × ツール別レイテンシ」の分解用(buildMcpServer 冒頭コメント参照)。
@@ -1412,7 +1581,7 @@ function buildMcpServer(
 						requestId,
 						host,
 						...(sessionId !== undefined ? { sessionId } : {}),
-						...(argsDigest !== undefined ? { argsDigest } : {}),
+						...(mergedArgsDigest !== undefined ? { argsDigest: mergedArgsDigest } : {}),
 					}),
 				);
 				// TelemetryPort.record は fire-and-forget(await しない・戻り値なし — ポートの
@@ -1435,7 +1604,7 @@ function buildMcpServer(
 						errKind,
 						ms,
 						colo: requestColo,
-						argsDigest,
+						argsDigest: mergedArgsDigest,
 						sessionId,
 					});
 				} catch {
@@ -2975,10 +3144,26 @@ function buildMcpServer(
 	// 境界で cast する(todos の toTodosToolResponse と同じ判断)。
 	// S1(docs/modeling/14 §6 項目5): agenda カード応答にも免除トークンを _meta.confirm へ載せる
 	// (toTodosToolResponse と対称。理由・ボツ案は toTodosToolResponse / getCardToken のコメント参照)。
-	const eventsToolResponse = async (vm: Record<string, unknown>) => ({
-		content: [{ type: "text" as const, text: JSON.stringify(vm) }],
+	// extraNote: #locationAutoResolve(自動ジオコーディング要件3)が付ける人間可読の一文。
+	// create-calendar の「既存のコレクションを返しました」(content[1])と同じ流儀 — content[0] は
+	// 従来どおり vm の JSON、追加の説明文は content[1] 以降に積む(structuredContent の形を汚さない)。
+	// autoResolveDigest: telemetry 用の属性(要件5)。TELEMETRY_LOCATION_META_KEY 経由で argsDigest に
+	// マージされる(下の buildMcpServer 計測ラッパー参照)。undefined なら何も付けない(location 自動解決を
+	// 試みなかった呼び出しを telemetry で無駄に埋めない)。
+	const eventsToolResponse = async (
+		vm: Record<string, unknown>,
+		extraNote?: string,
+		autoResolveDigest?: LocationAutoResolveOutcome["kind"],
+	) => ({
+		content: [
+			{ type: "text" as const, text: JSON.stringify(vm) },
+			...(extraNote !== undefined ? [{ type: "text" as const, text: extraNote }] : []),
+		],
 		structuredContent: vm as { [key: string]: unknown },
-		_meta: { confirm: { cardToken: await getCardToken() } },
+		_meta: {
+			confirm: { cardToken: await getCardToken() },
+			...(autoResolveDigest !== undefined ? { [TELEMETRY_LOCATION_META_KEY]: { locationAutoResolve: autoResolveDigest } } : {}),
+		},
 	});
 
 	// create/update-event が投げる「入力起因の kind タグ付きエラー」をまとめて toolError に倒す判定
@@ -3026,6 +3211,23 @@ function buildMcpServer(
 		},
 		async ({ title, notes, start, end, timeZone, location, url, calendarId, recurrence, alarms, travelMinutes, structuredLocation, conference }) => {
 			try {
+				// #locationAutoResolve(要件2): structuredLocation が明示されておらず location だけが
+				// 渡された場合のみ自動解決する(明示指定は絶対に上書きしない・要件2「明示的に
+				// structuredLocation が渡された場合...は現状どおり」)。
+				let effectiveStructuredLocation = structuredLocation;
+				let autoResolveNote: string | undefined;
+				let autoResolveDigest: LocationAutoResolveOutcome["kind"] | undefined;
+				if (structuredLocation === undefined && location !== undefined && location.trim() !== "") {
+					const outcome = await autoResolveLocation(deps, principal, location);
+					autoResolveDigest = outcome.kind;
+					if (outcome.kind !== "failed") {
+						effectiveStructuredLocation = outcome.structuredLocation;
+						autoResolveNote = describeAutoResolvedLocation(outcome);
+					} else {
+						autoResolveNote = LOCATION_AUTO_RESOLVE_FAILED_NOTE;
+					}
+				}
+
 				const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const createEvent = new CreateEvent(putCalendarObject);
@@ -3042,7 +3244,7 @@ function buildMcpServer(
 					recurrence: normalizedRecurrence,
 					alarms,
 					travelMinutes,
-					structuredLocation,
+					structuredLocation: effectiveStructuredLocation,
 					conference,
 				});
 				const cid = calendarId ?? "calendar";
@@ -3062,7 +3264,7 @@ function buildMcpServer(
 					generatedAt: Date.now(),
 					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
-				return eventsToolResponse(vm);
+				return eventsToolResponse(vm, autoResolveNote, autoResolveDigest);
 			} catch (error) {
 				if (isEventInputError(error)) return toolError((error as Error).message);
 				return toolError(error instanceof Error ? error.message : String(error));
@@ -3094,10 +3296,26 @@ function buildMcpServer(
 				const createdEvents: ReturnType<typeof toWireEvent>[] = [];
 				const succeeded: AffectedEvent[] = [];
 				const failed: { title: string; reason: string }[] = [];
+				// #locationAutoResolve(要件2): create-event と同じ判定を item ごとに行う。バッチは件数が
+				// 多くなりうるので、per-item のメッセージではなく件数だけ summaryLines に足す(要件3の
+				// 「見えるようにする」は満たしつつ、25件分の詳細でノイズにしない判断)。
+				let autoResolvedCount = 0;
+				let autoResolveFailedCount = 0;
 
 				// create-todos と同じく直列実行(D1 の同一コレクション PUT 競合・sync token 順序を守る)。
 				for (const item of items) {
 					try {
+						let effectiveStructuredLocation = item.structuredLocation;
+						if (item.structuredLocation === undefined && item.location !== undefined && item.location.trim() !== "") {
+							const outcome = await autoResolveLocation(deps, principal, item.location);
+							if (outcome.kind !== "failed") {
+								effectiveStructuredLocation = outcome.structuredLocation;
+								autoResolvedCount++;
+							} else {
+								autoResolveFailedCount++;
+							}
+						}
+
 						const normalizedRecurrence = normalizeCreateTodoRecurrenceInput(item.recurrence);
 						const { event } = await createEvent.execute({
 							owner: principal,
@@ -3112,7 +3330,7 @@ function buildMcpServer(
 							recurrence: normalizedRecurrence,
 							alarms: item.alarms,
 							travelMinutes: item.travelMinutes,
-							structuredLocation: item.structuredLocation,
+							structuredLocation: effectiveStructuredLocation,
 							conference: item.conference,
 						});
 						createdEvents.push(toWireEvent(event, cid, event.recurrence !== null));
@@ -3134,6 +3352,9 @@ function buildMcpServer(
 				if (succeeded.length > 0) vm.affected = succeeded;
 
 				const summaryLines = [`${succeeded.length}/${items.length} 件の予定を作成しました。`];
+				if (autoResolvedCount > 0) summaryLines.push(`うち ${autoResolvedCount} 件は場所を自動解決しました。`);
+				if (autoResolveFailedCount > 0)
+					summaryLines.push(`うち ${autoResolveFailedCount} 件は場所をテキストのみで登録しました(地図ピンなし)。`);
 				if (failed.length > 0) {
 					summaryLines.push("失敗した項目:");
 					for (const f of failed) summaryLines.push(`- "${f.title}": ${f.reason}`);
@@ -3141,6 +3362,11 @@ function buildMcpServer(
 				return {
 					content: [{ type: "text" as const, text: summaryLines.join("\n") }],
 					structuredContent: vm as { [key: string]: unknown },
+					// #locationAutoResolve(要件5): create-event と同じ telemetry 属性キー(件数を持つ点だけ
+					// 単発版と異なる)。
+					...(autoResolvedCount > 0 || autoResolveFailedCount > 0
+						? { _meta: { [TELEMETRY_LOCATION_META_KEY]: { locationAutoResolveCount: autoResolvedCount, locationAutoResolveFailedCount: autoResolveFailedCount } } }
+						: {}),
 				};
 			} catch (error) {
 				return toolError(error instanceof Error ? error.message : String(error));
@@ -3182,6 +3408,41 @@ function buildMcpServer(
 			conference,
 		}) => {
 			try {
+				// #locationAutoResolve(要件2・要件2「update の再解決条件」): structuredLocation が
+				// 明示されておらず、location が「文字列に設定」される(undefined=変更なし・null=除去
+				// ではない)ときだけ自動解決の対象にする。かつ「location 文字列が変わらない update では
+				// 再解決しない」(無駄な quota 消費防止・要件2)ため、現在の location を1回だけ読んで
+				// 比較する(下の lookupEvent 呼び出し)。UpdateEvent.execute 内部でも同じリソースを
+				// 改めて lookup するため D1 往復が1回増えるが、「location を変更する update」という
+				// 相対的に稀な経路にのみ乗るコストなので許容する(create-event 側は既に owner 全体
+				// スキャンを伴う known-locations 優先探索をしており、対称的な追加コストと捉えられる)。
+				let effectiveStructuredLocation = structuredLocation;
+				let autoResolveNote: string | undefined;
+				let autoResolveDigest: LocationAutoResolveOutcome["kind"] | undefined;
+				if (structuredLocation === undefined && location !== undefined && location !== null && location.trim() !== "") {
+					let currentLocation: string | null = null;
+					try {
+						const cidForLookup = mkCollectionId(calendarId ?? "calendar");
+						const looked = await lookupEvent(deps.resourceRepo, principal, cidForLookup, id);
+						currentLocation = looked !== null && looked.vevent.location !== undefined ? decodeText(looked.vevent.location) : null;
+					} catch {
+						// lookup 失敗(イベント未検出等)は「変わった」とみなして自動解決を試みる
+						// (どのみち直後の updateEvent.execute が同じエラーで落ちるので、ここで無理に
+						// 特別扱いしない best-effort の割り切り)。
+						currentLocation = null;
+					}
+					if (currentLocation !== location) {
+						const outcome = await autoResolveLocation(deps, principal, location);
+						autoResolveDigest = outcome.kind;
+						if (outcome.kind !== "failed") {
+							effectiveStructuredLocation = outcome.structuredLocation;
+							autoResolveNote = describeAutoResolvedLocation(outcome);
+						} else {
+							autoResolveNote = LOCATION_AUTO_RESOLVE_FAILED_NOTE;
+						}
+					}
+				}
+
 				const normalizedRecurrence = normalizeUpdateTodoRecurrenceInput(recurrence);
 				const putCalendarObject = new PutCalendarObject(deps.collectionRepo, deps.resourceRepo, deps.uow, deps.iterator);
 				const updateEvent = new UpdateEvent(putCalendarObject, deps.resourceRepo);
@@ -3203,7 +3464,7 @@ function buildMcpServer(
 					alarms,
 					travelMinutes,
 					// structuredLocation/conference(三値)もそのまま渡す(C8)。
-					structuredLocation,
+					structuredLocation: effectiveStructuredLocation,
 					conference,
 				});
 
@@ -3238,7 +3499,7 @@ function buildMcpServer(
 					generatedAt: Date.now(),
 					uiHash: AGENDA_UI_HASH, // ④ カードの版不整合可視化(EventsViewModel.uiHash JSDoc 参照)。
 				};
-				return eventsToolResponse(vm);
+				return eventsToolResponse(vm, autoResolveNote, autoResolveDigest);
 			} catch (error) {
 				if (isEventInputError(error)) return toolError((error as Error).message);
 				return toolError(error instanceof Error ? error.message : String(error));
@@ -3315,15 +3576,27 @@ function buildMcpServer(
 	// 【なぜ素の registerTool(カード無し)か】search-location は「文字列 → 候補配列」を返すだけの
 	// 純粋な解決ツールで、UI 描画の責務を持たない(選んだ候補を structuredLocation に写すのは
 	// create-event/update-event 側 = 別ツール)。list-known-locations と同じく素の registerTool に留める。
+	//
+	// 【#locationAutoResolve 追加に伴う description 改訂(要件4)】create-event/update-event が
+	// location(自由記述テキスト)だけを渡されたときサーバー側で自動的に structuredLocation へ解決する
+	// ようになった(この節の上、autoResolveLocation 冒頭コメント参照)ため、search-location を明示的に
+	// 呼ぶ意味は「単純な場所指定」では薄くなった。実機で確定した問題(claude.ai iOS(Haiku 4.5)が
+	// search-location を呼ばず location だけの素の VEVENT を作った事故)を description の誘導強化では
+	// 再発防止しきれない、という判断が自動解決の導入動機そのものなので、この description は
+	// 「もう search-location を必ず呼べ」とは言わない(モデルが呼ばなくてもサーバーが解決するので)。
+	// 代わりに「曖昧な場所や複数候補から選びたいときに使う」役割へ再定義し、単純な場所は
+	// create-event の location に直接渡してよいことを明記する。
 	server.registerTool(
 		"search-location",
 		{
 			title: "Search location (geocode)",
 			description:
-				"場所(店名・施設名・住所)の文字列を、地図検索で座標付きの候補(title/address/geo)に解決する。" +
-				"【使い方の順序】ユーザーが場所を口にしたら、create-event/update-event の structuredLocation を組む前に、" +
-				"まず list-known-locations(過去に使った場所)を見て一致があればそれを使う。無ければこの search-location で" +
-				"解決する。candidates から文脈に最も合う1件を選び、structuredLocation {title, address, lat, lon} に写す" +
+				"場所(店名・施設名・住所)の文字列を、地図検索で座標付きの候補(title/address/geo)に複数解決する。" +
+				"【いつ使うか】単純な場所指定(「品川のホテルの叙々苑で」等)は create-event/update-event の location に" +
+				"そのまま渡せばよい(サーバーが known-locations 優先で自動的に structuredLocation へ解決する)。" +
+				"このツールを明示的に呼ぶのは、曖昧な場所名で複数候補から選びたい・自動解決の結果を事前に確認したい・" +
+				"自動解決に失敗した場所を手動で探し直したい、といった候補比較が要る場面に限る。" +
+				"candidates から文脈に最も合う1件を選び、structuredLocation {title, address, lat, lon} に写す" +
 				"(geo 付きにすると iOS の地図表示・経路案内が効く)。" +
 				"【解決できないとき / 枠を使い切ったとき】候補が0件、または今月の解決枠を使い切った場合でも、" +
 				"structuredLocation を lat/lon 無し(title と address だけ)で渡せば住所表現として登録できる(degrade)。" +
