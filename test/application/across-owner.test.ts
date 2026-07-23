@@ -61,6 +61,7 @@ function countingRepo(real: FakeCalendarObjectResourceRepository): {
 		getUidAtUri: (o, c, u) => real.getUidAtUri(o, c, u),
 		findInCollectionByTimeRange: (o, c, k, s, e) => real.findInCollectionByTimeRange(o, c, k, s, e),
 		findVTodosInCollection: (o, c) => real.findVTodosInCollection(o, c),
+		findVTodosByOwner: (o, cids) => real.findVTodosByOwner(o, cids),
 		findByOwnerTimeRange: (o, k, s, e, cids) => {
 			calls += 1;
 			return real.findByOwnerTimeRange(o, k, s, e, cids);

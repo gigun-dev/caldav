@@ -78,7 +78,18 @@ export interface AffectedTask {
  */
 export interface TodosViewModel {
 	tasks: Task[];
-	calendarId: string;
+	/**
+	 * 【K3(2026-07-23)で string → string|null に変えた】この一覧が「単一コレクション由来」なら
+	 * その ID、「owner 横断(calendarId 省略時の list-todos/refresh-todos)」なら **null**。
+	 * agenda 側の echo pin 修正(git log 56cbb73)と同じ「横断結果に架空の単一 ID を名乗らない」
+	 * 規律をここにも適用した。旧実装は省略時に固定で "tasks" を echo しており、todos カードが
+	 * これを currentCalendarId として保存 → 以降の refresh-todos が単一コレクションへ静かに
+	 * collapse する構造的リスクを抱えていた(agenda で実際に踏んだ事故と同型)。K3 で UI 側を
+	 * 「初回に全 VTODO コレクション横断取得 → 切替はクライアント側フィルタ」へ作り替えるにあたり
+	 * 先に潰した。null/非 null は UI が「この応答が横断か特定リスト由来か」を判別する唯一の材料
+	 * (todos-entry.ts の applyStructuredContent マージ方針を参照)。
+	 */
+	calendarId: string | null;
 	timeZone: string;
 	/** mutate 系のみ。参照系(list-todos/refresh-todos)は付けない。 */
 	affected?: AffectedTask[];
@@ -116,30 +127,15 @@ export interface TodosViewModel {
 		dueAfter?: string;
 	};
 	/**
-	 * 【E-1/E-2 拡張・2026-07-16: list-todos calendarId 省略時の silent drop 対策(D 案)】
-	 * calendarId を省略した list-todos/refresh-todos 呼び出しでだけ、実際に返した tasks の
-	 * コレクション以外にまだ VTODO コレクションが存在する場合に載る。「全部見た」という
-	 * モデルの誤認(実アカウントの tasks/reading-list のように VTODO コレクションが複数ある
-	 * ケースで reading-list を静かに取りこぼす)を、応答側の構造化フィールドで防ぐ
-	 * (Anthropic「Writing tools for agents」の部分結果ステアリングに倣う)。
-	 *
-	 * 【additive・calendarId 明示指定時は付けない】affected/removed/view と同じ「値があるときだけ
-	 * 載せる」規律。calendarId を明示指定した呼び出しは「対象を絞る意図が明確」なので、他の
-	 * コレクションが存在してもこのフィールドは付けない(スコープ明示済みとみなす)。
-	 *
-	 * 【mutate 系にも波及する非対称(Why not: mutate 系だけ抑制しない)】mutate 系
-	 * (create/complete/update/delete-todo)は buildTodosViewModel を calendarId 明示で呼ぶため
-	 * このフィールドは自然に付かない。唯一の例外は refresh-todos で、list-todos と同じ共通クロージャ
-	 * (runListTodos)を通るため calendarId 省略時は同様に otherTodoCollections が付きうる —
-	 * これは意図どおり(UI の再読み込みでも同じ「取りこぼし」注意が有効なため実害は無い、が
-	 * カード自体は otherTodoCollections を描画しない=UI 側は無視するだけなので実質無害。
-	 * 親レビューの論点として残す)。
-	 *
-	 * 【スライス2(カード描画)への布石】このフィールドは今回 structuredContent/content(テキスト)
-	 * にだけ載せ、UI(todos-entry.ts)側の描画は変えない(仕様のスライス分割どおり)。将来カードに
-	 * 「他にも○件あります」バナーを出す拡張の土台として additive に確保しておく。
+	 * 【E-1/E-2 拡張・2026-07-16〜K3(2026-07-23)で撤去: list-todos calendarId 省略時の
+	 * silent drop 対策(D 案)】旧フィールド otherTodoCollections はここにあった。calendarId 省略の
+	 * list-todos/refresh-todos が単一コレクション("tasks")しか見ていなかった時代に、「他にも
+	 * VTODO コレクションがある」ことを構造化フィールドで伝える最小変更(D 案)として導入した。
+	 * K3 で calendarId 省略時の ListTodos が owner 配下の全 VTODO コレクションを本当に横断する
+	 * ようになったため、「実は見せていないコレクションがある」という前提自体が成立しなくなり
+	 * (構造的に取りこぼしが起きない)、フィールドごと撤去した(server.ts の
+	 * resolveOtherTodoCollections 撤去コメント参照)。
 	 */
-	otherTodoCollections?: { id: string; displayName: string }[];
 	/**
 	 * 【2026-07-23 症状B対策・ユーザー裁定で追加】完了済みタスクの有界サマリ。
 	 * buildTodosViewModel(server.ts)は includeCompleted の値に関係なく **常に** このフィールドへ
@@ -163,11 +159,24 @@ export interface TodosViewModel {
 	 * 【recent の並び順】completedAt 降順(新しい順)。undo(un-complete)導線とフィードバックが目的
 	 * なので、履歴を遡って見せる必要はない(遡った履歴閲覧は includeCompleted:true の
 	 * テキスト/structuredContent 側でモデルが担う——recent はカードの「直近の結果」専用)。
-	 * 【D1 コスト】ListTodos の内部実装(findVTodosInCollection)は component_kind="VTODO" だけを
-	 * SQL 側で絞り、STATUS(完了/未完了)は元々メモリ側でフィルタしている(list-todos.ts 冒頭
-	 * コメント参照)ため、buildTodosViewModel は「常に includeCompleted:true 相当で1回読み、
-	 * メモリで tasks 用(未完了 or 全件)と completedSummary 用(完了のみ)に分ける」実装にした。
-	 * 追加の D1 SELECT は発生しない(1 回の全件読みを2用途に再利用するだけ)。
+	 * 【D1 コスト】ListTodos の内部実装(findVTodosInCollection/findVTodosByOwner)は
+	 * component_kind="VTODO" だけを SQL 側で絞り、STATUS(完了/未完了)・コレクションは元々
+	 * メモリ側でフィルタしている(list-todos.ts 冒頭コメント参照)ため、buildTodosViewModel は
+	 * 「常に includeCompleted:true・calendarId 省略(owner 横断)相当で1回読み、メモリで
+	 * tasks 用(コレクション絞り+未完了 or 全件)と completedSummary 用(コレクション非絞り・
+	 * 完了のみ)に分ける」実装にした。追加の D1 SELECT は発生しない(1 回の owner 横断読みを
+	 * 2用途に再利用するだけ)。
+	 *
+	 * 【2026-07-23 K3 直後の追加修正: calendarId スコープからも独立(不変条件の拡張)】
+	 * 症状B対策の直後は「completedSummary は due 窓(dueBefore/dueAfter)からは独立」までしか
+	 * 固定していなかった。K3(todos カードの「初回に全 VTODO コレクション横断取得 → 切替は
+	 * クライアント側フィルタ」化)後、モデル発の list-todos/create-todo 等が calendarId を明示
+	 * 指定してカードへ push すると、completedSummary.total が「owner 全体の完了済み件数」と
+	 * 「そのコレクションだけの完了済み件数」の間で揺れてしまい、症状Bと同じ「サマリはどんな
+	 * view の push でも不変」の再発になる(親レビュー指摘)。よって不変条件を **due 窓からも
+	 * calendarId スコープからも独立** に拡張し、completedSummary は常に owner 配下の全 VTODO
+	 * コレクション横断(allTasksAcrossOwner)から計算する(tasks 側だけが calendarId 指定時に
+	 * メモリでコレクションを絞る。server.ts の buildTodosViewModel コメント参照)。
 	 */
 	completedSummary?: { total: number; recent: TaskSnapshot[] };
 }

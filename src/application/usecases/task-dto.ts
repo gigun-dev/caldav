@@ -130,6 +130,15 @@ export interface Task {
 	 * や本サーバー author 規約(C8)で書かれた proximity VALARM はこのフィールドで読める。
 	 */
 	proximityAlarm: ProximityAlarm | null;
+	/**
+	 * K3(2026-07-23・todos カードのリスト切替横断化): この Task が属する VTODO コレクション ID。
+	 * additive・任意フィールド(既存の単一コレクション呼び出し元/フィクスチャを壊さないため
+	 * optional にしているが、list-todos.ts の taskFromVTodo 呼び出し側は必ずセットする —
+	 * 「サーバーは常に埋める・型は後方互換のため optional」という completedSummary と同じ規律)。
+	 * 横断取得(calendarId 省略/"all")では per-task にどのリストの todo かを運ぶ唯一の手段になる
+	 * (agenda 側 toWireEvent の calendarId 併記と対称の設計)。
+	 */
+	calendarId?: string;
 }
 
 function pad2(n: number): string {

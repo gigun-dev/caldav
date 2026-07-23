@@ -255,6 +255,36 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 	}
 
 	/**
+	 * K3(2026-07-23): findVTodosInCollection の owner 横断版(ports/index.ts のコメント参照)。
+	 * time-range 判定を持たない点だけが findByOwnerTimeRange と違う — WHERE に
+	 * last_occurrence/first_occurrence の比較を含めないので、bounds 計算の有無に関わらず
+	 * owner 配下の VTODO を漏れなく返す(K3 は「切替のたびに最新を取り直さない」代わりに
+	 * 初回で全件を確実に取り切る必要があるため、粗い time-range フィルタすら挟まない)。
+	 */
+	async findVTodosByOwner(
+		owner: PrincipalRef,
+		collectionIds?: readonly CollectionId[],
+	): Promise<{ collectionId: CollectionId; resource: CalendarObjectResource }[]> {
+		if (collectionIds !== undefined && collectionIds.length === 0) return [];
+		const inClause =
+			collectionIds !== undefined
+				? ` AND collection_id IN (${collectionIds.map(() => "?").join(",")})`
+				: "";
+		const stmt = this.db.prepare(
+			`SELECT collection_id, uri, ics FROM calendar_objects
+			 WHERE owner = ? AND component_kind = 'VTODO' AND deleted_at IS NULL${inClause}
+			 ORDER BY collection_id, uri`,
+		).bind(owner, ...(collectionIds ?? []));
+		const rows = await stmt.all<ResourceRow & { collection_id: string }>();
+		return Promise.all(
+			rows.results.map(async (row) => ({
+				collectionId: collectionId(row.collection_id),
+				resource: await hydrateResource(row),
+			})),
+		);
+	}
+
+	/**
 	 * レイテンシ案2(2026-07-22): owner 配下の time-range 一致リソースを、collection_id 付きで
 	 * 1 クエリ取得する。findInCollectionByTimeRange の WHERE を「collection_id 等値」から
 	 * 「owner 等値 + (任意) collection_id IN(...)」に緩めただけで、time-range 部分は同一。

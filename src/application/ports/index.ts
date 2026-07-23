@@ -202,6 +202,38 @@ export interface CalendarObjectResourceRepository {
 	findVTodosInCollection(owner: PrincipalRef, collectionId: CollectionId): Promise<CalendarObjectResource[]>;
 
 	/**
+	 * K3(2026-07-23): todos カードのリスト切替「初回に全 VTODO コレクション横断取得 → 切替は
+	 * クライアント側フィルタ」向け。owner 配下の VTODO を **時間窓を掛けずに** 1クエリで
+	 * 横断取得し、行ごとにどのコレクションのものかを collectionId で添えて返す。
+	 *
+	 * 【なぜ findByOwnerTimeRange を流用しないか(Why not: 引数を極端な範囲に倒して使い回す）】
+	 * findByOwnerTimeRange は VEVENT の occurrence 展開(list-events-expanded 等)向けに設計された
+	 * 契約で、first_occurrence/last_occurrence の範囲判定が前提にある。VTODO にも PUT 時点で
+	 * bounds(DUE 由来)が計算され入ってはいるものの、list-todos.ts 冒頭コメントが明記するとおり
+	 * 「VTODO の DUE フィルタに occurrence bounds 索引は過剰」という既存の設計判断がある
+	 * (dueBefore/dueAfter は最初からメモリ側フィルタに倒している)。[-Infinity, +Infinity) を
+	 * bind する裏技も使えなくはないが、D1(SQLite)の数値バインドに Infinity を渡す経路は
+	 * 契約として保証されておらず事故りやすい。findVTodosInCollection(単一コレクション・
+	 * time-range 無し)と対称に「時間窓を持たない owner 横断版」を素直に足す方が、実装・
+	 * テストの見通しが良い(findByOwnerTimeRange と findInCollectionByTimeRange を並べた
+	 * 前例と同じ「契約が違うものは別メソッドにする」判断を踏襲)。
+	 *
+	 * 【絞り込みの粗さ】component_kind='VTODO' の等値条件のみ SQL 側。STATUS(完了)・DUE 窓は
+	 * findVTodosInCollection と同じく呼び出し側(ListTodos.execute / filterTasksByWindow)が
+	 * メモリで判定する(ロジックの単一情報源を保つため、ここでも SQL 側に STATUS/DUE を
+	 * 持ち込まない)。
+	 *
+	 * @param collectionIds 指定時はその集合に限定(K3 では通常使わないが、findByOwnerTimeRange と
+	 *   同じ契約を持たせておく方が呼び出し側の分岐が単純になるため additive に用意する）。
+	 *   **undefined = owner 配下の全コレクション横断**。空配列 [] は「どのコレクションにもマッチ
+	 *   しない」= 空結果(全横断に化けさせない。findByOwnerTimeRange と同じ規約）。
+	 */
+	findVTodosByOwner(
+		owner: PrincipalRef,
+		collectionIds?: readonly CollectionId[],
+	): Promise<OwnerTimeRangeMatch[]>;
+
+	/**
 	 * レイテンシ案2「コレクション横断1クエリ化」(2026-07-22): owner 配下の(任意コレクションの)
 	 * component_kind 一致リソースを time-range で粗く絞り、**どのコレクションのものか(collectionId)を
 	 * 添えて 1 クエリで返す**。list-events-expanded / get-freebusy の「calendarId 省略=全横断」経路が

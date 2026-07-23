@@ -869,7 +869,11 @@ describe("/mcp", () => {
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
 			const sc = rpc.result.structuredContent;
-			expect(sc.calendarId).toBe("tasks");
+			// K3(2026-07-23): calendarId 省略時は buildTodosViewModel が owner 横断で確定一覧を返す
+			// ように意味を変えた(56cbb73 の agenda echo pin 修正と同じ「単一 ID を偽装しない」規律)。
+			// create-todo 自体の保存先(CreateTodo UC の既定 "tasks")とは独立の話 — 確定一覧の echo は
+			// 「今回の一覧がどんなスコープで組まれたか」を正直に返す。
+			expect(sc.calendarId).toBeNull();
 			expect(Array.isArray(sc.tasks)).toBe(true);
 			expect(sc.affected).toHaveLength(1);
 			expect(sc.affected[0].kind).toBe("added");
@@ -1062,7 +1066,9 @@ describe("/mcp", () => {
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
 			const sc = rpc.result.structuredContent;
-			expect(sc.calendarId).toBe("tasks");
+			// K3: create-todos も calendarId 省略なので確定一覧は owner 横断(null echo)。上の
+			// create-todo 単発テストと同じ理由(56cbb73 の規律をそのまま踏襲)。
+			expect(sc.calendarId).toBeNull();
 			expect(sc.affected).toHaveLength(3);
 			expect(sc.affected.map((a: { kind: string }) => a.kind)).toEqual(["added", "added", "added"]);
 			const titles = sc.affected.map((a: { task: { title: string } }) => a.task.title).sort();
@@ -1157,8 +1163,9 @@ describe("/mcp", () => {
 			expect(rpc.result.isError).toBeFalsy();
 			return rpc.result.structuredContent.tasks.find((t: { title: string }) => t.title === args.title).id;
 		}
-		async function completeTodo(id: string): Promise<void> {
-			const res = await fetchMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "complete-todo", arguments: { id } } });
+		async function completeTodo(id: string, calendarId?: string): Promise<void> {
+			const args: Record<string, unknown> = calendarId !== undefined ? { id, calendarId } : { id };
+			const res = await fetchMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "complete-todo", arguments: args } });
 			const rpc = await jsonRpcResult(res);
 			expect(rpc.result.isError).toBeFalsy();
 		}
@@ -1257,15 +1264,56 @@ describe("/mcp", () => {
 			// 壊さず completedSummary だけ不変にする」という要求どおりであることの回帰防止。
 			expect(windowed.tasks.some((t: { id: string }) => t.id === outsideWindowDoneId)).toBe(false);
 		});
+
+		// K3 直後の追加修正(コーディネーター指摘): completedSummary は due 窓だけでなく calendarId
+		// スコープからも独立でなければならない(症状Bの治療原則の拡張。todos-view-model.ts の
+		// completedSummary JSDoc 参照)。K3 で todos カードは常に owner 横断取得だが、モデル発の
+		// list-todos/create-todo 等は calendarId を明示指定して呼べる(単一コレクション scoped)。
+		// この push がカードへ届いたとき total が「owner 全体」と「単一コレクションだけ」の間で
+		// 揺れないことを固定する。
+		it("completedSummary は calendarId を明示指定した list-todos でも owner 全体の値のまま揺れない(K3 後の症状B再発対策)", async () => {
+			const READING_LIST = collectionId("reading-list");
+			seedTasksCollection();
+			repos.collections.seed(
+				new CalendarCollection({ id: READING_LIST, owner: OWNER, displayName: "Reading List", supportedComponents: ["VTODO"] }),
+			);
+			// "tasks" に完了済み1件、"reading-list" にも完了済み1件(別コレクションの完了済みが
+			// 単一 scoped 応答で数え漏れないことも併せて確認する)。
+			const tasksDoneId = await createTodo({ title: "牛乳を買う", calendarId: "tasks" });
+			await completeTodo(tasksDoneId);
+			const readingDoneId = await createTodo({ title: "本を返す", calendarId: "reading-list" });
+			await completeTodo(readingDoneId, "reading-list");
+
+			// calendarId 省略(owner 横断)での completedSummary.total を基準値にする。
+			const crossScope = await call("list-todos", { includeCompleted: true });
+			expect(crossScope.completedSummary.total).toBeGreaterThanOrEqual(2);
+
+			// calendarId を "tasks" に明示指定した単一コレクション scoped 呼び出しでも、
+			// completedSummary.total は owner 横断の基準値と同じでなければならない(揺れない)。
+			const tasksScoped = await call("list-todos", { includeCompleted: true, calendarId: "tasks" });
+			expect(tasksScoped.completedSummary.total).toBe(crossScope.completedSummary.total);
+
+			// "reading-list" に明示指定した場合も同様(どちらの単一コレクションを指定しても
+			// completedSummary は owner 全体のまま=不変条件)。
+			const readingScoped = await call("list-todos", { includeCompleted: true, calendarId: "reading-list" });
+			expect(readingScoped.completedSummary.total).toBe(crossScope.completedSummary.total);
+
+			// tasks 側のコレクション絞り自体は生きている(reading-list の完了済みは "tasks" scoped の
+			// tasks には出てこない)ことも併せて確認する — completedSummary だけを別チャンネルにした
+			// 設計が「tasks の calendarId 絞りを壊さず completedSummary だけ不変にする」という
+			// 要求どおりであることの回帰防止。
+			expect(tasksScoped.tasks.some((t: { id: string }) => t.id === readingDoneId)).toBe(false);
+			expect(readingScoped.tasks.some((t: { id: string }) => t.id === tasksDoneId)).toBe(false);
+		});
 	});
 
-	// 2026-07-16 silent drop 対策(D 案): calendarId 省略の list-todos が「tasks 以外にも VTODO
-	// コレクションがある」ことを otherTodoCollections で構造化的に伝えるかのサーバー契約テスト。
-	// 【背景】実アカウントに tasks/reading-list のように VTODO コレクションが複数あるとき、
-	// モデルが calendarId 省略で「これで全部」と誤認して reading-list を静かに取りこぼす事故が
-	// あった。VTODO 判定は list-calendars と同じ accepts("VTODO") 基準(CalendarCollection の
-	// 既存ドメインヘルパー)を使う。
-	describe("list-todos: otherTodoCollections(calendarId 省略時の silent drop 対策)", () => {
+	// K3(2026-07-23): todos カードのリスト切替「初回に全 VTODO コレクション横断取得 → 切替は
+	// クライアント側フィルタ」向けのサーバー契約テスト。旧 D 案(otherTodoCollections)は
+	// calendarId 省略時も単一コレクション("tasks")しか見せず「他にもある」ことを構造化
+	// フィールドで伝えるだけの部分対策だったが、K3 は calendarId 省略を「本当に owner 配下の
+	// 全 VTODO コレクションを1クエリで横断する」よう変えた(list-todos.ts の ListTodosInput
+	// JSDoc・server.ts の resolveOtherTodoCollections 撤去コメント参照)。
+	describe("list-todos: calendarId 省略時の owner 横断(K3)", () => {
 		const TASKS = collectionId("tasks");
 		const READING_LIST = collectionId("reading-list");
 		async function call(name: string, args: Record<string, unknown>): Promise<any> {
@@ -1274,30 +1322,41 @@ describe("/mcp", () => {
 			expect(rpc.result.isError).toBeFalsy();
 			return rpc.result.structuredContent;
 		}
-
-		it("calendarId 省略 + 複数 VTODO コレクションがあるとき otherTodoCollections が載る", async () => {
+		function seedTwoLists(): void {
 			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
 			repos.collections.seed(
 				new CalendarCollection({ id: READING_LIST, owner: OWNER, displayName: "Reading List", supportedComponents: ["VTODO"] }),
 			);
+		}
+
+		it("calendarId 省略 + 複数 VTODO コレクションがあるとき、両方の task が calendarId 付きで1応答に混ざる", async () => {
+			seedTwoLists();
+			await call("create-todo", { title: "牛乳を買う", calendarId: "tasks" });
+			await call("create-todo", { title: "本を返す", calendarId: "reading-list" });
+
 			const sc = await call("list-todos", {});
-			expect(sc.otherTodoCollections).toEqual([{ id: "reading-list", displayName: "Reading List" }]);
+			// 横断応答は架空の単一 ID を echo しない(56cbb73 の agenda echo pin 規律と同じ)。
+			expect(sc.calendarId).toBeNull();
+			const byId = new Map(sc.tasks.map((t: { title: string; calendarId?: string }) => [t.title, t.calendarId]));
+			expect(byId.get("牛乳を買う")).toBe("tasks");
+			expect(byId.get("本を返す")).toBe("reading-list");
 		});
 
-		it("calendarId を明示指定すると otherTodoCollections は載らない(スコープ明示済み)", async () => {
-			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
-			repos.collections.seed(
-				new CalendarCollection({ id: READING_LIST, owner: OWNER, displayName: "Reading List", supportedComponents: ["VTODO"] }),
-			);
+		it("calendarId を明示指定すると、そのコレクションだけを返し calendarId をそのまま echo する(単一照会は互換のまま)", async () => {
+			seedTwoLists();
+			await call("create-todo", { title: "牛乳を買う", calendarId: "tasks" });
+			await call("create-todo", { title: "本を返す", calendarId: "reading-list" });
+
 			const sc = await call("list-todos", { calendarId: "tasks" });
-			expect("otherTodoCollections" in sc).toBe(false);
+			expect(sc.calendarId).toBe("tasks");
+			expect(sc.tasks.map((t: { title: string }) => t.title)).toEqual(["牛乳を買う"]);
 		});
 
-		it("VTODO コレクションが tasks 1件だけなら otherTodoCollections は載らない", async () => {
+		it("calendarId 省略 + VTODO コレクションが tasks 1件だけでも横断応答(calendarId:null)になる", async () => {
 			repos.collections.seed(new CalendarCollection({ id: TASKS, owner: OWNER, displayName: "Tasks" }));
 			repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar", supportedComponents: ["VEVENT"] }));
 			const sc = await call("list-todos", {});
-			expect("otherTodoCollections" in sc).toBe(false);
+			expect(sc.calendarId).toBeNull();
 		});
 	});
 

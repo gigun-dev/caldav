@@ -1047,16 +1047,21 @@ const listTodosInputShape = {
 	includeCompleted: z.boolean().optional().describe("完了済み(STATUS:COMPLETED)を含めるか。既定は未完了のみ(false)。"),
 	dueBefore: z.string().optional().describe("DUE がこの offset 付き ISO8601 より前の TODO だけに絞る(due 無しは除外)。"),
 	dueAfter: z.string().optional().describe("DUE がこの offset 付き ISO8601 より後の TODO だけに絞る(due 無しは除外)。"),
-	// 【2026-07-16 追記(D 案・silent drop 対策)】旧文言は「省略時は "tasks"」とだけ書いており、
-	// 「他にも VTODO コレクションがあるかもしれない」ことを示唆していなかった。実アカウントで
-	// tasks/reading-list のように VTODO コレクションが複数あるとき、モデルが calendarId 省略で
-	// 「全体を見た」つもりになり reading-list を静かに取りこぼす事故があった(親レビューで確認)。
-	// 完全解決(横断既定化。events 系 resolveCollectionIds と同じ挙動)は「カードは単一コレクション
-	// 前提」という既存 UI 契約(todos-view-model.ts の calendarId: string 必須)を壊すため見送り、
-	// 今回は「他にもある」ことを otherTodoCollections で応答側から伝える最小変更(D 案)に留める。
+	// 【K3(2026-07-23): D 案(otherTodoCollections)を横断既定化で置き換えた】
+	// 旧文言(2026-07-16)は「省略時は "tasks" のみ」で、実アカウントに tasks/reading-list のように
+	// VTODO コレクションが複数あるとモデルが silent drop する事故があった(親レビューで確認)。
+	// 当時は「カードは単一コレクション前提」という UI 契約(todos-view-model.ts の calendarId:
+	// string 必須)を理由に横断既定化を見送り、応答に otherTodoCollections を添える D 案で凌いだ。
+	// 今回(K3)は UI 側を「初回に全 VTODO コレクション横断取得 → 切替はクライアント側フィルタ」へ
+	// 作り替えたため、この制約が外れた。calendarId 省略は素直に owner 配下の全 VTODO コレクション
+	// 横断に倒す(events 系 resolveCollectionIds/list-events-expanded と同じ既定)。D 案の
+	// otherTodoCollections フィールドはもう構造的に取りこぼしが起きない(横断クエリが最初から
+	// 全部拾う)ため撤去し、resolveOtherTodoCollections(findAllByOwner の追加 D1 往復)も削除した
+	// ——「D1 クエリは1回」という K3 の要求と、D 案の追加往復は両立しないため。
 	calendarId: z.string().optional().describe(
-		'対象コレクション ID。省略時は "tasks" のみを対象とする。他の VTODO コレクション' +
-			"(list-calendars で components に VTODO を含むもの)を見るには calendarId を明示すること。",
+		'対象コレクション ID。省略(または "all")時は owner 配下の全 VTODO コレクションを横断して' +
+			"一覧する(応答の calendarId は横断時 null・単一指定時はその ID を echo する)。特定のリスト" +
+			"だけを見たいときだけ明示すること。",
 	),
 	timeZone: z.string().optional().describe(
 		"due の表示 + floating/DATE の解釈に使う IANA タイムゾーン(例 \"Asia/Tokyo\")。" +
@@ -1124,34 +1129,14 @@ function collectionIdArg(
 	return undefined; // 全横断: findByOwnerTimeRange に collection_id 条件を付けさせない。
 }
 
-/**
- * list-todos の silent drop 対策(D 案)用: calendarId 省略呼び出しで「実際に見せたコレクション以外に
- * VTODO コレクションがまだ存在するか」を解決する。
- *
- * 【なぜ events 系の resolveCollectionIds のように横断既定化しないか(Why not)】
- * events 側(list-events-expanded/get-freebusy)は元から「省略=横断」で、応答も item ごとに
- * calendarId を併記する wire 形(toWireEvent)なので複数コレクション混在を表現できる。
- * todos 側は TodosViewModel.calendarId が単一 string 必須(todos-view-model.ts)で、UI
- * (todos-entry.ts)も「1カード=1コレクション」前提で作られている。ListTodos の実行を横断化すると
- * この単一コレクション契約を壊し、カード描画・quick-add の作成先(currentCalendarId)まで
- * 波及するため、今回のスライスでは見送る(親仕様の指示どおり)。代わりに「tasks は見せたが
- * 他にもある」ことだけを構造化フィールドで伝え、モデルに calendarId 明示の追加呼び出しを促す
- * (Anthropic「Writing tools for agents」の部分結果ステアリングと同じ発想)。
- *
- * 【VTODO 判定基準】list-calendars と同じ「components に VTODO を含む」基準を使う。
- * CalendarCollection.accepts("VTODO")(supportedComponents undefined=全受理 MUST を織り込み済み
- * の既存ドメインヘルパー)をそのまま再利用し、判定ロジックの重複実装を避ける。
- */
-async function resolveOtherTodoCollections(
-	deps: McpAppDeps,
-	owner: PrincipalRef,
-	shownCollectionId: string,
-): Promise<{ id: string; displayName: string }[]> {
-	const collections = await deps.collectionRepo.findAllByOwner(owner);
-	return collections
-		.filter((c) => c.accepts("VTODO") && c.id !== shownCollectionId)
-		.map((c) => ({ id: c.id, displayName: c.displayName }));
-}
+// 【K3(2026-07-23)で resolveOtherTodoCollections(D 案)を撤去した】
+// 旧関数は「calendarId 省略呼び出しで実際に見せたコレクション以外に VTODO コレクションが
+// まだ存在するか」を findAllByOwner の追加 D1 往復で調べ、otherTodoCollections フィールドで
+// モデルに伝えていた(TodosViewModel.otherTodoCollections の旧 JSDoc・git log 56cbb73 の前段参照)。
+// K3 で ListTodos/buildTodosViewModel の calendarId 省略が「本当に owner 配下の全 VTODO
+// コレクションを1クエリで横断する」よう変わったため、「実は見せていないコレクションがある」
+// という前提そのものが成立しなくなった(構造的に取りこぼしが起きない)。よって関数ごと削除し、
+// 追加の findAllByOwner 往復も無くした(K3 の「D1 クエリは1回」要求と D 案の追加往復は両立しない)。
 
 /**
  * Event DTO を list-events-expanded / event mutate ツールの wire 形へ整える(E-3 スライス S1)。
@@ -2470,9 +2455,6 @@ function buildMcpServer(
 		removed?: TaskSnapshot[];
 		/** move-todo のみ。TodosViewModel.movedTo の JSDoc 参照。 */
 		movedTo?: string;
-		/** list-todos/refresh-todos の calendarId 省略時のみ呼び出し側が解決して渡す。
-		 *  TodosViewModel.otherTodoCollections の JSDoc 参照。 */
-		otherTodoCollections?: { id: string; displayName: string }[];
 	}): Promise<TodosViewModel> => {
 		const zone = resolveTimeZone(opts.timeZone);
 		// 【次の伸びしろ(今回スコープ外)】この確定一覧は応答契約(TodosViewModel.tasks)上必要なので
@@ -2489,49 +2471,74 @@ function buildMcpServer(
 		// due 窓で痩せてしまい、「completedSummary はどんな view の push でも不変」という症状Bの
 		// 治療原則そのものが再発する(完了済みタスクにも due が付いていることがあるため、
 		// dueBefore/dueAfter が完了済み側の集計まで削ってしまう)。
-		// 【修正】ここでは **due 引数を渡さず** includeCompleted:true・calendarId のみで1回読み、
-		// allTasks(= コレクション内の全 VTODO・due 窓非フィルタ・完了/未完了とも全件)を得る。
-		// completedSummary はこの完全な allTasks から計算する(due 窓の影響を受けない)。
-		// tasks(応答契約どおりの絞り込み結果)は、この allTasks に対して ListTodos.execute 自身が
-		// 内部で使うのと同じ純関数 filterTasksByWindow(list-todos.ts から export)を presentation
-		// 側から呼んで導出する — due 窓判定ロジックを presentation に複製しない(単一情報源。
-		// list-todos.ts の filterTasksByWindow JSDoc に経緯を集約)。
+		// 【2026-07-23 K3 直後・コーディネーター指摘で再修正: calendarId スコープからも独立させる】
+		// 上の due 窓修正だけでは足りなかった。K3(todos カードの横断取得+クライアント側フィルタ)
+		// 後もモデル発の list-todos/create-todo 等は calendarId を明示指定して呼べる(単一
+		// コレクション scoped 呼び出し)。この push がカードへ届くと、completedSummary.total が
+		// 「owner 全体の完了済み件数」と「そのコレクションだけの完了済み件数」の間で揺れてしまい、
+		// due 窓のときと同じ「サマリはどんな view の push でも不変」という症状Bの治療原則の再発に
+		// なる(親レビュー指摘)。よって completedSummary の計算元は **calendarId スコープも
+		// due 窓と同じく無視し、常に owner 配下の全 VTODO コレクション横断** から導出する。
+		// 【修正】ListTodos は **calendarId を渡さず**(= list-todos.ts の ListTodosInput.calendarId
+		// JSDoc どおり owner 横断)・due 引数も渡さず・includeCompleted:true の1回だけ呼ぶ。
+		// allTasksAcrossOwner は「owner 配下の全 VTODO コレクション・due 窓非フィルタ・
+		// コレクション非絞り・完了/未完了とも全件」になる。completedSummary はこの完全な値から
+		// 計算する(due 窓にもコレクション指定にも影響されない)。
+		// tasks(応答契約どおりの絞り込み結果)は、この allTasksAcrossOwner に対して
+		// (1) opts.calendarId が指定されていればそのコレクションへメモリでスコープを絞り、
+		// (2) ListTodos.execute 自身が内部で使うのと同じ純関数 filterTasksByWindow(list-todos.ts
+		//     から export)で due 窓/完了フィルタを適用する、の2段で導出する
+		// (due 窓判定ロジックを presentation に複製しない=単一情報源。list-todos.ts の
+		// filterTasksByWindow JSDoc に経緯を集約)。
 		// 【D1 SELECT は1回のまま】ListTodos の内部実装は component_kind="VTODO" だけを SQL で絞り、
-		// STATUS/DUE は元々メモリ側フィルタ(list-todos.ts 冒頭コメント)なので、due 引数を渡さず
-		// includeCompleted:true で呼んでも(= 単に絞り込みをしないだけなので)D1 への追加 SELECT は
-		// 発生しない。IAD レイテンシ事情(2026-07-14 レイテンシ改善の経緯)により追加ラウンドトリップは
-		// 避ける制約を守っている。
-		const { tasks: allTasks } = await listTodos.execute({
+		// STATUS/DUE/コレクションは元々メモリ側フィルタ(list-todos.ts 冒頭コメント)なので、
+		// calendarId/due 引数を渡さず includeCompleted:true で呼んでも(単に絞り込みをこの関数側の
+		// メモリへ肩代わりさせるだけなので)D1 への追加 SELECT は発生しない。IAD レイテンシ事情
+		// (2026-07-14 レイテンシ改善の経緯)により追加ラウンドトリップは避ける制約を守っている
+		// (owner 横断1クエリの転送量は単一コレクション時より増えるが、K3 で todos カード自体が
+		// 常時この横断量を扱う設計へ既に移行済みなので、mutate 系だけ特別に軽い経路を保つ意味は
+		// 薄いと判断した)。
+		const { tasks: allTasksAcrossOwner } = await listTodos.execute({
 			owner: principal,
 			includeCompleted: true,
-			calendarId: opts.calendarId,
 			timeZone: zone,
 		});
-		// tasks: 応答契約どおり「呼び出し側が指定した includeCompleted/dueBefore/dueAfter」に従って
-		// 絞る(未指定=false=未完了のみ。mutate 系が includeCompleted を渡さないのは
-		// buildTodosViewModel コメントの「確定一覧は未完了ビューに揃える」方針のまま変えない)。
-		const tasks = filterTasksByWindow(allTasks, {
+		// tasks: 応答契約どおり「呼び出し側が指定した calendarId/includeCompleted/dueBefore/dueAfter」
+		// に従って絞る。calendarId は opts.calendarId が指定されているときだけこの1段でスコープを
+		// 絞る(未指定 or "all" は絞らず owner 横断のまま=list-todos.ts の ListTodosInput.calendarId
+		// と同じ語彙)。includeCompleted 未指定=false=未完了のみ(mutate 系が includeCompleted を
+		// 渡さないのは buildTodosViewModel コメントの「確定一覧は未完了ビューに揃える」方針のまま変えない)。
+		const collectionScoped =
+			opts.calendarId !== undefined && opts.calendarId !== "all"
+				? allTasksAcrossOwner.filter((t) => t.calendarId === opts.calendarId)
+				: allTasksAcrossOwner;
+		const tasks = filterTasksByWindow(collectionScoped, {
 			includeCompleted: opts.includeCompleted,
 			dueBefore: opts.dueBefore,
 			dueAfter: opts.dueAfter,
 			timeZone: zone,
 		});
 		// completedSummary: 完了済みの総数 + completedAt 新しい順の直近 COMPLETED_RECENT_MAX 件。
-		// **due 窓を通していない allTasks** から計算する(上のコメントの核心)。計算ロジックは
+		// **due 窓もコレクションスコープも通していない allTasksAcrossOwner** から計算する
+		// (上のコメントの核心・不変条件は「due 窓からもcalendarId スコープからも独立」)。計算ロジックは
 		// 純関数 buildCompletedSummary(todos-diff.ts)に抽出済み(D1/principal 非依存なので Task
 		// フィクスチャだけで単体テストできる — mcp-todos-diff.test.ts 参照)。symptom B の背景は
 		// todos-view-model.ts の completedSummary JSDoc に集約 — includeCompleted/dueBefore/dueAfter
 		// の値に関係なく常にこの形で載る。
-		const vm: TodosViewModel = { tasks, calendarId: opts.calendarId ?? "tasks", timeZone: zone };
-		vm.completedSummary = buildCompletedSummary(allTasks, COMPLETED_RECENT_MAX);
+		// 【K3(2026-07-23) calendarId echo: agenda echo pin(56cbb73)と同じ「単一 ID を偽装しない」規律】
+		// 旧実装は calendarId 省略時も `?? "tasks"` で架空の単一 ID を echo していた。これは D 案
+		// (otherTodoCollections)前提の「省略=tasks だけ見せる」挙動と対だったが、K3 で省略時の
+		// ListTodos は owner 横断に変わった(ListTodosInput.calendarId JSDoc 参照)。横断結果に対して
+		// 単一 ID を名乗ると、agenda 側で実際に起きた「echo を currentCalendarId に固定保存 → 2回目
+		// 以降の refetch が単一コレクションへ静かに collapse する」のと同じ事故を招く。よって
+		// 省略/横断時は正直に null を返す(単一指定時のみその値を echo)。UI(todos-entry.ts)は
+		// この null/非 null を「今回の応答が横断か、特定リスト由来か」の判別に使う(K3 の設計判断参照)。
+		const vm: TodosViewModel = { tasks, calendarId: opts.calendarId ?? null, timeZone: zone };
+		vm.completedSummary = buildCompletedSummary(allTasksAcrossOwner, COMPLETED_RECENT_MAX);
 		// 空配列を載せると UI が「差分ゼロの mutate」と誤認しかねないので、値があるときだけ載せる。
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;
 		if (opts.movedTo !== undefined) vm.movedTo = opts.movedTo;
-		// otherTodoCollections: 存在しなければフィールド自体を省略(affected/removed と同じ規律)。
-		if (opts.otherTodoCollections !== undefined && opts.otherTodoCollections.length > 0) {
-			vm.otherTodoCollections = opts.otherTodoCollections;
-		}
 		// view echo(E-2 view 状態非保持バグ修正): 非 undefined の引数だけを載せる。全部 undefined
 		// (既定ビュー)なら view キー自体を省いて後方互換を保つ(旧 UI/旧テストは view 不在前提)。
 		// UI はこの view を currentView として保持し、focus refetch / mutation 後の再取得へ引き継ぐ。
@@ -2561,15 +2568,11 @@ function buildMcpServer(
 		timeZone?: string;
 	}) => {
 		try {
-			// 【省略判定は生 input で行う】args.calendarId が undefined かどうかがそのまま
-			// 「モデルが対象を絞らずに呼んだか」の判定材料。buildTodosViewModel/ListTodos 内部では
-			// `?? "tasks"` に潰ってしまい判定材料が失われるため、潰す前のこの地点で判定する
-			// (仕様の指示どおり)。明示指定時は「スコープ明示済み」とみなし解決自体を省く
-			// (無駄な findAllByOwner を避ける最適化も兼ねる)。
-			const otherTodoCollections = args.calendarId === undefined
-				? await resolveOtherTodoCollections(deps, principal, "tasks")
-				: undefined;
-			return toTodosToolResponse(await buildTodosViewModel({ ...args, otherTodoCollections }));
+			// K3: calendarId 省略時はそのまま buildTodosViewModel → ListTodos に渡す(owner 横断は
+			// application 層の ListTodos が1クエリで担う)。旧実装がここで行っていた
+			// resolveOtherTodoCollections の追加 D1 往復(D 案)は撤去済み(listTodosInputShape の
+			// calendarId JSDoc・resolveOtherTodoCollections 撤去コメント参照)。
+			return toTodosToolResponse(await buildTodosViewModel({ ...args }));
 		} catch (error) {
 			return toolError(error instanceof Error ? error.message : String(error));
 		}
@@ -2581,7 +2584,8 @@ function buildMcpServer(
 		{
 			title: "List todos",
 			description: "VTODO(リマインダー)を一覧する。既定は未完了のみ(includeCompleted:false)。反復 VTODO も master 1件として一覧する(展開はしない)。" +
-				'calendarId 省略時は "tasks" のみ。応答の otherTodoCollections に他のリマインダーリストが載る場合、全体を見るにはそれらも列挙すること。',
+				"calendarId 省略時は owner 配下の全 VTODO コレクションを横断して一覧する(各 task に由来 calendarId が付く)。" +
+				"特定のリストだけを見たいときは calendarId を明示すること。",
 			inputSchema: listTodosInputShape,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {

@@ -270,6 +270,30 @@ export class FakeCalendarObjectResourceRepository implements CalendarObjectResou
 	}
 
 	/**
+	 * K3(2026-07-23): findVTodosByOwner のフェイク実装。findVTodosInCollection の owner 横断版
+	 * (time-range 判定なし)。findByOwnerTimeRange のフェイク実装と同じキー分解方針を使うが、
+	 * bounds/range 判定は一切行わない(component_kind==='VTODO' と collectionIds 絞りのみ)。
+	 */
+	async findVTodosByOwner(
+		owner: PrincipalRef,
+		collectionIds?: readonly CollectionId[],
+	): Promise<{ collectionId: CollectionId; resource: CalendarObjectResource }[]> {
+		if (collectionIds !== undefined && collectionIds.length === 0) return [];
+		const ownerPrefix = `${owner}::`;
+		const allow = collectionIds === undefined ? null : new Set<string>(collectionIds);
+		const result: { collectionId: CollectionId; resource: CalendarObjectResource }[] = [];
+		for (const [k, r] of this.store) {
+			if (!k.startsWith(ownerPrefix)) continue;
+			if (this.isDeleted(k)) continue;
+			if (r.componentKind !== "VTODO") continue;
+			const cid = k.slice(ownerPrefix.length, k.indexOf("::", ownerPrefix.length));
+			if (allow !== null && !allow.has(cid)) continue;
+			result.push({ collectionId: mkCollectionId(cid), resource: r });
+		}
+		return result;
+	}
+
+	/**
 	 * レイテンシ案2(2026-07-22): findByOwnerTimeRange のフェイク実装。
 	 * findInCollectionByTimeRange と同じ time-range 判定(NULL は常に候補)を owner スコープに広げ、
 	 * collectionIds 指定時はその集合に限定する。undefined = 全横断(owner 配下の全コレクション)。

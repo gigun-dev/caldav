@@ -151,6 +151,7 @@ import { type ProximityAlarmView, type StructuredLocationView, proximityBadge } 
 // ui/→ui/ の import は mcp-ui-is-terminal の許可対象。bun build がバンドル時に inline する。
 import { isDoneRowStillInPlace as isDoneExitPending, shouldScheduleDoneExit } from "./done-exit";
 import { coalesceAction, mergeCompletedBase, shouldReviveToggle } from "./toggle-coalesce";
+import { mergeTasksByCalendar, filterTasksByCalendar } from "./todos-calendar-filter";
 import {
 	type RecurrenceSummary,
 	type RecurPreset,
@@ -231,6 +232,15 @@ interface TodoItem {
 	// C1(設計 05 §1-a/§2): proximity(到着/出発)VALARM。geofence リマインダーの実体。未設定は null。
 	// 一覧行の 📍「〜に到着時 / から出発時」バッジの源(C2 todos 指示 5)。
 	proximityAlarm: ProximityAlarmView | null;
+	/**
+	 * K3(2026-07-23): この task の由来 VTODO コレクション ID。server(task-dto.ts の Task.calendarId)
+	 * が横断/単一どちらの応答でも常にセットする。UI 側はこれを「初回に全 VTODO コレクション横断
+	 * 取得 → 切替はクライアント側フィルタ」の絞り込みキーに使う(filterTasksByCalendar 参照)。
+	 * additive・optional にしているのは旧応答/テストフィクスチャ(calendarId 無し)の後方互換のため
+	 * (mergeTasksByCalendar/filterTasksByCalendar は calendarId 無しの行を「所属不明」として
+	 * 安全側=常に表示・常に保持で扱う)。
+	 */
+	calendarId?: string;
 }
 
 /** 差分レンズ用の自己完結スナップショット(案X・2026-07-13。server.ts の TaskSnapshot と同型)。
@@ -686,10 +696,22 @@ function dueSection(task: TodoItem, todayKey: string): Exclude<SectionKey, "comp
 // 【なぜ let でなく const か】今回は切替 UI が無いので再代入は起きない。将来 UI を足すときに let へ
 // 昇格 + 永続化を配線する(その1点だけの変更で他モードへ道が通る、という seam の置き場所)。
 const sortMode: "manual" = "manual";
-// currentCalendarId(E-2 スライス③): この一覧が今どのコレクションを表示しているか。
-// 応答の vm.calendarId(server の buildTodosViewModel は必ず載せる。省略時は "tasks")で更新し、
-// ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未受領。
+// currentCalendarId(E-2 スライス③、K3(2026-07-23)で意味を拡張): 「今表示しているリスト」の
+// コレクション ID。K3 以前は「サーバーが今返している一覧のコレクション」= サーバー echo と
+// 常に一致していたが、K3 で todos カードを「初回に全 VTODO コレクション横断取得 → 切替は
+// クライアント側フィルタ」へ作り替えたため、currentCalendarId は **クライアント側の選択状態**
+// (=ユーザーがリスト切替メニューで選んだ、または横断応答から自動選択した既定リスト)になった。
+// 横断応答(vm.calendarId===null)を受け取っても currentCalendarId は書き換えない(選択を保つ)。
+// 単一コレクション応答(vm.calendarId が非 null)のときだけ、その値で currentCalendarId を
+// 確立/追随する(mutate 系は常にこの経路 — 自分が作成/操作した先のリストに追随するのは自然)。
+// ヘッダ見出しの表示と quick-add の作成先(create-todo の calendarId)に使う。null = 未選択。
 let currentCalendarId: string | null = null;
+// crossFetchDone(K3): owner 配下の全 VTODO コレクションを横断取得済みか。false の間だけ
+// switchCalendar が背景で1回 fetchLatest(cross)を行い、以降は真にネットワーク往復ゼロで
+// クライアント側フィルタだけに徹する(switchCalendar のコメント参照)。cross 応答
+// (vm.calendarId===null)を1度でも受け取れば true になる(初回 push が既に横断ならこのフラグは
+// 一度も false のまま使われない = 追加の背景 fetch は発生しない)。
+let crossFetchDone = false;
 // currentTimeZone(v2): この一覧の解釈ゾーン(vm.timeZone)。詳細シートの「時間帯」行を、閲覧者の
 // Intl ゾーンと異なるときだけ出すために保持する。null=未受領(その間は時間帯行を出さない)。
 let currentTimeZone: string | null = null;
@@ -740,16 +762,21 @@ function viewAsArgs(v: CurrentView): Record<string, unknown> {
 	return { ...v };
 }
 
-/** refresh-todos / list-todos 系を呼ぶときの arguments。currentView に加えて currentCalendarId を
- *  必ず載せる(2026-07-14 実機バグ修正)。
- *  【なぜ calendarId を必ず載せるか(重大バグの根治)】focus refetch が calendarId を渡さないと
- *  server 既定 "tasks" を取得してしまい、reading-list 等の別コレクションで開いたカードが
- *  ダブルクリック(iframe フォーカス)のたびに tasks コレクションの内容へ化ける
- *  (→ 差分レンズが全行「同期(追加)」+ 消えた行のゴーストまみれになる)実機事故があった。
- *  currentCalendarId が null(初回応答前)のときは省略して従来どおり server 既定に委ねる。 */
+/** refresh-todos / list-todos 系を呼ぶときの arguments。
+ *
+ * 【K3(2026-07-23): calendarId を送らなくなった(旧実装からの重要な変更)】
+ * 旧実装(2026-07-14 実機バグ修正)は currentCalendarId を必ず calendarId として送っていた —
+ * 当時は「calendarId 省略 = server 既定 "tasks"」だったため、省略すると reading-list 等の
+ * 別コレクションで開いたカードがフォーカスのたびに tasks コレクションの内容へ化ける実機事故が
+ * あった(差分レンズが全行「同期(追加)」+ 消えた行のゴーストまみれになる)。
+ * K3 で server 側の「calendarId 省略」の意味が「owner 配下の全 VTODO コレクション横断」に
+ * 変わったため(server.ts の listTodosInputShape/buildTodosViewModel JSDoc 参照)、この
+ * refreshArgs が calendarId を省略することはもう「別コレクションへの化け」を意味しない —
+ * むしろ横断取得そのものが K3 の目的(初回に全 VTODO コレクションを一括取得)であり、
+ * currentCalendarId を送らないことで毎回の refetch がそのまま横断キャッシュの更新になる。
+ * 表示側の絞り込みは filterTasksByCalendar(renderAll)がクライアント側で担う。 */
 function refreshArgs(): Record<string, unknown> {
 	const args = viewAsArgs(currentView);
-	if (currentCalendarId !== null) args.calendarId = currentCalendarId;
 	// 【2026-07-17 時刻付き todo の TZ グラウンディング(read 側の UTC 落ち修正)】
 	// 再取得(refetch/mutate 後の refresh-todos)には閲覧デバイスの IANA ゾーンを常時載せる。
 	// これが無いと server 側 resolveTimeZone が UTC に落ち、時刻付き DUE が UTC のまま表示されて
@@ -2843,7 +2870,11 @@ function renderAll(): void {
 	selTitleInput = null;
 	selMemoInput = null;
 	// tasks 未受領(null)でも draft(FAB で生やしたドラフト行)があれば一覧を描く。以降は baseTasks を使う。
-	const baseTasks = tasks ?? [];
+	// K3(2026-07-23): tasks は「横断キャッシュ」(複数コレクション混在)なので、ここで
+	// filterTasksByCalendar により「今表示中のリスト」(currentCalendarId)だけへ絞り込む
+	// (仕様「セクション計算に calendarId フィルタを一段挟む」)。以降のセクション計算・
+	// 件数表示はすべてこの絞り込み後の baseTasks を土台にする。
+	const baseTasks = filterTasksByCalendar(tasks ?? [], currentCalendarId);
 	const todayKey = localDateKey(new Date());
 	// 【C0-c: 削除ゴースト(ghostItems)の合流を廃止(2026-07-17 ユーザー裁定)】旧実装はここで
 	// ghosts(removed 由来)を擬似 TodoItem に変換し通常セクションへ合流させ、renderRow が破線ボックス
@@ -3281,10 +3312,13 @@ function markUpdated(): void {
 /** 応答の structuredContent の形(冒頭コメントの契約を型に写経したもの)。 */
 interface TodosStructuredContent {
 	tasks?: TodoItem[];
-	// calendarId(E-2 スライス③): この一覧の対象コレクション ID。server は必ず載せる(省略時 "tasks")。
+	// calendarId(E-2 スライス③、K3(2026-07-23)で string|null に変更): この一覧の対象コレクション ID。
+	// server は必ず載せる — 単一コレクション由来(明示 calendarId 指定 or mutate 系)ならその ID、
+	// owner 横断(calendarId 省略の list-todos/refresh-todos)なら **null**(agenda echo pin=56cbb73 と
+	// 同じ「架空の単一 ID を名乗らない」規律。server.ts の buildTodosViewModel コメント参照)。
 	// ヘッダ見出しと quick-add の作成先に使う。合成 vm(mutation の非既定ビュー経路)では refresh 側の
 	// vm から引き継がれる(applyStructuredContent が currentCalendarId を更新する)。
-	calendarId?: string;
+	calendarId?: string | null;
 	// timeZone(コレクションの解釈ゾーン)。v2 詳細シートの「時間帯」行を「閲覧者ゾーンと異なるときだけ」
 	// 出すために使う(list-todos/create-todo 等の vm が載せる)。
 	timeZone?: string;
@@ -3332,6 +3366,10 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
 	return out;
 }
 
+// K3(2026-07-23): mergeTasksByCalendar/filterTasksByCalendar は todos-calendar-filter.ts へ抽出した
+// (toggle-coalesce.ts と同じ「純粋な合成/絞り込みロジックだけを bun test から直接検証できる形で
+// 切り出す」規律。DOM・module state への適用はこのファイル側に残す)。冒頭 import 参照。
+
 /**
  * 応答を状態に反映する唯一の関数。ontoolresult / fetchLatest / mutation 成功の
  * 3経路すべてがここを通ることで、「tasks と becoming メタは常に同じ応答のペア」という
@@ -3366,25 +3404,34 @@ function applyStructuredContent(sc: unknown): void {
 	// reduced-motion は既存の抑制(spinner/skeleton の @media)にそのまま乗る(新規の動きが無い)。
 	// 差分レンズの prev/next はクリーンな確定値だけを使う(confirmedTasks)。表示用 tasks は
 	// 楽観の重ね物込みなので prev に使うと仮行が removed に化ける等の誤検出になる(2026-07-14)。
-	// calendarId が変わった描画では差分レンズを回さない(2026-07-14 実機バグ修正の保険)。
-	// reconcile が失敗して別コレクションの vm を degrade 適用した場合、prev(前コレクションの tasks)と
-	// next(別コレクションの tasks)を突き合わせると「全行が追加+全行が削除」の全差分ノイズになる。
-	// コレクションが違う描画は「差分」ではなく「別物への切り替え」なので、静かに置き換える(sync 差分ゼロ)。
-	// currentCalendarId はこの時点でまだ前回値(更新は関数末尾)なので旧コレクションとの比較になる。
-	const incomingCalendarId = structuredContent?.calendarId;
-	const calendarChanged =
-		currentCalendarId !== null && incomingCalendarId !== undefined && incomingCalendarId !== currentCalendarId;
+	// 【K3(2026-07-23) calendarId 変更判定を撤去し、mergeTasksByCalendar による合成に一本化した】
+	// 旧実装は「calendarId が変わった描画では prev/next が別コレクションで比較不能」という前提で
+	// 差分レンズを丸ごとスキップし、位置記憶もリセットしていた(当時は「省略=tasks のみ」で
+	// 単一コレクション同士の切り替えしか無かったため、prev/next が別物になるのは事実だった)。
+	// K3 で tasks は「横断キャッシュ(複数コレクション混在)」に意味が変わり、単一コレクション応答
+	// (mutate 系・明示 calendarId 指定)は mergeTasksByCalendar が「そのコレクション由来の行だけ
+	// 差し替え、他コレクションの行は保持」する合成後の値を次値にするため、prev/next はもう
+	// 「別物」ではなく「同じ横断キャッシュの一部更新」になる。よって比較不能という前提そのものが
+	// 崩れ、diff スキップ・位置記憶リセットの根拠が消えた(位置記憶のリセットは switchCalendar が
+	// クライアント側で明示的に行う — 表示中のリストが変わるのはユーザーの切替操作そのものであって
+	// サーバー応答の到着ではないため)。
+	// incomingCalendarId: undefined(旧応答/フィクスチャで calendarId フィールド自体が無い)も
+	// null(owner 横断)と同じ「丸ごと置き換え」として扱う(mergeTasksByCalendar の契約)。
+	const incomingCalendarId = structuredContent?.calendarId ?? null;
+	const mergedNextTasks = mergeTasksByCalendar(confirmedTasks, incomingCalendarId, nextTasks);
 	// view 変更(実質別ビュー)判定。mutate 応答は view を持たない(undefined)ので誤検出しないよう、
 	// sc.view が明示されていて currentView と中身が違うときだけ「別ビュー」とみなす(2026-07-14 並び順安定性)。
 	const viewChanged =
 		structuredContent?.view !== undefined && JSON.stringify(structuredContent.view) !== JSON.stringify(currentView);
-	// 実質別ビュー(コレクション切り替え or ビュー切り替え)への遷移では位置記憶をリセットし、
-	// 次の renderAll をクリーン描画にする(要件4: クリーン再セクショニングはリセット時 or fresh render のみ)。
-	if (calendarChanged || viewChanged) resetPositionMemory();
+	// 実質別ビューへの遷移では位置記憶をリセットし、次の renderAll をクリーン描画にする
+	// (要件4: クリーン再セクショニングはリセット時 or fresh render のみ)。
+	if (viewChanged) resetPositionMemory();
 	let syncDiff: SyncDiff = { added: [], completed: [], reopened: [], edited: [], removed: [] };
-	// viewChanged も差分レンズをスキップする(default→includeCompleted で prev/next の件数が
-	// 大きく変わり全件が「追加/削除」に誤検出されるのを防ぐ。calendarChanged と同じ理由)。
-	if (confirmedTasks !== null && !calendarChanged && !viewChanged) {
+	// viewChanged は差分レンズをスキップする(default→includeCompleted で prev/next の件数が
+	// 大きく変わり全件が「追加/削除」に誤検出されるのを防ぐ)。prev/next はどちらも
+	// mergeTasksByCalendar 後の「横断キャッシュ全体」同士の比較なので、他コレクションの行は
+	// prev/next 両方に存在し続け偽の差分にならない(上のコメント参照)。
+	if (confirmedTasks !== null && !viewChanged) {
 		const explained = new Set<string>();
 		for (const a of serverAffected) explained.add(a.id);
 		for (const r of serverRemoved) explained.add(r.id);
@@ -3392,10 +3439,13 @@ function applyStructuredContent(sc: unknown): void {
 		for (const id of pendingIds.keys()) explained.add(id);
 		// 仮行(optimistic:)は confirmedTasks に元々入らないので prev/next のどちらにも現れず、
 		// 差分計算に混ざらない(仕様3「仮行は差分計算から除外」を state 分離で構造的に満たす)。
-		syncDiff = computeSyncDiff(confirmedTasks, nextTasks, explained);
+		syncDiff = computeSyncDiff(confirmedTasks, mergedNextTasks, explained);
 	}
 
-	confirmedTasks = nextTasks;
+	confirmedTasks = mergedNextTasks;
+	// K3: 横断応答(calendarId===null)を受け取ったら crossFetchDone を確定する。switchCalendar の
+	// 「初回だけ背景 fetch」判定がこのフラグを見る(crossFetchDone のコメント参照)。
+	if (incomingCalendarId === null) crossFetchDone = true;
 	// C0-a 撤去済み(2026-07-23): 「未完了で返ってきたら退場マークを解除する」処理はここにあったが、
 	// 退場機構そのものの撤去(上部コメント参照)に伴い不要になった。
 	// サーバー由来(ユーザー起因)+ システム由来(sync)の affected を統合。sync 側は sync:true を
@@ -3434,15 +3484,28 @@ function applyStructuredContent(sc: unknown): void {
 	// {} へ戻っても既に既定=無害。非既定ビューでの mutation は refresh-todos で view を保った
 	// 合成 vm を渡してくるため、ここで currentView が誤って既定に落ちることはない。
 	currentView = structuredContent?.view ?? {};
-	// currentCalendarId を応答の calendarId で更新し、ヘッダ見出しへ反映する(E-2 スライス③)。
-	// server は必ず calendarId を載せるが、旧サーバー/欠落応答に備え、値が来たときだけ更新する
-	// (未受領のうちはプレースホルダ「リマインダー」のまま = 後方互換 degrade)。
-	if (structuredContent?.calendarId !== undefined) {
-		currentCalendarId = structuredContent.calendarId;
-		// ヘッダ見出しは displayName を優先(calendarsCache があれば)。未取得のうちは raw id
-		// フォールバック(従来挙動)。メニューを一度でも開けばキャッシュが埋まり displayName に揃う
-		// (titleForCalendarId のコメント参照)。 —— 2026-07-22 リスト切替ドロップダウン導入に伴う変更。
+	// 【K3(2026-07-23): currentCalendarId 更新をクライアント側選択優先に変更】
+	// 単一コレクション応答(incomingCalendarId 非 null。明示 calendarId 指定 or mutate 系)は
+	// 従来どおりその値へ追随する(自分が作成/操作した先のリストへ自然に追随)。
+	// owner 横断応答(incomingCalendarId===null)では currentCalendarId を上書きしない
+	// (agenda echo pin=56cbb73 と同じ「横断結果を単一選択に固定 echo しない」規律 —
+	// 上書きすると、ユーザーが切替メニューで選んだ表示中のリストが背景 refetch のたびに
+	// null 起因の何かへ巻き戻ってしまう)。ただし「まだ何も選ばれていない」(currentCalendarId
+	// が null = 初回応答前)ときだけ、横断結果から既定リストを自動選択する — 空の一覧を
+	// 見せないための最小限の初期化。
+	if (incomingCalendarId !== null) {
+		currentCalendarId = incomingCalendarId;
 		appTitleEl.textContent = titleForCalendarId(currentCalendarId);
+	} else if (currentCalendarId === null) {
+		// 既定選択: "tasks" があればそれを、無ければ横断結果に含まれる最初の calendarId を選ぶ
+		// (mergedNextTasks は既に X-APPLE-SORT-ORDER 昇順で並んでいる list-todos の応答順を保つ)。
+		// 該当が無ければ(VTODO コレクション自体が無い等)null のまま = 未選択・空表示に degrade する。
+		const defaultId =
+			mergedNextTasks.find((t) => t.calendarId === "tasks")?.calendarId ?? mergedNextTasks[0]?.calendarId ?? null;
+		if (defaultId !== null) {
+			currentCalendarId = defaultId;
+			appTitleEl.textContent = titleForCalendarId(currentCalendarId);
+		}
 	}
 	// timeZone を保持(詳細シートの「時間帯」行の出し分けに使う)。値が来たときだけ更新する。
 	if (structuredContent?.timeZone !== undefined) {
@@ -3606,12 +3669,14 @@ function needsViewReconcile(view: CurrentView, sc: TodosStructuredContent): bool
 	// (a) 非既定ビューで view echo の無い vm(mutate 応答 or 無関係な他ツールの push)→ そのまま
 	//     適用すると currentView が黙って {} へ縮む(完了済みセクションが消える)ので refetch に差し替える。
 	if (!isDefaultView(view) && sc.view === undefined) return true;
-	// (b) calendarId 不一致(2026-07-14 実機バグ修正の最後の砦)。ホストが別コレクションの結果を
-	//     同一 App へ push しても、届いた vm の calendarId が現在のカードのコレクションと違えば直接
-	//     適用しない(カードが tasks コレクションの内容へ化ける事故の防御)。refetch(currentCalendarId
-	//     付き)で自分のコレクションを取り直す。currentCalendarId が null(初回応答前)は自分の
-	//     コレクションが未確定なので判定しない(初回 vm をそのまま受け入れて currentCalendarId を確立する)。
-	if (currentCalendarId !== null && sc.calendarId !== undefined && sc.calendarId !== currentCalendarId) return true;
+	// 【K3(2026-07-23) で (b) calendarId 不一致ガードを撤去した】
+	// 旧実装はホストが別コレクションの結果を同一 App へ push したとき、届いた vm の calendarId が
+	// 現在のカードのコレクションと違えば直接適用せず refetch していた(「カードが別コレクションの
+	// 内容へ化ける」事故の防御)。K3 で applyStructuredContent が mergeTasksByCalendar 経由の
+	// 合成に変わったため、この防御はもう構造的に不要になった —— 別コレクションの vm が届いても
+	// 「そのコレクション由来の行だけを横断キャッシュへ差し替える」だけで、renderAll は
+	// currentCalendarId（クライアント側の選択）で常にフィルタするので、表示中のリストが
+	// 勝手に化けることはない(mergeTasksByCalendar/filterTasksByCalendar のコメント参照)。
 	return false;
 }
 
@@ -3640,9 +3705,15 @@ async function reconcileViewAndCompose(sc: TodosStructuredContent): Promise<Todo
 			throw new Error(text);
 		}
 		const rsc = refreshed.structuredContent as TodosStructuredContent | undefined;
+		// 【K3(2026-07-23) calendarId は「非 undefined なら rsc の値をそのまま使う」に変更】
+		// 旧実装は `rsc?.calendarId ?? sc.calendarId` で null を「値なし」として sc.calendarId へ
+		// フォールバックしていたが、K3 で null は「owner 横断」という正当な値になったため
+		// (?? は null も左辺不採用にしてしまう)、単純な ?? では横断応答の null が握りつぶされて
+		// 元の(単一コレクションの)sc.calendarId に化けてしまう。undefined のときだけ
+		// フォールバックする明示分岐にする。
 		return {
 			tasks: rsc?.tasks ?? [],
-			calendarId: rsc?.calendarId ?? sc.calendarId,
+			calendarId: rsc?.calendarId !== undefined ? rsc.calendarId : sc.calendarId,
 			view: rsc?.view,
 			affected: sc.affected,
 			removed: sc.removed,
@@ -4568,9 +4639,25 @@ function clearMenuHeightGuard(): void {
 	document.body.style.minHeight = "";
 }
 
-/** 選んだリストへ表示を切り替える。currentCalendarId を更新し、ビューは既定に戻して(別リストの
- *  「未完了のみ」を素直に開く)、refresh-todos(refreshArgs が currentCalendarId/currentView を載せる)で
- *  取り直す。失敗はバナーに degrade(現在の一覧は保持)。 */
+/**
+ * 選んだリストへ表示を切り替える。
+ *
+ * 【K3(2026-07-23): ネットワーク往復ゼロのクライアント側フィルタに変えた】
+ * 旧実装は切替のたびに fetchLatest(refresh-todos に calendarId:id を付けて再取得)していた —
+ * 「初回に全 VTODO コレクション横断取得 → 切替はクライアント側フィルタ」という K3 の目的そのものが
+ * この往復を無くすことなので、切替自体は currentCalendarId の付け替え + renderAll(が
+ * filterTasksByCalendar で絞り込む)だけにする。
+ *
+ * 【crossFetchDone による「初回だけ背景 fetch」の例外】
+ * tasks(横断キャッシュ)が本当に owner 配下の全 VTODO を含んでいる保証は、初回の ontoolresult が
+ * calendarId 省略(=横断)で呼ばれたときにしか無い。モデルが最初の list-todos を calendarId 明示で
+ * 呼んでいた場合、キャッシュには他リストのデータが無く、素朴にローカルフィルタするだけでは
+ * 空表示になってしまう。crossFetchDone フラグが false の間だけ、切替の直後に1回だけ背景で
+ * fetchLatest(refreshArgs はもう calendarId を送らない=横断取得)を行いキャッシュを補完する
+ * (crossFetchDone 宣言のコメント参照)。2回目以降の切替は真にネットワーク往復ゼロになる。
+ * 失敗はバナーに degrade(現在の一覧は保持。ローカルフィルタでの初期表示は既に済んでいるので
+ * ユーザー体験としては「背景更新に失敗しただけ」に留まる)。
+ */
 async function switchCalendar(id: string): Promise<void> {
 	// 進行中の選択編集/スワイプは切替前に畳む(別リストへ移ると対象 id が消えて宙に浮くため)。
 	commitSelection();
@@ -4581,16 +4668,27 @@ async function switchCalendar(id: string): Promise<void> {
 	// 別リストへ切り替えたら「そのリストの既定ビュー(未完了のみ)」から見せる(前リストの
 	// includeCompleted:true 等を引き継がない — リストごとに見たいビューは独立、という素直な既定)。
 	currentView = {};
-	// ヘッダ見出しを即・displayName へ反映(応答を待たずに手応えを出す。applyStructuredContent が
-	// 後で raw id を書くが、titleForCalendarId でキャッシュ済み displayName に揃うので跳ねない)。
+	// クライアント側フィルタでの切替は fresh render 相当(要件4: クリーン再セクショニングは
+	// リセット時 or fresh render のみ)なので、位置記憶をここで明示的にリセットする(旧実装は
+	// applyStructuredContent の calendarChanged 判定に委ねていたが、K3 でその判定を撤去したため
+	// ここが唯一のリセット契機になる — mergeTasksByCalendar のコメント参照)。
+	resetPositionMemory();
+	// ヘッダ見出しを即・displayName へ反映(フィルタ描画は同期なので応答を待つ必要が無い)。
 	appTitleEl.textContent = titleForCalendarId(id);
 	clearBanner();
+	renderAll();
+	if (crossFetchDone) return; // 通常経路: ここでネットワーク往復ゼロで完了する。
 	try {
 		await fetchLatest();
+		// crossFetchDone は成功時にだけ立てる(失敗時に立てると、下のバナー再試行が「もう横断済み」
+		// と誤認してローカル再描画だけで終わり、背景 fetch がリトライされなくなるため)。
+		// fetchLatest 自身が cross 応答を受け取れば applyStructuredContent 側でも立つが、
+		// ここで明示しておくのが素直(冗長でも安全)。
+		crossFetchDone = true;
 		renderAll();
 	} catch (e) {
 		showBanner(
-			`リストの切り替えに失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+			`最新のリストの取得に失敗しました(表示は継続します): ${e instanceof Error ? e.message : String(e)}`,
 			() => void switchCalendar(id),
 		);
 	}

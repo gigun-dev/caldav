@@ -19,7 +19,7 @@
 // 前提で VTODO の「単発 due」フィルタには過剰なため、DUE の絞り込みも引き続きメモリで行う。
 // =============================================================================
 
-import type { CollectionId, PrincipalRef } from "../../domain/caldav";
+import type { CalendarObjectResource, CollectionId, PrincipalRef } from "../../domain/caldav";
 import { collectionId as mkCollectionId } from "../../domain/caldav";
 import { zoneResolverFor } from "../../domain/ical/recurrence";
 import { calDateStartEpochMillis } from "../../domain/ical/timezone";
@@ -37,7 +37,21 @@ export interface ListTodosInput {
 	dueBefore?: string;
 	/** DUE がこの ISO8601 時刻より後(以降)の TODO だけに絞る。dueBefore と同じ理由で due 無しは除外。 */
 	dueAfter?: string;
-	/** 対象コレクション ID。省略時は "tasks"。 */
+	/**
+	 * 対象コレクション ID。
+	 *
+	 * 【K3(2026-07-23)で意味を変えた点】旧実装は省略時に既定コレクション "tasks" だけを見ていた
+	 * (todos カードは「1カード=1コレクション」前提で、切替のたびに calendarId 指定で再往復して
+	 * いた)。K3 は「初回に全 VTODO コレクションを横断取得 → 切替はクライアント側フィルタ」へ
+	 * 変えるため、**省略時(undefined)は owner 配下の全 VTODO コレクション横断**に意味を変える
+	 * (findByOwnerTimeRange の「undefined=全横断」契約と合わせる)。明示文字列 "all" も同じ扱い
+	 * (親仕様の指示 — MCP ツール入力で「省略」と「明示的に全部」を区別したい呼び出し元のため)。
+	 * 【後方互換への影響】単一コレクションを指定する呼び出し(calendarId: "other-tasks" 等)は
+	 * 完全に不変。省略呼び出しは「"tasks" だけ」→「全コレクション横断」に振る舞いが変わるが、
+	 * VTODO コレクションが "tasks" 1つしか無い環境(既存テストの大半・多くの実運用アカウント)では
+	 * 観測できる差が無い(結果集合が同じになる)。複数 VTODO コレクションを持つ環境でだけ挙動が
+	 * 変わる(= このタスクの目的そのもの)。
+	 */
 	calendarId?: string;
 	/** DATE-TIME/DATE の due を表示・比較する IANA タイムゾーン。省略時は UTC。 */
 	timeZone?: string;
@@ -139,11 +153,24 @@ export class ListTodos {
 
 	async execute(input: ListTodosInput): Promise<ListTodosOutput> {
 		const timeZone = input.timeZone ?? "UTC";
-		const collectionId: CollectionId = mkCollectionId(input.calendarId ?? "tasks");
+		// K3: calendarId 省略 または明示 "all" は owner 横断(ListTodosInput.calendarId の JSDoc 参照)。
+		// それ以外(具体的なコレクション ID 文字列)は従来どおり単一コレクション。
+		const acrossOwner = input.calendarId === undefined || input.calendarId === "all";
 
 		// 2026-07-14: component_kind="VTODO" の絞り込みを SQL 側に押し出した(ファイル冒頭コメント)。
 		// findAllInCollection → メモリで componentKind==="VTODO" を判定、から置き換え。
-		const resources = await this.resourceRepo.findVTodosInCollection(input.owner, collectionId);
+		// K3: 横断時は findVTodosByOwner(1クエリ・全コレクション)、単一時は従来の
+		// findVTodosInCollection を使う。どちらも「resource, その所属 collectionId」のペアへ正規化
+		// してから同じループで Task 化する(D1 SELECT は常に1回のまま — 仕様「D1 クエリは1回」を守る)。
+		let resources: { resource: CalendarObjectResource; collectionId: CollectionId }[];
+		if (acrossOwner) {
+			const matches = await this.resourceRepo.findVTodosByOwner(input.owner);
+			resources = matches.map((m) => ({ resource: m.resource, collectionId: m.collectionId }));
+		} else {
+			const collectionId: CollectionId = mkCollectionId(input.calendarId as string);
+			const found = await this.resourceRepo.findVTodosInCollection(input.owner, collectionId);
+			resources = found.map((resource) => ({ resource, collectionId }));
+		}
 
 		// 【2026-07-23 リファクタ】STATUS(完了)・DUE 窓のフィルタはもうこのループの中で行わない —
 		// ここでは resource → Task の変換だけを行い(全件・無条件)、フィルタは下の
@@ -152,7 +179,7 @@ export class ListTodos {
 		// (D1 の1 SELECT 分)実害は無い。見返りとして「STATUS/DUE 窓の判定ロジックが1箇所だけに
 		// 存在する」という不変条件が手に入る(buildTodosViewModel が同じ関数を呼べる・ズレない)。
 		const allTasks: Task[] = [];
-		for (const resource of resources) {
+		for (const { resource, collectionId } of resources) {
 			// master(RECURRENCE-ID 無し)を1件として扱う。反復展開はしない方針(ファイル冒頭)。
 			// todos() は同一 UID の master + オーバーライドを返しうるが、VTODO はこの実装では
 			// オーバーライドを想定していない(put-calendar-object.ts の VTODO bounds 計算コメント
@@ -160,7 +187,12 @@ export class ListTodos {
 			const vtodo = resource.payload.todos()[0];
 			if (vtodo === undefined) continue;
 			const zoneOf = zoneResolverFor(resource.payload);
-			allTasks.push(taskFromVTodo(vtodo, zoneOf, timeZone));
+			const task = taskFromVTodo(vtodo, zoneOf, timeZone);
+			// K3: どのコレクション由来かを additive に添える(単一コレクション指定時も含め常にセット。
+			// 「サーバーは常に埋める」規律は Task.calendarId の JSDoc 参照。UI が横断/単一どちらの
+			// 応答でも同じフィールドでコレクションを判別できるようにするため、単一指定時にも省かない)。
+			task.calendarId = collectionId;
+			allTasks.push(task);
 		}
 
 		const tasks = filterTasksByWindow(allTasks, input);
