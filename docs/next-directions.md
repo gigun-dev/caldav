@@ -191,6 +191,17 @@
   > 根因(ホスト判断ではない)→ 配線して解消・**swift への mutate カード申し送りは不要に**。
   > 論点(log 2026-07-23 続き6): restore 後は復元先リストへ遷移(意図的)/ゴミ箱ページは
   > render-gate 対象外/byCalendar は所属不明行を数えず内訳合計 ≤ total。次は #44。
+  > **2026-07-23 更新: ~~#44~~ ✅ 完了(deploy c06d8d5・Inspector 受け入れ FAIL ゼロ)。**
+  > 詳細ファースト(閲覧ページ→明示「編集」)/URL は App.openLink+二段 degrade コピー/
+  > ⊕ テキスト併記/新規リスト fullscreen 化/**キーボード根治 = 450ms 遅延 focus 撤去 →
+  > タップジェスチャ内の同期 focus → requestDisplayMode の順へ**(render-gate が focus 保持)。
+  > UNVERIFIED はホスト制約のみ(Inspector の clipboard 遮断・hostDisplayMode 未送出・fullscreen
+  > 不許可)。**残実機確認(ユーザー)**: claude.ai iOS/web でのキーボード出現・コピー・agenda ラベル。
+  > **2026-07-23 更新: #45 の geocoding 裁定(経緯は log 続き7)**: known-locations 先引き →
+  > **Google Places Text Search 単段**(場所入力の実態は POI 主体・GSI は POI 不可で住所形前処理の
+  > 将来候補・Apple はポートの口のみ)。ToS は「サーバーはメタデータ保存のみ・表示はクライアント
+  > 解釈」の立場+6.3.2 のユーザー別直接機能で整理。鍵受領後に GSI/Google/Apple の POI 精度ベンチ →
+  > 実装。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

@@ -1075,3 +1075,26 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
   ゴミ箱ページは render-gate の抑止対象外(入力フォーカスが無いため)— 入力 UI を足すなら要再考。
   byCalendar は所属不明完了行を数えないため内訳合計 ≤ total になりうる(旧応答互換の degrade)。
 - 次: #44(イベント詳細ファースト・会議 URL 導線・⊕ ラベル・新規リスト fullscreen+同期 focus)。
+
+## 2026-07-23(続き7・#44 完了: 詳細ファースト+URL導線+⊕ラベル+同期focus)
+
+- #44 を artisan で実装・deploy(c06d8d5)。①イベント行タップ= read-only 閲覧ページ(編集は明示
+  ボタン・buildDetailPage 温存・削除も閲覧ページ下部へ)②URL 行は App.openLink(ui/open-link、
+  ext-apps の型定義で実在確認)で開く+ clipboard→execCommand 二段 degrade コピー ③⊕ を
+  「予定を追加/タスクを追加」のテキスト併記 pill へ ④新規リスト作成をタスク追加と同じ
+  fullscreen 昇格フローへ ⑤キーボード不発の根治 — 450ms 遅延 focus(ジェスチャ外)を撤去し
+  「同期描画→同期 focus→requestDisplayMode」へ並べ替え(昇格後の再描画は render-gate が抑止)。
+  純関数 detail-view.ts(URL行構築/日時整形/コピー戦略)+テスト15件。
+- Inspector 受け入れ: FAIL ゼロ。PASS: 閲覧ページ描画と編集遷移・URL開く・ラベル(todos 実UI/
+  agenda はソース確認)・新規リスト名 input への auto-focus・削除の D1 soft delete 裏取り・
+  todos 描画回帰(byCalendar 116件表示含む)。UNVERIFIED(ホスト制約): コピー確認(Inspector
+  iframe が Clipboard API を permissions policy で遮断)・agenda ラベルの実UI(Inspector は
+  hostDisplayMode を送らず action-row が fold)・fullscreen 昇格。iOS 実機キーボードは対象外。
+- 残実機確認(ユーザー): claude.ai iOS/web でタスク・予定・新規リスト追加時にキーボードが
+  出るか(⑤の本丸)・コピー動作・agenda の「予定を追加」表示。
+- geocoding 設計は調査+実測を経て裁定が3転: Google 30日ルールは 6.3.2(ユーザー別直接機能)で
+  回避可とユーザー指摘 → 他社地図条項も「サーバーはメタデータ保存のみ・表示はクライアント解釈」
+  の立場で障害にしない → 場所入力の実態は POI 主体という指摘で最終形 = known-locations 先引き →
+  Google Places Text Search 単段(GSI は住所形前処理の将来候補・Apple はポートの口のみ)。
+  実測: Nominatim は道玄坂2-1-1 ゼロ件・GSI は番レベル解決。次: 鍵受領後に GSI/Google/Apple の
+  POI クエリ精度ベンチ → #45 実装。
