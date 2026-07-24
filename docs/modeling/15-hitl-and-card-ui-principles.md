@@ -223,6 +223,17 @@ DOM を直接またがせようとするのが誤り)。
 
 ### C-3 作成の第一打鍵は inline で・VTODO/VEVENT 対称(現時点の UI 既定)
 
+> **2026-07-24 更新(積層注記・§C 内の再裁定):** 本節のうち **「VTODO/VEVENT 対称」** と
+> **「VEVENT も inline ドラフト行で作成開始」** は撤回する(VEVENT の inline ドラフト化は
+> 未実装のまま着手しない)。改訂後の既定は **C-7(キーボード編集の位置保証原則)** を正とする。
+> ただし C-1/C-2 の恒久前提、および **「VTODO の add は inline ドラフト行」** の部分は維持
+> (実機で「inline keyboard うまくいってる」と確認済み)。撤回理由: Anthropic design-guidelines /
+> OpenAI apps-sdk ui-guidelines の nested-scrolling 禁止 + iOS の VirtualKeyboard API・viewport
+> `interactive-widget` の WebKit 未実装により、**入力欄の画面内位置をカードが制御できない
+> inline keyboard 編集は一般解が存在しない**と確定したため(調査: 2026-07-24、一次資料 verbatim)。
+> VTODO/VEVENT の非対称は欠陥ではなく、iOS ネイティブ(リマインダー=inline add / カレンダー=
+> 詳細 add)と同型の設計判断である。
+
 作成フローの最初のテキスト入力(title)は、**遷移ゼロ・タップジェスチャ内同期 focus の
 inline ドラフト行**で開始する。VTODO と VEVENT で見た目の手順は非対称に見えても
 (後述のとおり VEVENT は時刻入力を挟む)、「最初の入力は inline・遷移なし」という
@@ -286,6 +297,51 @@ C-1(遷移はプログラム的 focus を運べない)と apps.mdx の仕様上�
   document が再生成される・遷移後の遅延 auto-focus が focus-probe 計測で無効・
   gesture-synchronous focus は mode を問わず成立することの確定)。
 - 本文書 §B(可搬性・ホスト差に UX の成立を依存させない、という同じ筋の原則)。
+
+### C-7 キーボード編集の位置保証原則(2026-07-24 Fable 裁定)
+
+> 位置づけ: C-3 の「対称・第一打鍵 inline」を、業界ベスプラ調査(Anthropic/OpenAI 公式 +
+> iOS プラットフォーム欠落の裏取り)を踏まえて一段精緻化した**現時点の UI 既定**。C-1/C-2 の
+> 恒久前提を一切緩めない(fullscreen 詳細でも到着時 auto-focus はしない)。
+
+**原則(線引きの核):** キーボードを要する編集は、**入力欄の画面内位置をカードが保証できる
+場合にのみ inline を許す**。保証できるのは「カード先頭(safe top)に自分で差し込むドラフト行」
+だけ。それ以外のキーボード編集はすべて fullscreen 詳細へ倒す。キーボードを要しない
+direct manipulation(完了トグル・swipe 削除・コレクション選択)は位置を問わず inline 可。
+
+なぜ「位置保証」が線引きになるか: iOS には VirtualKeyboard API も viewport の
+`interactive-widget` も **WebKit に無い**(2026-07-24 調査確定)。つまり「キーボード出現時に
+入力欄を可視域へ留める」クリーンな標準 API が存在せず、任意位置の入力欄を inline で滑らかに
+編集する一般解は原理的に作れない。唯一の例外が「カードが自分で先頭に差し込むドラフト行」で、
+これは位置が固定なので `scrollIntoView` 型のワークアラウンド(§B が禁じた対症療法)に頼らずに
+可視性を保証できる。
+
+**帰結:**
+
+- **帰結1(VTODO add = inline ドラフト行)**: 先頭固定・カードは auto-fit・**内部スクロールなし**。
+  保存経路はキーボードアクセサリ **✓(= 完全な保存 Move を実行)** と Enter のみに一本化する。
+  inline 側に右上「保存」ボタンは**置かない**(OpenAI "No duplicative inputs" / Anthropic
+  "Max actions: 2"、および「内部スクロールで保存ボタンが隠れる地雷」をボタンごと消して解消)。
+- **帰結2(VTODO 既存行の編集 = fullscreen 詳細)**: 既存行はリスト内の任意位置にあり keyboard
+  出現時の可視性をカードが制御できない。行タップで fullscreen 詳細へ昇格 → C-4 の tap-to-edit
+  (gesture 同期 focus・到着時 auto-focus なし=C-1 遵守)。
+- **帰結3(VEVENT add = fullscreen 詳細のまま)**: agenda-entry.ts は変更しない。C-3 が描いた
+  「VEVENT も inline ドラフト」は未実装のまま撤回。iOS カレンダーの型と一致。
+- **帰結4(direct manipulation は inline 維持)**: 完了トグル・swipe 削除・コレクション選択は
+  キーボードを出さない=位置問題が生じない。位置を問わず inline のまま。
+
+**ボツ案(Why not):**
+
+- **全面 fullscreen 化**(VTODO add も詳細遷移へ倒す・52c5f23 を revert): 実機確認済みの
+  「inline keyboard うまくいってる」成功事実と iOS リマインダー型の体験を捨てる。却下。
+- **全面 inline 化**(既存行 tap-edit も inline keyboard): 任意位置の入力欄はプラットフォーム
+  欠落により原理的に滑らかにできず、OpenAI/Anthropic の実装例にも先行者がいない。却下。
+- **✓ を「キーボードを閉じるだけ」に留める**(現状): 中途半端な Move は「保存されたのか?」の
+  錯覚を生む。✓ は完全な保存 Move に昇格させる。却下(=是正対象)。
+
+**revert 不要:** 直近コミット 52c5f23(VTODO inline-add)は本裁定の帰結1と一致しており revert
+しない。手を入れるのは (a) inline カードの内部スクロール撤去(§B-5 の既存残作業と同一)、
+(b) ✓ の保存 Move 化、(c) 既存行 tap-edit の fullscreen 化、の3点。
 
 ### 可逆性の注記
 

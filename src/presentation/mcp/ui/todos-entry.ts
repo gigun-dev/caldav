@@ -540,12 +540,15 @@ let selectedId: string | null = null;
 // TodosViewModel.highlightId で伝えてきた「今回 surface すべき行」の id。applyStructuredContent が
 // 受信のたびに更新し(undefined なら null へ戻す=前回の highlight を引きずらない)、
 // applyInlineFold(inline の5件クランプ)が「この id は強制的に可視セットへ含める」判定に、
-// renderAll 末尾が「一度だけ scrollIntoView する」判定に、それぞれこの値を読む。
+// renderAll 末尾が「(fullscreen 限定で)一度だけ scrollIntoView する」判定に、それぞれこの値を読む。
+// 【2026-07-24 §C-7 (a)】scrollIntoView は fullscreen のみに縮退した。inline では applyInlineFold の
+// 強制可視化だけで surface を達成し、プログラム的スクロールに依存しない(modeling/15 §B-1・B-5。
+// 詳細は renderAll 末尾の scrollIntoView 節コメント)。
 // 【なぜ「一度だけ」を保証できるか(時間駆動効果を使わない設計)】scrollIntoView 実行後に
 // highlightScrolledFor へ「もう流した id」を記録し、以後同じ id では再実行しない(=タイマーで
 // 消すのではなく「やったかどうか」という状態で1回性を保証する。CLAUDE.md の「時間駆動の視覚
-// イベントを型から排する」ドクトリンに沿う決定論的な一発動作 — ⊕ ドラフト行の scrollIntoView
-// (5273 行付近)と同じ語彙)。次に別の highlightId(別の新規作成)が届けば再び1回だけ実行される。
+// イベントを型から排する」ドクトリンに沿う決定論的な一発動作)。次に別の highlightId(別の新規作成)が
+// 届けば再び1回だけ実行される。
 let pendingHighlightId: string | null = null;
 // highlightScrolledFor: pendingHighlightId のうち、既に scrollIntoView 済みの id(直近1件のみ
 // 記録すれば足りる — 同一 id を連続 render しても再スクロールしないための1回性ガード)。
@@ -3733,9 +3736,25 @@ function renderAll(): void {
 	// 【一度だけの保証(時間駆動なし)】pendingHighlightId !== highlightScrolledFor の間だけ実行し、
 	// 実行後に highlightScrolledFor へ記録する。同じ highlightId で renderAll が何度呼ばれても
 	// (例: 選択/編集などの無関係な再描画)2回目以降は何もしない — setTimeout でハイライトを
-	// 「消す」のではなく、「もうやった」という状態で1回性を保証する決定論的動作(⊕ ドラフト行の
-	// 一発 scrollIntoView と同じ語彙。CLAUDE.md の時間駆動効果排除ドクトリン参照)。
-	if (pendingHighlightId !== null && pendingHighlightId !== highlightScrolledFor) {
+	// 「消す」のではなく、「もうやった」という状態で1回性を保証する決定論的動作(CLAUDE.md の
+	// 時間駆動効果排除ドクトリン参照)。
+	//
+	// 【2026-07-24 §C-7 (a): inline では scrollIntoView しない(fullscreen 限定へ縮退)】
+	// modeling/15 §B-1「inline カード内部でのスクロールは禁止」「プログラム的スクロール(scrollIntoView)を
+	// UX の成立条件にしない」/ §B-5 の残作業「todos ⊕ フローの scrollIntoView 撤去」を完遂する。
+	// inline では applyInlineFold の highlightId 節が該当行を強制的に可視プレビュー集合へ含める
+	// (5件クランプを突破させる)ため、そもそも「見えない行を追いかけてスクロールする」必要が無い
+	// ── 対象は常に可視域に置かれる(§B-3 の「安全先頭に置いた状態で見せる」= スクロールに依存しない)。
+	// よって inline では scrollIntoView を一切呼ばない(⊕ ドラフト行は renderAll 側で最上部固定描画されて
+	// おり、これも同じ「最初から見える位置」原則)。
+	// 【なぜ fullscreen では残すか(§B に反しないと判断した根拠)】fullscreen は §B-2③ のとおり
+	// 「単一の内部スクロールコンテナ(#root.fullscreen-scroll)」であり、その overflow はカード側 CSS の
+	// 完全管轄で ホストごとの挙動差が入り込まない(inline の「ホストがどこまで自動追従するか不定」とは
+	// 別物)。長い fullscreen リストで新規作成した1件がスクロール下端の外に出た場合、それを可視域へ
+	// 運ぶのは card-controlled な操作であって「ホスト差に UX の成立を依存させる」対症療法ではない。
+	// したがって §B-1 の禁止対象(inline の scrollIntoView 依存)には当たらないと判断し、fullscreen 限定で
+	// 残す。inline を対象外にしたことで §B-5 の残作業(inline scrollIntoView 撤去)は解消。
+	if (hostDisplayMode === "fullscreen" && pendingHighlightId !== null && pendingHighlightId !== highlightScrolledFor) {
 		// li.dataset.id との比較で探す(既存の selectedIndex 判定と同じ手法・CSS 属性セレクタは
 		// UID に特殊文字が含まれた場合のエスケープ懸念があるため使わない)。
 		const target = Array.from(root.querySelectorAll<HTMLLIElement>("li")).find((li) => li.dataset.id === pendingHighlightId) ?? null;
