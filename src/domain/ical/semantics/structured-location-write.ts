@@ -56,26 +56,6 @@ export interface StructuredLocationInput {
 }
 
 /**
- * 【2026-07-24 iOS 地図表示 実機検証用の仮説実装(効かなければ revert 前提・docs/modeling/06 G3 と紐付け)】
- * radius 未指定時に VEVENT 側の X-APPLE-STRUCTURED-LOCATION へ書く既定半径(メートル)。
- *
- * 【経緯】サーバー発 VEVENT(geo+X-TITLE+X-ADDRESS のみ)が iOS カレンダーで地図ピンを出さない、
- * という実機報告があった。iOS 実機が書いた「動く」VEVENT には我々が書いていない
- * X-APPLE-MAPKIT-HANDLE(Apple Maps 内部の不透明トークン。捏造不可なので依然として書かない —
- * ファイル冒頭コメント参照)・X-APPLE-RADIUS・X-APPLE-REFERENCEFRAME=0 があった。HANDLE 無しで
- * RADIUS+REFERENCEFRAME=0 を足せば地図が出るかは実機でしか確定できないため、この1点を試す。
- * RADIUS(半径)・REFERENCEFRAME=0(参照系フラグ)はどちらも実データとして偽りではない
- * (「場所を偽らない」ドクトリンには反しない。偽情報を捏造するのは MAPKIT-HANDLE だけ)。
- *
- * 【値の由来・循環 import 回避】valarm-write.ts の PROXIMITY_DEFAULT_RADIUS_METERS(=100・proximity
- * VALARM の既定半径)と同じ値を採用する(iOS 実測で geofence/地図表示どちらも半径100mが使われている
- * ため揃えるのが自然)。ただし valarm-write.ts はこのファイルの buildStructuredLocationProperty を
- * import しており、逆方向に定数を import すると循環 import になるため、同値の定数をここに独立定義する
- * (2ファイルの値がズレたら意図的な差分でない限りバグ — 変更時は両方を確認すること)。
- */
-const VEVENT_STRUCTURED_LOCATION_DEFAULT_RADIUS_METERS = 100;
-
-/**
  * #45 スライス B: この入力が geo(lat/lon 両方)を持つか。持つときだけ X-APPLE-STRUCTURED-LOCATION を
  * 書き、持たないときは LOCATION への degrade に倒す(write 側の分岐の単一情報源)。
  * 片方だけ(部分 geo)は false 扱いにして degrade へ倒す(application 層で弾かれる前提だが、防御的に)。
@@ -111,18 +91,7 @@ const VALUE_URI_PARAM: Parameter = { name: "VALUE", values: ["URI"] };
  * パラメータ値に入れる(シリアライズ時に COMMA/SEMICOLON/COLON を含めば serializer が自動で
  * DQUOTE 化する — structure/edit.ts の upsertProperty コメント・serialize/*.ts 参照。ここでは
  * decodeText の逆である encodeText だけ担い、QUOTED 判定はしない)。
- * X-APPLE-RADIUS は数値をそのまま文字列化(read 側 parseRadiusMeters の逆)。radius 未指定でも
- * VEVENT_STRUCTURED_LOCATION_DEFAULT_RADIUS_METERS で必ず書く(上記コメントの地図表示仮説実装)。
- * X-APPLE-REFERENCEFRAME=0 も常に書く(同仮説実装。VALARM 側 proximity の REFERENCEFRAME=1 とは
- * 値が異なる別物 — valarm-write.ts の buildProximityStructuredLocationProperty は自前で
- * REFERENCEFRAME=1 を組み立てており、ここで base.parameters に紛れ込む REFERENCEFRAME=0 は
- * byName で拾われないため proximity 側には一切影響しない)。
- *
- * 【パラメータ順(2026-07-24 変更)】iOS 実機で観測された「動く」実例の並び
- * (VALUE, MAPKIT-HANDLE[書かない], RADIUS, REFERENCEFRAME, X-TITLE, X-ADDRESS)に寄せ、
- * RADIUS/REFERENCEFRAME を VALUE の直後・X-TITLE の前に挿入する(旧順は VALUE, X-TITLE, X-ADDRESS,
- * [RADIUS] だった。厳密な順序が地図表示に影響する確証はないが、Apple 実例に寄せる方が安全という
- * 判断 — バイト忠実テストの差分は許容する)。
+ * X-APPLE-RADIUS は数値をそのまま文字列化(read 側 parseRadiusMeters の逆)。
  */
 export function buildStructuredLocationProperty(loc: StructuredLocationInput): Property {
 	// #45 スライス B: geo 無しでここに来るのは呼び出し側のバグ(write 側は structuredLocationHasGeo で
@@ -132,15 +101,12 @@ export function buildStructuredLocationProperty(loc: StructuredLocationInput): P
 	if (!structuredLocationHasGeo(loc)) {
 		throw new Error("buildStructuredLocationProperty: lat/lon required (geo-less input must degrade to LOCATION)");
 	}
-	const radius = loc.radius ?? VEVENT_STRUCTURED_LOCATION_DEFAULT_RADIUS_METERS;
-	const parameters: Parameter[] = [
-		VALUE_URI_PARAM,
-		{ name: "X-APPLE-RADIUS", values: [String(radius)] },
-		{ name: "X-APPLE-REFERENCEFRAME", values: ["0"] },
-		{ name: "X-TITLE", values: [encodeText(loc.title)] },
-	];
+	const parameters: Parameter[] = [VALUE_URI_PARAM, { name: "X-TITLE", values: [encodeText(loc.title)] }];
 	if (loc.address !== undefined && loc.address !== "") {
 		parameters.push({ name: "X-ADDRESS", values: [encodeText(loc.address)] });
+	}
+	if (loc.radius !== undefined) {
+		parameters.push({ name: "X-APPLE-RADIUS", values: [String(loc.radius)] });
 	}
 	return { name: "X-APPLE-STRUCTURED-LOCATION", parameters, value: `geo:${loc.lat},${loc.lon}` };
 }
