@@ -1358,7 +1358,10 @@ const createEventItemFieldsShape = {
 	),
 	end: z.string().optional().describe(
 		'終了(DTEND・省略可・排他的終端)。start と同じ2形態で、値型(終日/時刻付き)は start と一致させること。' +
-			"start より後でなければならない。終日1日イベントや開始のみのイベントは end を省略してよい。",
+			"start より後でなければならない。終日イベントは end を省略してよい(1日のイベントになる)。" +
+			"時刻付き(start が \"YYYY-MM-DDTHH:MM:SS\")で end を省略すると、サーバーが自動的に開始+1時間を" +
+			"終了として補完する(iOS で終了時刻が表示されない「ゼロ長」イベントを避けるため)。" +
+			"別の長さにしたいときは end を明示的に指定すること。",
 	),
 	location: z.string().optional().describe(
 		"LOCATION(場所)。§3.8.1.7 の TEXT。空文字は未設定と同義。" +

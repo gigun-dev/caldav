@@ -108,6 +108,29 @@ export function localFieldsToEpochMillis(fields: LocalFields, ianaId: string): n
 }
 
 /**
+ * localFieldsToEpochMillis の逆変換: UTC エポックミリ秒 → 指定ゾーンでの壁時計フィールド。
+ *
+ * 【2026-07-24 追加理由】create-event の「時刻付きイベントで end 省略時に start+1h を補完する」
+ * 機能のために必要になった(壁時計を保ったまま TZID 付き VEventDateValue を組み直すには、
+ * 「start の壁時計に1時間足した後の壁時計」が要る — epoch を直接 ICS の raw 文字列にはできない)。
+ * これまで instant.ts はローカル→UTC の一方向しか公開していなかった(getZoneOffsetMillis は
+ * オフセット計算の内部部品であり、フィールド分解までは外に出していなかった)ので、既存の
+ * formatterFor キャッシュをそのまま再利用する形で対称の変換を追加する。
+ *
+ * DST 境界(繰り返し/欠落する壁時計)は generic に発生しうるが、この関数はある1瞬間(一意)を
+ * 入力に取るので localFieldsToEpochMillis のような多義性の問題は無い — Intl が返す壁時計は
+ * その瞬間について一意に決まる。
+ */
+export function epochMillisToLocalFields(utcMillis: number, ianaId: string): LocalFields {
+	const parts = formatterFor(ianaId).formatToParts(new Date(utcMillis));
+	const get = (type: Intl.DateTimeFormatPartTypes): number => {
+		const p = parts.find((x) => x.type === type);
+		return p !== undefined ? Number(p.value) : 0;
+	};
+	return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute"), second: get("second") };
+}
+
+/**
  * CalDateTime → UTC エポックミリ秒。kind で分岐する。
  *
  * @param opts.zoneOf           zoned の TZID を IANA 名へ解決する関数(resolver 経由を注入)。

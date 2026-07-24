@@ -84,6 +84,37 @@ describe("event usecases", () => {
 		expect(event.end).toBeNull();
 	});
 
+	// 2026-07-24: 時刻付き start で end 省略時のデフォルト補完(create-event.ts 冒頭の
+	// DEFAULT_TIMED_EVENT_DURATION_MINUTES コメント参照)。iOS で終了時刻が表示されない
+	// 「ゼロ長」イベント問題への対処。all-day は対象外(直上のテストで確認済み・現状維持)。
+	it("時刻付き start で end 省略時は start+1h を DTEND に補完する(iOS ゼロ長イベント対策)", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "岐阜大学ランチ",
+			start: "2026-07-25T12:00:00",
+			timeZone: "Asia/Tokyo",
+		});
+		expect(event.start).toBe("2026-07-25T12:00:00+09:00");
+		expect(event.end).toBe("2026-07-25T13:00:00+09:00");
+		expect(event.isAllDay).toBe(false);
+		const stored = await resourceRepo.findAllInCollection(TEST_OWNER, mkCollectionId("calendar"));
+		// DTEND の raw が TZID 付きで書かれ、DTSTART からちょうど1時間後の壁時計になっていること
+		// (epoch を直に UTC raw にすると TZID と矛盾するため、ローカル壁時計として書き戻す実装)。
+		expect(stored[0]!.rawIcs).toContain("DTSTART;TZID=Asia/Tokyo:20260725T120000");
+		expect(stored[0]!.rawIcs).toContain("DTEND;TZID=Asia/Tokyo:20260725T130000");
+	});
+
+	it("時刻付き start でも end を明示すればそれが優先される(デフォルト補完は上書きしない)", async () => {
+		const { event } = await createEvent.execute({
+			owner: TEST_OWNER,
+			title: "会議",
+			start: "2026-07-15T10:00:00",
+			end: "2026-07-15T10:30:00",
+			timeZone: "Asia/Tokyo",
+		});
+		expect(event.end).toBe("2026-07-15T10:30:00+09:00");
+	});
+
 	it("location / url を設定できる(url は URI 値型でエスケープしない)", async () => {
 		const { event } = await createEvent.execute({
 			owner: TEST_OWNER,

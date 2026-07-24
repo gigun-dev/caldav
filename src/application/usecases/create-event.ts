@@ -20,6 +20,7 @@ import {
 	buildVEventCalendar,
 	buildVTimezone,
 	composeDescriptionWithConference,
+	epochMillisToLocalFields,
 	ICalendarObject,
 	isValidIanaZone,
 	localFieldsToEpochMillis,
@@ -52,6 +53,24 @@ import { nowStampFromDate } from "./now-stamp";
 
 // VTIMEZONE 窓の余白(create-todo.ts の WINDOW_MARGIN_MILLIS と同値・同理由)。
 const WINDOW_MARGIN_MILLIS = 400 * 24 * 60 * 60 * 1000;
+
+// 【時刻付きイベントの終了デフォルト補完(2026-07-24)】
+// 時刻付き(DATE-TIME)VEVENT で end/duration が両方省略されると、DTSTART だけの「ゼロ長」イベント
+// になる。RFC 5545 §3.6.1 はこれを valid としており(DTEND/DURATION 省略時は "the event does not
+// take up any time" — 原文 docs/rfc/rfc5545.txt 照合済み)、ドメイン/パース層(domain/ical 配下)は
+// これを引き続き受容し続ける — 他クライアント(iOS 本体・Google Calendar 等)から sync-in してきた
+// 正当なゼロ長イベント(例: 「15:00」とだけ書いた予定)を、こちらの都合で retroactive に書き換えて
+// しまう副作用を避けるため。補完は「サーバーが新規に VEVENT を組み立てる」create-event ユースケース
+// 境界 *だけ* で行う(domain 層には一切持ち込まない)。
+//
+// 【なぜ補完するか】ゼロ長イベントは iOS のカレンダー UI で終了時刻欄が表示されず(開始時刻のみの
+// 表示になる)、ユーザーが「終了時刻が消えた」と誤認する実害があった。Apple Calendar 自身も新規作成
+// UI では既定で「開始+1時間」を終了に埋める慣習があり、これに揃えるのが最も自然。
+//
+// 【なぜ1時間か】Apple Calendar のデフォルト所要時間との一致(上記)。他の値(30分・オールデー化等)
+// も検討したが、根拠となる規約が無く恣意的になるため見送った。
+const DEFAULT_TIMED_EVENT_DURATION_MINUTES = 60;
+const DEFAULT_TIMED_EVENT_DURATION_MILLIS = DEFAULT_TIMED_EVENT_DURATION_MINUTES * 60 * 1000;
 
 // --- 入力 DTO ---
 
@@ -370,6 +389,29 @@ export class CreateEvent {
 			if (end.epochMillis <= start.epochMillis) {
 				throw new StartAfterEndError(input.start, input.end);
 			}
+		} else if (start.value.type === "DATE-TIME") {
+			// 【end 省略時のデフォルト補完(2026-07-24・冒頭の DEFAULT_TIMED_EVENT_DURATION_MINUTES
+			// コメント参照)】時刻付き start で end が省略されたときだけ start+1h を補完する。
+			// all-day(DATE 型)は補完しない — RFC 5545 の「DTEND 省略時は1日」という既存セマン
+			// ティクスをそのまま活かす(こちらは iOS でも問題なく1日表示される。ゼロ長で困るのは
+			// 時刻付きイベントだけ)。
+			// このユースケースは「duration」語彙を持たない(CreateEventInput に duration フィールドは
+			// 無い — end のみ)ので、ここでの分岐条件は「end 未指定」だけで足りる(将来 duration を
+			// 語彙に追加したらこの分岐より前に判定を差し込むこと)。
+			const endEpochMillis = start.epochMillis + DEFAULT_TIMED_EVENT_DURATION_MILLIS;
+			// 壁時計は「その TZID での start+1h」を書き戻す(epoch を絶対値のまま UTC raw にすると
+			// TZID と矛盾する値になってしまう — VEventDateValue の DATE-TIME は TZID 前提の壁時計
+			// 表現なので、epoch→ローカル変換を経由する。DST を跨ぐ地域では壁時計の見た目の差分が
+			// ちょうど1時間にならないことがあるが、絶対時間で1時間後という意味は保たれる)。
+			const tzid = start.value.tzid;
+			const f = epochMillisToLocalFields(endEpochMillis, tzid);
+			const pad2 = (n: number) => String(n).padStart(2, "0");
+			const raw = `${f.year}${pad2(f.month)}${pad2(f.day)}T${pad2(f.hour)}${pad2(f.minute)}${pad2(f.second)}`;
+			end = {
+				value: { type: "DATE-TIME", raw, tzid },
+				epochMillis: endEpochMillis,
+				timeInfo: { hour: f.hour, minute: f.minute, second: f.second, timeZone: tzid },
+			};
 		}
 
 		// recurrence(chat 語彙 → RecurrenceRule + 不変条件検証は create-todo と共有)。DTSTART が
