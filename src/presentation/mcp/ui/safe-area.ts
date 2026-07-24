@@ -79,16 +79,41 @@ export function resolveSafeTopPx(insets: SafeAreaInsets | undefined, displayMode
 }
 
 /**
- * fullscreen コンテナへ適用すべき padding-bottom(px)。
+ * 【2026-07-24 実機フィードバック #48/#50・是正A】inline root 未申告時の bottom フォールバック(px)。
+ * fullscreen の FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX(60px)とは値の性格が異なるため独立の定数にした
+ * ——inline には浮遊 FAB が無く(action-row が通常フローの最後尾に実在する。todos-app.ts の
+ * .fab-row 撤回コメント参照)、必要なのは「その action-row(完了済み/他n件/⊕)の下端がホスト
+ * composer クロームに隠れない最小限の余白」だけ。fullscreen の 60px は「浮遊 FAB の分の予約」という
+ * 別の意味を持つ値なのでそのまま流用すると過大(有界な inline カードの末尾に不要な空白が常時居座り、
+ * ドクトリン「inline=有界高」に対して逆行する)。
+ * 【値の根拠】action-row 実体(min-height 44px 相当のタップ領域+上下 padding)が composer に半分でも
+ * 食われるとタップ不能になる実害を避けつつ、0 と 60px の中間で控えめに倒した経験値として 24px を採る
+ * (top の FULLSCREEN_SAFE_TOP_FALLBACK_PX=56px・bottom fullscreen の 60px と同じく実機採寸前の仮値。
+ * 実測が取れ次第この定数だけ更新すればよい — 判定を resolveSafeBottomPx 1関数に隔離してある理由)。
+ * 【Why not: fullscreen と同じ 60px を inline にも流用する案】却下(上記のとおり過大な空白の実害の方が
+ * 「フォールバックがやや不足するかもしれない稀ケース」より大きいと判断)。
+ */
+export const INLINE_SAFE_BOTTOM_FALLBACK_PX = 24;
+
+/**
+ * padding-bottom として適用すべき px 値。fullscreen コンテナだけでなく inline root にも効かせる
+ * (2026-07-24 #48/#50 是正A: inline の action-row が composer に隠れる occlusion 修正・
+ * todos-entry.ts の applyHostContext / todos-app.ts の #root 基底ルール参照)。
  * 優先順位は resolveSafeTopPx と対称:
  *   (1) insets.bottom が申告されていて 0 より大きければそれを採用(申告済みホストではフォールバック
- *       を絶対に使わない — 二重余白を避ける)。
- *   (2) 未申告(undefined)か 0 のときに限り、displayMode==="fullscreen" ならフォールバック値を使う。
- *   (3) それ以外(inline 等)は 0(= 従来どおり無余白)。
+ *       を絶対に使わない — 二重余白を避ける。fullscreen/inline 共通)。
+ *   (2) 未申告(undefined)か 0 のときに限り、displayMode に応じたフォールバック値を使う
+ *       (fullscreen: FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX / inline: INLINE_SAFE_BOTTOM_FALLBACK_PX)。
+ *   (3) それ以外(displayMode 未受信の null 等)は 0(= 従来どおり無余白)。
  * 【2026-07-23 変更: displayMode 引数を additive 追加】旧実装はフォールバックを持たず引数も insets のみ
  * だったが、claude.ai iOS の composer occlusion 実測反証(FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX コメント
  * 参照)を受け top と対称化した。displayMode 省略時(既存呼び出し・テスト)は undefined → 非 fullscreen
  * 扱いで従来どおり 0 を返すので後方互換。
+ * 【2026-07-24 変更: inline もフォールバック対象に追加(#48/#50)】旧実装は「inline は bottom の
+ * occlusion が起きない」という当初仮定(FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX コメント冒頭参照)のまま
+ * inline を「フォールバック常に 0」側に据え置いていたが、実機で inline の action-row(完了済み/
+ * 他n件/⊕)も composer の裏に隠れる反証が出た(#48/#50)。fullscreen と同じ理屈(occlusion の実害 >
+ * フォールバック不要な稀ホストで余白が余る実害)を inline にも適用する。
  * 【Why not: bottom===0 を明示ゼロ申告として尊重する案】resolveSafeTopPx と同じ理由で却下
  * (「composer 分を含めない実装のたまたま 0」と「クローム無しの 0」を区別するシグナルが無い。
  * occlusion の実害 > フォールバック不要な稀ホストで数十px 余る実害、として 0 は未申告側へ寄せる)。
@@ -96,5 +121,6 @@ export function resolveSafeTopPx(insets: SafeAreaInsets | undefined, displayMode
 export function resolveSafeBottomPx(insets: SafeAreaInsets | undefined, displayMode?: string | null): number {
 	if (insets !== undefined && insets.bottom > 0) return insets.bottom;
 	if (displayMode === "fullscreen") return FULLSCREEN_SAFE_BOTTOM_FALLBACK_PX;
+	if (displayMode === "inline") return INLINE_SAFE_BOTTOM_FALLBACK_PX;
 	return 0;
 }

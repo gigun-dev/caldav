@@ -2807,6 +2807,7 @@ function buildMcpServer(
 					calendarId,
 					timeZone,
 					affected: [{ id: task.id, kind: "added", task: snapshotFromTask(task) }],
+					highlightId: task.id, // #48/#50 是正C: 新規作成した1件をカードが surface できるよう伝える
 				});
 				const resp = await toTodosToolResponse(vm);
 				// #51: 解決した場所(title/address)を応答 content に明示する(誤った場所で通知が鳴る実害回避)。
@@ -2914,6 +2915,9 @@ function buildMcpServer(
 					calendarId,
 					timeZone,
 					affected: succeeded.length > 0 ? succeeded : undefined,
+					// #48/#50 是正C: N 件バッチでは代表1件(追加順で最後に作られた行)だけを highlight する
+					// (todos-view-model.ts の TodosViewModel.highlightId JSDoc「なぜ単一か」参照)。
+					highlightId: succeeded.length > 0 ? succeeded[succeeded.length - 1]?.id : undefined,
 				});
 
 				// content(text)側は「非 UI ホスト向けの後方互換」だが、create-todo 単発と違い
@@ -3014,6 +3018,11 @@ function buildMcpServer(
 		removed?: TaskSnapshot[];
 		/** move-todo のみ。TodosViewModel.movedTo の JSDoc 参照。 */
 		movedTo?: string;
+		/**
+		 * create-todo/create-todos のみ。TodosViewModel.highlightId の JSDoc 参照(#48/#50 是正C)。
+		 * 新規作成を伴わない呼び出しは省略する(update/complete/delete/move/list/refresh 等)。
+		 */
+		highlightId?: string;
 	}): Promise<TodosViewModel> => {
 		const zone = resolveTimeZone(opts.timeZone);
 		// 【次の伸びしろ(今回スコープ外)】この確定一覧は応答契約(TodosViewModel.tasks)上必要なので
@@ -3119,6 +3128,8 @@ function buildMcpServer(
 		if (opts.affected !== undefined) vm.affected = opts.affected;
 		if (opts.removed !== undefined) vm.removed = opts.removed;
 		if (opts.movedTo !== undefined) vm.movedTo = opts.movedTo;
+		if (opts.highlightId !== undefined) vm.highlightId = opts.highlightId; // #48/#50 是正C
+
 		// view echo(E-2 view 状態非保持バグ修正): 非 undefined の引数だけを載せる。全部 undefined
 		// (既定ビュー)なら view キー自体を省いて後方互換を保つ(旧 UI/旧テストは view 不在前提)。
 		// UI はこの view を currentView として保持し、focus refetch / mutation 後の再取得へ引き継ぐ。

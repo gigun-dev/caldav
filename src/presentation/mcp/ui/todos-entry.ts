@@ -526,6 +526,20 @@ function isDraftId(id: string): boolean {
 //   枠なし input 化し、直下に「メモを追加」行と ⓘ が出る。選択解除=確定(auto-save): 行外タップ /
 //   Enter / 別行選択のいずれでも、変更があれば update-todo(title/notes のみ・部分更新)を楽観送信する。
 let selectedId: string | null = null;
+// pendingHighlightId(2026-07-24 実機フィードバック #48/#50・是正C): create-todo/create-todos が
+// TodosViewModel.highlightId で伝えてきた「今回 surface すべき行」の id。applyStructuredContent が
+// 受信のたびに更新し(undefined なら null へ戻す=前回の highlight を引きずらない)、
+// applyInlineFold(inline の5件クランプ)が「この id は強制的に可視セットへ含める」判定に、
+// renderAll 末尾が「一度だけ scrollIntoView する」判定に、それぞれこの値を読む。
+// 【なぜ「一度だけ」を保証できるか(時間駆動効果を使わない設計)】scrollIntoView 実行後に
+// highlightScrolledFor へ「もう流した id」を記録し、以後同じ id では再実行しない(=タイマーで
+// 消すのではなく「やったかどうか」という状態で1回性を保証する。CLAUDE.md の「時間駆動の視覚
+// イベントを型から排する」ドクトリンに沿う決定論的な一発動作 — ⊕ ドラフト行の scrollIntoView
+// (5273 行付近)と同じ語彙)。次に別の highlightId(別の新規作成)が届けば再び1回だけ実行される。
+let pendingHighlightId: string | null = null;
+// highlightScrolledFor: pendingHighlightId のうち、既に scrollIntoView 済みの id(直近1件のみ
+// 記録すれば足りる — 同一 id を連続 render しても再スクロールしないための1回性ガード)。
+let highlightScrolledFor: string | null = null;
 // draft: FAB(+)で生やす「まだ送信していない新規リマインダー行」(2026-07-15 v3 スコープ追加)。
 //   【v2→v3 で覆した点(経緯・財産)】v2 は新規追加を position:fixed の quick-add ボトムシート
 //   (FAB タップで開く #quick-add フォーム + 段階的開示パネル)で行っていた。しかし詳細シートと同じ
@@ -3605,38 +3619,73 @@ function renderAll(): void {
 			stickyData.set(snap.id, row); // 他セクションと同じく sticky を full-ish data で更新しておく
 			completedRows.push(row);
 		}
-		// 完了済みは <details> で折り畳み(既定閉)。開閉状態は completedOpen に保持し、
-		// 再描画(refresh 確定描画)で勝手に閉じ戻らないようにする — 完了操作直後に
-		// 「開いて確認していた折り畳みが閉じる」のは操作を疑わせる悪い挙動。
-		const details = document.createElement("details");
-		details.className = "sec-completed";
-		details.open = completedOpen;
-		details.addEventListener("toggle", () => {
-			completedOpen = details.open;
-		});
-		const summary = document.createElement("summary");
-		// サマリの件数は常に総件数(completedTotal)を出す — 展開して見える行数を絞っても
-		// 「実際に何件完了しているか」の情報は失わない。
-		summary.textContent = `完了済み(${completedTotal}件)`;
-		details.appendChild(summary);
-		const ul = document.createElement("ul");
-		for (const t of completedRows) ul.appendChild(renderRow(t, todayKey));
-		details.appendChild(ul);
-		const hiddenCompletedCount = completedTotal - completedRows.length;
-		if (hiddenCompletedCount > 0) {
-			// 「他 n件」の非展開表記。既存の .fold-more(未完了の折り畳みフッタ)と同じ視覚言語を借りるが、
-			// ここは常に受動表示(タップ不可の div)— 展開すると有界化の意味が無くなるため、
-			// 仕様どおり単なる件数表記に留める(未完了側の fullscreen 昇格導線とは役割が異なる)。
-			const more = document.createElement("div");
-			more.className = "fold-more completed-more";
-			more.appendChild(document.createTextNode("他 "));
-			const moreCount = document.createElement("span");
-			moreCount.className = "fold-more-count";
-			moreCount.textContent = `${hiddenCompletedCount}件`;
-			more.appendChild(moreCount);
-			details.appendChild(more);
+		// --- B(2026-07-24 実機フィードバック #48/#50): inline/fullscreen で描き分ける -------------
+		// 【なぜ分岐が要るか】旧実装は displayMode を見ず常に <details> を描いていた。inline でこれを
+		// その場展開(open)すると、完了リスト(最大 COMPLETED_RECENT_MAX 件)が inline の内部に
+		// そのまま増殖し「inline=有界高・内部スクロール禁止」ドクトリンに反する(#48/#50 実機報告の
+		// 症状そのもの)。fullscreen は単一スクロール容器なので展開して良い(ドクトリン上も問題ない)。
+		// 【方針】
+		//   inline     : 「完了済み(N件) ›」の有界サマリ行のみ。タップで fullscreen へ昇格する導線
+		//                (buildActionRow の「他 n件」フッタと同じ canRequestFullscreen/requestDisplayMode
+		//                パターンを流用)。その場展開は一切許さない(<details> を作らない)。
+		//   fullscreen : 従来どおり <details>(既定 open)+ recent 行 + 「他 n件」の非活性表記。
+		//   それ以外(null 等・displayMode 未受信)は fullscreen 側の従来挙動へ寄せる(旧実装の後方互換—
+		//   displayMode 未受信のホストでいきなり機能が失われないよう安全側に倒す)。
+		if (hostDisplayMode === "inline") {
+			const canFull = canRequestFullscreen(hostAvailableDisplayModes);
+			// 死にリンクを作らないため、fullscreen 昇格不可のホストでは受動表示(div)にする
+			// (buildActionRow の「他 n件」フッタと同じ判断・設計05 §4)。
+			const summaryEl = document.createElement(canFull ? "button" : "div");
+			summaryEl.className = "sec-completed-summary";
+			if (canFull) (summaryEl as HTMLButtonElement).type = "button";
+			summaryEl.appendChild(document.createTextNode(`完了済み(${completedTotal}件)`));
+			if (canFull) {
+				const chevron = document.createElement("span");
+				chevron.className = "sec-completed-chevron";
+				chevron.setAttribute("aria-hidden", "true");
+				chevron.textContent = "›";
+				summaryEl.appendChild(chevron);
+				summaryEl.addEventListener("click", () => {
+					// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。拒否されたら
+					// "inline" が返るだけでエラーではない — buildActionRow の「他 n件」と同じ扱いで握りつぶす。
+					void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+				});
+			}
+			root.appendChild(summaryEl);
+		} else {
+			// 完了済みは <details> で折り畳み(既定閉)。開閉状態は completedOpen に保持し、
+			// 再描画(refresh 確定描画)で勝手に閉じ戻らないようにする — 完了操作直後に
+			// 「開いて確認していた折り畳みが閉じる」のは操作を疑わせる悪い挙動。
+			const details = document.createElement("details");
+			details.className = "sec-completed";
+			details.open = completedOpen;
+			details.addEventListener("toggle", () => {
+				completedOpen = details.open;
+			});
+			const summary = document.createElement("summary");
+			// サマリの件数は常に総件数(completedTotal)を出す — 展開して見える行数を絞っても
+			// 「実際に何件完了しているか」の情報は失わない。
+			summary.textContent = `完了済み(${completedTotal}件)`;
+			details.appendChild(summary);
+			const ul = document.createElement("ul");
+			for (const t of completedRows) ul.appendChild(renderRow(t, todayKey));
+			details.appendChild(ul);
+			const hiddenCompletedCount = completedTotal - completedRows.length;
+			if (hiddenCompletedCount > 0) {
+				// 「他 n件」の非展開表記。既存の .fold-more(未完了の折り畳みフッタ)と同じ視覚言語を借りるが、
+				// ここは常に受動表示(タップ不可の div)— 展開すると有界化の意味が無くなるため、
+				// 仕様どおり単なる件数表記に留める(未完了側の fullscreen 昇格導線とは役割が異なる)。
+				const more = document.createElement("div");
+				more.className = "fold-more completed-more";
+				more.appendChild(document.createTextNode("他 "));
+				const moreCount = document.createElement("span");
+				moreCount.className = "fold-more-count";
+				moreCount.textContent = `${hiddenCompletedCount}件`;
+				more.appendChild(moreCount);
+				details.appendChild(more);
+			}
+			root.appendChild(details);
 		}
-		root.appendChild(details);
 	}
 
 	// C2(設計04 §5・2026-07-17 動的フィット改訂): renderAll「最終段」の表示切りだけを行う畳み。
@@ -3649,6 +3698,28 @@ function renderAll(): void {
 	// 全ての appendChild が終わったこの時点で applyInlineFold が root.appendChild するだけでよくなった
 	// (foldAnchor 自体が不要になった=会計の単純化の一部)。
 	applyInlineFold();
+
+	// highlightId の surface(2026-07-24 #48/#50 是正C): 5件クランプ突破の可視化は applyInlineFold
+	// 内(highlightId 節)で完了済み。ここは「一度だけの scrollIntoView」だけを担当する。
+	// 【なぜ renderAll の最後(applyInlineFold の後)か】applyInlineFold が該当行を強制可視化した
+	// *後*でないと、その行が DOM に無い(クランプで間引かれた)ままの scrollIntoView になりうる —
+	// 呼ぶ順序が逆だと機能しない。
+	// 【一度だけの保証(時間駆動なし)】pendingHighlightId !== highlightScrolledFor の間だけ実行し、
+	// 実行後に highlightScrolledFor へ記録する。同じ highlightId で renderAll が何度呼ばれても
+	// (例: 選択/編集などの無関係な再描画)2回目以降は何もしない — setTimeout でハイライトを
+	// 「消す」のではなく、「もうやった」という状態で1回性を保証する決定論的動作(⊕ ドラフト行の
+	// 一発 scrollIntoView と同じ語彙。CLAUDE.md の時間駆動効果排除ドクトリン参照)。
+	if (pendingHighlightId !== null && pendingHighlightId !== highlightScrolledFor) {
+		// li.dataset.id との比較で探す(既存の selectedIndex 判定と同じ手法・CSS 属性セレクタは
+		// UID に特殊文字が含まれた場合のエスケープ懸念があるため使わない)。
+		const target = Array.from(root.querySelectorAll<HTMLLIElement>("li")).find((li) => li.dataset.id === pendingHighlightId) ?? null;
+		if (target !== null) {
+			target.scrollIntoView({ block: "nearest" });
+			highlightScrolledFor = pendingHighlightId;
+		}
+		// target が無い(まだ DOM に反映されていない・別ページ表示中等)ときは記録しない —
+		// 次の renderAll で改めて探し、見つかったときに一度だけ実行する(取りこぼしを防ぐ)。
+	}
 }
 
 // アクション行(.action-row)の実高さ(margin 込み)のキャッシュ。CSS 定数(todos-app.ts の
@@ -3882,6 +3953,14 @@ function applyInlineFold(): void {
 			const selectedIndex = rows.findIndex((li) => li.dataset.id === selectedId);
 			if (selectedIndex >= visibleCount) visibleCount = selectedIndex + 1;
 		}
+		// highlightId(2026-07-24 #48/#50 是正C): 新規作成した行を「他 n件」の裏に埋もれさせない。
+		// selectedId と同じ手法(該当行の index+1 まで visibleCount を拡大する)を再利用する —
+		// 「タップ中の行は必ず見える」不変条件と同型の「新規作成直後の行は必ず見える」不変条件を、
+		// 同じ機構で満たす(2つの別概念に別ロジックを持たせない・fold.ts の設計方針に倣う)。
+		if (pendingHighlightId !== null) {
+			const highlightIndex = rows.findIndex((li) => li.dataset.id === pendingHighlightId);
+			if (highlightIndex >= visibleCount) visibleCount = highlightIndex + 1;
+		}
 		folded = visibleCount < rows.length;
 		if (folded) {
 			lastFoldActive = true; // 実際に畳んで「他 N件」を出す(⊕ の fullscreen 昇格判定に使う)。
@@ -3984,6 +4063,12 @@ interface TodosStructuredContent {
 	// 焼き込み値(window.__CARD_BUILD_HASH__)と食い違えば「カードが古い可能性」を表示する
 	// (server.ts の TodosViewModel.uiHash JSDoc・card-version.ts 参照)。additive・欠落時は非表示。
 	uiHash?: string;
+	// highlightId(2026-07-24 実機フィードバック #48/#50・是正C): create-todo/create-todos が新規
+	// 作成した1件の UID。届いたら次の renderAll で「その行を5件クランプ突破で可視化 + 一度だけ
+	// scrollIntoView」する(pendingHighlightId module state・applyInlineFold の highlight 節参照)。
+	// server.ts の TodosViewModel.highlightId JSDoc に「なぜ setTimeout フラッシュでなく状態駆動か」
+	// を含め詳細を集約。
+	highlightId?: string;
 }
 
 /** ゴミ箱ページの1行(server の TodosViewModel.deletedItems と同型・ui 末端なのでローカルに写経)。 */
@@ -4221,6 +4306,13 @@ function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean
 	const staleFromPush =
 		opts?.push === true && shouldRevalidateOnPush(structuredContent?.generatedAt, Date.now());
 	if (!staleFromPush) markUpdated();
+	// highlightId(2026-07-24 #48/#50 是正C): 届いた応答が新規作成した1件を指していれば保持する。
+	// 【なぜ undefined のとき明示的に null へ戻すか】create-todo 以外の応答(list/refresh/update/
+	// complete/delete/move 等)は highlightId を載せない=undefined。ここで前回の値を引きずると、
+	// 新規作成の1描画で消えるべき surface 効果が、その後の無関係な応答でも延々と可視強制/
+	// scrollIntoView を再現しかねない(highlightScrolledFor の1回性ガードで実害は限定的だが、
+	// 「新規作成直後だけ効く」という状態駆動の意味を保つため、無関係な応答では明示的に消す)。
+	pendingHighlightId = structuredContent?.highlightId ?? null;
 	announceBecoming();
 	return staleFromPush;
 }

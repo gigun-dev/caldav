@@ -404,6 +404,36 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     display: flex;
     align-items: center;
   }
+  /* 【2026-07-24 実機フィードバック #48/#50・是正B】inline 専用の完了済みサマリ行。<details> の
+   * summary(上記)と同格の見た目(font-size/weight/color/padding/min-height)を踏襲しつつ、
+   * <details> 自体を作らない(その場展開=inline 内部スクロールに繋がるため許さない。entry.ts の
+   * sec-completed 分岐コメント参照)。button 要素(fullscreen 昇格可)/div 要素(受動)いずれでも
+   * 幅いっぱいの行として振る舞うよう width:100%・box-sizing を明示する(既定の button/div の
+   * 幅挙動差を吸収)。 */
+  .sec-completed-summary {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 8px 0 0;
+    padding: 4px 0;
+    min-height: 32px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: default;
+  }
+  /* button 版(fullscreen 昇格可能ホスト)だけ押せることを示す(cursor + accent 色)。
+   * .fold-more の button 版(上の button.fold-more)と同じ視覚言語。 */
+  button.sec-completed-summary { cursor: pointer; color: var(--accent); }
+  /* 昇格導線であることを示す「›」。テキストの直後・右端は寄せない(サマリ行自体は左寄せの短文なので
+   * 右寄せにすると FAB/action-add のような「行の反対側にある操作」と誤読されうる——ここは行全体が
+   * 1つの押せるテキストであることを示したいだけなので、文字列にそのまま続ける)。 */
+  .sec-completed-chevron { margin-left: 2px; }
 
   ul { list-style: none; margin: 0; padding: 0; }
   /* 【2026-07-14 UI フィードバック対応: li を縦積みに】row-main(横並び: check + header + ⓘ)を
@@ -957,6 +987,21 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
    * .retiring / retire-fade / li.exiting のスタイルはここに置いていたが、退場機構そのものを撤去した
    * (todos-entry.ts 冒頭の C0-a 撤去コメント参照)ため丸ごと削除した。完了行はもう退場せず completed
    * セクションのメンバーとして残り続けるので、退場アニメも不要になった。 */
+  /* 【2026-07-24 実機フィードバック #48/#50・是正A】inline でも下端の action-row(完了済み/
+   * 他n件/⊕)がホスト composer クロームに隠れないよう、#root 基底(fullscreen-scroll 修飾無し=
+   * inline 適用)に bottom safe-area padding を効かせる。
+   * 【なぜ #root 基底に置くか(inline はクラス修飾を持たない)】fullscreen-scroll クラスは C3(下記)が
+   * fullscreen 昇格中だけ付け外しするため、inline はこのクラスを持たない素の #root のまま——つまり
+   * 従来「#root.fullscreen-scroll { padding-bottom: ... }」しか無かった状態では inline に bottom
+   * padding の宛先が構造的に存在しなかった(実害の根本原因)。ここに基底ルールを追加し、下の
+   * #root.fullscreen-scroll(2つ)がカスケードの ID セレクタ的な強さでは同じだが宣言順が後にあるため
+   * 上書きする形にする(fullscreen は 72px+safe の別式、inline はこの基底の safe 値のみ)。
+   * --host-safe-bottom は todos-entry.ts の applySafeAreaVars が resolveSafeBottomPx(inline も
+   * フォールバック対象・safe-area.ts 参照)から算出して供給する。fullscreen 専用の FAB 予約(72px)は
+   * inline には不要(inline に浮遊 FAB は無い。.fab-row の inline display:none 撤回コメント参照)。 */
+  #root {
+    padding-bottom: var(--host-safe-bottom, 0px);
+  }
   /* C3: fullscreen 昇格中だけ #root を内部スクロールコンテナにする(設計04 決定2 — sheet は
    * コンテナが1枚だけなので二重スクロール問題が起きない)。--host-max-height は C1 が
    * containerDimensions.maxHeight から設定する CSS 変数で、fullscreen 中はホストが sheet 実寸を
