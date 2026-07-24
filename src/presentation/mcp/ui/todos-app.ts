@@ -223,6 +223,24 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     z-index: 11;
     background: var(--bg);
   }
+  /* 2026-07-24 実機フィードバック是正②: fullscreen 時だけヘッダに top safe-area を効かせる
+   * (safe-area occlusion 修正)。.bar は #root の【手前の】兄弟要素なので "#root.fullscreen-scroll"
+   * からの祖先/兄弟セレクタでは拾えず、documentElement に立てた is-fullscreen クラス
+   * (todos-entry.ts の applyHostContext 参照)を祖先セレクタとして使う。
+   * 【採用方式: padding-top(背景延長)/ sticky offset(top: safe-top)のどちらにしたか】
+   * padding-top を選んだ — .bar は sticky top:0 のまま(offset を変えない)で、box 自体の
+   * 上端は常にビューポート最上端に張り付く。中身は padding-top 分だけ下がるが、.bar の
+   * background: var(--bg)(上の宣言)は padding を含むボーダーボックス全体に及ぶため、
+   * ノッチ/クローム下の帯もヘッダと同じ背景色で塗られ「ノッチ下にヘッダが来て、その上の
+   * safe 領域は同色で埋まる」iOS の見た目に自然に一致する。sticky offset 案(top: var(--host-safe-top)
+   * にして box ごと safe-top 分下げる)も検討したが、その場合 box の上端とビューポート最上端の
+   * 隙間はどの背景色で埋まるか(body 背景頼み)を別途保証する必要があり、ここで完結する
+   * padding-top のほうが .bar 単体の責務として閉じていて筋が良いと判断した。
+   * inline(html に is-fullscreen が無い)では padding-top 0 のまま(基底 .bar にプロパティ無し)
+   * =従来どおり余白ゼロ。 */
+  html.is-fullscreen .bar {
+    padding-top: var(--host-safe-top, 0px);
+  }
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .app-title { font-size: 16px; font-weight: 700; }
 

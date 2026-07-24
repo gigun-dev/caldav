@@ -386,6 +386,15 @@ function applyHostContext(): void {
 	// fullscreen は sheet 1枚だけなので二重スクロール問題が構造的に起きない・設計04 決定2)。
 	// sticky ヘッダ(.bar)はスクロール可能な祖先が生まれて初めて効く(todos-app.ts の .bar コメント参照)。
 	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
+	// 2026-07-24 実機フィードバック是正②: ヘッダ .bar(コレクション picker)が上部ノッチ/ホスト
+	// クロームに隠れる safe-area occlusion 修正。.bar は #root の【手前の】兄弟要素(header は
+	// #root より前の DOM 位置)なので "#root.fullscreen-scroll ~ .bar" の一般兄弟結合子では拾えない
+	// (一般兄弟結合子は後続の兄弟にしかマッチしない — 上の #root.fullscreen-scroll ~ .fab-row が
+	// 効いているのは .fab-row が #root より後ろにあるから)。祖先を辿れる documentElement に
+	// fullscreen 状態を示すクラスを立て、todos-app.ts 側で "html.is-fullscreen .bar" として
+	// 拾わせる(header 側から見て #root は兄弟にすぎず祖先ではないため、header 自身の祖先である
+	// documentElement を目印にするしかない)。inline では外す(余計な top padding を作らないため)。
+	document.documentElement.classList.toggle("is-fullscreen", hostDisplayMode === "fullscreen");
 }
 
 // --- UI 状態(単一の状態 → renderAll() で全描画、という素朴な一方向データフロー)-------

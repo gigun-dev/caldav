@@ -98,6 +98,15 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
 
   /* --- ヘッダ(タイトル + 期間 + 表示フィルタ + 最終更新)--- */
   .bar { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  /* 2026-07-24 実機フィードバック是正②(todos-app.ts の同名コメント参照・判断は同型):
+   * fullscreen 時だけヘッダに top safe-area を padding-top で効かせる。.bar は sticky ではないが
+   * #root の手前の兄弟という構造は todos と同じで、is-fullscreen(agenda-entry.ts の
+   * applyHostContext)を祖先セレクタに使う。body 自体が background: var(--bg) を持つ(この
+   * ファイル冒頭の body 宣言)ため、.bar 自身に background を足さなくても padding-top で
+   * 生まれる帯は body 背景で自然に埋まる(sticky でないぶん todos より単純)。 */
+  html.is-fullscreen .bar {
+    padding-top: var(--host-safe-top, 0px);
+  }
   .bar-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .bar-right { display: flex; align-items: center; gap: 10px; flex: none; }
   .app-title { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }

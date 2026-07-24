@@ -210,6 +210,12 @@ function applyHostContext(): void {
 	applySafeAreaVars(ctx?.safeAreaInsets);
 	// fullscreen 中だけ #root を内部スクロールコンテナにする。inline に戻ったら外す(設計04 決定2)。
 	root.classList.toggle("fullscreen-scroll", hostDisplayMode === "fullscreen");
+	// 2026-07-24 実機フィードバック是正②(todos-entry.ts と同型): ヘッダ .bar(カレンダー picker/
+	// フィルタ)が上部ノッチ/ホストクロームに隠れる safe-area occlusion 修正。.bar は #root の
+	// 手前の兄弟要素で祖先セレクタからは拾えないため、documentElement にクラスを立てて
+	// agenda-app.ts 側で "html.is-fullscreen .bar" として拾わせる(理由の詳細は todos-entry.ts の
+	// 同名コメント参照。todos/agenda で判断ロジックが同型なので重複コメントも意図的)。
+	document.documentElement.classList.toggle("is-fullscreen", hostDisplayMode === "fullscreen");
 	// 【inline 復帰時は list へ強制リセット(確定済み設計判断1)】inline は高さクランプ内で月グリッドが
 	// 潰れるため list 一択。fullscreen で月ビューにしたまま inline へ縮んだら、agendaViewMode を list へ
 	// 戻し、月ビューで差し替えていた currentRange を退避してあった listRange へ復元して取り直す
