@@ -216,7 +216,8 @@ const appTitleEl = document.getElementById("app-title") as HTMLElement;
 const appTitleBtn = document.getElementById("app-title-btn") as HTMLButtonElement;
 const listMenuEl = document.getElementById("list-menu") as HTMLElement;
 const menuOutsideEl = document.getElementById("menu-outside") as HTMLElement;
-// 追加 FAB(+)。タップで一覧末尾に空のドラフト行を選択状態で生やす(startDraft)。
+// 追加 FAB(+)。タップで一覧最上部に空のドラフト行を選択状態で生やす(startDraft。
+// 2026-07-24 は「一覧末尾」だったが inline 方式回帰に伴い最上部固定へ変更。triggerQuickAdd 参照)。
 // 【v2→v3 で覆した点(経緯・財産)】v2 は FAB タップで position:fixed の quick-add ボトムシート
 // (#quick-add フォーム + 段階的開示パネル)を開いていた。fixed+vh の実機バグとトーン不一致のため
 // シート方式は全廃し、FAB は「新規ドラフト行を生やす」トリガーに変えた(draft 宣言のコメント参照)。
@@ -1782,15 +1783,16 @@ function commitSelection(): boolean {
 	return false;
 }
 
-/** FAB(+)で「一覧末尾に空のドラフト行を選択状態で生やす」。タイトル input へ即フォーカスする
+/** ⊕ で「一覧最上部に空のドラフト行を選択状態で生やす」。タイトル input へ即フォーカスする
  *  (iOS の新規行と同じ体感)。draft は due/優先度/繰り返し等を持たない最小の {title,notes}(構造化
  *  フィールドは作成モード詳細ページで編集する)。
- *  【2026-07-23 カード UI 原則 (b) 是正② で focusDelayMs 引数を撤去】旧実装は fullscreen 昇格経路
- *  だけ startDraft(450) で遅延フォーカス + scrollIntoView していたが、その経路自体を
- *  triggerQuickAdd() 側で「昇格 → openCreateSheet() へ直行(safe top の作成ビューへ遷移)」に
- *  作り替えたため、startDraft はもう遅延を必要としない(常に inline の末尾ドラフト行を即フォーカス
- *  する用途だけが残った。inline はカード全高が常に見えるので scrollIntoView も不要 — 下記
- *  focusDraftTitle 参照)。 */
+ *  【2026-07-24 fullscreen 昇格経路の撤去に伴い唯一の実装へ復帰】2026-07-23 は triggerQuickAdd が
+ *  昇格後に openCreateSheet() へ直行する形へ作り替え、startDraft はその「拒否/失敗時フォールバック」
+ *  という位置づけに格下げされていた。しかし実機検証で「昇格そのものがホストの WebView 差し替えを
+ *  招き focus を破壊する」と確定した(triggerQuickAdd 冒頭コメント参照)ため、昇格経路自体を撤去し
+ *  startDraft を再び唯一の入口に戻した。renderAll 内でドラフト行は一覧最上部へ固定描画される
+ *  (renderAll の draft 節参照。旧・末尾配置はキーボード出現で隠れる実機報告があった)ので、
+ *  即フォーカスしても常に可視位置にある。 */
 function startDraft(): void {
 	draft = { id: `draft:${Math.random().toString(36).slice(2)}`, title: "", notes: "" };
 	selectedId = draft.id;
@@ -1800,15 +1802,12 @@ function startDraft(): void {
 	focusDraftTitle();
 }
 
-/** ドラフト行のタイトル input へフォーカスする(startDraft の下請け)。
- *  【2026-07-23 scrollIntoView 撤去(カード UI 原則 (b) §B-3 是正②)】旧実装は fullscreen 内部
- *  スクロール(#root.fullscreen-scroll)で末尾のドラフト行を追わせるため scrollIntoView していたが、
- *  プログラム的スクロールはホスト WebView 差(claude.ai iOS は追従なし・swift-mcp-app は過剰発火)で
- *  UX 成立条件にできない(modeling/15 §B-1・B-4)。startDraft の呼び出し元は現在「inline のまま
- *  末尾に生やす」経路(fullscreen 昇格を試みない/拒否時のフォールバック)だけになり、inline は
- *  カード全高が常に見える(内部スクロール無効)ため、そもそも見えない行にフォーカスすることが無い
- *  — scrollIntoView は不要になった(fullscreen 昇格経路は triggerQuickAdd が openCreateSheet() の
- *  「安全先頭に置いた作成ビュー」へ直行するので、こちらも scrollIntoView を要らない設計にした)。 */
+/** ドラフト行のタイトル input へフォーカスする(startDraft の下請け)。同期実行(タップジェスチャ内)
+ *  であることが iOS WebKit でキーボードを出す必須条件(root-cause は render-gate.ts 冒頭コメント)。
+ *  scrollIntoView は使わない — プログラム的スクロールはホスト WebView 差(claude.ai iOS は追従なし・
+ *  swift-mcp-app は過剰発火)で UX 成立条件にできない(modeling/15 §B-1・B-4)。ドラフト行は
+ *  renderAll 側で一覧最上部に固定描画されるため、そもそも見えない行にフォーカスすることが無く
+ *  scrollIntoView は不要。 */
 function focusDraftTitle(): void {
 	if (selTitleInput === null) return;
 	selTitleInput.focus();
@@ -3534,8 +3533,27 @@ function renderAll(): void {
 	// 応じて {total, recent} を絞る(completed-summary-view.ts 参照)。「すべて」表示は従来どおり owner 全体。
 	const scopedCompleted = scopeCompletedSummary(completedSummary, currentCalendarId);
 	const completedTotal = scopedCompleted?.total ?? 0;
-	// ドラフト行(FAB で生やした未送信の新規行)があるときは「タスクはありません」を出さない
-	// (空でも一番下にドラフト行を出すので、空メッセージとドラフト行の同居は誤解を招く)。
+
+	// --- ドラフト行(⊕ で生やした未送信の新規行)を一覧の最上部(全セクションより上)に選択状態で描く ------
+	// 【2026-07-24 末尾→先頭へ配置変更(inline ドラフト行方式への回帰に伴う対策)】旧実装は「期日なし
+	// セクションの下=一覧末尾」に置いていたが、それは fullscreen 昇格前提(昇格後は openCreateSheet の
+	// 単一ページ遷移が safe top を保証するので末尾でも実害なし)の設計だった。triggerQuickAdd が昇格
+	// しない inline 方式へ戻ったことで、末尾配置だと「inline はカード全高が常に見える」とはいえキーボード
+	// 出現でビューポートが縮み、末尾のドラフト行がキーボードの下に隠れうる(fa84ceb が inline を一度
+	// ボツにした実機報告そのもの)。scrollIntoView はホスト WebView 差(claude.ai iOS は追従なし・
+	// swift-mcp-app は過剰発火。modeling/15 §B-1・B-4)で UX 成立条件にできないため、スクロールに
+	// 頼らず「最初から見える位置に置く」= 一覧の最上部(cardVersionIsStale 通知の下・全セクションより
+	// 上)に固定描画することで解決する。
+	// sectionize に混ぜないのは従来どおり: 空タイトルの draft を compareTasks に通すと localeCompare で
+	// 意図しない位置に来てしまうため(位置を固定する)。
+	if (draft !== null) {
+		const ul = document.createElement("ul");
+		ul.appendChild(renderRow(draftToItem(draft), todayKey));
+		root.appendChild(ul);
+	}
+
+	// ドラフト行があるときは「タスクはありません」を出さない
+	// (最上部にドラフト行を出すので、空メッセージとドラフト行の同居は誤解を招く)。
 	if (activeCount === 0 && draft === null) {
 		const empty = document.createElement("div");
 		empty.className = "empty";
@@ -3557,15 +3575,6 @@ function renderAll(): void {
 		appendSection(root, "sec-today", "今日", s.today, todayKey);
 		appendSection(root, "sec-upcoming", "今後", s.upcoming, todayKey);
 		appendSection(root, "sec-nodue", "期日なし", s.noDue, todayKey);
-	}
-
-	// --- ドラフト行(FAB で生やした未送信の新規行)を一覧末尾(期日なしの下)に選択状態で描く ------------
-	// sectionize に混ぜず末尾へ直接置くのは、空タイトルの draft を compareTasks に通すと localeCompare で
-	// 期日なしセクションの先頭に来てしまい「末尾に生やす」という iOS の体感とズレるため(位置を固定する)。
-	if (draft !== null) {
-		const ul = document.createElement("ul");
-		ul.appendChild(renderRow(draftToItem(draft), todayKey));
-		root.appendChild(ul);
 	}
 
 	// --- B: 完了済みセクション(2026-07-23 症状B対策・ユーザー裁定で s.completed から乗り換え)------
@@ -3850,9 +3859,12 @@ function measureActionRowBlockPx(): number {
  */
 /** アクション行(フッタ「他 n 件の未完了」+ ⊕)を組み立てる。remaining が null なら畳みが無い
  *  (左は空・⊕ だけの行)。canRequestFullscreen で fullscreen 昇格ボタン化するかを判定する処理は
- *  旧フッタ生成と同一(コメントは旧 applyInlineFold から移設)。⊕ のクリックは todos の追加フロー
- *  (triggerQuickAdd。旧 quickAddFab ハンドラを抽出した共通関数)をそのまま呼ぶ — 浮遊 FAB と
- *  同じ「折り畳み中は fullscreen へ昇格してから startDraft(450)」判定に乗る(lastFoldActive 参照)。 */
+ *  旧フッタ生成と同一(コメントは旧 applyInlineFold から移設)。フッタの「他 n件」タップはこの
+ *  fullscreen 昇格判定を今も使う(畳みを解くための昇格で、triggerQuickAdd とは無関係)。⊕ のクリックは
+ *  todos の追加フロー(triggerQuickAdd。旧 quickAddFab ハンドラを抽出した共通関数)をそのまま呼ぶ —
+ *  【2026-07-24 是正】triggerQuickAdd 自体は fullscreen 昇格を一切行わなくなった(inline ドラフト行
+ *  方式に回帰。triggerQuickAdd 冒頭コメント参照)ため、この ⊕ は畳み有無に関わらず常に inline のまま
+ *  一覧最上部へドラフト行を生やす。 */
 function buildActionRow(remaining: number | null): HTMLElement {
 	const row = document.createElement("div");
 	row.className = "action-row";
@@ -5319,113 +5331,38 @@ function triggerQuickAdd(): void {
 	draft = null;
 	selectedId = null;
 
-	// 【追加は常に fullscreen へ昇格してから(2026-07-18 実機FB「ここ矛盾が多い」で常時昇格へ統一)】
-	// 旧仕様は「折り畳み中(lastFoldActive)だけ昇格・畳みが無ければ inline のままドラフト行」だった
-	// (2026-07-17 ユーザー提案「収納状態で add が押されたら fullscreen」由来)。しかしホスト側の
-	// 可視高レース修正で maxHeight が正しく大きくなった結果、畳みが発生せず inline 追加になる頻度が
-	// 上がり、(1) inline 追加はキーボード回避のスクロール量が足りずタイトルが隠れる、(2) agenda の
-	// ⊕ は常時昇格なのに todos だけ条件分岐、という矛盾が実機で露呈した。inline 追加の
-	// キーボード問題をホスト側回避量の調整で追うより、「追加は常に全件の見える fullscreen で行う」に
-	// 統一する方が単純(iOS リマインダーも新規追加は全件の見える文脈・agenda と挙動も揃う)。
-	// 旧・畳み時の破綻理由(top-N 窓の外へソートされる/追加後に畳みへ飲まれる)は常時昇格でも
-	// 引き続き回避される(lastFoldActive はこの判定から外れたが、畳み描画自体の記録として残す)。
-	// 昇格が受理されたら applyHostContext で hostDisplayMode を更新してから作成ビューへ直行する。
-	// 昇格不可(ホストが fullscreen 非対応=canRequestFullscreen false)や拒否/失敗のときは inline の
-	// まま追加へフォールバックする(この経路でも draft 行は section 外の ul なので畳み対象外=消えはしない)。
-	//
-	// 【2026-07-23 カード UI 原則 (b) 是正②: agenda の triggerCreateEvent 型へ統一】
-	// 旧実装は昇格後も「一覧末尾にドラフト行を生やして選択状態にする」(startDraft(450))ままで、
-	// scrollIntoView(+450ms 遅延 focus)がその行を fullscreen の内部スクロールコンテナ内で追わせて
-	// いた。しかしプログラム的スクロールはホスト WebView 差(claude.ai iOS は追従なし・swift-mcp-app
-	// は過剰発火)で UX 成立条件にできない(modeling/15 §B-1・B-4)。agenda-entry.ts の
-	// triggerCreateEvent(vevent 作成)はそもそも一覧行を経由せず openCreateSheet() で「作成ビューへの
-	// 単一ページ遷移」に直行しており、遷移直後は #root を差し替えるため scrollTop=0(=安全先頭)が
-	// 保証される。todos 側もこれに揃え、昇格後は startDraft()(draft オブジェクトの生成のみ・
-	// renderAll は list 骨格のまま一瞬走るが直後の openCreateSheet() の renderAll で上書きされ
-	// ユーザーには見えない — agenda 側コメントと同じ「同一 tick 内の同期呼び出し」の理屈)→
-	// openCreateSheet() で作成ビューへ即遷移する形に変える。450ms 遅延 focus 自体は撤去しない
-	// (ズーム遷移との直列化が目的でホスト差分吸収ではないため。startDraft 旧 JSDoc の記録を
-	// focusSheetTitle 側へ引き継いだ)。
-	// 【#44 item 5(iOS キーボード根治)で順序を並べ替えた・450ms 遅延 focus を撤去】
-	// 旧実装は「requestDisplayMode(fullscreen).then(() => { applyHostContext(); startDraft();
-	// openCreateSheet(); setTimeout(focusSheetTitle, 450) })」で、作成ビューの描画も focus も昇格の
-	// Promise 解決後(=タップジェスチャの外・非同期)に起きていた。iOS WebKit はユーザージェスチャの
-	// 同期実行中以外の input.focus() ではソフトキーボードを出さないため、450ms 遅延 focus は原理的に
-	// キーボードが出ない(root-cause は render-gate.ts 冒頭コメント)。agenda-entry.ts の
-	// triggerCreateEvent と同じ順序へ統一する:
-	//   (1) startDraft() + openCreateSheet() を同期実行 = 作成ビュー(タイトル input)を今すぐ DOM に用意
-	//   (2) focusSheetTitle() を同期実行 = タップジェスチャ内で focus し、この時点でキーボード権を確保
-	//   (3) その後 requestDisplayMode(fullscreen) を投げ、解決後は applyHostContext(CSS のみ・非破壊)だけ
-	// 昇格に伴い後から来る hostcontextchanged 等の再描画要求は guardedRenderAll が sheetState!==null で
-	// 抑止する(render-gate)ため、focus 済み input が DOM から外れずキーボードが閉じない。
-	// 【不変条件(テスト不能なのでコメントで明文化)】昇格後に「focus 済み要素を DOM から外す破壊的
-	// renderAll」を走らせないこと。applyHostContext・guardedRenderAll はいずれもシート表示中に focus
-	// 要素を作り直さない。この不変条件を崩す新経路を足すときは要注意。
+	// 【2026-07-24 fullscreen 昇格経路を撤去し inline ドラフト行方式へ回帰(実機で根因確定)】
+	// 2026-07-23 は「追加は常に fullscreen へ昇格 → 作成ビューへ直行(openCreateSheet+focusSheetTitle)」
+	// に統一していたが、実機検証(#50 の focus-probe 計測)で根因が確定した: inline→fullscreen の
+	// "遷移" 自体でホスト(swift-mcp-app / claude.ai iOS)が WebView/document を作り直し、focus 済み
+	// 要素ごと別 window に差し替わる。ユーザー確認: 「最初から fullscreen なら ⊕ でキーボードが出る /
+	// inline から昇格すると出ない」。つまり同期描画→同期 focus→requestDisplayMode という順序を
+	// どれだけ厳密に守っても、"昇格" という行為自体がホスト側で focus を破壊する。対処法は
+	// 「昇格させない」以外にない。
+	// 【Why not: 昇格を維持したままホスト差を吸収する】ホストの WebView 差し替え挙動はカード側の
+	// JS からは検知も阻止もできない(#50 の probe が「カード側の不変条件は守られているのに focus が
+	// 消える」ことを実機ログで確定させた)。ホスト修正を待つのは iOS 対応というコア価値に対し
+	// 非現実的なので、昇格を要求しない設計に倒す。
+	// 【新方式】startDraft()(inline の末尾ドラフト行を生やし selTitleInput へ同期 focus)だけで
+	// 完結させる。fullscreen 昇格(openCreateSheet/focusSheetTitle/requestDisplayMode)は呼ばない
+	// — 既に fullscreen 状態のホストで押された場合も同じ inline ドラフト行方式に統一する(遷移が
+	// 無いので focus/キーボードは成立する。display mode で分岐して create sheet を出す必要はない
+	// = シンプルさ優先。タスク仕様③)。
+	// 【inline の「末尾で隠れる」対策】fa84ceb が inline を一度ボツにした理由は「inline 追加は
+	// キーボード回避のスクロール量が足りずタイトルが末尾で隠れる」だった。scrollIntoView はホスト差
+	// (modeling/15 §B-1・B-4)で当てにできないため、今回は renderAll 側でドラフト行を一覧の
+	// **最上部**(全セクションより上)に固定描画する形で解決する(下記 renderAll の draft 節参照)。
+	// 「最初から見える位置に置く」ことでスクロールへ依存しない。
+	// 【#50/#52 の focus-probe 計測(console.log + cardTelemetry.recordFocusProbe)を削除した理由】
+	// あの計測は「昇格の前後で focus が保たれるか」を測るものだった。昇格そのものをしなくなった今、
+	// 測る対象が無い(inline のままなので focus は同期 startDraft() の中で完結し、昇格由来の
+	// 非同期な喪失リスクが存在しない)。計測コードを残すと「今後も昇格するかもしれない」という
+	// 誤ったシグナルになるため撤去した。cardTelemetry.recordFocusProbe メソッド自体
+	// (card-telemetry.ts)は他の再発防止用途に転用され得るので残置している。
+	// 【リッチ入力への導線は維持】ドラフト行 → 詳細ページ(buildDetailPage)への遷移(行タップ/ⓘ)は
+	// 今回変更しない。クイック追加は title だけ inline で打てればよく、notes/due 等の編集は
+	// その導線に委ねる(タスク仕様④)。
 	startDraft();
-	openCreateSheet(); // 同期 renderAll で作成ビューを描き、buildDetailPage(create)が sheetTitleInput を登録
-	focusSheetTitle(); // ← タップジェスチャ内の同期 focus(キーボード権の確保。450ms 遅延 focus は撤去した)
-	if (canRequestFullscreen(hostAvailableDisplayModes)) {
-		// 【#50 実機FB①: inline→fullscreen 昇格で focus/キーボードが失われる根因の切り分け証跡】
-		// 症状は「既に fullscreen なら ⊕ で focus/キーボードが出るが、inline から ⊕ を押すと fullscreen には
-		// なるが focus もキーボードも無い」。上記の順序(同期描画→同期 focus→requestDisplayMode)は既に守られて
-		// いて、guardedRenderAll が sheetState!==null で昇格後の破壊的 renderAll を抑止する(= sheetTitleInput は
-		// DOM から外れない)ので、カード側の JS 不変条件は満たされている。それでも focus が消えるなら、残る
-		// 疑いは「ホスト(claude.ai iOS)が昇格時に WebView/ドキュメントを作り直し、focus 済み要素ごと別 window に
-		// 差し替わる」= カード側では原理的に維持不能なケース。それを実機ログで確定/否定するための計測。
-		// (1) 昇格を投げる直前に window へ世代印を打つ。ドキュメントが作り直されれば新 window には印が無い。
-		// (2) 昇格解決後、同一 window か・sheetTitleInput が今も DOM 接続され activeElement のままかを記録する。
-		// iOS WebView にはコンソールが無いので、この console.log は実機ログ収集(proxy / observability)で拾う前提。
-		// 原因が確定したらこのブロックごと撤去してよい(safeAreaLogged と同じ暫定計測の位置づけ)。
-		interface PromoteProbeWindow extends Window {
-			__todosPromoteGen?: number;
-		}
-		const w = window as PromoteProbeWindow;
-		const gen = (w.__todosPromoteGen ?? 0) + 1;
-		w.__todosPromoteGen = gen;
-		const focusedBefore = document.activeElement === sheetTitleInput;
-		console.log("[todos] ⊕ promote start", { gen, hostDisplayMode, focusedBefore });
-		// #52 タスクB: 上の console 計測(実機コンソールが無い iOS では拾えない)の telemetry 版。
-		// requestDisplayMode 直前に phase:"before" を積む(この時点で focus はジェスチャ内で確保済みのはず)。
-		// activeElement.id は id 属性名のみ(コード命名の識別子 = PII 安全。空文字は undefined 化)。
-		const activeIdBefore = document.activeElement?.id || undefined;
-		cardTelemetry?.recordFocusProbe(
-			"before",
-			activeIdBefore,
-			sheetTitleInput !== null && sheetTitleInput.isConnected,
-			document.activeElement === sheetTitleInput,
-		);
-		app
-			.requestDisplayMode({ mode: "fullscreen" })
-			.then(() => {
-				applyHostContext(); // 非破壊のレイアウト調整のみ(focus は保持)
-				const w2 = window as PromoteProbeWindow;
-				const sameWindow = w2.__todosPromoteGen === gen; // false ならホストがドキュメントを作り直した証拠
-				const stillConnected = sheetTitleInput !== null && sheetTitleInput.isConnected;
-				const stillFocused = document.activeElement === sheetTitleInput;
-				console.log("[todos] ⊕ promote resolved", {
-					gen,
-					sameWindow,
-					stillConnected,
-					stillFocused,
-					activeTag: document.activeElement?.tagName ?? null,
-				});
-				// #52 タスクB: phase:"after" は昇格解決の **600ms 後** に読む(設計指定)。解決直後だと
-				// ホスト側の WebView 差し替え/レイアウト確定が済んでおらず focus 喪失を取りこぼしうるため、
-				// 一拍置いてから activeElement/sheetTitleInput の接続・focus 状態を確定値として記録する。
-				setTimeout(() => {
-					const activeIdAfter = document.activeElement?.id || undefined;
-					cardTelemetry?.recordFocusProbe(
-						"after",
-						activeIdAfter,
-						sheetTitleInput !== null && sheetTitleInput.isConnected,
-						document.activeElement === sheetTitleInput,
-					);
-				}, 600);
-			})
-			.catch(() => {
-				// 拒否/失敗は握りつぶす — 作成ビューは inline のまま成立しているので追加処理は不要。
-			});
-	}
 }
 quickAddFab.addEventListener("click", (e) => {
 	// FAB クリックは下の document click(選択解除)へ伝播させない(伝播すると生やした直後の
