@@ -1704,17 +1704,25 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			if (isDraft) {
 				// ドラフト行の ⓘ → v3 詳細ページを「作成モード」で開く。開く前に現在のインライン入力
 				// (タイトル/メモ)を draft へ取り込んでから開く(詳細ページの初期値に引き継ぐ)。
+				// openCreateSheet は create モード専用(create-todo に全フィールドを渡す)なので、
+				// 既存行用の openDetail とは別経路のまま維持する(draft は「作成」・既存行は「編集」で
+				// 保存先ツールが異なるため一本化できない)。
 				if (selTitleInput !== null && draft !== null) draft.title = selTitleInput.value;
 				if (selMemoInput !== null && draft !== null) draft.notes = selMemoInput.value;
 				openCreateSheet();
 				return;
 			}
-			// 詳細ページを開く前にインライン編集を確定してから開く(タイトル/メモを二重管理しない)。
-			// 確定後の最新表示行を詳細ページの初期値に使う(楽観上書きが乗った display 行)。
-			commitSelection();
-			selectedId = null;
-			const latest = tasks?.find((t) => t.id === task.id) ?? task;
-			openSheet(latest);
+			// 【2026-07-24 §C-4/§B: 既存行の ⓘ を head タップと同一の openDetail 経路へ一本化】
+			// 旧実装はここで commitSelection → openSheet(latest) を直呼びしており、requestDisplayMode を
+			// 通さないため inline ホストでは詳細フォームを inline のまま描きうる経路だった。§C-4 は
+			// 「詳細フォームは fullscreen 側に置く・inline カード内への詳細フォーム埋め込みは §B の
+			// 有界高原則(inline は有界高・内部スクロール禁止)と正面衝突するため却下」と明記しており、
+			// inline 直描画を残すのは §B 違反の温床。よって既存行の詳細導線は ⓘ も head タップも
+			// openDetail(fullscreen 昇格 + C-4 tap-to-edit・到着時 auto-focus なし=C-1 遵守)へ統一する。
+			// なお、この非 isDraft 枝は §C-7 帰結2 で既存行が inline selected にならなくなった今、
+			// 事実上 draft 以外では到達しない(ⓘ は if(sel) 枝でしか描かれない)が、将来 selected 前提が
+			// 変わっても §B 違反へ退行しないよう、経路自体を openDetail に固定しておく。
+			openDetail(task.id);
 		});
 		rowMain.appendChild(info);
 
