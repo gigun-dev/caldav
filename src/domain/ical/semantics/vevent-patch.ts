@@ -31,6 +31,7 @@ import {
 	upsertStructuredLocationProperty,
 	structuredLocationHasGeo,
 	structuredLocationDegradeText,
+	VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS,
 	type StructuredLocationInput,
 } from "./structured-location-write";
 import { type CalDateTime } from "../values/cal-date-time";
@@ -186,7 +187,14 @@ export function patchVEventFields(vevent: Component, fields: VEventPatchFields):
 			out = removeStructuredLocationProperty(out);
 		} else if (structuredLocationHasGeo(fields.structuredLocation)) {
 			out = upsertProperty(out, "LOCATION", encodeText(fields.structuredLocation.title));
-			out = upsertStructuredLocationProperty(out, fields.structuredLocation);
+			// 2026-07-24 実験実装(ical-generator #236・地図表示テスト・効かなければ revert):
+			// X-ADDRESS を外し X-APPLE-RADIUS を常に書く。VTODO proximity(valarm-write.ts)は
+			// このオプションを渡さないので無関係(structured-location-write.ts の定数コメント参照)。
+			out = upsertStructuredLocationProperty(
+				out,
+				fields.structuredLocation,
+				VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS,
+			);
 		} else {
 			// #45 スライス B: geo 無しの設定 = degrade。LOCATION に title(+住所)を書き、既存の
 			// X-APPLE-STRUCTURED-LOCATION(古い座標)は除去する(新しい場所に座標が無いのに古い geo が

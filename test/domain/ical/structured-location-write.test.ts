@@ -137,12 +137,41 @@ describe("buildVEventCalendar: structuredLocation の author 規約(LOCATION も
 		const ev = reparsed.events()[0]!;
 		expect(ev.location).toBe("岐阜大学"); // encodeText 済み生値(エスケープ対象文字なし)。
 		const loc = readStructuredLocation(ev.raw);
+		// 2026-07-24 実験実装(ical-generator #236 由来・地図表示テスト・効かなければ revert):
+		// VEVENT の X-APPLE-STRUCTURED-LOCATION は X-ADDRESS を書かなくなった(#236 で X-ADDRESS が
+		// 地図を壊した実例あり)。input に address: "岐阜県岐阜市柳戸1-1" を渡していても出力からは消える
+		// (実験優先の割り切り。効いたら住所の戻し方は別途設計)。radius は入力どおり 100。
 		expect(loc).toEqual({
 			title: "岐阜大学",
-			address: "岐阜県岐阜市柳戸1-1",
+			address: null,
 			geo: { lat: 35.463012, lon: 136.737202 },
 			radiusMeters: 100,
 		});
+	});
+
+	test("2026-07-24 実験実装: X-APPLE-STRUCTURED-LOCATION が X-ADDRESS 無し・X-APPLE-RADIUS=100 のバイト列になる(ical-generator #236)", () => {
+		// #236 の報告(handle 無しで地図が出た最小形式): X-TITLE + geo: + X-APPLE-RADIUS のみ・
+		// X-ADDRESS 無し。効かなければこのテストごと revert する前提の実験。
+		const component = buildVEventCalendar({
+			uid: "ev-loc-236",
+			now: NOW,
+			summary: "岐阜大学で会議",
+			start: { type: "DATE", raw: "20260718" },
+			structuredLocation: { title: "岐阜大学", address: "岐阜県岐阜市柳戸1-1", lat: 35.4651333, lon: 136.7372096 },
+		});
+		const ics = serialize(component);
+		const line = ics
+			.split(/\r\n/)
+			.reduce((acc: string[], l) => {
+				// unfold(継続行の先頭スペースを連結)してから検索する — serializer が長い行を折り返すため。
+				if (l.startsWith(" ") && acc.length > 0) acc[acc.length - 1] += l.slice(1);
+				else acc.push(l);
+				return acc;
+			}, [])
+			.find((l) => l.startsWith("X-APPLE-STRUCTURED-LOCATION"));
+		expect(line).toBe(
+			"X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE=岐阜大学;X-APPLE-RADIUS=100:geo:35.4651333,136.7372096",
+		);
 	});
 
 	test("location と structuredLocation を両方渡すと structuredLocation.title が LOCATION を上書きする(後勝ち規約)", () => {
@@ -184,11 +213,13 @@ describe("patchVEventFields: structuredLocation の三値 patch", () => {
 		const vevent = ICalendarObject.fromComponent(calendar).events()[0]!.raw;
 		const patched = patchVEventFields(vevent, { structuredLocation: { title: "新しい場所", lat: 10, lon: 20 } });
 		expect(patched.properties.find((p) => p.name === "LOCATION")?.value).toBe("新しい場所");
+		// 2026-07-24 実験実装: radius 未指定でも VEVENT 側は既定 100 を補完して書くようになった
+		// (defaultRadiusMeters。#236 の「効いた」最小形式が X-APPLE-RADIUS を常に持つため)。
 		expect(readStructuredLocation(patched)).toEqual({
 			title: "新しい場所",
 			address: null,
 			geo: { lat: 10, lon: 20 },
-			radiusMeters: null,
+			radiusMeters: 100,
 		});
 	});
 

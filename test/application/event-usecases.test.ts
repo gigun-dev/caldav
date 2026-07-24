@@ -210,9 +210,12 @@ describe("event usecases", () => {
 			structuredLocation: { title: "岐阜大学", address: "岐阜県岐阜市柳戸1-1", lat: 35.463012, lon: 136.737202, radius: 100 },
 		});
 		expect(event.location).toBe("岐阜大学");
+		// 2026-07-24 実験実装(ical-generator #236・地図表示テスト・structured-location-write.ts 参照):
+		// VEVENT の X-APPLE-STRUCTURED-LOCATION は X-ADDRESS を書かなくなったため、address を渡しても
+		// 読み戻しでは消える(実験優先の割り切り)。
 		expect(event.structuredLocation).toEqual({
 			title: "岐阜大学",
-			address: "岐阜県岐阜市柳戸1-1",
+			address: null,
 			geo: { lat: 35.463012, lon: 136.737202 },
 			radiusMeters: 100,
 		});

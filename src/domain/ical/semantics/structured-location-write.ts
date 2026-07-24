@@ -86,14 +86,48 @@ export function structuredLocationDegradeText(loc: StructuredLocationInput): str
 const VALUE_URI_PARAM: Parameter = { name: "VALUE", values: ["URI"] };
 
 /**
+ * 【2026-07-24 実験実装・ical-generator #236 由来の仮説・効かなければ revert】
+ * VEVENT の地図表示だけを狙った build 時オプション(VTODO proximity 経路は一切渡さないので
+ * デフォルト値のまま=既存挙動を完全維持する。呼び出し元は buildProximityStructuredLocationProperty
+ * (valarm-write.ts)——ここはオプション無しで呼ぶ契約を守ること)。
+ * - omitAddress: true で X-ADDRESS パラメータを一切付けない。ical-generator issue #236 の報告で
+ *   「X-ADDRESS を付けると Apple カレンダーの地図が壊れた」実例があり、VEVENT 側だけこれを疑って
+ *   外す(住所情報は失われるが実験優先の割り切り。効いたら住所の戻し方は別途設計する)。
+ * - defaultRadiusMeters: loc.radius が未指定のときに補完する既定半径。#236 の「効いた」最小形式は
+ *   X-APPLE-RADIUS を常に持っていたため(handle 無し構成では半径がないと地図が出ない容疑)、
+ *   VEVENT 側は radius 未指定でも既定値(呼び出し元が 100 を渡す)を書くようにする。
+ */
+export interface BuildStructuredLocationPropertyOptions {
+	omitAddress?: boolean;
+	defaultRadiusMeters?: number;
+}
+
+/**
+ * VEVENT 専用の実験オプション(2026-07-24・単一情報源)。vevent-write.ts / vevent-patch.ts の両方の
+ * upsert 呼び出しがこの同じ定数を渡すことで「X-ADDRESS 無し・X-APPLE-RADIUS=100 既定」を統一する
+ * (2箇所にマジックナンバー 100 を重複させない)。効かなければこの定数ごと revert すればよい設計。
+ */
+export const VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS: BuildStructuredLocationPropertyOptions = {
+	omitAddress: true,
+	defaultRadiusMeters: 100,
+};
+
+/**
  * StructuredLocationInput → X-APPLE-STRUCTURED-LOCATION プロパティ(設計 05 §1-b の author 規約)。
  * 値は `geo:lat,lon`(read 側 parseGeoUri の逆)。X-TITLE/X-ADDRESS は TEXT なので encodeText して
  * パラメータ値に入れる(シリアライズ時に COMMA/SEMICOLON/COLON を含めば serializer が自動で
  * DQUOTE 化する — structure/edit.ts の upsertProperty コメント・serialize/*.ts 参照。ここでは
  * decodeText の逆である encodeText だけ担い、QUOTED 判定はしない)。
  * X-APPLE-RADIUS は数値をそのまま文字列化(read 側 parseRadiusMeters の逆)。
+ *
+ * options は2026-07-24 の実験実装(上記コメント参照)。省略時は完全に元の挙動(X-ADDRESS 付与・
+ * radius は指定時のみ)なので、VTODO proximity 経路(valarm-write.ts)は options を渡さず今まで通り
+ * 動く——バイト忠実テストが green のまま保たれるのはこの後方互換のおかげ。
  */
-export function buildStructuredLocationProperty(loc: StructuredLocationInput): Property {
+export function buildStructuredLocationProperty(
+	loc: StructuredLocationInput,
+	options?: BuildStructuredLocationPropertyOptions,
+): Property {
 	// #45 スライス B: geo 無しでここに来るのは呼び出し側のバグ(write 側は structuredLocationHasGeo で
 	// 分岐して geo 有りのときだけ呼ぶ契約)。value 本体の geo:lat,lon URI を作れないので防御的に throw する
 	// (黙って壊れた `geo:undefined,undefined` を書かない — vevent-write の「表現できない入力を黙って
@@ -102,11 +136,15 @@ export function buildStructuredLocationProperty(loc: StructuredLocationInput): P
 		throw new Error("buildStructuredLocationProperty: lat/lon required (geo-less input must degrade to LOCATION)");
 	}
 	const parameters: Parameter[] = [VALUE_URI_PARAM, { name: "X-TITLE", values: [encodeText(loc.title)] }];
-	if (loc.address !== undefined && loc.address !== "") {
+	if (!options?.omitAddress && loc.address !== undefined && loc.address !== "") {
 		parameters.push({ name: "X-ADDRESS", values: [encodeText(loc.address)] });
 	}
-	if (loc.radius !== undefined) {
-		parameters.push({ name: "X-APPLE-RADIUS", values: [String(loc.radius)] });
+	// 実験実装: options.defaultRadiusMeters があれば loc.radius 未指定時の既定値として使う
+	// (#236 の「効いた」形式は X-APPLE-RADIUS を常に持つため。VTODO 側は options 無し=従来どおり
+	// loc.radius 未指定なら X-APPLE-RADIUS 自体を書かない)。
+	const radius = loc.radius ?? options?.defaultRadiusMeters;
+	if (radius !== undefined) {
+		parameters.push({ name: "X-APPLE-RADIUS", values: [String(radius)] });
 	}
 	return { name: "X-APPLE-STRUCTURED-LOCATION", parameters, value: `geo:${loc.lat},${loc.lon}` };
 }
@@ -115,9 +153,17 @@ export function buildStructuredLocationProperty(loc: StructuredLocationInput): P
  * X-APPLE-STRUCTURED-LOCATION プロパティを Component から upsert する(VEVENT/VTODO 共有可能な
  * 汎用ヘルパー。vevent-write.ts/vevent-patch.ts がこれを呼ぶ。同名プロパティは単一出現前提
  * — structure/edit.ts upsertProperty と同じ制約)。
+ * options は buildStructuredLocationProperty へそのまま透過する(2026-07-24 実験実装。VEVENT 呼び出し
+ * 元だけが渡す想定 — VTODO proximity は upsertStructuredLocationProperty を使わず
+ * buildProximityStructuredLocationProperty 経由で buildStructuredLocationProperty を直接呼ぶので、
+ * ここに options を足しても proximity 経路には無関係)。
  */
-export function upsertStructuredLocationProperty(component: Component, loc: StructuredLocationInput): Component {
-	const prop = buildStructuredLocationProperty(loc);
+export function upsertStructuredLocationProperty(
+	component: Component,
+	loc: StructuredLocationInput,
+	options?: BuildStructuredLocationPropertyOptions,
+): Component {
+	const prop = buildStructuredLocationProperty(loc, options);
 	const index = component.properties.findIndex((p) => p.name === "X-APPLE-STRUCTURED-LOCATION");
 	const properties =
 		index === -1 ? [...component.properties, prop] : component.properties.map((p, i) => (i === index ? prop : p));
