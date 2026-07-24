@@ -51,10 +51,6 @@ import { TODOS_APP_HTML, TODOS_UI_HASH, TODOS_UI_URI } from "./ui/todos-app";
 // E-3 スライス S2: list-events-expanded が描画するアジェンダカードの ui:// URI と HTML 本体
 // (agenda-app.ts → agenda-bundle.ts 自動生成を経由)。todos と同じく server.ts から ui/ への import は許可。
 import { AGENDA_APP_HTML, AGENDA_UI_HASH, AGENDA_UI_URI } from "./ui/agenda-app";
-// 2026-07-23 iOS 描画切り分けスパイク: 最小診断カード(外部依存ゼロ・< 2KB)の URI + HTML。
-// todos/agenda と同じ登録経路(registerAppResource / registerAppTool)・同じ OAuth 保護下を通しつつ
-// 中身だけ極小にして「iOS で描画されるか」を切り分ける(仮説 (a) 認証 vs (b) サイズ)。詳細は diag-app.ts 冒頭。
-import { DIAG_APP_HTML, DIAG_UI_URI } from "./ui/diag-app";
 // S1: 確認トークンの生成(HMAC-SHA256・canonical JSON・TTL)。層は presentation/mcp に閉じる
 // (application 層の UC シグネチャに confirmToken を持ち込まない — docs/modeling/14 §7)。
 // R1(docs/modeling/15 §A-3): verifyConfirmToken(検証)はもう server.ts から使わない(delete-* の
@@ -2046,8 +2042,7 @@ function buildMcpServer(
 
 	// --- agenda ui:// 「未知のハッシュ」への後方互換フォールバック(2026-07-23)-----------------
 	// 理由・SDK 挙動確認・list 非掲載・uiHash 整合は上の todos 版フォールバックと完全に対称
-	// (詳細コメントは重複させずそちら側を参照)。diag は対象外(裁定どおり・診断カードは
-	// キャッシュバスティング対象そのものではなく撤去前提の一時カードなので後方互換は不要)。
+	// (詳細コメントは重複させずそちら側を参照)。
 	server.registerResource(
 		"Agenda View (legacy hash fallback)",
 		new ResourceTemplate("ui://caldav/agenda.{hash}.html", { list: undefined }),
@@ -2068,42 +2063,6 @@ function buildMcpServer(
 					uri: uri.toString(),
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
-				},
-			],
-		}),
-	);
-
-	// --- diag ui:// リソース(2026-07-23 iOS 描画切り分けスパイク)------------------------
-	// diag-card ツールが _meta.ui.resourceUri で参照する最小診断カードの HTML 本体を登録する。
-	// todos/agenda の "Todos View" / "Agenda View" と完全に対称の登録流儀(自己完結・外部依存ゼロ
-	// なので CSP 許可は不要)。違いは中身が < 2KB という点だけ — これにより iOS で描画されれば
-	// サイズ/内容説、失敗すれば認証説へ切り分けられる(diag-app.ts 冒頭コメント参照)。
-	// 切り分けが済んだらこの resource + diag-card ツール + diag-app.ts を丸ごと撤去できるよう疎に保つ。
-	registerAppResource(
-		server,
-		"Diag Card",
-		DIAG_UI_URI,
-		{
-			title: "診断カード(iOS 描画切り分け用・一時的)",
-			description: "iOS の MCP Apps 描画失敗を切り分ける最小カード(外部依存ゼロ・< 2KB)。切り分け完了後に撤去する。",
-			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
-		},
-		async () => ({
-			contents: [
-				{
-					uri: DIAG_UI_URI,
-					mimeType: RESOURCE_MIME_TYPE,
-					text: DIAG_APP_HTML,
 					_meta: {
 						ui: {
 							prefersBorder: false,
@@ -2179,43 +2138,6 @@ function buildMcpServer(
 			} catch (error) {
 				return toolError(error instanceof Error ? error.message : String(error));
 			}
-		},
-	);
-
-	// --- diag-card(2026-07-23 iOS 描画切り分け用・一時的)-----------------------------
-	// 【なぜ常時登録か(環境変数ゲートにしない)】既存に diag/debug 系の隔離パターン(env ゲート等)は
-	// 無い。かつ切り分けの本題は「本番の claude.ai iOS で、他カードと同じ経路を通したとき最小カードが
-	// 描画されるか」なので、本番 tools/list に出ないと検証できない。よって常時登録し、モデル/一覧に出る
-	// ノイズは description の「iOS 描画切り分け用・一時的」明記で吸収する(切り分け後に丸ごと撤去する前提)。
-	// 【なぜ registerAppTool + _meta.ui か】todos/agenda カードと「同じ紐付け経路・同じ resources/read
-	// 経路・同じ Bearer」を通すことが切り分けの肝。差分を「中身の大きさ」だけに絞るため、_meta.ui は
-	// list-events-expanded 等と同じ形(resourceUri + openai/outputTemplate 併記)にする。
-	// structuredContent は最小 { ok, generatedAt } のみ(カードは structuredContent を読まず静的描画する
-	// ので、中身は「ツールが成功応答を返した」ことの目印で足りる)。
-	server.registerTool(
-		"diag-card",
-		{
-			title: "Diag card",
-			description:
-				"iOS 描画切り分け用・一時的。最小の診断カード(ui://caldav/diag.html・外部依存ゼロ・< 2KB)を出すだけのツール。" +
-				"caldav の todos/agenda カードが claude.ai iOS で描画失敗する原因(認証 vs バンドルサイズ)を切り分けるための一時ツールで、切り分け完了後に撤去する。",
-			// 入力は取らない(診断カードを出すだけ)。空の ZodRawShape を渡す(get-current-time 等と同じく
-			// registerTool は inputSchema に ZodRawShape を要求するので、空オブジェクトで「引数なし」を表す)。
-			inputSchema: {},
-			annotations: READ_ONLY_ANNOTATIONS,
-			_meta: {
-				ui: { resourceUri: DIAG_UI_URI },
-				"openai/outputTemplate": DIAG_UI_URI,
-			},
-		},
-		async () => {
-			// 最小 structuredContent。ok は「ツールが成功した」目印、generatedAt はカードが描画された時刻と
-			// ツール応答時刻のズレを後から突き合わせられるようにする診断メタ(カード側は読まない)。
-			const result = { ok: true, generatedAt: Date.now() };
-			return {
-				content: [{ type: "text" as const, text: JSON.stringify(result) }],
-				structuredContent: result,
-			};
 		},
 	);
 

@@ -207,12 +207,10 @@ describe("/mcp", () => {
 	// 2026-07-23 #47 撤去: propose-delete-todo/event/calendar(確認 UI はホスト責務へ移行済みで
 	// 確認カードの入口が不要になった。撤去理由は server.ts の buildMcpServer 冒頭近くのコメント参照)を
 	// 削除したため 27→24 に更新。
-	// 2026-07-23 iOS 描画切り分け追記: diag-card(最小診断カードを出す一時ツール。iOS で todos/agenda
-	// カードだけ描画失敗する原因を認証 vs バンドルサイズで切り分ける用。切り分け完了後に撤去予定)を
-	// 追加したため 24→25 に更新。
 	// 2026-07-24 #52 追記: report-card-telemetry(カードからのサーバー側テレメトリ受け口。
 	// visibility:["app"] だが refresh-todos 等と同じく tools/list には出る)を追加したため 25→26 に更新。
-	it("正しい Bearer で tools/list に26ツールが並ぶ(report-card-telemetry 追加後)", async () => {
+	// 2026-07-24 diag-card 撤去: iOS 描画切り分け用の一時ツール(役目終了)を削除したため 26→25 に更新。
+	it("正しい Bearer で tools/list に25ツールが並ぶ(diag-card 撤去後)", async () => {
 		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
 		expect(res.status).toBe(200);
 		const rpc = await jsonRpcResult(res);
@@ -227,7 +225,6 @@ describe("/mcp", () => {
 			"delete-calendar",
 			"delete-event",
 			"delete-todo",
-			"diag-card",
 			"get-current-time",
 			"get-freebusy",
 			"list-calendars",
@@ -319,77 +316,11 @@ describe("/mcp", () => {
 		}
 	});
 
-	// 2026-07-23 iOS 描画切り分けスパイク: diag-card ツールと ui://caldav/diag.html リソースの検証。
-	// このスパイクの本質は「todos/agenda と同じ登録経路を通しつつ、中身だけ極小(外部依存ゼロ・< 2KB)に
-	// する」こと。よってテストで固定するのは (1) tool が _meta.ui で diag リソースを紐付ける、
-	// (2) resources/read が HTML を返す、(3) HTML が 2KB 以下で外部 URL 参照ゼロ、の3点。
-	// 中身が肥大化/外部依存混入すると切り分けの意味(サイズ/内容説の対照)が崩れるので機械的に固定する。
-	describe("diag-card(iOS 描画切り分け用・最小カード)", () => {
-		it("tools/list の diag-card が _meta.ui.resourceUri で diag リソースを紐付ける", async () => {
-			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
-			const rpc = await jsonRpcResult(res);
-			const byName = new Map<string, { _meta?: { ui?: { resourceUri?: string } }; annotations?: Record<string, unknown> }>(
-				rpc.result.tools.map((t: { name: string }) => [t.name, t]),
-			);
-			const diag = byName.get("diag-card");
-			expect(diag).toBeDefined();
-			expect(diag?._meta?.ui?.resourceUri).toBe("ui://caldav/diag.html");
-			// 照会系(副作用なし)なので read-only 申告(todos の list-todos 等と同じ形)。
-			expect(diag?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
-		});
-
-		it("resources/read が diag HTML を text/html;profile=mcp-app で返す", async () => {
-			const res = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 1,
-				method: "resources/read",
-				params: { uri: "ui://caldav/diag.html" },
-			});
-			expect(res.status).toBe(200);
-			const rpc = await jsonRpcResult(res);
-			const content = rpc.result.contents[0];
-			expect(content.uri).toBe("ui://caldav/diag.html");
-			expect(content.mimeType).toBe("text/html;profile=mcp-app");
-			expect(content.text).toContain("診断カード");
-		});
-
-		it("diag HTML は 2KB 以下・外部 URL 参照ゼロ(切り分けの対照条件を機械的に固定)", async () => {
-			const res = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 1,
-				method: "resources/read",
-				params: { uri: "ui://caldav/diag.html" },
-			});
-			const rpc = await jsonRpcResult(res);
-			const html: string = rpc.result.contents[0].text;
-			// サイズ上限 2048 バイト(仮説 (b) モバイル上限説を切り分ける「小さいカード」の定義)。
-			expect(Buffer.byteLength(html, "utf8")).toBeLessThanOrEqual(2048);
-			// 外部依存ゼロ: http(s):// や //cdn 等のプロトコル/プロトコル相対 URL を含まない
-			// (App SDK・CDN・フォント等を一切引かないので、SDK 読込やネットワークが失敗要因から排除される)。
-			expect(html).not.toMatch(/https?:\/\//i);
-			expect(html).not.toMatch(/src\s*=\s*["']\/\//i);
-		});
-
-		it("diag-card 呼び出しが structuredContent { ok, generatedAt } を返す", async () => {
-			const res = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 1,
-				method: "tools/call",
-				params: { name: "diag-card", arguments: {} },
-			});
-			expect(res.status).toBe(200);
-			const rpc = await jsonRpcResult(res);
-			expect(rpc.result.structuredContent.ok).toBe(true);
-			expect(typeof rpc.result.structuredContent.generatedAt).toBe("number");
-		});
-	});
-
 	// 2026-07-23 旧ハッシュ URI 後方互換(裁定: ハッシュ URI は維持しつつ、未知のハッシュへの
 	// read には最新 HTML を返す)。背景は server.ts の「todos ui:// 「未知のハッシュ」への
 	// 後方互換フォールバック」コメント参照。ここで固定するのは (1) 旧ハッシュ風 URI が最新 HTML を
 	// 返す、(2) 現行ハッシュ・legacy 静的 URI も従来どおり読める(テンプレート追加で壊れていない)、
-	// (3) resources/list の内容が変わらない(テンプレートは MAY omit で列挙されない)、
-	// (4) diag への波及がない、の4点。
+	// (3) resources/list の内容が変わらない(テンプレートは MAY omit で列挙されない)、の3点。
 	describe("ui:// 旧ハッシュ URI への後方互換フォールバック(2026-07-23)", () => {
 		it("todos: 存在しない旧ハッシュ風 URI への resources/read が最新 HTML を返す", async () => {
 			const res = await fetchMcp({
@@ -408,8 +339,6 @@ describe("/mcp", () => {
 			expect(content.uri).toBe("ui://caldav/todos.deadbeef.html");
 			expect(content.mimeType).toBe("text/html;profile=mcp-app");
 			expect(content.text.length).toBeGreaterThan(0);
-			// diag ではなく todos の中身であることを機械的に固定(diag への波及が無いことの一部保証)。
-			expect(content.text).not.toContain("診断カード");
 		});
 
 		it("agenda: 存在しない旧ハッシュ風 URI への resources/read が最新 HTML を返す", async () => {
@@ -425,7 +354,6 @@ describe("/mcp", () => {
 			expect(content.uri).toBe("ui://caldav/agenda.cafebabe.html");
 			expect(content.mimeType).toBe("text/html;profile=mcp-app");
 			expect(content.text.length).toBeGreaterThan(0);
-			expect(content.text).not.toContain("診断カード");
 		});
 
 		it("現行ハッシュ URI は従来どおり完全一致で読める(テンプレート追加で衝突しない)", async () => {
@@ -457,32 +385,19 @@ describe("/mcp", () => {
 			}
 		});
 
-		it("resources/list の内容は変わらない(現行ハッシュ + legacy 静的 URI + diag のみ・テンプレートは列挙されない)", async () => {
+		it("resources/list の内容は変わらない(現行ハッシュ + legacy 静的 URI のみ・テンプレートは列挙されない)", async () => {
 			const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "resources/list", params: {} });
 			expect(res.status).toBe(200);
 			const rpc = await jsonRpcResult(res);
 			const uris: string[] = rpc.result.resources.map((r: { uri: string }) => r.uri);
-			// 旧ハッシュ風の任意 URI(テンプレート)は列挙されない。現行ハッシュ・legacy 静的・diag の
+			// 旧ハッシュ風の任意 URI(テンプレート)は列挙されない。現行ハッシュ・legacy 静的の
 			// 固定 URI 群だけが載っていることを確認する(SEP-1865 は ui:// の list 省略を MAY omit と
 			// しているので、テンプレートを列挙しない設計はここでも仕様適合)。
 			for (const uri of uris) {
-				expect(uri).toMatch(/^ui:\/\/caldav\/(todos\.[0-9a-f]{8}\.html|todos\.html|agenda\.[0-9a-f]{8}\.html|agenda\.html|diag\.html)$/);
+				expect(uri).toMatch(/^ui:\/\/caldav\/(todos\.[0-9a-f]{8}\.html|todos\.html|agenda\.[0-9a-f]{8}\.html|agenda\.html)$/);
 			}
 			expect(uris).toContain("ui://caldav/todos.html");
 			expect(uris).toContain("ui://caldav/agenda.html");
-			expect(uris).toContain("ui://caldav/diag.html");
-		});
-
-		it("diag への波及なし: diag.html は変わらず単独で読める", async () => {
-			const res = await fetchMcp({
-				jsonrpc: "2.0",
-				id: 1,
-				method: "resources/read",
-				params: { uri: "ui://caldav/diag.html" },
-			});
-			expect(res.status).toBe(200);
-			const rpc = await jsonRpcResult(res);
-			expect(rpc.result.contents[0].text).toContain("診断カード");
 		});
 	});
 
