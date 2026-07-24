@@ -43,7 +43,7 @@ describe("AnalyticsEngineTelemetryAdapter", () => {
 		expect(dataset.calls[0].indexes).toEqual(["create-calendar"]);
 	});
 
-	it("blobs を [principal, host, errKind, requestId, sessionId] の固定順で積み、未指定は空文字にする", () => {
+	it("blobs を [principal, host, errKind, requestId, sessionId, colo] の固定順で積み、未指定は空文字にする", () => {
 		const dataset = new FakeAnalyticsEngineDataset();
 		new AnalyticsEngineTelemetryAdapter(dataset as unknown as AnalyticsEngineDataset).record(BASE_EVENT);
 		expect(dataset.calls[0].blobs).toEqual([
@@ -52,6 +52,7 @@ describe("AnalyticsEngineTelemetryAdapter", () => {
 			"",
 			"11111111-1111-4111-8111-111111111111",
 			"",
+			"NRT",
 		]);
 	});
 
@@ -69,7 +70,15 @@ describe("AnalyticsEngineTelemetryAdapter", () => {
 			"CollectionAlreadyExistsError",
 			"11111111-1111-4111-8111-111111111111",
 			"session-xyz",
+			"NRT",
 		]);
+	});
+
+	it("colo が未指定のイベントは blob6 が空文字になる", () => {
+		const dataset = new FakeAnalyticsEngineDataset();
+		const { colo, ...eventWithoutColo } = BASE_EVENT;
+		new AnalyticsEngineTelemetryAdapter(dataset as unknown as AnalyticsEngineDataset).record(eventWithoutColo as TelemetryEvent);
+		expect(dataset.calls[0].blobs?.[5]).toBe("");
 	});
 
 	it("doubles を [ms, ok(0/1)] に写す", () => {
@@ -78,7 +87,7 @@ describe("AnalyticsEngineTelemetryAdapter", () => {
 		expect(dataset.calls[0].doubles).toEqual([999, 0]);
 	});
 
-	it("argsDigest / colo は AE データポイントに含めない(96B 予算を principal/errKind 等へ優先する設計)", () => {
+	it("argsDigest は AE データポイントに含めない(構造化ログ側のみに残す設計。colo とは異なり集計ニーズが薄いため)", () => {
 		const dataset = new FakeAnalyticsEngineDataset();
 		new AnalyticsEngineTelemetryAdapter(dataset as unknown as AnalyticsEngineDataset).record({
 			...BASE_EVENT,
@@ -86,7 +95,6 @@ describe("AnalyticsEngineTelemetryAdapter", () => {
 		});
 		const point = dataset.calls[0];
 		expect(JSON.stringify(point)).not.toContain("tasks");
-		expect(JSON.stringify(point)).not.toContain("NRT");
 	});
 
 	it("writeDataPoint が例外を投げても record() 自体は例外を外へ漏らさない(fire-and-forget 契約)", () => {

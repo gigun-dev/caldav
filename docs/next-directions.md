@@ -52,6 +52,27 @@
   > — includeCompleted:true 照会 push で「完了済み111件」に化ける現象を構造的に解消。
   > due 窓判定は filterTasksByWindow として application 層へ抽出(UC と presentation で単一情報源)。
   > D4 完了スナップショットの無期限累積(111件の真因)の保持ポリシーは未着手の設計事項。
+  > **2026-07-24 更新: D4 保持ポリシーは「今は入れない」で裁定・クローズ(architect/Fable 一次設計)。**
+  > 理由(優先度順): ①可逆性の非対称(「入れない」は cron 追加で後から覆せるが削除は不可逆。
+  > 判別不能な旧データへ自動削除を走らせると非反復タスクの手動完了履歴を誤消去するリスクがある)
+  > ②コアバリュー(RFC 準拠+iOS 対応)に非寄与 — 削除はむしろ iOS ネイティブの「無期限累積」
+  > 挙動からの逸脱 ③実害ゼロ(本番 150 行/単一ユーザー、D1 10GB まで桁違いの余裕)④「累積が問題」
+  > という従来評価は UI 表示問題を指していたもので、それは completedSummary(#43)で解決済み。
+  > 本番実測(2026-07-24 SELECT): STATUS:COMPLETED な VTODO 118 件中、確定 D4(`completion-` prefix
+  > UID)は 7 件のみ。旧 UUID 採番の D4 か通常完了かを ICS だけで判別不能なものが 111 件
+  > (07-16/07-17 の 67 件バーストは D4 実装直後の開発・E2E トラフィックの可能性大)。
+  > **据え置きトリガー(いずれかで再着手)**: ①対象コレクションの VTODO 行数が閾値(目安 5,000 行)
+  > 超過、または calendar-query/sync-collection REPORT の体感劣化 ②マルチユーザー化(OSS キット化)
+  > でテナント別保持ポリシーが商品要件になったとき ③iOS 実機で「サーバー側削除→ローカル表示」の
+  > 挙動検証が完了したとき。**将来入れる場合の設計輪郭**: 対象は `uid LIKE 'completion-%'` AND
+  > STATUS:COMPLETED AND `updated_at < now - TTL`(TTL 目安180日・iOS キャッシュ挙動未検証のため
+  > 保守的に長め)。二段(①日次 cron で deleted_at を立てる→sync_changes に 'deleted' 記録=RFC 6578
+  > §3.5.2 の removed MUST を既存 soft-delete 機構が充足 ②既存 purgeDeletedBefore が30日後に物理
+  > DELETE)。層配置: 保持判定は domain のポリシー関数、cron 起動は application UC(例
+  > PurgeExpiredCompletionSnapshots)、SQL は infrastructure。**判別不能な旧 111 件は恒久的に対象外**
+  > (全 STATUS:COMPLETED 一律にすると非反復タスクの手動完了履歴を消す許容不能な副作用があるため)。
+  > ボツ案: (b) マスターごと直近 N 件保持 = 旧 UUID で紐付け不能・`completion-` ハッシュはマスター
+  > UID へ逆引き不能でボツ。(c) 無期限を「ポリシーとして実装」= それは「入れない」と同義でコード不要。
   > **2026-07-23 更新: カード UI 原則 (b) 採用(ユーザー承認・architect 調査)。**
   > inline=有界高・内部スクロール禁止・深いナビ禁止(OpenAI Apps SDK ガイドラインと一致)/
   > fullscreen=単一スクロールコンテナ許容/プログラム的スクロールを UX 成立条件にしない —
@@ -144,6 +165,8 @@
   > 教訓(memory 記録済み): 同一ファイルを触るスライスを並列に出さない(後勝ちマージが
   > 先行実装の配線を乱す。make check green でも統合の振る舞いは守られない)。
   > 完了済み総数(114件)表示と D4 スナップショット保持ポリシーの議論は未決のまま。
+  > **2026-07-24 更新: D4 保持ポリシーは「今は入れない」で決着 ✅**(裁定と根拠は上記 07-23
+  > completedSummary の更新ブロック参照)。完了済み総数表示は #43 の completedSummary で解決済み。
   > **2026-07-23 更新: 実機フィードバック大量投入(swift ホスト・新版カード)と設計裁定2件。**
   > 【裁定1: done 行の自動移動(C0-a′)は撤回】architect 調査で modeling/12 §7.8 v2.2 の
   > 裁可済みドクトリン「時間駆動の視覚イベントを型から排する」と矛盾する再導入だったと判明
@@ -170,6 +193,15 @@
   > description 誘導: リスト名→calendarId 解決/住所→structuredLocation/known-locations 先引き)。
   > **バックログ(#47)**: propose-delete 撤去・purge cron 配線・R2 Inspector E2E・IAD 再計測・
   > D4 保持ポリシー(完了済み115件累積の根本)。
+  > **2026-07-24 更新: #47 バックログ全項目決着。** ~~propose-delete 撤去~~ ✅・~~purge cron 配線~~ ✅・
+  > ~~R2 Inspector E2E~~ ✅(3件とも 545920f で実装済み・受け入れ PASS は docs/log.md 07-23続き10)。
+  > ~~D4 保持ポリシー~~ ✅「今は入れない」で裁定・据え置き(裁定と根拠は上の 07-23 completedSummary
+  > 更新ブロック参照)。~~IAD 再計測~~ △ colo タグ欠落により判定不能と判明 → AE blob6 に colo 追加+
+  > 誤ったコメント訂正(このセッションで実施・詳細は下記 07-22 IAD 更新ブロック直後の追記参照)。
+  > colo 蓄積後の再測定は引き続き据え置き。加えて #45 名残の2件も確認しクローズ: known-locations の
+  > geo 無し emit は現状どおり出さないのが正(iOS 地図に出ない場所を提示する中途半端さを避ける・
+  > 変更不要)/ geocoding quota は失敗時も消費するのが正(実呼び出しが発生した以上試行回数で数える
+  > 設計はコード既存コメントどおり・変更不要)。
   > **swift 申し送り(#34/#41)**: swift-mcp-app/docs/next-directions.md に追記済み(未コミット・
   > Desktop セッションに委ねる)。
   > **2026-07-23 更新: 是正束7件の実装・静的検証完了 ✅。** C0-a′ の2相退場機構/
@@ -372,6 +404,19 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
 >   **1 クエリ**へ。新 port findByOwnerTimeRange + ListOccurrences/ComputeFreeBusyAcrossOwner(単一 UC は
 >   DAV 用に不変・echo 契約不変)。**残: claude.ai 経由の実測 before/after(トラフィック待ち)**。
 >   sync-collection 系の hydrate N+1 は残置(別スライス候補)。
+>   > **2026-07-24 更新: IAD 再計測は colo タグ欠落により判定不能と判明・対処のみ実施し据え置き。**
+>   > AE dataset caldav_mcp_events を SQL HTTP API で直接クエリ(計装は 2026-07-23 追加でまだ薄い・
+>   > 約1日/419コール、うちエラー27=~6.4%)。全 list/refresh 系が強い bimodal(p50 85〜211ms=近い
+>   > D1 クラスタで既測 325〜351ms と整合・p95 ~2000ms/max 4.9s の遅いテール)までは分かったが、
+>   > **colo 別の分解が不能だった**: `analytics-engine-telemetry.ts` が colo を AE へ書いていなかった
+>   > (96B 予算を理由に除外していたが、その 96B 前提が事実誤認 — 96B は index のみで blobs は
+>   > 16KB 枠。Cloudflare 公式 limits ページ 2026-07-24 一次確認)。observability MCP ツールの
+>   > events ビューは Zod バグで壊れており console.log 側の colo を読む回避路も不能。**対応(この
+>   > セッションで実施)**: AE アダプタの blobs 末尾(blob6)に colo を追記し、誤ったコメントを一次
+>   > 資料で訂正(コード変更済み)。**判定は据え置き** — 「IAD が並列化後 ~400-500ms に収まったか」
+>   > および次段最適化(横断1クエリ化 / D1 read replication)の go/no-go は、colo タグ付きサンプルが
+>   > 蓄積されてから再測定して判断する(単発 IAD からの合成プローブでも可)。現時点では「IAD は
+>   > 改善した」と結論づけるデータは無い(bimodal のテールが IAD 由来かも未確認)。
 > - **range 語彙拡充(b6961d1)**: 「今週の予定」で get-current-time 2往復が実運用で再発(スクショ確認)→
 >   this-week / next-week / this-month を追加・description に「相対表現は range 1発・get-current-time 不要」。
 >   **→ #32: 週始まりは月曜固定にしたがユーザーのカレンダーは日曜始まり — 日曜へ変更予定**(単一ユーザーの

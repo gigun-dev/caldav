@@ -1297,3 +1297,25 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 副産物のツール事情: Inspector の tools/call フォームが `create-todo` の `locationReminder`
   フィールドを一切レンダリングしない(DOM に存在しない)。フォーム経由の検証はこの引数について
   原理的に不可能で、直接 JSON-RPC POST が必須だった(前回検証者のメモと一致)。
+
+## 2026-07-24(続き17・#47 小粒バックログ決着)
+
+- **D4 完了スナップショット保持ポリシー**: architect(Fable)一次設計で「今は入れない・据え置き」
+  裁定。可逆性の非対称(入れないは後から覆せるが削除は不可逆)・コアバリュー非寄与・実害ゼロ・
+  UI 表示問題は completedSummary で解決済み、が理由。本番実測(SELECT): STATUS:COMPLETED な
+  VTODO 118 件中、確定 D4(`completion-` prefix UID)は 7 件のみ。判別不能な旧 111 件(07-16/07-17
+  バーストは D4 実装直後の開発トラフィックの可能性大)は恒久的に保持対象外(自動削除の誤爆を
+  避ける)。再着手トリガー(行数閾値・マルチユーザー化・iOS 実機検証完了)を明文化。
+- **IAD 再計測**: AE dataset を SQL HTTP API で直接クエリしたが、colo 別分解が不能と判明 —
+  `analytics-engine-telemetry.ts` が colo を書いていなかった(96B 予算を理由に除外していたが、
+  その前提が事実誤認。96B は index のみで blobs は 16KB 枠。Cloudflare 公式 limits ページで
+  一次確認)。observability MCP ツールの events ビューは Zod バグで代替不能。対処として AE
+  アダプタの blobs 末尾(blob6)に colo を追記し、誤ったコメントを訂正(コード変更のみ・判定は
+  colo タグ付きサンプルが蓄積されてから再測定へ据え置き)。
+- **known-locations の geo 無し emit**: 現状どおり出さないのが正(iOS 地図に出ない場所を提示する
+  中途半端さを避ける)。コード確認のみで変更不要・クローズ。
+- **geocoding quota 失敗時消費**: 現状どおり消費するのが正(実呼び出しが発生した以上試行回数で
+  数える設計・既存コメントで根拠明記済み)。変更不要・クローズ。
+- 以上で #47 バックログ(propose-delete 撤去・purge cron 配線・R2 Inspector E2E・IAD 再計測・
+  D4 保持ポリシー)全項目が決着。docs/next-directions.md の該当箇所へ反映(コードは無変更
+  ——AE blob6 の colo 追記のみ src 側の軽微な変更)。
