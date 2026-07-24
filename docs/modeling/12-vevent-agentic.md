@@ -485,6 +485,15 @@ export const isCommitting = (now: number, startedAt: number): boolean =>
 > 完了行はカードインスタンス生存中その場に留まり(取消線・再タップ undo)、次の fresh render / view・calendar
 > 切替のクリーン再セクショニング(`resetPositionMemory`)で初めて completedSummary 側だけの表示へ移る。
 
+> **2026-07-24 上書き:** §7.8 の系譜が扱ってきた ⊕ 昇格挙動(fa84ceb「常時 fullscreen
+> 昇格」= todos の ⊕ を常に fullscreen へ昇格させる方式)は、
+> `docs/modeling/15-hitl-and-card-ui-principles.md` §C(表示モード遷移と作成フローの
+> ドクトリン)の C-3 により上書きされた。C-1(focus は遷移をまたがない)が実機検証
+> #50 で恒久前提として確定したため、fa84ceb の「遷移直後に fullscreen ドラフト行へ
+> `scrollIntoView`」という設計は撤回し、「作成の第一打鍵は遷移ゼロの inline ドラフト行」
+> へ回帰している(VTODO/VEVENT 対称)。本節(§7.8)の本文はそのまま残すが、⊕ 昇格の
+> 現行方針は 15 §C を正とする。フリップの経緯は 15 §C-5 に記録済み。
+
 ## §7.9 表示順序設定(2026-07-16・Fable 設計・フォローアップ G)
 
 > iOS リマインダーの表示順序(手動/期限/作成日/優先順位/タイトル・既定 手動)の対応物。§7.8 v2.2 の位置不変は
