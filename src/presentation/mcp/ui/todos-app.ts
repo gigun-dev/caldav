@@ -427,9 +427,12 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     text-align: left;
     cursor: default;
   }
-  /* button 版(fullscreen 昇格可能ホスト)だけ押せることを示す(cursor + accent 色)。
-   * .fold-more の button 版(上の button.fold-more)と同じ視覚言語。 */
-  button.sec-completed-summary { cursor: pointer; color: var(--accent); }
+  /* 【2026-07-24 実機フィードバック是正: accent(青)色は外す】button 版(fullscreen 昇格可能ホスト)は
+   * 押せることを示す必要があるが、それは「›」chevron で足りる。当初 .fold-more の button 版に倣って
+   * accent 色も付けていたが、実機フィードバックで「青色じゃなくていい」と指摘された——サマリ行は
+   * リンクではなく折り畳みの延長線上の操作なので、色で目立たせるより muted のまま統一した方が
+   * 完了済みセクション全体のトーン(控えめ)と合う。cursor:pointer だけ残して押下可能は示す。 */
+  button.sec-completed-summary { cursor: pointer; }
   /* 昇格導線であることを示す「›」。テキストの直後・右端は寄せない(サマリ行自体は左寄せの短文なので
    * 右寄せにすると FAB/action-add のような「行の反対側にある操作」と誤読されうる——ここは行全体が
    * 1つの押せるテキストであることを示したいだけなので、文字列にそのまま続ける)。 */

@@ -3646,6 +3646,14 @@ function renderAll(): void {
 				chevron.textContent = "›";
 				summaryEl.appendChild(chevron);
 				summaryEl.addEventListener("click", () => {
+					// 【2026-07-24 実機フィードバック是正: 昇格と同時に開く】昇格の意図は「完了済みを見たい」
+					// ことそのものなので、fullscreen へ切り替わった先の <details> が既定閉(completedOpen
+					// 初期値 false)のままだと「押したのに何も変わらない」に見えてしまう(実機報告)。
+					// requestDisplayMode を投げる前に completedOpen を true にしておけば、昇格後の
+					// applyHostContext → renderAll(fullscreen 枝)が `details.open = completedOpen` を
+					// 読む時点で既に true になっており、開いた状態で出る。時間差の視覚効果ではなく
+					// 「次に読まれる状態」を先に書き換えるだけなので時間駆動ドクトリンには抵触しない。
+					completedOpen = true;
 					// requestDisplayMode の戻り値は実際に設定されたモード(apps.mdx:787 MUST)。拒否されたら
 					// "inline" が返るだけでエラーではない — buildActionRow の「他 n件」と同じ扱いで握りつぶす。
 					void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
