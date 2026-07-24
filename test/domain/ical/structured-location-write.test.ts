@@ -42,14 +42,45 @@ describe("buildStructuredLocationProperty ↔ readStructuredLocation(1プロパ�
 		});
 	});
 
-	test("address/radius 省略時は書かれない(read も null に戻る)", () => {
+	test("address 省略時は書かれない・radius 省略時は既定100が書かれる(2026-07-24 地図表示仮説実装)", () => {
 		const prop = buildStructuredLocationProperty({ title: "某所", lat: 35.4, lon: 136.7 });
 		expect(prop.parameters.find((p) => p.name === "X-ADDRESS")).toBeUndefined();
-		expect(prop.parameters.find((p) => p.name === "X-APPLE-RADIUS")).toBeUndefined();
+		// radius 未指定でも既定値100が常に書かれる(VEVENT_STRUCTURED_LOCATION_DEFAULT_RADIUS_METERS)。
+		expect(prop.parameters.find((p) => p.name === "X-APPLE-RADIUS")?.values).toEqual(["100"]);
+		// REFERENCEFRAME=0 も常に書かれる(地図表示仮説実装。効かなければ revert 前提)。
+		expect(prop.parameters.find((p) => p.name === "X-APPLE-REFERENCEFRAME")?.values).toEqual(["0"]);
 		const component = { name: "VEVENT" as const, properties: [prop], components: [] };
 		const loc = readStructuredLocation(component);
 		expect(loc!.address).toBeNull();
-		expect(loc!.radiusMeters).toBeNull();
+		expect(loc!.radiusMeters).toBe(100);
+	});
+
+	test("radius 指定時はその値が優先される(既定100を上書き)", () => {
+		const prop = buildStructuredLocationProperty({ title: "某所", lat: 35.4, lon: 136.7, radius: 250 });
+		expect(prop.parameters.find((p) => p.name === "X-APPLE-RADIUS")?.values).toEqual(["250"]);
+	});
+
+	test("バイト忠実: 岐阜大学ケースの X-APPLE-STRUCTURED-LOCATION 完全出力(パラメータ順は Apple 実機実例に寄せる)", () => {
+		const prop = buildStructuredLocationProperty({
+			title: "岐阜大学",
+			address: "〒501-1193 岐阜県岐阜市柳戸１−１",
+			lat: 35.4651333,
+			lon: 136.7372096,
+		});
+		const vevent = { name: "VEVENT" as const, properties: [{ name: "UID", parameters: [], value: "e-gifu" }, prop], components: [] };
+		const vcalendar = {
+			name: "VCALENDAR" as const,
+			properties: [{ name: "VERSION", parameters: [], value: "2.0" }],
+			components: [vevent],
+		};
+		const ics = serialize(vcalendar);
+		// serializer は 75 オクテット超で行を折り返す(RFC 5545 §3.1 line folding)ため、
+		// 継続行(先頭が空白1個)を連結してから比較する。
+		const unfolded = ics.replace(/\r\n /g, "");
+		const line = unfolded.split("\r\n").find((l) => l.startsWith("X-APPLE-STRUCTURED-LOCATION"));
+		expect(line).toBe(
+			"X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-APPLE-RADIUS=100;X-APPLE-REFERENCEFRAME=0;X-TITLE=岐阜大学;X-ADDRESS=〒501-1193 岐阜県岐阜市柳戸１−１:geo:35.4651333,136.7372096",
+		);
 	});
 
 	test("X-ADDRESS にカンマを含む住所は serializer が自動 DQUOTE 化しても往復する", () => {
@@ -188,7 +219,9 @@ describe("patchVEventFields: structuredLocation の三値 patch", () => {
 			title: "新しい場所",
 			address: null,
 			geo: { lat: 10, lon: 20 },
-			radiusMeters: null,
+			// radius 未指定でも 2026-07-24 の地図表示仮説実装で既定100が常に書かれるようになった
+			// (VEVENT_STRUCTURED_LOCATION_DEFAULT_RADIUS_METERS)。
+			radiusMeters: 100,
 		});
 	});
 
