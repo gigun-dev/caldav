@@ -1570,8 +1570,16 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 			notesPreview.textContent = task.notes.trim();
 			head.appendChild(notesPreview);
 		}
-		// head タップ=選択(iOS 準拠)。仮行(create 未確定)は選択させても saveEdit が no-op なので許容。
-		head.addEventListener("click", () => setSelected(task.id));
+		// 【2026-07-24 §C-7 帰結2: 既存行の head タップ = fullscreen 詳細へ昇格(旧: inline 選択編集)】
+		// 旧実装は head タップで setSelected(task.id) を呼び、行を inline 選択状態にして title/memo を
+		// その場で直接編集させていた。しかし既存行はリスト内の任意位置にあり、iOS のキーボード出現時に
+		// 入力欄の可視性をカードが制御できない(VirtualKeyboard/interactive-widget が WebKit に無い・
+		// modeling/15 §C-7)。位置保証できない inline キーボード編集は一般解が無いため、既存行の編集は
+		// fullscreen 詳細へ倒す(openDetail → C-4 tap-to-edit)。これにより「行選択 → ⓘ の2タップで詳細」
+		// だった経路が「head タップ1発で詳細」へ短縮される(ⓘ もそのまま openDetail に合流)。
+		// なお draft 行(先頭固定・位置保証できる唯一の inline 編集=帰結1)は selected=true で上の if(sel)
+		// 枝(title input)を通るため、この else 枝(=非選択の既存行)には来ない。
+		head.addEventListener("click", () => openDetail(task.id));
 	}
 
 	// --- meta 行: due / 繰り返しバッジ / 場所チップ / becoming ラベル(右端)----------------------
@@ -1742,22 +1750,16 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 	return li;
 }
 
-/** setSelected: 行を選択(前の選択があれば確定 auto-save してから切替)。選択後に新タイトル input へ
- *  フォーカスしキャレットを末尾に置く(iOS の「タップで編集に入りカーソルが末尾」を再現)。 */
-function setSelected(id: string): void {
-	if (selectedId === id) return; // 同じ行の再タップは何もしない(input のフォーカスを奪わない)
-	commitSelection(); // 別行選択=前選択の確定(モック要件2)
-	// 別行を選んだ = 直前がドラフト行なら、それは commitSelection で確定/破棄済みなので落とす。
-	draft = null;
-	selectedId = id;
-	closeSwipe();
-	renderAll();
-	if (selTitleInput !== null) {
-		selTitleInput.focus();
-		const v = selTitleInput.value;
-		selTitleInput.setSelectionRange(v.length, v.length);
-	}
-}
+// 【2026-07-24 §C-7 帰結2: setSelected(既存行の inline 選択編集)を撤去】
+// 旧 setSelected は「head タップで既存行を選択 → title/memo をその場で inline 編集」の入口だった。
+// §C-7 の位置保証原則により、リスト内の任意位置にある既存行のキーボード編集は inline では成立させられない
+// (iOS に VirtualKeyboard/interactive-widget が無く、キーボード出現時に任意位置の入力欄を可視域へ
+// 留めるクリーンな標準 API が存在しない)ため、既存行の編集は fullscreen 詳細(openDetail → C-4
+// tap-to-edit)へ倒した。head タップは openDetail に合流し、この関数は唯一の呼び出し元を失って完全な
+// デッドコードになったため削除した(復活させると帰結2で撤回した anti-pattern を再導入することになる)。
+// selectedId が非 null になる残りの経路は draft 行(startDraft)のみ = 「カード先頭に差し込む位置保証
+// できる唯一の inline 編集」(帰結1)。renderRow の if(sel) 枝・commitSelection・selTitleInput/
+// selMemoInput はこの draft 行専用として残る(既存行から参照されなくなった分岐は draft では今も使う)。
 
 /** commitSelection: 選択解除=確定(auto-save)の本体。renderAll 前に selTitleInput/selMemoInput の
  *  DOM 値を読み、変更があれば楽観送信する。呼び出し側が selectedId=null / draft=null と renderAll を担う。
@@ -2106,6 +2108,34 @@ function openSheet(task: TodoItem): void {
 	closeSwipe();
 	quickAddFab.hidden = true; // 詳細ページ表示中は FAB を隠す(編集面の上に + が浮かないように)。
 	renderAll();
+}
+
+/** openDetail: 既存行(確定済みタスク)の詳細ページを fullscreen で開く共通経路(§C-7 帰結2)。
+ *  行タップ(head click)/ ⓘ ボタンの双方をここへ合流させる。
+ *  【なぜ既存行編集は inline ではなく fullscreen 詳細か(位置保証原則・modeling/15 §C-7)】
+ *  キーボードを要する編集は「入力欄の画面内位置をカードが保証できる場合にのみ inline を許す」。
+ *  保証できるのは「カード先頭(safe top)に自分で差し込む draft 行」だけ(=帰結1)。既存行はリスト内の
+ *  任意位置にあり、iOS には VirtualKeyboard API も viewport の interactive-widget も WebKit に無い
+ *  (2026-07-24 調査確定)ため、キーボード出現時に任意位置の入力欄を可視域へ留めるクリーンな標準 API が
+ *  存在しない。よって既存行の inline 選択編集(旧 setSelected)は撤去し、行タップは fullscreen 詳細へ
+ *  倒す ── そこは §C-4 の tap-to-edit(到着時 auto-focus はしない=C-1 遵守。ユーザーが textarea/input を
+ *  実際にタップした gesture で focus)。
+ *  【昇格の仕方】inline のときだけ fullscreen を要求する。requestDisplayMode の戻りは待たず openSheet を
+ *  同期で呼ぶ ── 昇格が拒否されるホストでも detail 自体は #root 単一ページ差し替えで表示され、C-1 遵守で
+ *  到着時 auto-focus をしないので「遷移をまたぐ focus」問題(#50)は構造的に起きない。 */
+function openDetail(id: string): void {
+	const latest = tasks?.find((t) => t.id === id) ?? null;
+	if (latest === null) return; // 楽観追加直後などで実データが無ければ何もしない(openSheet 側でも弾かれる)。
+	if (isOptimisticId(latest.id)) return; // 仮行はサーバー id が無く詳細編集できない(openSheet と同じ規律)。
+	// inline のときだけ昇格を要求する(既に fullscreen なら遷移不要=そのまま detail を描く)。
+	// canRequestFullscreen が false のホストでは要求せず、openSheet が現在モードのまま detail を描く
+	// (死にリンクを作らない・「他 n件」フッタや完了サマリと同じ判断)。
+	if (hostDisplayMode === "inline" && canRequestFullscreen(hostAvailableDisplayModes)) {
+		// 戻り値(実際に設定されたモード。apps.mdx:787 MUST)は待たない。拒否時は "inline" が返るだけで
+		// エラーではないので握りつぶす(buildActionRow の昇格導線と同じ扱い)。
+		void app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+	}
+	openSheet(latest);
 }
 
 /** 詳細ページを「作成モード」で開く(FAB ドラフト行の ⓘ から)。draft の title/notes を初期値にし、
@@ -5789,9 +5819,12 @@ menuOutsideEl.addEventListener("click", (e) => {
 // クリックはそれぞれのハンドラで先に処理され、ここは「その外」を担う(iOS の編集外タップに相当)。
 // 【v2→v3】menu-pop(ポップオーバー)は廃止したので外側タップでの closeMenu は不要になり削除。
 // #sheet-root も廃止(詳細ページは #root に描くので sheetState 表示中はこのハンドラを丸ごと skip)。
-// 【順序の噛み合い】別行の head をタップした選択切替では、head の setSelected が先に走って selectedId が
-// 新 id になり renderAll 済み。ここに来た時点で closest("li[data-id]") は(detached でも)クリックした
-// 行の li を返し data-id === 新 selectedId なので二重 commit しない。空白タップだけが commit+解除に至る。
+// 【2026-07-24 §C-7 帰結2 後の役割】setSelected(既存行の inline 選択編集)撤去後、selectedId が
+// 非 null になるのは draft 行(startDraft)だけになった。よってこのハンドラの「選択解除=確定」は
+// 実質的に「draft 行の外をタップしたら create 確定/空破棄する」経路として働く(既存行タップは
+// openDetail で fullscreen 詳細へ抜けるので、そもそも selectedId を立てない)。draft の head/⊕ FAB は
+// stopPropagation 済みなので、draft を生やした直後のタップがここへ漏れて即消える事故は起きない。
+// closest("li[data-id]") が draft 行 li を返せば rowId===selectedId で二重 commit しない。
 document.addEventListener("click", (e) => {
 	const target = e.target as HTMLElement;
 	// 詳細/リスト選択ページ表示中は、そのページ内のクリックを一覧の選択/スワイプ処理に巻き込まない。
