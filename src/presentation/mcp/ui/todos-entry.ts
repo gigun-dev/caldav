@@ -1474,8 +1474,13 @@ function renderRow(task: TodoItem, todayKey: string): HTMLLIElement {
 		// selectedId=null → renderAll で選択行 input を DOM から外す = 事実上の blur)が担う。属性はその
 		// 導線をユーザーに正しく示すために添える(メモ = .memo-line は「複数行が正当」なので下では付けない)。
 		// Why not blur() を明示追加: Enter 経路の renderAll が選択行(input)を作り直さず必ず外すため、
-		// 焦点は自然に抜ける。二重 blur を足すと(将来 blur 保存を配線した際に)保存経路が二重発火する温床に
-		// なるため、解除は「選択解除 = renderAll」の1経路に一本化しておく。
+		// 焦点は自然に抜ける。ここで blur() を明示追加はしない。
+		// 【2026-07-24 §C-7 帰結1(b) 更新: blur 保存を配線した】✓/Done でキーボードが閉じる=input が blur
+		// する経路に「完全な保存 Move」を配線した(document.focusout → commitSelectionOnBlur)。二重発火は
+		// commitSelectionOnBlur の selectedId===null / hasFocusedEditableInCard の二段ガードで防ぐ(Enter は
+		// 同期で selectedId=null にしてから renderAll するので、後続 blur は no-op になる。詳細は
+		// commitSelectionOnBlur の JSDoc)。ここで blur() を二重に呼ぶと同一 tick で focusout が二度飛びうる
+		// ため、明示 blur はしない方針を維持する。
 		ti.setAttribute("enterkeyhint", "done");
 		// ドラフト行は空なので入力を促す placeholder を出す(iOS の新規行「新しいリマインダー」)。
 		if (isDraft) ti.placeholder = "新しいリマインダー";
@@ -2059,6 +2064,37 @@ function flushPendingRenderIfIdle(): void {
 		pendingRenderAfterSheet = false;
 		renderAll();
 	}
+}
+
+/** commitSelectionOnBlur: 選択行の input から focus が抜けた瞬間に「完全な保存 Move」を走らせる。
+ *  【2026-07-24 §C-7 帰結1(b): ✓ を完全な保存 Move へ昇格】iOS ソフトキーボードのアクセサリ ✓ や
+ *  内蔵の "Done" はネイティブ要素で Web から直接ハンドルできない。実際に制御できるのは「✓/Done を
+ *  押す = キーボードが閉じる = input が blur する」という副作用だけなので、blur(focusout)に保存 Move を
+ *  配線して「✓ = 完了/保存と同等」を成立させる。従来は blur が未配線で、✓ を押すとキーボードは閉じるが
+ *  何も保存されない「中途半端な Move」(§C-7 ボツ案「✓ をキーボードを閉じるだけに留める」= 是正対象)
+ *  だった。ここで走らせる Move は header-done / Enter(commitDraftEnter)/ 行外タップと完全に同一
+ *  (commitSelection → draft/selectedId クリア → renderAll)。
+ *
+ *  【二重発火をどう防ぐか(1473 行の警告への回答)】
+ *  - selectedId===null ガード: Enter / header-done / 行外タップは同期的に selectedId=null にしてから
+ *    renderAll で input を DOM から外す。その後に発火する blur では既に selectedId===null なので
+ *    commitSelection は即 return し、create/update は二重に飛ばない(commitSelection 自身も
+ *    selectedId===null で false を返す二段構え)。
+ *  - hasFocusedEditableInCard ガード: タイトル input ↔ メモ input の間で focus が移っただけ(同一行内の
+ *    移動)では blur が発火するが、次の activeElement がカード内 input なのでここで弾く(誤って
+ *    入力途中で create してしまうのを防ぐ)。この判定は activeElement 確定後に見る必要があるため、
+ *    呼び出し側(focusout リスナ)が setTimeout(0) を挟む。
+ *  シート/コレクションページ表示中は本体リストの行選択が無い(それらは別ページ・selectedId=null)ので
+ *  追加ガードは不要だが、明示的に早期 return しておく。 */
+function commitSelectionOnBlur(): void {
+	if (selectedId === null) return; // 既に確定済み(Enter/Done/外タップ)なら何もしない=二重発火防止。
+	if (sheetState !== null || collectionSheet !== null) return; // 別ページ表示中は本体の選択編集は無い。
+	if (hasFocusedEditableInCard()) return; // 同一行内の title↔memo 移動では commit しない。
+	// ここに来た = 選択行の外(キーボードを閉じた/カード外へ focus が抜けた)。完全な保存 Move を実行する。
+	commitSelection();
+	draft = null;
+	selectedId = null;
+	renderAll();
 }
 
 /** 詳細ページを開く(既存タスクの ⓘ から)。draft を初期化し detail ページへ遷移する。 */
@@ -3410,10 +3446,19 @@ function appendCollectionGroups(parent: HTMLElement, s: Sections, todayKey: stri
  *  一覧ページ / 詳細ページ / リスト選択ページのどれかを描く(v3 カード内ページ遷移)。 */
 function renderAll(): void {
 	// 【S-E: ヘッダ Done の表示/非表示】旧 button.confirm の `if (sel)` 条件と同じ「selectedId が
-	// 何かの行を指しているか」だけで決める(ドラフト行の選択中も表示 = 旧仕様どおり作成中も確定できる)。
-	// sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null(openSheet/openCreateSheet の
-	// 呼び出し前に commitSelection→selectedId=null を通る)なので、この1行だけで両状態を正しく畳める。
-	headerDoneEl.hidden = selectedId === null;
+	// 何かの行を指しているか」で決める。sheetState(詳細/リスト選択ページ)表示中は selectedId が必ず null
+	// (openSheet/openCreateSheet の呼び出し前に commitSelection→selectedId=null を通る)なので、
+	// この判定で両状態を正しく畳める。
+	// 【2026-07-24 §C-7 帰結1(b): inline add ドラフト行では右上「保存」ボタンを置かない】
+	// ドラフト行(先頭固定・位置保証できる唯一の inline 編集=帰結1)の保存経路は ✓(blur 保存 Move)/
+	// Enter のみに一本化する。header-done を並べると OpenAI "No duplicative inputs" / Anthropic
+	// "Max actions: 2" に反し、かつ「内部スクロールで保存ボタンが隠れる地雷」を再導入してしまう。
+	// そのため draft 選択中は header-done を隠す。既存行の選択編集(次 commit (c) で fullscreen 詳細へ
+	// 倒すまでの過渡)では従来どおり header-done を保存導線として出す(そちらは先頭固定でないので
+	// blur 保存だけだと確定手段が不可視になるため)。(c) 完了後は既存行が inline 選択されなくなり、
+	// selectedId が指すのは draft のみ=header-done は事実上常時 hidden になる。
+	const isDraftSelected = draft !== null && selectedId === draft.id;
+	headerDoneEl.hidden = selectedId === null || isDraftSelected;
 	// --- ゴミ箱ページ(② 2026-07-24): trashItems はタスク/コレクションと無関係のカードレベルページ。
 	// list-deleted 応答が届いた瞬間に開く最優先ページなので、他のページ判定より先に見る(復元中の
 	// callServerTool 応答=通常 todos vm が届いても deletedItems は載らないので trashItems は保たれ、
@@ -4516,7 +4561,16 @@ app.addEventListener("hostcontextchanged", () => {
 // (作成ビュー内でのフィールド移動)は flushPendingRenderIfIdle 側の hasFocusedEditableInCard 判定で
 // スキップされる — そのため activeElement が確定する次のタスクまで待ってから判定する(0ms タイマー)。
 document.addEventListener("focusout", () => {
-	setTimeout(flushPendingRenderIfIdle, 0);
+	// 0ms タイマーの後で activeElement が確定してから両処理を走らせる。
+	// 【2026-07-24 §C-7 帰結1(b)】commitSelectionOnBlur を先に走らせる — ✓/Done でキーボードが閉じた
+	// (= 選択行 input が blur した)瞬間に完全な保存 Move を確定させる。順序: 保存 Move が renderAll まで
+	// 走ると selectedId=null になり、続く flushPendingRenderIfIdle はもう抑止対象(focus 中 input)が無い
+	// 状態で idle flush を評価できる。title↔memo 間の移動では commitSelectionOnBlur が
+	// hasFocusedEditableInCard で自ら弾く(同一行内の focus 移動で誤 commit しない)。
+	setTimeout(() => {
+		commitSelectionOnBlur();
+		flushPendingRenderIfIdle();
+	}, 0);
 });
 
 showStatus("接続中…");
