@@ -86,16 +86,21 @@ export function structuredLocationDegradeText(loc: StructuredLocationInput): str
 const VALUE_URI_PARAM: Parameter = { name: "VALUE", values: ["URI"] };
 
 /**
- * 【2026-07-24 実験実装・ical-generator #236 由来の仮説・効かなければ revert】
- * VEVENT の地図表示だけを狙った build 時オプション(VTODO proximity 経路は一切渡さないので
- * デフォルト値のまま=既存挙動を完全維持する。呼び出し元は buildProximityStructuredLocationProperty
- * (valarm-write.ts)——ここはオプション無しで呼ぶ契約を守ること)。
- * - omitAddress: true で X-ADDRESS パラメータを一切付けない。ical-generator issue #236 の報告で
- *   「X-ADDRESS を付けると Apple カレンダーの地図が壊れた」実例があり、VEVENT 側だけこれを疑って
- *   外す(住所情報は失われるが実験優先の割り切り。効いたら住所の戻し方は別途設計する)。
- * - defaultRadiusMeters: loc.radius が未指定のときに補完する既定半径。#236 の「効いた」最小形式は
- *   X-APPLE-RADIUS を常に持っていたため(handle 無し構成では半径がないと地図が出ない容疑)、
- *   VEVENT 側は radius 未指定でも既定値(呼び出し元が 100 を渡す)を書くようにする。
+ * 【2026-07-24 実機確認済み・本採用】VEVENT の地図表示を成立させる build 時オプション(VTODO
+ * proximity 経路は一切渡さないのでデフォルト値のまま=既存挙動を完全維持する。呼び出し元は
+ * buildProximityStructuredLocationProperty(valarm-write.ts)——ここはオプション無しで呼ぶ契約を守ること)。
+ * 実機(iOS カレンダー)で「サーバー発 VEVENT が X-APPLE-MAPKIT-HANDLE 無しでも地図ピン + タップ可能な
+ * 場所 + 出発時刻(Time to Leave)を表示する」ことを確認できた条件がこの2つ:
+ * - omitAddress: true で X-ADDRESS パラメータを一切付けない。X-ADDRESS が付いていると地図が壊れる
+ *   (ical-generator issue #236 の報告と一致する実機挙動)。住所情報は ICS 上から失われるが、地図表示を
+ *   成立させるための必須トレードオフとして受け入れる(将来住所を運びたくなったら、この
+ *   BuildStructuredLocationPropertyOptions の omitAddress を条件付きで false にする設計余地はある)。
+ * - defaultRadiusMeters: loc.radius が未指定のときに補完する既定半径。X-APPLE-RADIUS を持たないと
+ *   (X-ADDRESS 除去後の)地図が出ない実機挙動を確認したため、VEVENT 側は radius 未指定でも既定値
+ *   (呼び出し元が 100 を渡す)を必ず書く。
+ * 【X-APPLE-MAPKIT-HANDLE は不要と実証】この不透明バイナリ blob は非公開フォーマットで捏造不可能
+ * (デコード調査でも不透明 place ID を含むだけと判明)だが、そもそも地図表示の成立に必須ではなかった
+ * ——handle 無しでも上記2条件だけで地図ピン/タップ可能場所/Time to Leave がすべて出た。
  */
 export interface BuildStructuredLocationPropertyOptions {
 	omitAddress?: boolean;
@@ -103,11 +108,11 @@ export interface BuildStructuredLocationPropertyOptions {
 }
 
 /**
- * VEVENT 専用の実験オプション(2026-07-24・単一情報源)。vevent-write.ts / vevent-patch.ts の両方の
- * upsert 呼び出しがこの同じ定数を渡すことで「X-ADDRESS 無し・X-APPLE-RADIUS=100 既定」を統一する
- * (2箇所にマジックナンバー 100 を重複させない)。効かなければこの定数ごと revert すればよい設計。
+ * VEVENT 専用オプション(2026-07-24 実機確認済み・単一情報源)。vevent-write.ts / vevent-patch.ts の
+ * 両方の upsert 呼び出しがこの同じ定数を渡すことで「X-ADDRESS 無し・X-APPLE-RADIUS=100 既定」を統一する
+ * (2箇所にマジックナンバー 100 を重複させない)。
  */
-export const VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS: BuildStructuredLocationPropertyOptions = {
+export const VEVENT_STRUCTURED_LOCATION_OPTIONS: BuildStructuredLocationPropertyOptions = {
 	omitAddress: true,
 	defaultRadiusMeters: 100,
 };
@@ -120,9 +125,9 @@ export const VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS: BuildStructuredLocat
  * decodeText の逆である encodeText だけ担い、QUOTED 判定はしない)。
  * X-APPLE-RADIUS は数値をそのまま文字列化(read 側 parseRadiusMeters の逆)。
  *
- * options は2026-07-24 の実験実装(上記コメント参照)。省略時は完全に元の挙動(X-ADDRESS 付与・
- * radius は指定時のみ)なので、VTODO proximity 経路(valarm-write.ts)は options を渡さず今まで通り
- * 動く——バイト忠実テストが green のまま保たれるのはこの後方互換のおかげ。
+ * options は2026-07-24 実機確認済みの VEVENT 地図表示オプション(上記コメント参照)。省略時は完全に
+ * 元の挙動(X-ADDRESS 付与・radius は指定時のみ)なので、VTODO proximity 経路(valarm-write.ts)は
+ * options を渡さず今まで通り動く——バイト忠実テストが green のまま保たれるのはこの後方互換のおかげ。
  */
 export function buildStructuredLocationProperty(
 	loc: StructuredLocationInput,
@@ -139,8 +144,8 @@ export function buildStructuredLocationProperty(
 	if (!options?.omitAddress && loc.address !== undefined && loc.address !== "") {
 		parameters.push({ name: "X-ADDRESS", values: [encodeText(loc.address)] });
 	}
-	// 実験実装: options.defaultRadiusMeters があれば loc.radius 未指定時の既定値として使う
-	// (#236 の「効いた」形式は X-APPLE-RADIUS を常に持つため。VTODO 側は options 無し=従来どおり
+	// 2026-07-24 実機確認済み: options.defaultRadiusMeters があれば loc.radius 未指定時の既定値として使う
+	// (実機で「効いた」形式は X-APPLE-RADIUS を常に持つため。VTODO 側は options 無し=従来どおり
 	// loc.radius 未指定なら X-APPLE-RADIUS 自体を書かない)。
 	const radius = loc.radius ?? options?.defaultRadiusMeters;
 	if (radius !== undefined) {
@@ -153,8 +158,8 @@ export function buildStructuredLocationProperty(
  * X-APPLE-STRUCTURED-LOCATION プロパティを Component から upsert する(VEVENT/VTODO 共有可能な
  * 汎用ヘルパー。vevent-write.ts/vevent-patch.ts がこれを呼ぶ。同名プロパティは単一出現前提
  * — structure/edit.ts upsertProperty と同じ制約)。
- * options は buildStructuredLocationProperty へそのまま透過する(2026-07-24 実験実装。VEVENT 呼び出し
- * 元だけが渡す想定 — VTODO proximity は upsertStructuredLocationProperty を使わず
+ * options は buildStructuredLocationProperty へそのまま透過する(2026-07-24 実機確認済みオプション。
+ * VEVENT 呼び出し元だけが渡す想定 — VTODO proximity は upsertStructuredLocationProperty を使わず
  * buildProximityStructuredLocationProperty 経由で buildStructuredLocationProperty を直接呼ぶので、
  * ここに options を足しても proximity 経路には無関係)。
  */

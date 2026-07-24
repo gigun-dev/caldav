@@ -1319,3 +1319,17 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 以上で #47 バックログ(propose-delete 撤去・purge cron 配線・R2 Inspector E2E・IAD 再計測・
   D4 保持ポリシー)全項目が決着。docs/next-directions.md の該当箇所へ反映(コードは無変更
   ——AE blob6 の colo 追記のみ src 側の軽微な変更)。
+- 2026-07-24: **VEVENT の地図表示、実機 PASS で本採用(#51 場所機能・G3 決着)**。場所機能スレッドの
+  弧: X-APPLE-MAPKIT-HANDLE(不透明バイナリ)のデコード調査(非公開フォーマット・捏造不可・
+  中身は不透明 place ID のみと判明)→ サーバー発 VEVENT ではこの handle を作れないため一時
+  「swift ネイティブ経路(EKStructuredLocation(mapItem:) 等の公開 API)でしか地図表示は無理では」
+  という仮説に傾く → Time to Leave(出発時刻通知)の要件調査 → ical-generator issue #236 で
+  「X-ADDRESS パラメータが Apple カレンダーの地図表示を壊す」実例報告を発見 → VEVENT の
+  X-APPLE-STRUCTURED-LOCATION から X-ADDRESS を外し X-APPLE-RADIUS を常時付与する実験実装
+  → **実機検証で PASS**: サーバー発 VEVENT が iOS カレンダーで地図ピン + タップ可能な場所 +
+  Time to Leave を X-APPLE-MAPKIT-HANDLE 無しで表示(handle は不要と実証)。本採用に格上げ
+  (`VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS` → `VEVENT_STRUCTURED_LOCATION_OPTIONS` に
+  リネーム、コメントを実験→確定の記述へ更新。挙動は変更なし)。VTODO 側の位置リマインダー
+  (proximity VALARM・X-ADDRESS 込み・REFERENCEFRAME=1)は別経路で G1(arrive)がすでに実機成立
+  済み(到着通知)——VEVENT の地図表示とは独立した機能・混同しないよう docs/modeling/06 に注記。
+  詳細は docs/modeling/06-ios-behavior-verification.md の G3。

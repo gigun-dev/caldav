@@ -59,6 +59,17 @@ wrangler dev(port 8787)
 | A8 | iOS の非グレゴリオ暦(旧暦/中国暦)繰り返しイベントは RFC 7529 の `RSCALE` を送るか。**現行パーサーは RSCALE を未知 rule-part として InvalidValueError → validate 違反 → PUT 拒否になる**(2026-07-09 実測)。送ってくるなら寛容化(最低限「壊さず保持」)が必要 | recurrence-rule.ts の default 節(未知 rule-part 拒否) | iOS 設定で中国暦/和暦系の繰り返し(旧暦の誕生日等)を作成して RRULE を観測 | 🔶 2026-07-10: ⑤の操作をしたが **RSCALE は 1 件も観測されず**(15 PUT 中 RRULE は put03/04 の `FREQ=WEEKLY` のみ)。iOS 26.5 の標準 UI に非グレゴリオ暦繰り返しの選択肢が無かった/たどり着けなかった可能性が高い(ユーザーも「UI に選択肢があったか不明」)。RSCALE 拒否バグ(recurrence-rule.ts の default 節)は**未検証のまま残置**。→ 2026-07-10 クローズ(非該当): 日本語ロケールの iOS 26.5 標準カレンダー UI に非グレゴリオ暦繰り返しの導線は存在しない(ユーザー確認)。iOS からは RSCALE が来ないため寛容化は不要。他クライアント(Google 由来のインポート等)で RSCALE 入りデータを受ける可能性だけ既知リスクとして残置 |
 | A9 | iOS リマインダー/アラームの RFC 9074 プロパティ(ACKNOWLEDGED / PROXIMITY 位置アラーム / VALARM 内 UID)の実態。完了操作・位置ベース通知で何が PUT されるか | valarm.ts(9074 プロパティは未知として生値保持)、fixtures の ACKNOWLEDGED | リマインダー完了/位置アラーム設定の PUT を観測 | ✅ 2026-07-10: ⑫**完了操作 → ACKNOWLEDGED は使われない**。VTODO 本体に `STATUS:COMPLETED` + `COMPLETED:20260710T045638Z`(UTC)+ `PERCENT-COMPLETE:100` を追加(put12, real-ios/vtodo-completed.ics)。⑬**位置アラーム → VALARM に `X-APPLE-PROXIMITY:ARRIVE`(RFC 9074 の PROXIMITY ではなく X-APPLE 拡張)+ `X-APPLE-STRUCTURED-LOCATION`(geo)+ `TRIGGER;VALUE=DATE-TIME:19760401T005545Z`(過去のダミー日時 = 位置トリガのプレースホルダ)**(put13, real-ios/vtodo-proximity-alarm.ics)。VALARM 内 `UID` と `X-WR-ALARMUID` の両方あり(同値)。ACKNOWLEDGED は完了・通常アラームとも未観測。→ すべて生値保持でパース成功、validate 違反ゼロ(9074/X-APPLE を未知プロパティとして壊さず保持できている) |
 
+**【A9 と G3 の X-APPLE-STRUCTURED-LOCATION 形式の混同注意(2026-07-24 追記)】** 同じプロパティ名でも
+本作サーバーが書く形式は2経路で異なる。混同しないこと:
+- **VEVENT(本採用・G3)**: `X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE;X-APPLE-RADIUS:geo:lat,lon`
+  (**X-ADDRESS を書かない**・REFERENCEFRAME なし)。地図表示専用。
+  `VEVENT_STRUCTURED_LOCATION_OPTIONS`(structured-location-write.ts)経由。
+- **VTODO proximity(A9・fixtures/real-ios/vtodo-proximity-alarm.ics 由来)**: VALARM 内に
+  `X-ADDRESS` を含み `X-APPLE-REFERENCEFRAME=1` が付く別形式(geofence 用。iOS 実機 PUT をそのまま
+  バイト忠実フィクスチャ化したもので、VEVENT 側の「本採用」の対象外)。
+  `buildProximityStructuredLocationProperty`(valarm-write.ts)は options を渡さず従来どおり
+  X-ADDRESS 込みで書く(G1/G2 の実機ゲート対象・本タスクでは変更しない)。
+
 ### B. プロトコル挙動の前提(これから実装する CalDAV リソース層)
 
 | # | 検証したい前提 | 前提の所在 | 確認方法 | 結果 |
@@ -590,8 +601,19 @@ V5 の確定を受け、時刻付き due(DATE-TIME;TZID)を独立 alarm フィ�
 - **G2(leave/DEPART)**: `X-APPLE-PROXIMITY:DEPART`(出発時通知)が iOS で発火することを実機確認する。
   domain writer は既に両対応だが、MCP 公開 enum は G2 通過まで "arrive" のみに絞る(未検証の
   DEPART を公開して「離れたら通知が実は鳴らない」誤解を生まないため)。通過後に enum へ "leave" を足す。
-- **G3(VEVENT degrade)**: VEVENT の structuredLocation を geo 有り/無しの両方で iOS カレンダーに
-  出し、geo 有り=地図ピン、geo 無し=LOCATION テキストのみ、が期待どおり表示されることを実機確認する。
+- ~~**G3(VEVENT degrade)**: VEVENT の structuredLocation を geo 有り/無しの両方で iOS カレンダーに
+  出し、geo 有り=地図ピン、geo 無し=LOCATION テキストのみ、が期待どおり表示されることを実機確認する。~~
+  ✅ **PASSED(2026-07-24)**: geo 有り=地図ピン側を実機確認。サーバー発 VEVENT が iOS カレンダーで
+  「地図ピン + タップ可能な場所 + 出発時刻(Time to Leave)」を **X-APPLE-MAPKIT-HANDLE 無し**で
+  表示できることを確認した。成立条件は `X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE;
+  X-APPLE-RADIUS:geo:lat,lon`(**X-ADDRESS を書かない**)。阻害要因は X-ADDRESS の存在 +
+  X-APPLE-RADIUS の欠落だった(ical-generator issue #236 の報告と一致)。
+  handle(X-APPLE-MAPKIT-HANDLE)は非公開バイナリ blob で捏造不可能だが、デコード調査で
+  中身は不透明な place ID を含むだけと判明し、地図表示の成立自体には不要だった。
+  本採用の実装は `structured-location-write.ts` の `VEVENT_STRUCTURED_LOCATION_OPTIONS`
+  (`omitAddress: true` + `defaultRadiusMeters: 100`)。geo 無し側(LOCATION テキストのみ degrade)は
+  #45 スライス B の既存実装のまま(このセッションでは未再検証だが、iOS 側で新規動作させる要素が
+  無いため実機ゲート対象外と判断)。
 
 ### Phase 1 実装範囲(コード)
 

@@ -38,7 +38,7 @@ import {
 	upsertStructuredLocationProperty,
 	structuredLocationHasGeo,
 	structuredLocationDegradeText,
-	VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS,
+	VEVENT_STRUCTURED_LOCATION_OPTIONS,
 	type StructuredLocationInput,
 } from "./structured-location-write";
 import type { NowStamp } from "./vtodo-stamp";
@@ -192,13 +192,14 @@ export function buildVEventCalendar(fields: VEventFields): Component {
 		// title(+住所)だけを併記する(structuredLocationDegradeText。geo が取れなかった住所のみ登録)。
 		if (structuredLocationHasGeo(fields.structuredLocation)) {
 			vevent = upsertProperty(vevent, "LOCATION", encodeText(fields.structuredLocation.title));
-			// 2026-07-24 実験実装(ical-generator #236・地図表示テスト・効かなければ revert):
-			// X-ADDRESS を外し X-APPLE-RADIUS を常に書く。VTODO proximity(valarm-write.ts)は
-			// このオプションを渡さないので無関係(structured-location-write.ts の定数コメント参照)。
+			// 2026-07-24 実機確認済み(本採用): X-ADDRESS を外し X-APPLE-RADIUS を常に書くと、iOS
+			// カレンダーで地図ピン + タップ可能な場所 + Time to Leave が handle 無しで表示された。
+			// VTODO proximity(valarm-write.ts)はこのオプションを渡さないので無関係
+			// (structured-location-write.ts の定数コメント参照)。
 			vevent = upsertStructuredLocationProperty(
 				vevent,
 				fields.structuredLocation,
-				VEVENT_STRUCTURED_LOCATION_EXPERIMENT_OPTIONS,
+				VEVENT_STRUCTURED_LOCATION_OPTIONS,
 			);
 		} else {
 			vevent = upsertProperty(vevent, "LOCATION", encodeText(structuredLocationDegradeText(fields.structuredLocation)));

@@ -137,10 +137,10 @@ describe("buildVEventCalendar: structuredLocation の author 規約(LOCATION も
 		const ev = reparsed.events()[0]!;
 		expect(ev.location).toBe("岐阜大学"); // encodeText 済み生値(エスケープ対象文字なし)。
 		const loc = readStructuredLocation(ev.raw);
-		// 2026-07-24 実験実装(ical-generator #236 由来・地図表示テスト・効かなければ revert):
-		// VEVENT の X-APPLE-STRUCTURED-LOCATION は X-ADDRESS を書かなくなった(#236 で X-ADDRESS が
-		// 地図を壊した実例あり)。input に address: "岐阜県岐阜市柳戸1-1" を渡していても出力からは消える
-		// (実験優先の割り切り。効いたら住所の戻し方は別途設計)。radius は入力どおり 100。
+		// 2026-07-24 実機確認済み(本採用): VEVENT の X-APPLE-STRUCTURED-LOCATION は X-ADDRESS を
+		// 書かない(X-ADDRESS があると iOS カレンダーの地図が壊れる実機挙動を確認・ical-generator #236
+		// の報告と一致)。input に address: "岐阜県岐阜市柳戸1-1" を渡していても出力からは消える
+		// (地図表示を成立させるための必須トレードオフ)。radius は入力どおり 100。
 		expect(loc).toEqual({
 			title: "岐阜大学",
 			address: null,
@@ -149,9 +149,9 @@ describe("buildVEventCalendar: structuredLocation の author 規約(LOCATION も
 		});
 	});
 
-	test("2026-07-24 実験実装: X-APPLE-STRUCTURED-LOCATION が X-ADDRESS 無し・X-APPLE-RADIUS=100 のバイト列になる(ical-generator #236)", () => {
-		// #236 の報告(handle 無しで地図が出た最小形式): X-TITLE + geo: + X-APPLE-RADIUS のみ・
-		// X-ADDRESS 無し。効かなければこのテストごと revert する前提の実験。
+	test("2026-07-24 実機確認済み: X-APPLE-STRUCTURED-LOCATION が X-ADDRESS 無し・X-APPLE-RADIUS=100 のバイト列になる(iOS カレンダーで地図表示 PASS)", () => {
+		// 実機(iOS カレンダー)で handle 無しでも地図が出た最小形式: X-TITLE + geo: + X-APPLE-RADIUS
+		// のみ・X-ADDRESS 無し(ical-generator #236 の報告と一致)。
 		const component = buildVEventCalendar({
 			uid: "ev-loc-236",
 			now: NOW,
@@ -213,8 +213,8 @@ describe("patchVEventFields: structuredLocation の三値 patch", () => {
 		const vevent = ICalendarObject.fromComponent(calendar).events()[0]!.raw;
 		const patched = patchVEventFields(vevent, { structuredLocation: { title: "新しい場所", lat: 10, lon: 20 } });
 		expect(patched.properties.find((p) => p.name === "LOCATION")?.value).toBe("新しい場所");
-		// 2026-07-24 実験実装: radius 未指定でも VEVENT 側は既定 100 を補完して書くようになった
-		// (defaultRadiusMeters。#236 の「効いた」最小形式が X-APPLE-RADIUS を常に持つため)。
+		// 2026-07-24 実機確認済み: radius 未指定でも VEVENT 側は既定 100 を補完して書く
+		// (defaultRadiusMeters。実機で「効いた」最小形式が X-APPLE-RADIUS を常に持つため)。
 		expect(readStructuredLocation(patched)).toEqual({
 			title: "新しい場所",
 			address: null,
