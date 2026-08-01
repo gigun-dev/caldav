@@ -40,6 +40,11 @@ cloudflared/*.json
 # claude local settings(個人環境の設定。プロジェクト共有の設定は .claude/settings.json に置く)
 .claude/settings.local.json
 
+# plan mode の plan ファイル(global settings の plansDirectory でここに寄せている)。
+# 追跡しないのは、恒久ドキュメントの正典が docs/(modeling・next-directions・log)だから。
+# plan はその時点の作業計画=中間生成物で、docs に混ぜると正典が薄まる。
+.claude/plans/
+
 # MCP Apps カード JS の自動生成物(2026-07-17 非コミット化)。entry(*-entry.ts)から
 # wrangler build hook / CI の生成ステップが毎ビルドで再生成する。詳細は scripts/build-ui-bundle.ts。
 src/presentation/mcp/ui/*-bundle.ts

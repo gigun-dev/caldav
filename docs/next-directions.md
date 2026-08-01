@@ -279,6 +279,52 @@
   > 隠蔽・TTL超過で再発)。refresh rotationはworkers-oauth-providerが仕様準拠実装済みで変更不要。
   > 確認事項2点だけ: refresh token失効時にRFC 6749準拠の`invalid_grant`を返すこと、
   > 401に`WWW-Authenticate: Bearer resource_metadata="..."`が付くこと(providerの挙動確認)。
+- **MCP 2026-07-28 仕様改訂への移行(2026-07-31 起票・裁定「今は着手しない」)**
+  > 一次資料: [仕様](https://modelcontextprotocol.io/specification/2026-07-28/) /
+  > [changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog) /
+  > [MCP blog](https://blog.modelcontextprotocol.io/posts/2026-07-28/) /
+  > [Claude blog](https://claude.com/blog/bringing-mcp-2026-07-28-to-claude)。
+  > **破壊的変更の規模**: ①`initialize`/`notifications/initialized` ハンドシェイク廃止 +
+  > `Mcp-Session-Id` 廃止(完全ステートレス化・版と client capabilities は毎リクエストの `_meta`)
+  > ②`server/discover` が **MUST**(新 RPC・サーバー実装必須) ③**全 result に `resultType` 必須**
+  > (`"complete"`/`"input_required"`) ④HTTP GET + `resources/subscribe` → `subscriptions/listen`
+  > ⑤`ping`/`logging/setLevel`/`notifications/roots/list_changed` 削除(log level は `_meta` の
+  > `io.modelcontextprotocol/logLevel` 経由・未指定リクエストへ `notifications/message` を
+  > 出すのは MUST NOT) ⑥MRTR がサーバー起点リクエスト(sampling/elicitation/roots)を置換
+  > ⑦list 系に `ttlMs`/`cacheScope` 必須・`Mcp-Method`/`Mcp-Name` ヘッダ必須・エラーコード renumber
+  > ⑧認可: DCR(RFC 7591)を**非推奨**化し Client ID Metadata Documents へ・RFC 9207 `iss` 検証必須。
+  > **裁定(2026-07-31・発表動画の締切 08-01 18:00 を理由に)**: **着手しない**。根拠(優先度順):
+  > ①発表デモは swift-mcp-app(自作クライアント)⇄ caldav の閉ループで外部が版を強制しない
+  > ②2025-11-25 は有効なリビジョンであり版ネゴシエーションがある以上「壊れた」わけではない
+  > ③Claude 側の打ち切り日は未告知で、今回 **feature lifecycle policy(最低12ヶ月の非推奨
+  > ウィンドウ)が明文化された**のはむしろ安心材料 ④締切前日の大改修 + 本番 deploy は
+  > デモを壊す唯一の現実的な経路。
+  > **予防措置(発表まで)**: `bun install` を走らせない(`@modelcontextprotocol/sdk` は `^1.29.0`
+  > のレンジ指定。lockfile は commit 済みだが再解決すると上がりうる)。
+  > **移行スライスの輪郭(発表後)**: ステートレス化 / `server/discover` / `resultType` /
+  > `subscriptions/listen` / **ext-apps の extensions 宣言**(MCP Apps が正式に versioned
+  > extensions framework に載った — 本プロジェクトの路線が標準化側に追認された) /
+  > list 系の `ttlMs`・`cacheScope` / DCR → CIMD(memory の「OAuth は近い将来の高優先」と合流)。
+  > **ステートレス化は Workers と本質的に好相性**(セッション廃止 = エッジ/ラウンドロビン向き)
+  > なので、歓迎すべき変更として丁寧にやる。発表資料側の扱いは
+  > `swift-mcp-app/docs/presentation-plan.md` §4.6。
+  > **2026-07-31 追記(見積もりの下方修正・Hono 作者のツイートを受けた調査):**
+  > TS SDK **v2** は `@modelcontextprotocol/server` + **`@modelcontextprotocol/hono`(公式)**
+  > という構成で、リモート MCP サーバーを Hono で数行書ける
+  > (`createMcpHonoApp()` + `transport.handleRequest(c.req.raw, ...)`、
+  > `sessionIdGenerator: undefined` = ステートレス)。Hono 作者はさらに
+  > `app.use('/mcp', mcp(server))` へ抽象化する案を提示している。
+  > **caldav の現状はこの方向と最初から一致している**: `src/presentation/mcp/server.ts:43` で
+  > `@hono/mcp` の `StreamableHTTPTransport` を使い、かつ **同ファイル 12〜20 行のコメントどおり
+  > 「Workers ではグローバルに接続済みサーバーを溜め込まない」という理由で @hono/mcp の README
+  > サンプルから意図的に外れ、リクエストごとに `McpServer`/`transport` を new している**
+  > (= 実質ステートレス運用。principal をクロージャ束縛できる利点も込み)。
+  > **よって「ステートレス化」の移行コストは当初見積もりより大幅に小さい。** 乗り換え先も
+  > `@hono/mcp` → `@modelcontextprotocol/hono`(公式)が用意されている。
+  > **残る重い部分**: `server/discover` の実装 / 全 result への `resultType` 付与 /
+  > `subscriptions/listen` / **ext-apps の extensions 宣言**(initialize 廃止により
+  > capabilities 申告の場所が変わるため、カード UI の要となる ext-apps の宣言経路は要確認)/
+  > list 系の `ttlMs`・`cacheScope` / DCR → CIMD。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 

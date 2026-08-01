@@ -2780,7 +2780,15 @@ function buildMcpServer(
 				"(1件ずつ create-todo を繰り返し呼ぶと、ホスト UI に一覧カードが呼び出し回数分積まれてしまう)。" +
 				"各 item は create-todo と同じ語彙(title 必須、notes/due/priority/recurrence は省略可)。" +
 				'calendarId/timeZone は全 item 共通。省略時の保存先は "tasks"。' +
-				"1件だけ追加する場合は create-todo を使ってよい(create-todos でも動くが単発なら簡潔な方を推奨)。",
+				"1件だけ追加する場合は create-todo を使ってよい(create-todos でも動くが単発なら簡潔な方を推奨)。" +
+				// 【コレクション分離を促す一文を足した経緯(2026-08-01)】
+				//   旅行の持ち物のような「一時的で、ひとまとまりで、終わったら丸ごと不要になる」束を
+				//   既定の "tasks" へ流し込むと、日常のリマインダーと混ざって双方が読みにくくなる
+				//   (実地で、持ち物15件が既存タスクに混ざって一覧が破綻した)。
+				//   CalDAV のコレクションはまさにこの分離のためにあるので、使わせる。
+				"特定の予定に紐づく一時的なタスク群(旅行の持ち物、イベントの準備など)は、" +
+				"既定の tasks へ混ぜず create-calendar で専用コレクションを作ってそこへ入れること" +
+				"(日常のリマインダーと混ざると双方が読みにくくなる。終わったらコレクションごと消せる)。",
 			inputSchema: createTodosInputShape,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
@@ -3570,9 +3578,20 @@ function buildMcpServer(
 		"create-events",
 		{
 			title: "Create events (batch)",
+			// 【「1日の行程は個別の時刻付き予定にする」を明記した経緯(2026-08-01)】
+			//   「ディズニーの回る順を決めて予定に入れて」に対し、エージェントが
+			//   **1日ぶんをまとめた終日予定1件**(notes に順番を箇条書き)を作る事故を実地で観測した。
+			//   それだと当日カレンダーを開いても「何時に何へ行くのか」が分からず、予定にした意味が消える。
+			//   カレンダーへ入れる目的は「その時刻に何をするかが端末に出ること」なので、
+			//   行程は 1アトラクション = 1予定 に割るのが正しい。description は
+			//   *ツールを選ぶ基準* だけでなく *どう使うと目的を果たすか* も伝える場所として使う
+			//   (instructions を読まないクライアントにも届く唯一の経路でもある)。
 			description:
 				"複数の予定(VEVENT)をまとめて追加する。2件以上の追加は必ずこちらを使うこと。" +
-				"各 item は create-event と同じ語彙(title/start 必須)。calendarId/timeZone は全 item 共通。",
+				"各 item は create-event と同じ語彙(title/start 必須)。calendarId/timeZone は全 item 共通。" +
+				"1日の行程(観光の回る順、複数の訪問先など)を登録するときは、" +
+				"**まとめた終日予定1件にせず、行き先ごとに時刻付きの予定へ割ること**" +
+				"(当日カレンダーを見て『何時に何をするか』が分かる形にするのがカレンダーへ入れる目的)。",
 			inputSchema: createEventsInputShape,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
