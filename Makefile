@@ -76,7 +76,12 @@ reset-local: ## ローカル D1 を破棄(.wrangler の状態を消す。次回 
 	rm -rf .wrangler/state/v3/d1
 	@echo "ローカル D1 を削除しました。make dev → make migrate-local → make seed で再構築します。"
 
-mobileconfig: ## iOS 用 .mobileconfig を生成(CALDAV_HOST 等は env で上書き可)
+# 2026-08-01 実測: Simulator ではインストールが「完了」まで行っても Accounts3.sqlite に
+# 行が増えない(アカウント系ペイロード全般。CalDAV 固有ではない)。実機では有効。
+# Simulator に状態を入れるなら simctl clone / env 注入(共有スキル ios-simulator)。
+# レシピの中(タブ配下)ではなくここに置くのは、make がレシピ行をそのまま echo するため
+# (シェルにとってはコメントで無害だが、実行のたびに3行のノイズが出る)。
+mobileconfig: ## iOS 実機用 .mobileconfig を生成(Simulator では account が作られない。env で上書き可)
 	bun run scripts/make-mobileconfig.ts
 
 # --- 品質チェック(CI と同一)-----------------------------------------------

@@ -9,6 +9,17 @@
 // M2(マルチユーザー)ではダッシュボードからのワンタイム URL 配布を正式ルートにする
 // 予定で、これはその前身となる開発用ツール(CLAUDE.md の M2 参照)。
 //
+// 【⚠️ 実機専用。iOS Simulator ではアカウントが作られない】(2026-08-01 実測で訂正)
+//   Simulator ではインストールが「完了」まで到達し、設定アプリにもプロファイルが並ぶのに、
+//   Accounts3.sqlite に行が1つも増えない。**CalDAV 固有ですらなく、アカウント系ペイロード全般**が
+//   Simulator ではアカウントを作らない(認証の要らない com.apple.subscribedcalendar.account 単体でも
+//   作られないことを確認済み。つまり「本サーバーへの接続に失敗しているから」ではない)。
+//   → **Simulator 相手に「インストール完了」の UI を成功判定に使わないこと。**
+//      判定は Accounts3.sqlite を直接見る。Simulator へ状態を運ぶ正しい手段(env 注入 /
+//      種を1台作ってからの simctl clone)は共有スキル ios-simulator の
+//      references/state-provisioning.md にある。
+//   なお **実機では有効**(このスクリプトの存在意義は失われていない)ので、機能は変えない。
+//
 // 【使い方】
 //   bun scripts/make-mobileconfig.ts [出力パス]
 //   資格情報・ホストは環境変数で上書き可能(既定は検証アカウント):
@@ -118,4 +129,7 @@ const out = process.argv[2] ?? "caldav-verification.mobileconfig";
 await Bun.write(out, profile);
 console.log(`書き出し完了: ${out}`);
 console.log(`  host=${host} user=${username} desc=${description}`);
-console.log("iPhone へは AirDrop で送る → 設定 → 一般 → VPN とデバイス管理 → インストール");
+// 出力先にも「実機用」を書く。生成物だけ渡されたエージェント/人が Simulator に流し込んで
+// ハマる事故(2026-08-01 に実際に起きた)を、ここでも1行止める。
+console.log("iPhone(実機)へは AirDrop で送る → 設定 → 一般 → VPN とデバイス管理 → インストール");
+console.log("※ iOS Simulator ではこのプロファイルからアカウントは作られない(実測)。冒頭コメント参照");
