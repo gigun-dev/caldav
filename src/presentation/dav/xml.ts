@@ -25,7 +25,68 @@ const NS_CALDAV = "urn:ietf:params:xml:ns:caldav";
 const NS_CS = "http://calendarserver.org/ns/";
 const NS_APPLE = "http://apple.com/ns/ical/";
 
-export type PropFilter = Set<string> | "allprop";
+// =============================================================================
+// 要求プロパティ名の保持(2026-08-01 修正: 404 propstat の名前空間/大文字が壊れていた)
+// =============================================================================
+// 【何が壊れていたか】旧実装の PropFilter は `Set<string>`(小文字化したローカル名だけ)で、
+// 404 propstat は `<d:${name}/>` と決め打ちしていた。つまり
+//   - 要求 `<B:calendar-color xmlns:B="http://apple.com/ns/ical/"/>`
+//     → 応答 `<d:calendar-color/>`(**DAV: に潰れる**)
+//   - 要求 `<C:schedule-default-calendar-URL/>`
+//     → 応答 `<d:schedule-default-calendar-url/>`(**名前空間 + 大文字小文字が壊れる**)
+// という別物の要素を返していた(本番実測。caldav/carddav/calendarserver/apple-ical/me.com の
+// 5 名前空間すべて・PROPFIND と REPORT の両方で再現)。
+//
+// 【なぜ直すか(RFC 原文)】docs/rfc/rfc4918.txt より:
+//   - §14.22 propstat: "The contents of the prop XML element MUST only list the names of
+//     properties to which the result in the status element applies."
+//   - §4.4 Property Names: "A property name is a universally unique identifier ...
+//     The XML namespace mechanism, which is based on URIs ([RFC3986]), is used to name
+//     properties because it prevents namespace collisions"
+//   - §17: "WebDAV property names are qualified XML names (pairs of XML namespace name and
+//     local name)."
+// つまりプロパティ「名」= (名前空間 URI, ローカル名) の対であり、名前空間を潰した時点で
+// 「要求されたプロパティの名前」ではなくなる = §14.22 の MUST 違反。さらに XML の要素名は
+// 大文字小文字を区別する(REC-XML)ので `...-URL` を `...-url` にするのも別要素化である。
+// 一方 prefix そのものは §4.3 の例の注記 "The [prefix] for the property name itself was not
+// preserved, being non-significant" のとおり保存不要 — **保存すべきは名前空間 URI だけ**。
+//
+// 【iOS への影響の程度(過大評価しないための注記)】docs/modeling/06 の
+// 「要求されたプロパティを黙って落とすと NG。404 propstat に列挙必須」は列挙の**有無**の話で、
+// 今回は列挙自体はできていた。iOS 26.5 は現状この壊れた名前でもアカウント追加に成功する(実測)。
+// よってこれは「証明された iOS 破壊」ではなく **仕様違反 + 潜在リスク**(名前空間で判定する
+// 他クライアント・将来の iOS で壊れうる)として直す。
+//
+// 【設計の要点: 「マッチング用の正規化」と「応答に書き戻す表現」を分ける】
+// 200 側の照合は今までどおり小文字ローカル名(props Record のキー)で行い、404 側に書き戻す
+// ときだけ元の名前空間 URI と原表記のローカル名を使う。両者を1つの文字列で兼ねようとしたのが
+// そもそもの敗因なので、型で分離する。
+
+/** 要求された1つのプロパティ名。マッチング用の key と、応答へ書き戻す原表現を両方持つ。 */
+export interface RequestedPropName {
+	/** マッチング用の正規化キー = ローカル名の小文字化。props Record のキーと突き合わせる。 */
+	readonly key: string;
+	/** 応答へ書き戻すローカル名。**要求されたままの大文字小文字**(schedule-default-calendar-URL 等)。 */
+	readonly localName: string;
+	/** 名前空間 URI。prefix ではなく URI で持つ(prefix は §4.3 のとおり非保存でよい)。
+	 *  宣言が見つからなければ ""(= 名前空間なし)。 */
+	readonly namespace: string;
+}
+
+/**
+ * PROPFIND/REPORT の `<prop>` 要求。"allprop" か、要求プロパティの Map。
+ *
+ * 【なぜ Set<string> ではなく Map<key, RequestedPropName> か】
+ * 呼び出し側(responseXml)は `filter.has(name)` と `filter === "allprop"` しか使っておらず、
+ * Map は Set と同じ `has()` を持つので **既存コードの形をほぼ変えずに** 情報量だけ増やせる。
+ * 【採らなかった案】`{ kind: "names"; props: RequestedPropName[] }` の判別共用体。
+ * 表現としては素直だが `filter === "allprop"` の比較が全部 `filter.kind === ...` に変わり、
+ * このバグ修正と無関係な差分が増える(レビューで本質が埋もれる)。
+ * 【採らなかった案2】Set<string> のまま「ns URI と原表記を1つの文字列に埋め込む」
+ * (例 `"{DAV:}displayname"` の Clark 記法)。props Record 側のキーも全部書き換えが必要になり、
+ * 200 側の照合規則(小文字ローカル名のみ)まで巻き込む大改修になるので見送った。
+ */
+export type PropFilter = ReadonlyMap<string, RequestedPropName> | "allprop";
 
 export function escapeXml(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -37,15 +98,80 @@ export function unescapeXml(value: string): string {
 		.replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 }
 
+/**
+ * ドキュメント全体の xmlns 宣言を prefix → 名前空間 URI に集める。
+ *
+ * 【なぜ「ドキュメント全体を舐める」という雑な方法でよいか】
+ * 本来 XML の名前空間宣言は要素のスコープを持ち、内側で同じ prefix を別 URI に再束縛できる。
+ * ここはそこまで見ない = **最初に現れた宣言が勝つ**近似。理由は3つ:
+ *   1. このファイルはそもそも正規表現ベースの codec で、DOM を持たない(Workers に DOMParser が
+ *      無く、XML パーサを1つ足すのはこのバグ修正には過剰。既存の parseHrefs 等も同じ流儀)。
+ *   2. 実クライアント(iOS / macOS / tsdav / Thunderbird)は全宣言を root 要素に置く。
+ *      prefix の再束縛を使う CalDAV クライアントは観測されていない。
+ *   3. 外した場合の被害は「404 propstat の名前空間が要求と違う」= **修正前と同じ状態**に戻るだけで、
+ *      新たな退行にはならない(200 側の照合はローカル名だけなので影響を受けない)。
+ * もし将来 prefix 再束縛を踏んだら、そのときこそ本物の XML パーサを入れる判断をする。
+ */
+function parseNamespaceDeclarations(body: string): Map<string, string> {
+	const declarations = new Map<string, string>();
+	// `xmlns:B="..."` と既定名前空間 `xmlns="..."` の両方。既定は prefix "" として持つ。
+	for (const match of body.matchAll(/\bxmlns(?::([^=\s>/]+))?\s*=\s*["']([^"']*)["']/g)) {
+		const prefix = match[1] ?? "";
+		// 最初の宣言が勝つ(上のコメントの「近似」の実体)。root 要素の宣言が document 順で先頭に来る。
+		if (!declarations.has(prefix)) declarations.set(prefix, unescapeXml(match[2]));
+	}
+	return declarations;
+}
+
 export function parsePropFilter(body: string): PropFilter {
 	if (!body.trim() || /<(?:[^:>]+:)?allprop\b/i.test(body)) return "allprop";
 	const block = body.match(/<(?:[^:>]+:)?prop\b[^>]*>([\s\S]*?)<\/(?:[^:>]+:)?prop>/i)?.[1];
 	if (!block) return "allprop";
-	const result = new Set<string>();
-	for (const match of block.matchAll(/<(?!\/)(?:[^:>\s]+:)?([\w-]+)\b/g)) {
-		result.add(match[1].toLowerCase());
+	const declarations = parseNamespaceDeclarations(body);
+	// Map は挿入順を保つので、404 propstat には**クライアントが要求した順**でプロパティが並ぶ。
+	// RFC 上の要求ではないが、リクエストと応答を目視で突き合わせるデバッグが格段に楽になる。
+	const result = new Map<string, RequestedPropName>();
+	// group1 = prefix(無ければ undefined)/ group2 = ローカル名。`(?!\/)` で閉じタグを除外。
+	// prefix から `/` を除いているのは `<foo/>` の自己終端スラッシュを prefix と誤読しないため。
+	for (const match of block.matchAll(/<(?!\/)(?:([^:>\s/]+):)?([\w-]+)\b/g)) {
+		const localName = match[2];
+		const key = localName.toLowerCase();
+		// 同じローカル名が別名前空間で2回来た場合は先勝ち。200 側の照合がローカル名でしか
+		// 行われない以上どちらか一方しか表現できず、「先に書かれた方」が最も素直な選択。
+		// (実クライアントで衝突は観測されていない。踏んだら名前空間つき照合への移行を検討する。)
+		if (result.has(key)) continue;
+		result.set(key, {
+			key,
+			localName,
+			// 宣言の無い prefix は「名前空間なし」に倒す。壊れた要求(prefix を宣言し忘れ)なので
+			// どう返しても正解は無いが、勝手に DAV: を割り当てる(= 旧実装の挙動)よりは
+			// 「知らない名前空間を捏造しない」方が誠実。宣言していない prefix をそのまま応答に
+			// 書き戻すのは名前空間的に非整形式な XML になるので論外。
+			namespace: declarations.get(match[1] ?? "") ?? "",
+		});
 	}
 	return result.size === 0 ? "allprop" : result;
+}
+
+/**
+ * 「この名前の集合が要求された」とみなす PropFilter を組み立てる(PROPPATCH 応答用)。
+ *
+ * PROPPATCH は「受理したプロパティ」をそのまま props Record と filter の両方に渡すため
+ * 404 側には決して回らない(known ⊇ filter)。よって namespace / localName は使われないが、
+ * PropFilter 型を1本に保つためにダミーを埋める。
+ * 【なぜ PropFilter を `Set<string> も可` の共用体にしなかったか】responseXml が
+ * 「Set なら名前空間不明」の分岐を持つことになり、404 の書き戻し経路が再び2本になる。
+ * 今回のバグの原因がまさに「404 側だけ別経路で名前を組み立てていた」ことなので、
+ * 経路は1本に保つ。
+ */
+export function propFilterFromKeys(keys: readonly string[]): PropFilter {
+	return new Map(keys.map((key) => [key, {
+		key,
+		localName: key,
+		// 名前空間不明を "" で表す。仮に将来この filter が 404 経路に回っても、
+		// 実在しない名前空間を捏造せず「名前空間なし」として出るだけで済む。
+		namespace: "",
+	}]));
 }
 
 function requested(filter: PropFilter, name: string): boolean {
@@ -54,6 +180,61 @@ function requested(filter: PropFilter, name: string): boolean {
 
 function propstat(props: string, status = "200 OK"): string {
 	return `<d:propstat><d:prop>${props}</d:prop><d:status>HTTP/1.1 ${status}</d:status></d:propstat>`;
+}
+
+/**
+ * multistatus() が `<d:multistatus>` 要素で宣言済みの名前空間 URI → prefix。
+ *
+ * 404 propstat に書き戻す要素は、ここに載っている名前空間なら**宣言済み prefix を再利用**する。
+ * 要素ごとに xmlns を撒かずに済み、200 側(props Record が手書きで `<c:...>` 等を使っている)と
+ * 見た目も揃う。multistatus() のテンプレートと二重管理になるが、テンプレートは1行の文字列
+ * リテラルなので機械的に導出するより「並べて読める」方が事故が少ないと判断した
+ * (どちらかを増やしたらもう一方も、というのは下のテストで固定してある)。
+ */
+const DECLARED_NS_PREFIXES: ReadonlyMap<string, string> = new Map([
+	["DAV:", "d"],
+	[NS_CALDAV, "c"],
+	[NS_CS, "cs"],
+	[NS_APPLE, "ical"],
+]);
+
+/**
+ * 404 propstat に列挙する「要求されたが存在しないプロパティ名」を要素として書き出す。
+ *
+ * 名前空間の扱いは3通り:
+ *   1. multistatus で宣言済み → その prefix を使う(`<ical:calendar-color/>`)
+ *   2. 未宣言の名前空間 → **その要素自身に xmlns を付けて** ad-hoc prefix を宣言する
+ *      (`<x1:bulk-requests xmlns:x1="http://me.com/_namespace/"/>`)。
+ *      【なぜ multistatus 側に足さないか】要求されうる名前空間は無限(クライアントは任意の
+ *      ベンダ拡張を要求できる)なので、静的な宣言リストでは原理的に閉じない。要素ローカル宣言なら
+ *      どんな URI でも正しく返せる。
+ *      【なぜ既定名前空間形式 `<bulk-requests xmlns="..."/>` を採らなかったか】XML 的には等価で
+ *      短いが、応答中で prefix 付きと無しが混在すると、prefix を文字列照合する素朴な
+ *      クライアント実装(DAV の世界には実在する)がさらに混乱しやすい。全要素 prefix 付きで揃える。
+ *      なお ad-hoc prefix は要素ごとに宣言を**毎回**付ける — 宣言のスコープは要素なので、
+ *      同じ URI の2個目に宣言を省くと非整形式になる(ここは踏みやすい罠)。
+ *   3. 名前空間なし(要求側が prefix も既定 xmlns も持たなかった/prefix 未宣言)→ prefix 無しで
+ *      そのまま書く。multistatus は既定名前空間を宣言していないので、prefix 無し = 名前空間なしが
+ *      正しく表現できる。
+ *
+ * localName は parsePropFilter の `[\w-]+` 由来なので XML メタ文字を含まず、エスケープ不要。
+ * 名前空間 URI はクライアント由来の任意文字列なので属性値としてエスケープする。
+ */
+function missingPropNameXml(missing: readonly RequestedPropName[]): string {
+	// 同じ未宣言名前空間には同じ ad-hoc prefix を割り当てる(応答の読みやすさのため。
+	// 別 prefix でも XML 的には正しいが、目 grep で「同じ名前空間だ」と分かる方がよい)。
+	const adhocPrefixes = new Map<string, string>();
+	return missing.map((prop) => {
+		if (prop.namespace === "") return `<${prop.localName}/>`;
+		const declared = DECLARED_NS_PREFIXES.get(prop.namespace);
+		if (declared !== undefined) return `<${declared}:${prop.localName}/>`;
+		let prefix = adhocPrefixes.get(prop.namespace);
+		if (prefix === undefined) {
+			prefix = `x${adhocPrefixes.size + 1}`;
+			adhocPrefixes.set(prop.namespace, prefix);
+		}
+		return `<${prefix}:${prop.localName} xmlns:${prefix}="${escapeXml(prop.namespace)}"/>`;
+	}).join("");
 }
 
 export function responseXml(href: string, props: Record<string, string>, filter: PropFilter): string {
@@ -66,9 +247,12 @@ export function responseXml(href: string, props: Record<string, string>, filter:
 	// allprop 応答中の sync-token には依存していない(既存の sync 系テストを参照して確認済み)。
 	const ok = known.filter((name) => requested(filter, name) && !(filter === "allprop" && name === "sync-token"))
 		.map((name) => props[name]).join("");
-	const missing = filter === "allprop" ? [] : [...filter].filter((name) => !known.includes(name));
+	// 404 側: 要求されたが props に無いもの。照合は key(小文字ローカル名)で行い、書き戻しは
+	// RequestedPropName が保持している原表記 + 名前空間で行う(旧実装はここで `<d:${name}/>` と
+	// 決め打ちしていたのが本バグの正体。冒頭の RequestedPropName のコメント参照)。
+	const missing = filter === "allprop" ? [] : [...filter.values()].filter((prop) => !known.includes(prop.key));
 	return `<d:response><d:href>${escapeXml(href)}</d:href>${ok ? propstat(ok) : ""}${
-		missing.length ? propstat(missing.map((name) => `<d:${name}/>`).join(""), "404 Not Found") : ""
+		missing.length ? propstat(missingPropNameXml(missing), "404 Not Found") : ""
 	}</d:response>`;
 }
 
@@ -97,6 +281,13 @@ export function principalProps(displayName: string, principalHref: string, homeH
 		"calendar-user-address-set": `<c:calendar-user-address-set><d:href>mailto:${escapeXml(displayName)}</d:href></c:calendar-user-address-set>`,
 		"current-user-principal": `<d:current-user-principal><d:href>${escapeXml(principalHref)}</d:href></d:current-user-principal>`,
 		"principal-url": `<d:principal-URL><d:href>${escapeXml(principalHref)}</d:href></d:principal-URL>`,
+		// 2026-08-01: principal URL で実際に応答できる REPORT を広告する(RFC 3253 §3.1.5
+		// DAV:supported-report-set)。collectionProps の R-5a 是正と同じ「実装しているものは
+		// 広告する / 広告したものは実装する」規律。ここに載せるのは principal-search-property-set
+		// だけ — DAV:principal-property-search(RFC 3744 §9.4。原文は "Support ... is REQUIRED")は
+		// 未実装なので**あえて広告しない**。広告して 403 を返すより、広告せず「無い」と言う方が
+		// クライアントの分岐が素直になる(未実装であること自体は docs/modeling/05 に gap として記録)。
+		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><d:principal-search-property-set/></d:report></d:supported-report></d:supported-report-set>",
 	};
 }
 
@@ -183,8 +374,92 @@ export function parseSyncToken(body: string): string | null {
 	return textElement(body, "sync-token") ?? null;
 }
 
-export function davError(name: string, detail?: string): string {
-	return `<?xml version="1.0" encoding="UTF-8"?><d:error xmlns:d="DAV:" xmlns:c="${NS_CALDAV}"><c:${name}/>${detail ? `<d:responsedescription>${escapeXml(detail)}</d:responsedescription>` : ""}</d:error>`;
+/**
+ * RFC 3253 §1.6 が定める precondition/postcondition の失敗応答ボディ。
+ * 「403/409 の本体は、違反した condition を表す XML 要素を子に持つ DAV:error でなければならない」
+ * (原文: docs/rfc/ に 3253 のスナップショットは無い。2026-08-01 時点では rfc-editor.org から
+ *  取得した原文で §1.6 / §3.6 を確認済み。照合結果は docs/modeling/05 に記録)。
+ * RFC 4918 §16 も同じ形("DAV:error containing the violated precondition")を踏襲している。
+ *
+ * 【namespace オプションを足した理由(2026-08-01)】
+ * この関数はもともと CalDAV 由来の precondition(CALDAV:supported-filter 等)専用で、
+ * 要素名を無条件に `c:`(urn:ietf:params:xml:ns:caldav)へ付けていた。だが RFC 3253 §3.6 の
+ * REPORT precondition は **DAV:supported-report** で、DAV: 名前空間に属する。
+ * `c:supported-report` と書くと別物の要素になり、名前空間で判別するクライアントには
+ * 「未知の precondition」に見える。
+ * 【なぜ関数を2本に分けなかったか】呼び出し側から見て「precondition 名 → 403 本体」という
+ * 役割は完全に同じで、違うのは名前空間だけ。2本にすると「どっちを呼ぶか」を都度考えることになり、
+ * かつ将来 precondition が増えるたびに分岐が増える。オプション1個で済ませる方が薄い。
+ *
+ * 【解決済み: valid-sync-token は DAV: 名前空間(2026-08-01 修正)】
+ * 上の段落を書いた時点では「c: を付けているが誤りの疑い」として据え置いていた(iOS の
+ * 「無効 sync-token からの回復」経路に触れるため単独で検証したかった)。原文を再確認して確定:
+ * docs/rfc/rfc6578.txt §3.2 Preconditions は "(DAV:valid-sync-token): The DAV:sync-token
+ * element value MUST be a valid token previously returned by the server ..." と書いており、
+ * RFC 3253 §1.6 の記法どおり precondition 名の `DAV:` は名前空間を指す。よって
+ * app.ts は `davError("valid-sync-token", { namespace: "dav" })` を呼ぶよう修正した。
+ * 回復経路(403 を受けたクライアントが token 無しで full sync し直す)は app.test.ts の
+ * 「無効 sync-token」テストで固定してある。
+ *
+ * @param name precondition 要素のローカル名(例 "supported-report" / "supported-filter")。
+ * @param options.detail DAV:responsedescription に載せる人間向け説明(任意)。
+ * @param options.namespace 要素を置く名前空間。既定は既存呼び出しとの互換のため "caldav"。
+ */
+export function davError(
+	name: string,
+	options?: { detail?: string; namespace?: "caldav" | "dav" },
+): string {
+	const prefix = options?.namespace === "dav" ? "d" : "c";
+	const detail = options?.detail;
+	return `<?xml version="1.0" encoding="UTF-8"?><d:error xmlns:d="DAV:" xmlns:c="${NS_CALDAV}"><${prefix}:${name}/>${detail ? `<d:responsedescription>${escapeXml(detail)}</d:responsedescription>` : ""}</d:error>`;
+}
+
+// =============================================================================
+// DAV:principal-search-property-set REPORT(RFC 3744 §9.5)
+// =============================================================================
+// 【なぜ実装するか(2026-08-01)】OPTIONS の Allow は REPORT を広告しているのに、
+// principal URL への REPORT がルーティングに引っかからず 404 を返していた
+// (app.ts の calendar-home prefix 判定に落ちる)。「広告したメソッドが 404」は不整合。
+// この REPORT は Apple 自身の負荷シミュレータ(ccs-calendarserver
+// simplugin/caldavclient.py の BaseAppleClient startup シーケンス)がブートストラップで
+// 投げる経路であり、iOS も結果をアカウント属性に保存している実績がある。
+//
+// RFC 3744 §9.5 原文(docs/rfc/rfc3744.txt)の要件:
+//   - リクエストボディは空の DAV:principal-search-property-set 要素 MUST
+//   - Depth は "0" のときだけ定義される。他の値は 400 (Bad Request) MUST
+//     (Depth ヘッダ省略時は RFC 3253 §3.6 により 0 とみなす)
+//   - レスポンスボディは DAV:principal-search-property-set 要素 MUST。子は
+//     `<!ELEMENT principal-search-property-set (principal-search-property*)>` = **0個でもよい**
+//   - 各 principal-search-property は prop 1個 + description(xml:lang 必須)
+
+/**
+ * DAV:principal-search-property-set REPORT の応答ボディ。
+ *
+ * 【なぜ「空」で返すのか(採用理由)】
+ * この REPORT が返すのは「DAV:principal-property-search REPORT で **検索できる** プロパティ」
+ * (§9.5 冒頭)。本サーバーは principal-property-search を実装していない(§9.4 は REQUIRED だが
+ * 未実装 — docs/modeling/05 に gap として記録)。したがって「検索できるプロパティ」は
+ * 現時点で存在せず、空集合が事実に一致する。DTD も `principal-search-property*` で 0 個を許す。
+ *
+ * 【なぜ Apple(ccs-calendarserver)のように displayname / calendar-user-address-set を
+ *   並べなかったか】ccs の CalendarPrincipalCollectionResource.principalSearchPropertySet() は
+ * この2つを返す(twistedcaldav/resource.py)。真似れば「それっぽい」応答になるが、
+ * 続けて principal-property-search を投げられても本サーバーは応答できない = **宣言と実装の乖離**
+ * になる。このリポジトリは supported-report-set の R-5a 是正・supported-calendar-component-set の
+ * J-2 是正で「宣言 = 実際に受理できるもの」を明示的な規律にしてきたので、ここでも同じ側に倒す。
+ * principal-property-search を実装したら、その時点で検索可能プロパティをここへ追加する
+ * (実装と広告を同じコミットで動かせるよう、意図的に1関数に閉じてある)。
+ *
+ * 【空集合のリスクとして認識していること】クライアントが結果をキャッシュする場合
+ * (iOS は CalDAVMobileAccountSearchPropertySetKey_CoreDAV に保存する挙動が観測されている)、
+ * 後から検索可能プロパティを増やしてもアカウント再設定まで反映されない可能性がある。
+ * ただし本サーバーはスケジューリング(schedule-inbox/outbox)を広告しておらず、
+ * 「参加者を検索する UI」を必要とする経路がそもそも無いので、実害は無いと判断した。
+ */
+export function principalSearchPropertySetXml(): string {
+	// 自己終端タグで返す(`<d:principal-search-property-set/>`)。開始+終了タグの空要素と
+	// XML 的には等価だが、意図が「子が0個」であることを一目で示せるこちらを選ぶ。
+	return `<?xml version="1.0" encoding="UTF-8"?><d:principal-search-property-set xmlns:d="DAV:"/>`;
 }
 
 // =============================================================================

@@ -21,6 +21,133 @@ describe("DAV XML", () => {
 		expect(xml).toContain("HTTP/1.1 404 Not Found");
 	});
 
+	// =========================================================================
+	// 404 propstat のプロパティ名は「要求された名前」でなければならない(2026-08-01 修正)
+	// =========================================================================
+	// 何を保証するか(RFC 4918 §14.22 "The contents of the prop XML element MUST only list the
+	// names of properties to which the result in the status element applies." + §17
+	// "WebDAV property names are qualified XML names (pairs of XML namespace name and local
+	// name)."):404 propstat に並ぶ要素は、**要求された名前空間**と**要求されたままの
+	// ローカル名(大文字小文字を含む)**を保つこと。
+	// 回帰対象: 修正前は全部 `<d:...>`(DAV: へ潰す)+ 小文字化していた(本番実測)。
+	describe("404 propstat のプロパティ名の忠実性", () => {
+		/** 5 名前空間 + DAV: を一度に要求するボディ。実クライアント(iOS)の宣言スタイルに合わせ、
+		 *  xmlns は全部 root 要素に置く。 */
+		const MULTI_NS_PROPFIND = [
+			'<?xml version="1.0" encoding="UTF-8"?>',
+			'<A:propfind xmlns:A="DAV:" xmlns:B="http://apple.com/ns/ical/"',
+			' xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="http://calendarserver.org/ns/"',
+			' xmlns:E="urn:ietf:params:xml:ns:carddav" xmlns:F="http://me.com/_namespace/">',
+			"<A:prop>",
+			"<A:principal-collection-set/>",
+			"<B:calendar-color/>",
+			"<C:schedule-default-calendar-URL/>",
+			"<D:email-address-set/>",
+			"<E:addressbook-home-set/>",
+			"<F:bulk-requests/>",
+			"</A:prop></A:propfind>",
+		].join("");
+
+		/** props を空にして「全部 404 へ落ちる」状態にした最小の response。 */
+		function missingOnly(body: string): string {
+			return multistatus(responseXml("/dav/principals/admin/", {}, parsePropFilter(body)));
+		}
+
+		it("DAV: の要求は d: prefix で返す", () => {
+			expect(missingOnly(MULTI_NS_PROPFIND)).toContain("<d:principal-collection-set/>");
+		});
+
+		it("Apple ical 名前空間の要求は DAV: に潰さず ical: prefix で返す", () => {
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml).toContain("<ical:calendar-color/>");
+			expect(xml).not.toContain("<d:calendar-color/>");
+		});
+
+		it("CalDAV 名前空間の要求は c: prefix で返す", () => {
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml).toContain("<c:schedule-default-calendar-URL/>");
+			expect(xml).not.toContain("<d:schedule-default-calendar-URL/>");
+		});
+
+		it("calendarserver 名前空間の要求は cs: prefix で返す", () => {
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml).toContain("<cs:email-address-set/>");
+			expect(xml).not.toContain("<d:email-address-set/>");
+		});
+
+		it("multistatus が宣言していない名前空間(carddav / me.com)は要素自身に xmlns を付けて返す", () => {
+			// 要求されうる名前空間は無限なので、multistatus の静的な宣言リストでは閉じない。
+			// 要素ローカル宣言で任意の URI を正しく表現できることを固定する。
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml).toMatch(/<(\w+):addressbook-home-set xmlns:\1="urn:ietf:params:xml:ns:carddav"\/>/);
+			expect(xml).toMatch(/<(\w+):bulk-requests xmlns:\1="http:\/\/me\.com\/_namespace\/"\/>/);
+			// DAV: へ潰していないこと。
+			expect(xml).not.toContain("<d:addressbook-home-set/>");
+			expect(xml).not.toContain("<d:bulk-requests/>");
+		});
+
+		it("大文字を含むローカル名(schedule-default-calendar-URL)を小文字化しない", () => {
+			// XML の要素名は大文字小文字を区別するので、小文字化すると別の要素になる。
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml).toContain("schedule-default-calendar-URL");
+			expect(xml).not.toContain("schedule-default-calendar-url");
+		});
+
+		it("同じ未宣言名前空間の複数プロパティは、どの要素にも xmlns を付ける(スコープは要素単位)", () => {
+			// 2個目の宣言を省くと名前空間的に非整形式になる、という踏みやすい罠の回帰。
+			const body = '<A:propfind xmlns:A="DAV:" xmlns:V="http://vendor.example/ns/"><A:prop><V:one/><V:two/></A:prop></A:propfind>';
+			const xml = missingOnly(body);
+			expect((xml.match(/xmlns:x1="http:\/\/vendor\.example\/ns\/"/g) ?? []).length).toBe(2);
+		});
+
+		it("既定名前空間(xmlns=)で要求されたプロパティも名前空間を解決する", () => {
+			// prefix を一切使わないクライアントの表記。unprefixed = 既定名前空間 DAV:。
+			const body = '<propfind xmlns="DAV:"><prop><nosuchprop/></prop></propfind>';
+			expect(missingOnly(body)).toContain("<d:nosuchprop/>");
+		});
+
+		it("名前空間が特定できない要求は prefix 無しで返す(DAV: を捏造しない)", () => {
+			// prefix を宣言し忘れた壊れた要求。旧実装は無条件に d: を付けていたが、
+			// 「知らない名前空間を DAV: だと言い張る」より「名前空間なし」の方が誠実。
+			const body = '<propfind><prop><Z:mystery/></prop></propfind>';
+			const xml = missingOnly(body);
+			expect(xml).toContain("<mystery/>");
+			expect(xml).not.toContain("<d:mystery/>");
+		});
+
+		it("404 の並び順はクライアントが要求した順を保つ", () => {
+			// RFC の要求ではないが、リクエストと応答の目視突き合わせを楽にするための仕様。
+			const xml = missingOnly(MULTI_NS_PROPFIND);
+			expect(xml.indexOf("principal-collection-set")).toBeLessThan(xml.indexOf("calendar-color"));
+			expect(xml.indexOf("calendar-color")).toBeLessThan(xml.indexOf("schedule-default-calendar-URL"));
+		});
+
+		it("200 側の照合はローカル名で行うので、名前空間つき要求でも既存プロパティは 200 に載る", () => {
+			// 「マッチングの正規化」と「応答の表現」を分けた設計の裏返し。ここが崩れると
+			// 既存クライアントの 200 応答が丸ごと 404 に落ちるので、明示的に固定しておく。
+			const filter = parsePropFilter(MULTI_NS_PROPFIND);
+			const xml = responseXml("/dav/cal/", {
+				"calendar-color": "<ical:calendar-color>#FF0000FF</ical:calendar-color>",
+			}, filter);
+			expect(xml).toContain("<ical:calendar-color>#FF0000FF</ical:calendar-color>");
+			expect(xml).toContain("HTTP/1.1 200 OK");
+		});
+
+		it("multistatus が宣言する prefix と 404 側が使う prefix は一致する", () => {
+			// DECLARED_NS_PREFIXES と multistatus() のテンプレートの二重管理を守る番人。
+			// どちらか片方だけを増減させると、未宣言 prefix を使った非整形式 XML になる。
+			const empty = multistatus("");
+			for (const [prefix, uri] of [
+				["d", "DAV:"],
+				["c", "urn:ietf:params:xml:ns:caldav"],
+				["cs", "http://calendarserver.org/ns/"],
+				["ical", "http://apple.com/ns/ical/"],
+			]) {
+				expect(empty).toContain(`xmlns:${prefix}="${uri}"`);
+			}
+		});
+	});
+
 	it("prefixに依存せずhrefを抽出してXML entityを戻す", () => {
 		expect(parseHrefs(`<x:href xmlns:x="DAV:">/a&amp;b.ics</x:href>`)).toEqual(["/a&b.ics"]);
 	});

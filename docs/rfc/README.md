@@ -21,6 +21,7 @@
 | rfc7232.txt | HTTP/1.1 Conditional Requests | ETag / If-Match / If-None-Match |
 | rfc5546.txt | iTIP | スケジューリング(将来フェーズ・輪郭のみ) |
 | rfc6638.txt | CalDAV Scheduling | スケジューリング(将来フェーズ・輪郭のみ) |
+| rfc3253.txt | WebDAV Versioning (DeltaV) | **REPORT メソッドと DAV:supported-report-set / DAV:supported-report precondition の定義元**。バージョニング機能自体は実装対象外だが、CalDAV の全 REPORT がこの §3.6 の枠組みに乗る(2026-08-01 取得。未対応 REPORT の 403 応答実装で必要になった) |
 | rfc3744.txt | WebDAV ACL | Principal / current-user-privilege-set の定義元(RFC 4791 も参照) |
 | rfc5689.txt | Extended MKCOL | MKCALENDAR 代替の拡張 MKCOL(02-usecases 参照) |
 | rfc6868.txt | Parameter Value Encoding | パラメータ値の ^ エスケープ。**現行シリアライザの「DQUOTE 表現不可エラー」に直接関係**(下記注意) |

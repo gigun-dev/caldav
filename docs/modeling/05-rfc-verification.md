@@ -130,6 +130,9 @@
 - well-known へのアクセスに認証(401)を要求してよい(MAY)。
   current-user-principal を返す PROPFIND は認証を強制 MUST(§7)。
 - リダイレクト応答には Cache-Control を設定 SHOULD。
+  <!-- 2026-08-01: この SHOULD は 2026-07-08 に記録されていたが実装されておらず(Cache-Control 無しの 301)、
+       実測で発覚して修正した。採用値(no-cache)と判断根拠は末尾の「未対応 REPORT の返し方 と
+       .well-known の Cache-Control(2026-08-01)」§③ を参照。 -->
 - 未認証時の current-user-principal は DAV:unauthenticated 擬似プリンシパル MUST(RFC 5397 §3)。
 - 同一ユーザーに複数 principal がある場合、一貫して同じ URI を返す SHOULD。
 
@@ -270,3 +273,276 @@ unsupported で実際には使われなかったため顕在化しなかった)�
 (無限扱い)に修正 — そうしないと SQL 側の粗い絞り込みで未来の反復回が恒久的に落ちてしまい、
 `vjournalOverlapsRange` まで到達できず false negative になる(VEVENT の isInfinite 分岐と
 同種の対策)。
+
+---
+
+## 未対応 REPORT の返し方 と .well-known の Cache-Control(2026-08-01)
+
+サーバー実測で見つかった2件のバグを直すにあたっての原文照合。
+**新規に docs/rfc/rfc3253.txt(WebDAV Versioning)を取得した** — REPORT メソッド本体と
+`DAV:supported-report-set` / `DAV:supported-report` precondition の定義元であり、
+CalDAV の全 REPORT がこの枠組みに乗るため(バージョニング機能自体は実装対象外)。
+
+### ① REPORT メソッドと未対応 report の返し方(RFC 3253)
+
+**現象**: `OPTIONS /dav/principals/admin/` の `Allow` は REPORT を広告しているのに、
+`REPORT /dav/principals/admin/` は **404**(素のテキスト)を返していた。
+広告したメソッドが 404 を返すのはプロトコル的に不整合。
+
+**原文(rfc3253.txt §3.6 REPORT の Preconditions)**:
+
+```
+   Preconditions:
+
+      (DAV:supported-report): The specified report MUST be supported by
+      the resource identified by the request-URL.
+```
+
+**原文(rfc3253.txt §1.6 Method Preconditions and Postconditions)**:
+
+```
+   If a method precondition or postcondition
+   for a request is not satisfied, the response status of the request
+   MUST be either 403 (Forbidden) if the request should not be repeated
+   because it will always fail, or 409 (Conflict) if it is expected that
+   the user might be able to resolve the conflict and resubmit the
+   request.
+   ...
+   When a particular precondition is
+   not satisfied or a particular postcondition cannot be achieved, the
+   appropriate XML element MUST be returned as the child of a top-level
+   DAV:error element in the response body, unless otherwise negotiated
+   by the request.
+```
+
+→ **確定**: 未実装の report は「再送しても必ず失敗する」ので **403 + `<DAV:error><DAV:supported-report/></DAV:error>`**。
+404(リソース不在の意味になる)でも 405(メソッド自体が不可の意味になる)でもない。
+名前空間は **DAV:**(CalDAV の `urn:ietf:params:xml:ns:caldav` ではない)。
+
+**§3.6 Marshalling で確認したその他**:
+- 「The request MAY include a Depth header. If no Depth header is included, Depth:0 is assumed.」
+  → Depth 省略時は 0。
+- 「If a Depth request header is included, the response MUST be a 207 Multi-Status.」
+  → ただし RFC 3744 §9.5 は当該 report を Depth:0 限定と定義しているため、
+  principal-search-property-set については 207 化は起こらない(下記)。
+
+**§3.1.5(DAV:supported-report-set)**: 「This property identifies the reports that are
+supported by the resource.」— リソース単位の広告プロパティ。principal URL 用の
+`supported-report-set` を新設した根拠。
+
+### ② DAV:principal-search-property-set REPORT(RFC 3744 §9.5)
+
+**原文(rfc3744.txt §9.5)**:
+
+```
+   Servers MUST support the DAV:principal-search-property-set REPORT on
+   all collections identified in the value of a DAV:principal-
+   collection-set property.
+   ...
+   Support for this report is REQUIRED.
+
+   Marshalling:
+
+      The request body MUST be an empty DAV:principal-search-property-
+      set XML element.
+
+      This report is only defined when the Depth header has value "0";
+      other values result in a 400 (Bad Request) error response.  Note
+      that [RFC3253], Section 3.6, states that if the Depth header is
+      not present, it defaults to a value of "0".
+
+      The response body MUST be  a DAV:principal-search-property-set XML
+      element, containing a DAV:principal-search-property XML element
+      for each property that may be searched with the DAV:principal-
+      property-search REPORT.  A server MAY limit its response to just a
+      subset of the searchable properties, ...
+
+      <!ELEMENT principal-search-property-set
+       (principal-search-property*) >
+```
+
+**確定した実装方針**:
+- 応答は **207 ではなく 200 + `DAV:principal-search-property-set` 本文**(§9.5 Marshalling)。
+- Depth ヘッダが 0 以外なら **400**(MUST)。省略は 0 扱い。
+- 子要素は DTD 上 `principal-search-property*` = **0個でもよい**。
+  本サーバーは **空集合**を返す — この report が返すのは
+  「DAV:principal-property-search で *検索できる* プロパティ」であり、
+  本サーバーは §9.4 の principal-property-search を実装していないため、
+  「検索可能プロパティは無い」が事実に一致する(下記 gap 参照)。
+  Apple(ccs-calendarserver `twistedcaldav/resource.py`)は displayname と
+  calendar-user-address-set を返すが、真似ると「宣言と実装の乖離」になるため採らなかった
+  (このリポジトリの R-5a / J-2 是正で確立した「宣言 = 実際に受理できるもの」の規律)。
+
+**配置の判断(principal URL vs principal collection)**: §9.5 は文字通りには principal
+**collection** への MUST。だが本サーバーは
+(a) `DAV:principal-collection-set` を広告しておらず、
+(b) principal URL 自身の resourcetype を `<DAV:collection/><DAV:principal/>` と宣言しており、
+(c) 実測でクライアントは principal URL(`/dav/principals/{user}/`)に投げてくる
+ため、単一ユーザー構成では principal URL = principal collection とみなして実装した。
+
+**未実装として記録する gap(意図的)**:
+1. **DAV:principal-property-search(§9.4。原文は "Support for the DAV:principal-property-search
+   report is REQUIRED.")は未実装** → 403 DAV:supported-report を返す。
+   単一ユーザー運用では検索対象が1件しかなく、実需が出るまで着手しない判断。
+   実装したら §9.5 の応答にも検索可能プロパティを載せること(2箇所が連動する)。
+2. **DAV:principal-collection-set(§5.8)を広告していない。**
+   `/dav/principals/`(principal collection にあたるパス)自体もルーティングされておらず
+   全メソッドで 404。整えるなら PROPFIND とセットで別途行う。
+3. **カレンダーオブジェクトリソース宛の calendar-multiget が未対応**(405 のまま)。
+   RFC 4791 §7.9 原文は「if the Request-URI is a calendar object resource」も対応対象と
+   しており、ここを 403 DAV:supported-report で塗るのは誤り(嘘の宣言になる)。
+   正しい直し方は「object 宛 multiget(href ちょうど1個 = Request-URI)を実装し、
+   それ以外を 403 supported-report にする」の2段構え。
+
+**既知の名前空間の疑い(未修正)**<!-- 2026-08-01 更新: 下の「404 propstat のプロパティ名 と
+valid-sync-token の名前空間(2026-08-01)」§② で原文確認のうえ修正済み。この段落は
+「疑いを持った時点の記録」として残す(打ち消さず、続きを読めば結論に辿り着ける形にする)。 -->:
+`davError("valid-sync-token")` は要素を
+`urn:ietf:params:xml:ns:caldav` に置いているが、RFC 6578 §3.2 の原文は
+`(DAV:valid-sync-token)` = **DAV: 名前空間**。現状の応答は名前空間が誤っている可能性が高い。
+iOS の「無効 sync-token からの回復」経路に触れるため、単独で検証するべく今回は据え置いた
+(`src/presentation/dav/xml.ts` の davError コメントにも記載)。
+
+### ③ .well-known/caldav の Cache-Control(RFC 6764 §5)
+
+上の「探索 (RFC 6764 / 5397)」節に 2026-07-08 時点で
+「リダイレクト応答には Cache-Control を設定 SHOULD」と記録済みだったが、**実装されていなかった**
+(Cache-Control 無しの 301 を返していた)。原文(rfc6764.txt §5):
+
+```
+   Servers SHOULD set an appropriate Cache-Control header value (as per
+   Section 14.9 of [RFC2616]) in the redirect response to ensure caching
+   occurs or does not occur as needed or as required by the type of
+   response generated.  For example, if it is anticipated that the
+   location of the redirect might change over time, then a "no-cache"
+   value would be used.
+
+   To facilitate "context paths" that might differ from user to user,
+   the server MAY require authentication when a client tries to access
+   the ".well-known" URI ...
+```
+
+**確定**: `Cache-Control: no-cache` を採用。判断根拠は
+「リダイレクト先は将来変わりうる」側 —
+(1) マルチユーザー化(docs/modeling/13)で context path がユーザーごとに変わりうる
+   (RFC 6764 §5 自身がその前提で認証要求 MAY を用意している)、
+(2) OSS キットとしてマウント先パスが利用者ごとに変わる前提(CLAUDE.md 長期ビジョン2)、
+(3) 焼き付き事故の回復コストが非対称(no-cache の損はブートストラップ時の1往復のみ)。
+**§5 の認証要求 MAY は採らない**(現状は宛先が全ユーザー同一で守る情報が無く、
+401 にするとクライアント実装差を踏むリスクだけが増える)。`private` も付けない
+(応答が全ユーザー同一で、no-cache により毎回検証されるため実効差が無い)。
+ステータスは 301 のまま(§5 は "301, 303, or 307" を等価に並べており、既存クライアントの
+実績を崩す理由が無い)。
+
+---
+
+## 404 propstat のプロパティ名 と valid-sync-token の名前空間(2026-08-01)
+
+本番実測(`https://caldav.gigun-dev.workers.dev`)で見つかった2件の是正。
+
+### ① 404 propstat のプロパティ名は「要求された名前」でなければならない(RFC 4918)
+
+**現象**: `PROPFIND` で要求したプロパティのうちサーバーに無いものは 404 propstat に列挙される
+(ここまでは正しい)が、**その要素名が全部 `DAV:` 名前空間に潰れ、さらに小文字化されていた**。
+
+```xml
+<!-- 要求 -->
+<A:prop xmlns:A="DAV:" xmlns:B="http://apple.com/ns/ical/" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <B:calendar-color/><C:schedule-default-calendar-URL/>
+</A:prop>
+<!-- 修正前の応答(404 propstat) -->
+<d:calendar-color/>                <!-- 名前空間が ical: → DAV: に化けている -->
+<d:schedule-default-calendar-url/> <!-- 名前空間 + 大文字 URL → url の二重の化け -->
+```
+
+200 propstat 側は正しかった(props Record が手書きで正しい prefix を持つため)。
+**404 側だけが別経路で `<d:${name}/>` と名前を組み立てていた**のが原因。
+caldav / carddav / calendarserver / apple-ical / me.com の5名前空間すべてで、
+principal・calendar-home・コレクションのいずれでも、PROPFIND と REPORT の両方で再現した。
+
+**原文(rfc4918.txt §14.22 propstat XML Element)**:
+
+```
+   Description:   The propstat XML element MUST contain one prop XML
+      element and one status XML element.  The contents of the prop XML
+      element MUST only list the names of properties to which the result
+      in the status element applies.
+```
+
+**原文(rfc4918.txt §4.4 Property Names)**:
+
+```
+   A property name is a universally unique identifier that is associated
+   with a schema that provides information about the syntax and
+   semantics of the property.
+   ...
+   The XML namespace mechanism, which is based on URIs ([RFC3986]), is
+   used to name properties because it prevents namespace collisions and
+   provides for varying degrees of administrative control.
+```
+
+**原文(rfc4918.txt §17 Internationalization Considerations)**:
+
+```
+   WebDAV property names are qualified XML names (pairs of XML namespace
+   name and local name).
+```
+
+**判定**: プロパティ「名」は (名前空間 URI, ローカル名) の対。名前空間を潰した時点で
+「結果が適用されるプロパティの名前」ではなくなるので §14.22 の MUST 違反。
+ローカル名の大文字小文字も XML の規則(REC-XML の Name は大文字小文字を区別する)により
+別要素になるため、小文字化も同じく違反。
+
+一方 **prefix そのものは保存しなくてよい**。§4.3 の例の注記が明示している:
+
+```
+   o  The [prefix] for the property name itself was not preserved, being
+      non-significant, whereas all other [prefix] values have been
+      preserved,
+```
+
+したがって修正方針は「prefix を鸚鵡返しする」ではなく
+**「名前空間 URI とローカル名(原表記)を保持し、応答側は自分の宣言済み prefix に写像する」**。
+
+**iOS への影響の程度(誇張しないための記録)**: docs/modeling/06 の
+「要求されたプロパティを黙って落とすと NG。404 propstat に列挙必須。iOS はこれを実際に強制する」
+は列挙の**有無**の話で、今回は列挙自体はできていた。**iOS 26.5 は壊れた名前でもアカウント追加に
+成功する(実測)**。よってこれは「証明された iOS 破壊」ではなく
+**仕様違反 + 潜在リスク**(名前空間で判定する他クライアント・将来の iOS で壊れうる)。
+
+**実装(src/presentation/dav/xml.ts)**:
+- `PropFilter` を `Set<string>`(小文字ローカル名のみ)から
+  `ReadonlyMap<string, RequestedPropName>` へ。`RequestedPropName` は
+  `{ key(小文字ローカル名=照合用), localName(原表記), namespace(URI) }`。
+  **「照合のための正規化」と「応答に書き戻す表現」を型で分離した**のが要点
+  (両者を1つの文字列で兼ねていたのが今回のバグの根)。
+- 200 側の照合は従来どおりローカル名のみ(名前空間を見ない)。**これは意図的な据え置き** —
+  名前空間つき照合に変えると props Record のキー体系ごと作り直しになり、
+  今回のバグ修正と無関係な退行リスクを負う。実クライアントは正しい名前空間で要求してくる。
+- 404 側の書き戻しは3通り: (a) multistatus が宣言済みの名前空間 → その prefix、
+  (b) 未宣言 → 要素自身に `xmlns:xN="..."` を付ける(要求されうる名前空間は無限で、
+  静的な宣言リストでは原理的に閉じないため)、(c) 名前空間不明 → prefix 無し。
+- 名前空間の解決はドキュメント全体の `xmlns` 宣言を舐める近似(prefix の再束縛は見ない)。
+  Workers に XML パーサを持ち込まない既存方針の踏襲で、外しても「修正前と同じ状態」に
+  戻るだけで新規退行にはならない。
+
+### ② DAV:valid-sync-token の名前空間(RFC 6578)
+
+**原文(rfc6578.txt §3.2 DAV:sync-collection Report の Preconditions)**:
+
+```
+   Preconditions:
+
+      (DAV:valid-sync-token): The DAV:sync-token element value MUST be a
+      valid token previously returned by the server for the collection
+      targeted by the request-URI.
+```
+
+RFC 3253 §1.6 の記法どおり precondition 名の `DAV:` は名前空間を指す。
+実装は `davError("valid-sync-token")` = CalDAV 名前空間(`c:`)に置いていたので誤り。
+`{ namespace: "dav" }` を渡して `<d:valid-sync-token/>` を返すよう修正した。
+
+**iOS への影響の程度**: この 403 はクライアントを full resync に落とす唯一の合図。
+iOS は現状 status 403 だけで回復しているように見え(壊れている証拠は無い)、
+これも「仕様違反 + 潜在リスク」の側。回復経路(403 → token 無しで再送 → full sync)は
+`test/presentation/app.test.ts` の「無効 sync-token」で固定した。

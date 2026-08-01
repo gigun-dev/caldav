@@ -654,4 +654,344 @@ describe("Worker app", () => {
 			expect(res.status).toBe(201);
 		});
 	});
+
+	// -------------------------------------------------------------------------
+	// principal URL への REPORT(RFC 3744 §9.5 / RFC 3253 §3.6)
+	// -------------------------------------------------------------------------
+	// 何を保証するか: OPTIONS の Allow が広告している REPORT が principal URL でも
+	// 「メソッドとして通る」こと。具体的には
+	//   - principal-search-property-set は 200 + DAV:principal-search-property-set 本文
+	//   - Depth が 0 以外なら 400(§9.5 の MUST)
+	//   - 未対応 report は 403 + DAV:supported-report(§3.6 precondition)であって 404 ではない
+	// 回帰対象: 修正前はこれら全部が「404 Not Found」だった(calendar-home の prefix 判定に
+	// 落ちていた)。広告と実装の不整合をここで固定する。
+	const PRINCIPAL_PATH = `/dav/principals/${USERNAME}/`;
+	const SEARCH_PROP_SET_BODY =
+		'<?xml version="1.0" encoding="UTF-8"?><A:principal-search-property-set xmlns:A="DAV:"/>';
+
+	describe("principal URL への REPORT", () => {
+		it("principal-search-property-set は 200 と DAV:principal-search-property-set 本文を返す(404 ではない)", async () => {
+			const res = await fetchApp(PRINCIPAL_PATH, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "0" },
+				body: SEARCH_PROP_SET_BODY,
+			});
+			expect(res.status).toBe(200);
+			// 修正前の退行(404)をピンポイントで検知する。
+			expect(res.status).not.toBe(404);
+			expect(res.headers.get("content-type")).toContain("xml");
+			const body = await res.text();
+			// §9.5 Marshalling: "The response body MUST be a DAV:principal-search-property-set
+			// XML element"。子要素(検索可能プロパティ)は 0 個 — 本サーバーは
+			// principal-property-search を実装していないため(xml.ts の判断コメント参照)。
+			expect(body).toContain("principal-search-property-set");
+			expect(body).toContain('xmlns:d="DAV:"');
+			expect(body).not.toContain("<d:principal-search-property>");
+		});
+
+		it("Depth ヘッダ省略でも 200(RFC 3253 §3.6 により Depth:0 とみなす)", async () => {
+			const res = await fetchApp(PRINCIPAL_PATH, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml" },
+				body: SEARCH_PROP_SET_BODY,
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("Depth: 1 の principal-search-property-set は 400(§9.5 の MUST)", async () => {
+			const res = await fetchApp(PRINCIPAL_PATH, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "1" },
+				body: SEARCH_PROP_SET_BODY,
+			});
+			expect(res.status).toBe(400);
+		});
+
+		it("末尾スラッシュ無しの principal URL でも同じく 200(パス集合の取りこぼし防止)", async () => {
+			const res = await fetchApp(`/dav/principals/${USERNAME}`, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml" },
+				body: SEARCH_PROP_SET_BODY,
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("未対応 report は 403 + DAV:supported-report(404 でも 405 でもない)", async () => {
+			const res = await fetchApp(PRINCIPAL_PATH, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml" },
+				// principal-property-search(§9.4)は未実装。supported-report-set にも載せていない。
+				body: '<?xml version="1.0" encoding="UTF-8"?><D:principal-property-search xmlns:D="DAV:"><D:property-search><D:prop><D:displayname/></D:prop><D:match>x</D:match></D:property-search></D:principal-property-search>',
+			});
+			expect(res.status).toBe(403);
+			expect(res.status).not.toBe(404);
+			const body = await res.text();
+			// RFC 3253 §1.6: 違反した precondition 要素を DAV:error の子として返す。
+			// 名前空間は DAV:(CalDAV 側の c: ではない)。
+			expect(body).toContain("<d:error");
+			expect(body).toContain("<d:supported-report/>");
+		});
+
+		it("PROPFIND の supported-report-set は実装済みの report だけを広告する", async () => {
+			// 「広告 = 実装」の規律(collectionProps の R-5a 是正と同じ)。
+			// principal-search-property-set は載る / 未実装の principal-property-search は載らない。
+			const res = await fetchApp(PRINCIPAL_PATH, {
+				method: "PROPFIND",
+				headers: { authorization: authHeader() },
+				body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:supported-report-set/></d:prop></d:propfind>',
+			});
+			expect(res.status).toBe(207);
+			const body = await res.text();
+			expect(body).toContain("<d:principal-search-property-set/>");
+			expect(body).not.toContain("<d:principal-property-search/>");
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// カレンダーコレクションへの未対応 REPORT(RFC 3253 §3.6)
+	// -------------------------------------------------------------------------
+	describe("コレクションへの未対応 REPORT", () => {
+		beforeEach(() => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+		});
+
+		it("calendar-query を名乗らないボディは 403 + DAV:supported-report(CALDAV:supported-filter ではない)", async () => {
+			// 修正前は「4分岐目 = 無条件に calendar-query」だったため、filter が見つからず
+			// 403 CALDAV:supported-filter になっていた。status は同じ 403 でも precondition 名が
+			// 誤り(filter の問題ではなく report 自体が非対応)。
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, {
+				method: "REPORT",
+				headers: { authorization: authHeader() },
+				body: SEARCH_PROP_SET_BODY,
+			});
+			expect(res.status).toBe(403);
+			const body = await res.text();
+			expect(body).toContain("<d:supported-report/>");
+			expect(body).not.toContain("supported-filter");
+		});
+
+		it("calendar-query は従来どおり動く(退行防止)", async () => {
+			await fetchApp(`/dav/calendars/${USERNAME}/calendar/q1.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-query-1"),
+			});
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), depth: "1" },
+				body: `<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+					<d:prop><d:getetag/><c:calendar-data/></d:prop>
+					<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter>
+				</c:calendar-query>`,
+			});
+			expect(res.status).toBe(207);
+			expect(await res.text()).toContain("uid-query-1");
+		});
+
+		it("calendar-query を名乗るが filter が未対応なら従来どおり CALDAV:supported-filter", async () => {
+			// supported-report との切り分けが効いていること(片方に寄せて塗り潰していない)。
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, {
+				method: "REPORT",
+				headers: { authorization: authHeader() },
+				body: `<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+					<d:prop><d:getetag/></d:prop>
+					<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">
+						<c:prop-filter name="SUMMARY"/>
+					</c:comp-filter></c:comp-filter></c:filter>
+				</c:calendar-query>`,
+			});
+			expect(res.status).toBe(403);
+			const body = await res.text();
+			expect(body).toContain("supported-filter");
+			expect(body).not.toContain("supported-report");
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// 404 propstat のプロパティ名(RFC 4918 §14.22 / §17)
+	// -------------------------------------------------------------------------
+	// 何を保証するか: 「要求されたが存在しないプロパティ」を 404 propstat に列挙するとき、
+	// 要求された**名前空間**と**大文字小文字**をそのまま返すこと。app.fetch を通した
+	// end-to-end での固定(xml.test.ts は codec 単体、こちらは実際のルーティング経由)。
+	// 回帰対象: 本番実測で `<B:calendar-color/>` → `<d:calendar-color/>`、
+	// `<C:schedule-default-calendar-URL/>` → `<d:schedule-default-calendar-url/>` になっていた。
+	describe("404 propstat のプロパティ名(名前空間・大文字小文字)", () => {
+		// 本番で実際にバグを再現させたリクエストボディ(iOS/Apple クライアントの宣言スタイル)。
+		const APPLE_STYLE_PROPFIND = [
+			'<?xml version="1.0" encoding="UTF-8"?>',
+			'<A:propfind xmlns:A="DAV:" xmlns:B="http://apple.com/ns/ical/"',
+			' xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="http://calendarserver.org/ns/"',
+			' xmlns:E="urn:ietf:params:xml:ns:carddav" xmlns:F="http://me.com/_namespace/">',
+			"<A:prop>",
+			"<B:calendar-color/>",
+			"<C:schedule-default-calendar-URL/>",
+			"<C:calendar-home-set/>",
+			"<D:email-address-set/>",
+			"<E:addressbook-home-set/>",
+			"<F:bulk-requests/>",
+			"</A:prop></A:propfind>",
+		].join("");
+
+		it("principal への PROPFIND で 5 名前空間すべてが保持される", async () => {
+			const res = await fetchApp(`/dav/principals/${USERNAME}/`, {
+				method: "PROPFIND",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "0" },
+				body: APPLE_STYLE_PROPFIND,
+			});
+			expect(res.status).toBe(207);
+			const body = await res.text();
+			// 存在するプロパティは 200 側(退行防止)。
+			expect(body).toContain("<c:calendar-home-set>");
+			// 404 側: 名前空間が DAV: に潰れていないこと。
+			expect(body).toContain("<ical:calendar-color/>");
+			expect(body).toContain("<cs:email-address-set/>");
+			expect(body).toMatch(/<(\w+):addressbook-home-set xmlns:\1="urn:ietf:params:xml:ns:carddav"\/>/);
+			expect(body).toMatch(/<(\w+):bulk-requests xmlns:\1="http:\/\/me\.com\/_namespace\/"\/>/);
+			expect(body).not.toContain("<d:calendar-color/>");
+			expect(body).not.toContain("<d:email-address-set/>");
+		});
+
+		it("principal への PROPFIND で大文字を含む名前が小文字化されない", async () => {
+			const res = await fetchApp(`/dav/principals/${USERNAME}/`, {
+				method: "PROPFIND",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "0" },
+				body: APPLE_STYLE_PROPFIND,
+			});
+			const body = await res.text();
+			expect(body).toContain("<c:schedule-default-calendar-URL/>");
+			expect(body).not.toContain("schedule-default-calendar-url");
+		});
+
+		it("コレクションへの PROPFIND でも同じく名前空間が保持される(principal 限定の修正ではない)", async () => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, {
+				method: "PROPFIND",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "0" },
+				body: APPLE_STYLE_PROPFIND,
+			});
+			expect(res.status).toBe(207);
+			const body = await res.text();
+			expect(body).toContain("<c:schedule-default-calendar-URL/>");
+			expect(body).toMatch(/<(\w+):bulk-requests xmlns:\1="http:\/\/me\.com\/_namespace\/"\/>/);
+		});
+
+		it("REPORT(calendar-multiget)の 404 propstat でも名前空間が保持される", async () => {
+			// PROPFIND だけでなく REPORT 経路(responseXml を共有)でも同じであることの確認。
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+			await fetchApp(`/dav/calendars/${USERNAME}/calendar/m1.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-404ns-1"),
+			});
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "1" },
+				body: [
+					'<?xml version="1.0" encoding="UTF-8"?>',
+					'<A:calendar-multiget xmlns:A="DAV:" xmlns:B="http://apple.com/ns/ical/" xmlns:C="urn:ietf:params:xml:ns:caldav">',
+					"<A:prop><A:getetag/><B:calendar-color/><C:schedule-default-calendar-URL/></A:prop>",
+					`<A:href>/dav/calendars/${USERNAME}/calendar/m1.ics</A:href>`,
+					"</A:calendar-multiget>",
+				].join(""),
+			});
+			expect(res.status).toBe(207);
+			const body = await res.text();
+			expect(body).toContain("<d:getetag>");
+			expect(body).toContain("<ical:calendar-color/>");
+			expect(body).toContain("<c:schedule-default-calendar-URL/>");
+			expect(body).not.toContain("<d:calendar-color/>");
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// 無効 sync-token からの回復(RFC 6578 §3.2 DAV:valid-sync-token)
+	// -------------------------------------------------------------------------
+	// 何を保証するか: 無効な sync-token を受けたら 403 + DAV:error/DAV:valid-sync-token を返し、
+	// クライアントが token 無しで投げ直せば full sync に戻れること(この2つで1つの回復経路)。
+	// 回帰対象: precondition 要素を CalDAV 名前空間(c:)に置いていた誤り。
+	describe("無効 sync-token", () => {
+		beforeEach(() => {
+			harness.repos.collections.seed(
+				new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }),
+			);
+		});
+
+		const COLLECTION = `/dav/calendars/${USERNAME}/calendar/`;
+		function syncBody(token?: string): string {
+			return [
+				'<?xml version="1.0" encoding="UTF-8"?>',
+				'<D:sync-collection xmlns:D="DAV:">',
+				token === undefined ? "" : `<D:sync-token>${token}</D:sync-token>`,
+				"<D:sync-level>1</D:sync-level><D:prop><D:getetag/></D:prop>",
+				"</D:sync-collection>",
+			].join("");
+		}
+
+		it("解釈できない sync-token は 403 + DAV:valid-sync-token(CalDAV 名前空間ではない)", async () => {
+			const res = await fetchApp(COLLECTION, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "1" },
+				// 別ホスト由来のトークン = この collection の base では解釈できない。
+				body: syncBody("https://other.example/dav/calendars/someone/other/3"),
+			});
+			expect(res.status).toBe(403);
+			const body = await res.text();
+			// RFC 6578 §3.2 "(DAV:valid-sync-token)" — 名前空間は DAV:。
+			expect(body).toContain("<d:valid-sync-token/>");
+			expect(body).not.toContain("<c:valid-sync-token/>");
+		});
+
+		it("403 を受けたクライアントは token 無しで投げ直せば full sync できる(回復経路)", async () => {
+			await fetchApp(`${COLLECTION}s1.ics`, {
+				method: "PUT",
+				headers: { authorization: authHeader(), "content-type": "text/calendar" },
+				body: makeVEventIcs("uid-sync-recover"),
+			});
+			const res = await fetchApp(COLLECTION, {
+				method: "REPORT",
+				headers: { authorization: authHeader(), "content-type": "text/xml", depth: "1" },
+				body: syncBody(),
+			});
+			expect(res.status).toBe(207);
+			const body = await res.text();
+			expect(body).toContain("s1.ics");
+			// 次回の差分同期に使える新しい sync-token が返ること。
+			expect(body).toContain("<d:sync-token>");
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// .well-known/caldav の Cache-Control(RFC 6764 §5)
+	// -------------------------------------------------------------------------
+	describe(".well-known/caldav リダイレクト", () => {
+		it("301 で /dav/ を指し、Cache-Control: no-cache を付ける", async () => {
+			const res = await fetchApp("/.well-known/caldav", { method: "GET" });
+			expect(res.status).toBe(301);
+			expect(res.headers.get("location")).toBe("/dav/");
+			// RFC 6764 §5 SHOULD。Cache-Control 無しの 301 は既定で無期限キャッシュ可能になり、
+			// 将来リダイレクト先を変えたときにクライアント側の焼き付きから回復できない。
+			expect(res.headers.get("cache-control")).toBe("no-cache");
+		});
+
+		it("PROPFIND(iOS が最初に投げるメソッド)でも同じく 301 + no-cache", async () => {
+			// iOS は .well-known に対して PROPFIND を投げる。app.all で受けているので
+			// メソッドによらず同じ応答になることを固定する。
+			const res = await fetchApp("/.well-known/caldav", { method: "PROPFIND" });
+			expect(res.status).toBe(301);
+			expect(res.headers.get("cache-control")).toBe("no-cache");
+		});
+
+		it("認証なしでもリダイレクトする(RFC 6764 §5 の認証要求 MAY は採らない)", async () => {
+			// authorization ヘッダを付けていない = 未認証。401 ではなく 301 が返ること。
+			const res = await fetchApp("/.well-known/caldav", { method: "GET" });
+			expect(res.status).not.toBe(401);
+			expect(res.status).toBe(301);
+		});
+	});
 });

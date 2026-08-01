@@ -99,6 +99,8 @@ import {
 	parsePropFilter,
 	parseSyncToken,
 	principalProps,
+	principalSearchPropertySetXml,
+	propFilterFromKeys,
 	responseXml,
 	serializeFreeBusyResponse,
 	statusResponseXml,
@@ -203,11 +205,20 @@ function errorResponse(error: unknown): Response {
 	// PUT でも競合時は 412 になる — put-preconditions R1〜R7 との整合を保つ意図的な判断。
 	// ports/index.ts の ConcurrencyConflictError コメント「再試行ロジックをここに持ち込まない判断」参照)。
 	if (error instanceof ConcurrencyConflictError) return new Response("Precondition Failed", { status: 412 });
-	if (error instanceof InvalidSyncTokenError) return xml(davError("valid-sync-token"), 403);
+	// 2026-08-01: 名前空間を CalDAV(c:)から DAV(d:)へ修正。RFC 6578 §3.2 Preconditions は
+	// "(DAV:valid-sync-token): The DAV:sync-token element value MUST be a valid token previously
+	// returned by the server for the collection targeted by the request-URI." と定めており、
+	// RFC 3253 §1.6 の記法どおり precondition 名の "DAV:" は名前空間を指す。
+	// 旧実装は davError の既定(c: = urn:ietf:params:xml:ns:caldav)に乗ってしまっていた。
+	// 【なぜ据え置かず直したか】この 403 は「クライアントを full resync へ落とす」唯一の合図で、
+	// 名前空間で precondition を判別するクライアントには「未知のエラー」に見えて回復経路に
+	// 入れない恐れがある。iOS 実機は現状 status 403 だけで回復しているように見えるので
+	// 「壊れている証拠」ではないが、規格どおりに直しておく方が安全側。
+	if (error instanceof InvalidSyncTokenError) return xml(davError("valid-sync-token", { namespace: "dav" }), 403);
 	if (error instanceof CalDAVPreconditionError) {
 		const violation = error.violations[0];
 		const status = violation?.precondition === "no-uid-conflict" ? 409 : 403;
-		return xml(davError(violation?.precondition ?? "valid-calendar-data", violation?.detail), status);
+		return xml(davError(violation?.precondition ?? "valid-calendar-data", { detail: violation?.detail }), status);
 	}
 	console.error(JSON.stringify({ event: "unhandled_error", message: error instanceof Error ? error.message : String(error) }));
 	return new Response("Internal Server Error", { status: 500 });
@@ -338,7 +349,44 @@ app.use("*", async (c, next) => {
 app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
 
 // iOS はこの場所を最初に PROPFIND する。認証前でも正規DAV入口へ誘導できるようリダイレクト自体は公開する。
-app.all("/.well-known/caldav", (c) => c.redirect("/dav/", 301));
+//
+// 【2026-08-01 Cache-Control を追加した理由】RFC 6764 §5(docs/rfc/rfc6764.txt)原文:
+//   "Servers SHOULD set an appropriate Cache-Control header value ... in the redirect response
+//    to ensure caching occurs or does not occur as needed ... For example, if it is anticipated
+//    that the location of the redirect might change over time, then a "no-cache" value would be used."
+// 従来は Cache-Control 無しの 301 を返していた。**Cache-Control の無い 301 は HTTP の既定で
+// 事実上無期限にキャッシュ可能**(RFC 9110 §15.4.2 の permanent redirect + heuristic caching)。
+// つまりクライアント/中間キャッシュが `/dav/` を焼き付け、後からリダイレクト先を変えても
+// 追従できなくなる。ユーザー端末側に残るので、サーバーを直しても回復できないのが厄介。
+//
+// 【no-cache を選んだ理由 / 長期キャッシュを選ばなかった理由】
+// この 301 の宛先は「将来変わりうる」側だと判断した。根拠は3つ:
+//   (1) マルチユーザー化(docs/modeling/13)を視野に入れており、RFC 6764 §5 自身が
+//       "context paths that might differ from user to user" を想定して well-known への
+//       認証要求(MAY)まで用意している。ユーザーごとに宛先が変われば固定 301 は成立しない。
+//   (2) CLAUDE.md の長期ビジョン2「マウント可能な Hono アプリとして切り出す」= コアの
+//       マウント先パスが利用者ごとに変わる前提。`/dav/` は本リポジトリの既定値にすぎない。
+//   (3) 誤って焼き付けたときの回復コストが非対称。no-cache 側の損は「毎回 1 往復増える」
+//       だけ(ブートストラップ時のみ、しかも直後に本体 PROPFIND が続く)で、実質無視できる。
+// よって「恒久固定として長期キャッシュを明示する」案は採らない。
+//
+// 【なぜ 301 のまま(303/307 に変えない)か】RFC 6764 §5 は "using a 301, 303, or 307 response"
+// と3つを等価に並べている。iOS を含む既存クライアントは 301 で問題なく動いている実績があり
+// (test/integration/tsdav-harness.test.ts の serviceDiscovery も 301 前提)、ステータスを
+// 変える理由が無い。キャッシュ制御はステータスではなく Cache-Control で表現するのが筋。
+//
+// 【なぜ認証を要求しないか(RFC 6764 §5 の MAY を採らない)】現状は単一ユーザーで
+// 宛先が全員同じ `/dav/` なので、認証で守るべき情報が無い。かつ well-known を 401 にすると
+// ブートストラップの往復が増え、クライアント実装差(401 で諦めるもの)を踏むリスクがある。
+// マルチユーザー化で宛先がユーザーごとに変わったら、そのとき §5 の MAY を採用する。
+//
+// 【なぜ private を付けないか】現状この応答は全ユーザーで同一(共有キャッシュに載っても
+// 情報漏洩にならない)。no-cache により毎回検証されるので、private を足しても実効差が無い。
+// ユーザーごとに宛先が変わる設計に移行したら private を足すこと。
+app.all("/.well-known/caldav", (c) => {
+	c.header("Cache-Control", "no-cache");
+	return c.redirect("/dav/", 301);
+});
 
 // =============================================================================
 // OAuth-for-MCP 第3スライス: GET/POST /authorize(同意 UI)
@@ -612,6 +660,57 @@ app.all("*", async (c) => {
 			return xml(multistatus(responseXml(requestHref(url), principalProps(c.env.CALDAV_USERNAME, principalHref(c.env.CALDAV_USERNAME), home), parsePropFilter(body))));
 		}
 
+		// =====================================================================
+		// principal URL への REPORT(2026-08-01 修正)
+		// =====================================================================
+		// 【何が壊れていたか】OPTIONS の Allow(DAV_HEADERS)は全パスで REPORT を広告している
+		// のに、principal URL への REPORT はここより下の「calendar-home prefix でなければ 404」
+		// 判定に落ちて **404 を返していた**(実測: REPORT /dav/principals/admin/ → 404)。
+		// 広告したメソッドが 404 を返すのはプロトコル的に不整合で、クライアントによっては
+		// 「principal URL 自体が存在しない」と誤読しうる。
+		//
+		// 【なぜ principal URL に置くのか(principal collection ではなく)】RFC 3744 §9.5 は
+		// "Servers MUST support the DAV:principal-search-property-set REPORT on all collections
+		// identified in the value of a DAV:principal-collection-set property" と書いており、
+		// 厳密には principal **collection** の話。だが本サーバーは
+		//   - DAV:principal-collection-set を広告していない(= クライアントが collection を知らない)
+		//   - principal URL 自身の resourcetype を `<d:collection/><d:principal/>`(principalProps)
+		//     として宣言している = この URL 自体がコレクション
+		//   - 実測でクライアントはこの principal URL に対して投げてきている
+		// ので、単一ユーザー構成では principal URL = principal collection とみなすのが素直。
+		// 【採らなかった案】`/dav/principals/` を新たにルーティングして principal collection に
+		// 仕立てる案。REPORT だけ通しても PROPFIND は依然 404 のままで、かえって歪む
+		// (そのパスは現状どのメソッドでも 404。整えるなら PROPFIND / principal-collection-set の
+		//  広告とセットで別途やるべき仕事なので、今回は踏み込まない)。
+		if (method === "REPORT" && principalPathsSet.has(path)) {
+			const body = await readBody(request);
+			if (/<(?:[^:>]+:)?principal-search-property-set\b/i.test(body)) {
+				// RFC 3744 §9.5: "This report is only defined when the Depth header has value "0";
+				// other values result in a 400 (Bad Request) error response. Note that [RFC3253],
+				// Section 3.6, states that if the Depth header is not present, it defaults to a
+				// value of "0"." → ヘッダ省略は 0 扱い、明示的な 0 以外だけ 400。
+				// (ccs-calendarserver の txweb2/dav/method/report_principal_search_property_set.py も
+				//  同じく depth != "0" を BAD_REQUEST にしている。挙動を揃えておく。)
+				const depth = request.headers.get("depth");
+				if (depth !== null && depth !== "0") {
+					return new Response(`Bad Request: principal-search-property-set REPORT requires Depth: 0 (got ${depth})`, { status: 400, headers: DAV_HEADERS });
+				}
+				// 応答は multistatus ではなく principal-search-property-set 要素そのもの(§9.5
+				// Marshalling)。free-busy-query が text/calendar 本文を直接返すのと同じ扱いで、
+				// ここで xml() ヘルパ(既定 207)を使わず 200 を明示する。
+				return new Response(principalSearchPropertySetXml(), { status: 200, headers: XML_HEADERS });
+			}
+			// 未対応の REPORT。RFC 3253 §3.6 Preconditions: "(DAV:supported-report): The specified
+			// report MUST be supported by the resource identified by the request-URL." で、§1.6 は
+			// precondition 違反を「403(繰り返しても必ず失敗する場合)または 409」+ DAV:error 本体
+			// と定めている。この REPORT はサーバーが実装していない = 再送しても必ず失敗するので 403。
+			// 【なぜ 404 でも 405 でもないか】404 は「リソースが無い」の意味になり principal URL の
+			// 存在自体を否定してしまう。405 は「このリソースでこのメソッドが不可」の意味だが
+			// Allow で REPORT を広告している以上メソッド自体は可(不可なのは "その report")。
+			// 403 + DAV:supported-report が唯一「メソッドは可・その report は非対応」を表せる。
+			return xml(davError("supported-report", { namespace: "dav", detail: "This resource does not support the requested report" }), 403);
+		}
+
 		if (method === "PROPFIND" && (path === home || path === homeNoSlash)) {
 			const body = await readBody(request);
 			const filter = parsePropFilter(body);
@@ -682,7 +781,10 @@ app.all("*", async (c) => {
 			if (props.displayName !== undefined) applied.displayname = `<d:displayname/>`;
 			if (props.color !== undefined) applied["calendar-color"] = `<ical:calendar-color/>`;
 			if (props.order !== undefined) applied["calendar-order"] = `<ical:calendar-order/>`;
-			return xml(multistatus(responseXml(requestHref(url), applied, new Set(Object.keys(applied)))));
+			// 2026-08-01: PropFilter が Set<string> から Map<key, RequestedPropName> になったため
+			// propFilterFromKeys 経由で組み立てる(意味は従来と同じ「applied のキーを全部要求扱い」)。
+			// 404 側には回らない(known ⊇ filter)ので名前空間情報はここでは要らない。
+			return xml(multistatus(responseXml(requestHref(url), applied, propFilterFromKeys(Object.keys(applied)))));
 		}
 
 		if (method === "DELETE" && !resourceName) {
@@ -768,6 +870,21 @@ app.all("*", async (c) => {
 					headers: { ...DAV_HEADERS, "Content-Type": "text/calendar; charset=utf-8" },
 				});
 			}
+			// 2026-08-01: ここまでの3分岐(sync-collection / calendar-multiget / free-busy-query)に
+			// 当たらなかったボディを、以前は**無条件に calendar-query として扱っていた**。
+			// その結果、未知の REPORT(例: principal-search-property-set をコレクションに投げた場合)は
+			// parseCalendarQueryFilter が C:filter を見つけられず unsupported=true になり
+			// 403 CALDAV:supported-filter を返していた。403 という status は偶然正しかったが、
+			// precondition 名が誤り — CALDAV:supported-filter は「calendar-query の filter が
+			// 対応外」の意味(RFC 4791 §7.8)であって「その report 自体が非対応」ではない。
+			// RFC 3253 §3.6 の (DAV:supported-report) が正しい precondition なので、
+			// 「calendar-query かどうか」をまず要素名で判定して両者を切り分ける。
+			// 【なぜ要素名判定で足りるか】RFC 4791 §7.8 Marshalling: "The request body MUST be a
+			// CALDAV:calendar-query XML element" — calendar-query を名乗らないボディは
+			// calendar-query ではない。名前空間 prefix 非依存の判定は他の3分岐と同じ流儀。
+			if (!/<(?:[^:>]+:)?calendar-query\b/i.test(body)) {
+				return xml(davError("supported-report", { namespace: "dav", detail: "This collection does not support the requested report" }), 403);
+			}
 			// calendar-query REPORT(RFC 4791 §7.8。G-3 で「全件返す」仮実装から差し替え)。
 			// 未対応の filter 要素(prop-filter 等)を検出したら §7.8 precondition の
 			// CALDAV:supported-filter で 403 を返す(davError の流儀を踏襲)。
@@ -798,6 +915,21 @@ app.all("*", async (c) => {
 			// 挙動を変えない、今回のスコープ外の話)。
 			return new Response("Forbidden: free-busy-query REPORT can only be run against a collection", { status: 403, headers: DAV_HEADERS });
 		}
+
+		// 【既知の gap(2026-08-01。今回は意図的に直していない)】
+		// オブジェクトリソースに対する free-busy-query 以外の REPORT は、下の最終フォールバックで
+		// 405 Method Not Allowed になる。Allow で REPORT を広告している以上ここも不整合だが、
+		// principal URL の 404(上で修正)とは事情が違って **403 DAV:supported-report で塗るのは誤り**:
+		// RFC 4791 §7.9 原文 "The CALDAV:calendar-multiget REPORT is used to retrieve specific
+		// calendar object resources from within a collection, if the Request-URI is a collection,
+		// or to retrieve a specific calendar object resource, if the Request-URI is a calendar
+		// object resource" — つまり calendar-multiget は **オブジェクトに対しても対応が必須**で、
+		// 「非対応」と宣言するのは嘘になる。正しい直し方は「object 宛の calendar-multiget
+		// (§7.9: href はちょうど1個で Request-URI と等価 MUST)を実装し、それ以外を
+		// 403 DAV:supported-report にする」の2段構え。実装コスト自体は小さいが、今回の依頼
+		// (principal URL の 404 と .well-known の Cache-Control)からは外れるので手を付けない。
+
+
 
 		if (method === "GET" || method === "HEAD") {
 			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });
