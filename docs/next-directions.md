@@ -366,6 +366,15 @@
   > **④別件で踏んだ実バグ: `make dev` が起動しない。** custom build の watch が
   > 「`*-bundle.ts` を再生成 → 変更検知 → 再ビルド」の**無限ループ**に入る。本日2つのエージェント
   > が独立に踏んだ。開発体験を直撃するので要修正(未調査)。
+- **2026-08-02: MCP Apps カードの配色・CSS 変数に実バグ9件** →
+  [`docs/card-color-audit-2026-08-02.md`](card-color-audit-2026-08-02.md)(全件を独立に再検証済み)。
+  重い順に **①`.fab` 等の白文字がダークで 2.71**(非テキスト最低線 3:1 も割る)
+  **②`--text-3` が両モード落第**(light 2.07 / dark 2.51。差分の「変更前の値」に当たっている)
+  **③`--hairline` が未定義**でダーク 1.03 = 不可視。加えて **④ホスト注入テーマが一度も
+  `setProperty` されておらず、`--color-*` の全参照がフォールバック**(= iOS のシステムカラーに
+  追従する設計が丸ごと死んでいる。`--color-border-secondary` と `--color-border-primary` の
+  綴り違いもあり断線は二重)。**Simulator を使わずブラウザで実測**した(手法は共有スキルの
+  `references/webview-offload.md`)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
