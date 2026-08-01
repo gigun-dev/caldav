@@ -70,15 +70,37 @@ com.apple.settings.apps → com.apple.mobilecal → ACCOUNTS → ADD_ACCOUNT
 
 ### エージェントが Simulator を CLI 操作するときの注意
 
-**Simulator に触る前に**(= `idb`/`simctl` で最初の1手を撃つ前に)、**共有スキル `ios-simulator`
-(personal scope・`ios-skills` プラグイン)の「事前チェック」節を実行すること。** システムプロキシと
-ソフトキーボード設定を確認せずに始めると、**以降の観測がすべて無効になる**(新品 Simulator の TLS が
-全部落ちる/ソフトキーボードが一切出ない、のどちらも実測で起きている)。
+### 🔴 アプリを触る前に、これを実行する(読むのではなく実行する)
 
-操作手順・座標系・IME 化け・スクショの出力先といった汎用の規律は**すべて共有スキルが原典**。
-本スキルでは重複させない(2026-08-02: ここに重複して書いていた3項目 —— `idb ui text` の
-ローマ字化け / スクショ出力先 / `describe-all` からの座標取り —— は共有スキルに同内容があるので削除した。
-片方だけ更新されて食い違うのが一番危ない)。
+```bash
+export SIM_UDID=<対象の UDID>          # 端末を新しく作るなら create → bootstatus を先に
+networksetup -getsecurewebproxy "Wi-Fi"                        # Enabled: Yes なら HTTPS が全部 MITM される
+pgrep -lf 'Proxyman|Charles|mitmproxy'                         # キャプチャツールが動いていないか
+defaults read com.apple.iphonesimulator ConnectHardwareKeyboard # 1 ならソフトキーボードが出ない
+xcrun simctl list devices booted                               # 複数 Booted なら以降すべて UDID 明示
+```
+
+**新品 Simulator はキャプチャツールのルート CA を信頼していないので、HTTPS だけが静かに落ちる。**
+この失敗はこう見える(**grep で当たるよう原文のまま置く**):
+
+```
+NSURLErrorDomain Code=-1200 "A TLS error caused the secure connection to fail."
+# Safari では: 接続はプライベートではありません / サーバの識別情報を検証できません
+```
+
+対処は**その端末にだけ CA を入れる**(ホストのプロキシ設定は触らない):
+`<ios-simulator スキル>/scripts/sim-trust-ca.sh --udid "$SIM_UDID"`(冪等・`--dry-run` あり)
+
+> **Why not「共有スキルの事前チェック節を実行せよ」で済ませないか(2026-08-02 実測で改訂)**:
+> 以前はそう書いていた。**エージェントはその一文を読んだうえで実行せず、7分目に TLS で詰まった**
+> (本人の弁: 「していれば1分目に気づいていた」)。**ポインタは読ませられても実行させられない。**
+> 逆に、同じチェックを**コマンドごとインライン化した run は、共有スキルを一度もロードせずに
+> 事前チェックを実行した**(✅実測)。**だからここに実物を置く。ポインタに戻さないこと。**
+> 共有スキルが読まれるかは 78%(9 run 実測)で、**制御できない**。
+
+操作手順・座標系・IME 化け・スクショの出力先といった汎用の規律は**すべて共有スキル `ios-simulator`
+が原典**。本スキルでは重複させない —— **ただし上の事前チェックだけは例外**(実行率を上げるため
+意図的に重複させている。片方だけ更新されて食い違うリスクより、実行されないリスクの方が大きい)。
 
 ## 前提(重要)
 
