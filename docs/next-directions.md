@@ -325,6 +325,47 @@
   > `subscriptions/listen` / **ext-apps の extensions 宣言**(initialize 廃止により
   > capabilities 申告の場所が変わるため、カード UI の要となる ext-apps の宣言経路は要確認)/
   > list 系の `ttlMs`・`cacheScope` / DCR → CIMD。
+- **iOS 初回アカウント追加バグの切り分け + サーバー是正5件 + Apple クライアントモデル総当たり調査(2026-08-01)**
+  > 経緯の生記録は docs/log.md 末尾(このセッションで追記)。
+  > **①iOS 実機挙動: まっさらな Simulator では CalDAV アカウントの初回追加が必ず失敗する(iOS 側の
+  > 挙動・サーバー実装は無関係と確定)。** ユーザー追加アカウントが1つも無い端末では、サーバー検証は
+  > 通るのに「カレンダー/リマインダー」トグル一覧が空になり、保存するとデータクラス0個の「停止中」
+  > になる。**他社サーバー(Vikunja のデモ)でも再現**したことで切り分けが完了した(7月の実機検証は
+  > 既存アカウントが1つ以上ある端末だったため、この現象に一度も当たらなかった)。回避策(実測で確定):
+  > `xcrun simctl openurl <UDID> 'webcal://<公開icsのURL>'` で**照会カレンダーを先に1つ入れる**
+  > (4タップ・テキスト入力ゼロ)と CalDAV の初回追加が通るようになる。端末を温めるのに CalDAV
+  > である必要はなく、型の違う `SubscribedCalendar` で足りる(同一端末に「日本の祝日」が2行並び、
+  > **システム管理の `HolidayCalDaemonAccount` では温まらず、ユーザー追加の照会カレンダーで温まった**
+  > ことを `sqlite3` で直接確認)。`.mobileconfig` はアカウント投入に使えないことも確定(アカウント系
+  > ペイロード全般が Simulator でアカウントを作らない。CalDAV 固有ですらない)。検証用の種デバイス
+  > `CalDAV-Seed-webcal` を残置 — 以後 `xcrun simctl clone` で**16.7秒・0タップ**で CalDAV 付き
+  > 端末が複製できる。詳細は `docs/modeling/06-ios-behavior-verification.md` に記録済み(別エージェント
+  > が執筆。このセッションは参照のみで編集していない)。
+  > **②サーバー側の是正5点(未コミット・未デプロイ)**: (a) 未対応 REPORT の応答を 404 →
+  > **403 + `<DAV:error><DAV:supported-report/></DAV:error>`** に是正(RFC 3253 §3.6/§1.6 を原文
+  > 照合。`docs/rfc/rfc3253.txt` を新規スナップショット追加)(b) `principal-search-property-set`
+  > REPORT を実装(RFC 3744 §9.5。200 で返す。`principal-property-search` 未実装のため空集合で
+  > 返す判断)(c) `.well-known/caldav` の 301 に `Cache-Control: no-cache`(RFC 6764 §5 の SHOULD)
+  > (d) **【重要】404 propstat のプロパティ名が壊れていたバグを修正**: 要求された名前空間が全部
+  > `DAV:` に潰れ、大文字が小文字化されていた(例: `{apple-ical}calendar-color` →
+  > `<d:calendar-color/>`、`{caldav}schedule-default-calendar-URL` →
+  > `<d:schedule-default-calendar-url/>`)。5名前空間すべて・principal/home/collection すべて・
+  > PROPFIND と REPORT の両方で再現していた(RFC 4918 §14.22 違反。200 propstat 側は正しく、
+  > 404 側だけが別経路で名前を組み立てていたのが原因)。**iOS 26.5 は現状これを許容している
+  > (実測)ので「証明された iOS 破壊」ではなく仕様違反+潜在リスクという扱い**。(e)
+  > `valid-sync-token` の名前空間を CalDAV → `DAV:` に修正(RFC 6578 §3.2)。`make check` 緑
+  > (bun 1105 pass / worker 42 pass)。
+  > **deploy 前に確認すること**(未実施のまま次セッションへ引き継ぐ): 既存アカウントが古い 301
+  > (`Cache-Control: no-cache` 無し版)をキャッシュ済みの可能性 / principal への PROPFIND で
+  > `supported-report-set` が 404 propstat → 200 propstat に変わる(挙動が変化する箇所)。
+  > **③Apple 公式リファレンス実装を使った総当たり調査という手法を確立(今後も使える)**:
+  > `/Users/gigun/ghq/github.com/apple/ccs-calendarserver` の `simplugin/caldavclient.py`
+  > (Apple 自身が「実クライアントはこう動く」とモデル化した負荷シミュレータ・リクエストボディ
+  > 78本)を棚卸しし、約45本を本番へ実際に当てて検出する手法で実施。未着手の課題8件を検出 —
+  > 一覧は下記「小粒の残タスク」の該当節参照(次セッションの着手候補)。
+  > **④別件で踏んだ実バグ: `make dev` が起動しない。** custom build の watch が
+  > 「`*-bundle.ts` を再生成 → 変更検知 → 再ビルド」の**無限ループ**に入る。本日2つのエージェント
+  > が独立に踏んだ。開発体験を直撃するので要修正(未調査)。
 - **正典の順序**: instructions → この最新サマリ → 該当modeling/RFC → project skill →
   `docs/log.md`。詳細履歴は必要な節だけ読む。Claude project memoryやsession JSONLは同期しない。
 
@@ -701,3 +742,28 @@ v2 の3バグ再発なし)。残るはユーザー実機の操作感確認のみ
   補助的な手段として扱う。
 - J-4: iOS 実機での calendar/tasks 非回帰(allprop sync-token 除外の念押し込み)。
 - completeRecurringTodo のゾーン変更エッジ / 全日→時刻付きで VALARM 新規生成の是非(要望待ち)。
+- **`make dev` が起動しない(2026-08-01 発見・未調査)**: custom build の watch が
+  「`*-bundle.ts` を再生成 → 変更検知 → 再ビルド」の無限ループに入る。本日2つのエージェントが
+  独立に踏んだ。開発体験を直撃するので優先度は高いが原因未特定。
+
+### Apple クライアントモデル総当たり調査で検出した未着手課題(2026-08-01・次の着手候補)
+
+`ccs-calendarserver` の `simplugin/caldavclient.py` を使った総当たり(頭の 2026-08-01 更新ブロック
+③参照)で見つかった、この日には未修正のまま残っている課題。
+
+1. `expand-property` / `principal-property-search` / `calendarserver-principal-search` が
+   principal で 404(principal ルートに REPORT ハンドラが無い)。
+   **`expand-property` は OS X が毎回のポーリングで投げる経路。**
+2. PROPPATCH の未対応プロパティ応答に status も propstat も無い(RFC 4918 §14.24 の DTD 違反)。
+3. `Depth: infinity` を黙って Depth 0 扱いして 207 を返す(RFC 4918 §9.1 の SHOULD は
+   403 + `propfind-finite-depth`)。
+4. calendar-home への `sync-collection` が 404。
+5. **sync token にリクエストホストが埋まっており、入口(workers.dev / Cloud Run)を変えると
+   全同期が走る**(データ喪失はしないが full resync コストが発生)。
+6. `.well-known/caldav/`(末尾スラッシュ)が 404。Apple のモデルはこの形を使う
+   (iOS 26.5 はスラッシュ無しなので低優先)。
+7. object 宛 `calendar-multiget` が 405(RFC 4791 §7.9 は object 宛も対象と明記)。
+8. **200 propstat 側の照合が名前空間を見ていない**(`<foo:calendar-home-set xmlns:foo="urn:bogus"/>`
+   を要求すると CalDAV の値が 200 で返る)。直すには props Record のキーを (ns, local) 対に
+   変える必要があり全プロパティ定義に波及する = **別タスク相当**(1〜7とは規模が違うので分けて
+   起票する)。
