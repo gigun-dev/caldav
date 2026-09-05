@@ -16,7 +16,7 @@ CSP、nullable入力、outputSchemaまで反映・検証済みで、焦点はプ
 - outputSchema は25/25ツールで公開され、ChatGPTの「出力スキーマ推奨」は消失。`refresh-todos`・`refresh-events`・`report-card-telemetry` は visibility=`[app]` のまま、通常カード操作と本番ログで全件成功を確認済み。
 - CalDAV是正5件は実装・反映済み。本番確認はwell-known以外の4件が未確認で、RFC適合の未着手課題と合わせてカタログに保持する。
 - 既知のカード実機バグ2件（fullscreen FABがcomposerに隠れる／⊕→fullscreenでキーボードが一瞬起動して閉じる）と、iOS実機・Simulatorの残項目は未解決のまま残す。
-- IADレイテンシはcolo別サンプルの蓄積待ちで判定保留。hubのH0検証WorkerはOpenTofuで公開済み（31テスト、D1永続化、APNsの無効端末応答、再plan No changesを確認）。iPhoneの通常/AES通知表示は未確認で、H0全体は未完了。[hub現在地](../../hub/docs/next-directions.md)を参照。
+- IADレイテンシはcolo別サンプルの蓄積待ちで判定保留。hubのH0検証WorkerはOpenTofuで公開済み（31テスト、D1永続化、再plan No changes）。本人がiPhoneで通常/AES通知を両方読めたと確認し、成立性ゲート通過。次は共通受付とheartbeat監視。個別の互換性・運用の残項目は[hub現在地](../../hub/docs/next-directions.md)を参照。
 - 正典の順序: instructions → この頭 → 該当カタログ / modeling / RFC原文 → project skill → `docs/log.md`。
 
 ## 着手順

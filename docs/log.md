@@ -1513,3 +1513,4 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 
 - hubは39bbf30でBark runtime、31722fdでIaC/公開手順をコミット。専用Worker/D1をOpenTofuで作成し、migration後に公開。31テスト・APNs直結のBadDeviceToken・再plan No changesを確認。本人のBark登録/通知表示は未完了。
 - caldav本体の追加変更・本番再デプロイはなし。詳細はhub/docs/log.mdを正とする。
+- 2026-09-06追記: 本人がhubの通常/AES通知を両方読めたと確認。hubの8a0b9fcに成立性ゲート通過と残項目を記録し、caldavの現在地も同期した。caldav本体のコード変更・再デプロイなし。
