@@ -1500,3 +1500,16 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 
 - ユーザー続行指示によりBark互換backend成立性とIaC所有境界をhub側で調査。hub/docs/bark-feasibility-2026-09-06.md、infra-ownership-2026-09-06.mdに記録。
 - hub/experiments/bark-compatにモックAPNsのローカル互換PoCを追加。12テスト・strict型検査PASS。実APNs・実機・デプロイは未実施。caldav本体や既存通知経路は変更していない。
+
+## 2026-09-06 next-directions 詳細カタログ分離
+
+- `docs/next-directions.md` を第6版へ棚卸しし、SessionStart の頭を現在地と着手順だけに整理した。マーカーより上は33行、ファイル全体は43行で、旧約600行の計画・裁定・申し送りは削除せず専門カタログへ移した。
+- 詳細は `docs/next-directions-agentic-ui.md`、`docs/next-directions-caldav-ios.md`、`docs/next-directions-operations.md`、`docs/next-directions-roadmap.md` に分離し、next-directions からリンクした。過去時点の状態記録は各カタログに保持し、現況は頭を正とする注記を追加した。
+- 現在の本番事実は e905642 / 6394a1b / 0440b7b の反映完了、25/25 outputSchema 公開、ChatGPT の出力スキーマ警告消失、app-only 3ツールの本番成功、make check の bun 1111 + worker 42 PASS として頭へ集約した。
+- CalDAV 是正5件の本番確認は well-known 以外の4件が未実施、カード実機バグ2件と iOS 残項目、未着手 RFC 課題は未完了のままカタログに保持した。IAD 再計測も判定保留のままとした。
+- hub の H0/R0 は実装中として記録し、caldav の本番完了や実機・実APNs・デプロイ済みとは混同していない。今回の変更は caldav/docs の文書のみで、コード・commit・pushは行っていない。
+
+## 2026-09-06 hub H0検証環境の引き継ぎ
+
+- hubは39bbf30でBark runtime、31722fdでIaC/公開手順をコミット。専用Worker/D1をOpenTofuで作成し、migration後に公開。31テスト・APNs直結のBadDeviceToken・再plan No changesを確認。本人のBark登録/通知表示は未完了。
+- caldav本体の追加変更・本番再デプロイはなし。詳細はhub/docs/log.mdを正とする。
