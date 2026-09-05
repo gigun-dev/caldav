@@ -257,6 +257,54 @@ describe("/mcp", () => {
 		]);
 	});
 
+	// MCP Apps の「出力スキーマ推奨」は tools/list の outputSchema で解消する。全ツールに
+	// any 相当の曖昧なスキーマを付けただけでは、ホストが structuredContent を理解できず、
+	// handler の成功応答も SDK の出力検証を通らないため、各ツールの最上位 shape と必須キーを
+	// ここで契約として固定する。成功時の実データ自体は下記の既存ツール呼び出しテストが
+	// SDK の outputSchema 検証を通ることで保証し、ここでは tools/list の公開漏れを検出する。
+	it("tools/list の全25ツールが実形に対応する outputSchema を公開する", async () => {
+		const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+		const rpc = await jsonRpcResult(res);
+		const requiredByTool: Record<string, string[]> = {
+			"get-current-time": ["currentTime", "timeZone", "utc", "dayOfWeek"],
+			"list-events-expanded": ["events", "calendarId", "timeZone"],
+			"refresh-events": ["events", "calendarId", "timeZone"],
+			"get-freebusy": ["timeZone", "busy", "resolvedRange"],
+			"list-calendars": ["calendars"],
+			"create-calendar": ["tasks", "calendarId", "timeZone"],
+			"delete-calendar": ["id", "deleted"],
+			"update-calendar": ["id", "displayName", "components"],
+			"create-todo": ["tasks", "calendarId", "timeZone"],
+			"create-todos": ["tasks", "calendarId", "timeZone"],
+			"list-todos": ["tasks", "calendarId", "timeZone"],
+			"refresh-todos": ["tasks", "calendarId", "timeZone"],
+			"update-todo": ["tasks", "calendarId", "timeZone"],
+			"complete-todo": ["tasks", "calendarId", "timeZone"],
+			"delete-todo": ["tasks", "calendarId", "timeZone"],
+			"move-todo": ["tasks", "calendarId", "timeZone"],
+			"create-event": ["events", "calendarId", "timeZone"],
+			"create-events": ["events", "calendarId", "timeZone"],
+			"update-event": ["events", "calendarId", "timeZone"],
+			"delete-event": ["events", "calendarId", "timeZone"],
+			"list-known-locations": ["locations"],
+			"search-location": ["candidates"],
+			"list-deleted": ["tasks", "calendarId", "timeZone"],
+			"restore-deleted": ["tasks", "calendarId", "timeZone"],
+			"report-card-telemetry": ["ok"],
+		};
+		const tools = rpc.result.tools as Array<{
+			name: string;
+			outputSchema?: { type?: string; required?: string[]; properties?: Record<string, unknown> };
+		}>;
+		expect(tools).toHaveLength(Object.keys(requiredByTool).length);
+		for (const tool of tools) {
+			const schema = tool.outputSchema;
+			expect(schema, `${tool.name} must publish outputSchema`).toBeDefined();
+			expect(schema?.type).toBe("object");
+			expect(schema?.required).toEqual(expect.arrayContaining(requiredByTool[tool.name] ?? []));
+		}
+	});
+
 	// R1(docs/modeling/15 §A-2): tool annotations の代表サンプル検証。全23ツール分を1件ずつ
 	// 突き合わせると変更のたびにこのテストを保守するコストが高いので、read/create/update/delete
 	// それぞれの代表1〜2ツールで annotations の形が正しく付いていることだけを固定する

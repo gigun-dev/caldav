@@ -81,6 +81,18 @@ import { buildCompletedSummary, buildEditedChanges, snapshotFromTask } from "./t
 import type { AffectedEvent, EventSnapshot } from "./events-view-model";
 import { buildEventEditedChanges, snapshotFromEvent } from "./events-diff";
 import {
+	calendarDeletedOutputSchema,
+	calendarPropertiesOutputSchema,
+	calendarsOutputSchema,
+	cardTelemetryOutputSchema,
+	eventsViewModelOutputSchema,
+	freeBusyOutputSchema,
+	getCurrentTimeOutputSchema,
+	knownLocationsOutputSchema,
+	searchLocationOutputSchema,
+	todosViewModelOutputSchema,
+} from "./output-schemas";
+import {
 	CompleteTodo,
 	// レイテンシ案2(2026-07-22): 全横断/一部/単一を1 D1 往復で満たす across-owner 版へ移行。
 	// 旧 ComputeFreeBusy / ListOccurrences(単一コレクション専用)は application 層に第一級 UC として
@@ -2089,6 +2101,7 @@ function buildMcpServer(
 			title: "Get current time",
 			description: "現在時刻を指定タイムゾーンの offset 付き ISO8601 で返す。エージェントが「今日/今」を基準に期間を組み立てるための基準時刻取得ツール。",
 			inputSchema: getCurrentTimeInputShape,
+			outputSchema: getCurrentTimeOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ timeZone }) => {
@@ -2246,6 +2259,7 @@ function buildMcpServer(
 					'「今週の予定」「来週」「今月」なども事前 get-current-time なしで1発で引ける。' +
 				"応答の calendarId が null の場合は全コレクション横断の結果であることを示す(単一コレクション指定時のみその ID を echo する)。",
 			inputSchema: listEventsExpandedInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
@@ -2269,6 +2283,7 @@ function buildMcpServer(
 				"UI(アジェンダ App)専用の再読み込みツール。UI が保持する現在の期間(timeMin/timeMax)を引数で受け取り、" +
 				"その期間の最新の展開済み一覧を返す。モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得用。",
 			inputSchema: listEventsExpandedInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI, visibility: ["app"] },
@@ -2290,6 +2305,7 @@ function buildMcpServer(
 				"this-week/next-week/this-month)で指定する。「今週」「来週」「今月」も range で1発で引ける。" +
 				"range を使えば事前 get-current-time なしで「今日の空き時間」を1発で引ける。",
 			inputSchema: getFreeBusyInputShape,
+			outputSchema: freeBusyOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ timeMin, timeMax, range, timeZone, calendarId }) => {
@@ -2352,6 +2368,7 @@ function buildMcpServer(
 				"list-todos/create-todo 等の calendarId、components に含まれる \"VTODO\" がリマインダーリスト・" +
 				'"VEVENT" がカレンダー(予定)であることを示す。',
 			inputSchema: listCalendarsInputShape,
+			outputSchema: calendarsOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async () => {
@@ -2400,6 +2417,7 @@ function buildMcpServer(
 				"繰り返せる)。同じ displayName でもう1つ別のリストを意図的に作りたい場合は、id を" +
 				"明示的に指定すること(省略すると既存のものが返る)。",
 			inputSchema: createCalendarInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: CREATE_CALENDAR_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -2535,6 +2553,7 @@ function buildMcpServer(
 				"コレクションは拒否する(誤操作で予定・リマインダーが巻き添えで消えるのを防ぐ安全装置)。" +
 				"中身ごと削除したい場合のみ force:true を指定する。",
 			inputSchema: deleteCalendarInputShape,
+			outputSchema: calendarDeletedOutputSchema,
 			annotations: DELETE_ANNOTATIONS,
 		},
 		async ({ id, force }) => {
@@ -2581,6 +2600,7 @@ function buildMcpServer(
 				"(RFC 4918 PROPPATCH と同じユースケース。iOS 側からの変更と同じ経路)。" +
 				"displayName/color の少なくとも一方を指定すること(両方省略はエラー)。",
 			inputSchema: updateCalendarInputShape,
+			outputSchema: calendarPropertiesOutputSchema,
 			annotations: UPDATE_CALENDAR_ANNOTATIONS,
 		},
 		async ({ id, displayName, color }) => {
@@ -2653,6 +2673,7 @@ function buildMcpServer(
 					// カードが N 枚積まれる実害があったため、複数件は create-todos へ誘導する。
 					"2件以上のリマインダーをまとめて追加する場合は create-todo を繰り返し呼ばず、必ず create-todos を使うこと。",
 			inputSchema: createTodoInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -2765,6 +2786,7 @@ function buildMcpServer(
 				"既定の tasks へ混ぜず create-calendar で専用コレクションを作ってそこへ入れること" +
 				"(日常のリマインダーと混ざると双方が読みにくくなる。終わったらコレクションごと消せる)。",
 			inputSchema: createTodosInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3083,6 +3105,7 @@ function buildMcpServer(
 				"calendarId 省略時は owner 配下の全 VTODO コレクションを横断して一覧する(各 task に由来 calendarId が付く)。" +
 				"特定のリストだけを見たいときは calendarId を明示すること。",
 			inputSchema: listTodosInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3132,6 +3155,7 @@ function buildMcpServer(
 				"引数で受け取り、そのビューの最新一覧を返す(引数なしなら既定=未完了のみ)。" +
 				"モデルからは呼べない(visibility:[\"app\"])— UI の focus refetch / mutation 後の再取得が callServerTool で叩く用。",
 			inputSchema: listTodosInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },
@@ -3153,6 +3177,7 @@ function buildMcpServer(
 				"status:\"COMPLETED\"/\"NEEDS-ACTION\" でフィールド更新と同時に完了/再開もできる" +
 				"(status:\"COMPLETED\" は complete-todo と同じ D4 モデルで定期タスク(RRULE あり)にも対応)。",
 			inputSchema: updateTodoInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3267,6 +3292,7 @@ function buildMcpServer(
 				"定期タスク(RRULE あり)は docs/modeling/06 §D4 の D4 モデル(新 UID の完了スナップショットを作り、" +
 				"マスターを次回 occurrence へ前進させる)で処理する。",
 			inputSchema: completeTodoInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3311,6 +3337,7 @@ function buildMcpServer(
 			title: "Delete todo",
 			description: "VTODO(リマインダー)を削除する。常に無条件削除(ETag 条件なし — delete-todo.ts 冒頭コメント参照)。",
 			inputSchema: deleteTodoInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: DELETE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3368,6 +3395,7 @@ function buildMcpServer(
 				"移動元=移動先の指定はエラーになる。移動先が VTODO を受け付けないコレクション" +
 				"(supported-calendar-component-set に VTODO が無い)もエラーになる。",
 			inputSchema: moveTodoInputShape,
+			outputSchema: todosViewModelOutputSchema,
 			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -3474,6 +3502,7 @@ function buildMcpServer(
 				'calendarId 省略時は "calendar" コレクションに作成する。' +
 				"2件以上の予定をまとめて追加する場合は create-event を繰り返し呼ばず、必ず create-events を使うこと。",
 			inputSchema: createEventInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
@@ -3568,6 +3597,7 @@ function buildMcpServer(
 				"**まとめた終日予定1件にせず、行き先ごとに時刻付きの予定へ割ること**" +
 				"(当日カレンダーを見て『何時に何をするか』が分かる形にするのがカレンダーへ入れる目的)。",
 			inputSchema: createEventsInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: CREATE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
@@ -3676,6 +3706,7 @@ function buildMcpServer(
 				"(alarms/recurrence/url/travelMinutes を指定すれば更新、null で除去)。" +
 				"end は null で終了を外せる(開始のみのイベント)。反復イベントはマスター(系列)単位で編集する。",
 			inputSchema: updateEventInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: DESTRUCTIVE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
@@ -3808,6 +3839,7 @@ function buildMcpServer(
 			title: "Delete event",
 			description: "VEVENT(予定)を削除する。常に無条件削除(ETag 条件なし — delete-event.ts 冒頭コメント参照)。",
 			inputSchema: deleteEventInputShape,
+			outputSchema: eventsViewModelOutputSchema,
 			annotations: DELETE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: AGENDA_UI_URI },
@@ -3849,6 +3881,7 @@ function buildMcpServer(
 				"vevent の「場所または会議」入力・vtodo の到着/出発通知(到着地点)の候補として使う既知の場所の一覧" +
 				"(セミモーダルの「既知の場所」候補用)。最近使った順(recency)に並ぶ。",
 			inputSchema: listKnownLocationsInputShape,
+			outputSchema: knownLocationsOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ calendarId }) => {
@@ -3896,6 +3929,7 @@ function buildMcpServer(
 				"structuredLocation を lat/lon 無し(title と address だけ)で渡せば住所表現として登録できる(degrade)。" +
 				"その場合 iOS の地図ピンは付かないが場所名・住所は残る。",
 			inputSchema: searchLocationInputShape,
+			outputSchema: searchLocationOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 		},
 		async ({ query }) => {
@@ -3984,6 +4018,7 @@ function buildMcpServer(
 				// クライアントの Date.now() で出すので timeZone 非依存 — ここは下敷き tasks の due 用)。
 				timeZone: z.string().optional().describe("下敷きに再取得する通常一覧の due 表示に使う IANA タイムゾーン。省略時 UTC。"),
 			},
+			outputSchema: todosViewModelOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -4045,6 +4080,7 @@ function buildMcpServer(
 				calendarId: z.string().optional().describe('所属コレクション ID。省略時は "tasks"。'),
 				timeZone: z.string().optional().describe("復元後に返す一覧の due 表示に使う IANA タイムゾーン。省略時 UTC。"),
 			},
+			outputSchema: todosViewModelOutputSchema,
 			annotations: RESTORE_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI },
@@ -4149,6 +4185,7 @@ function buildMcpServer(
 				"バッチをサーバー側テレメトリ(CardTelemetryPort)へ記録する。モデルからは呼べない" +
 				'(visibility:["app"])— カード側 JS が callServerTool で叩く用。応答は結果を持たない(常に成功)。',
 			inputSchema: reportCardTelemetryInputShape,
+			outputSchema: cardTelemetryOutputSchema,
 			annotations: READ_ONLY_ANNOTATIONS,
 			_meta: {
 				ui: { resourceUri: TODOS_UI_URI, visibility: ["app"] },

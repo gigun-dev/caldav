@@ -1479,3 +1479,15 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 新カードでdueのslice例外が消えた後、notes未指定によるtrim例外を観測。nullable10項目を受信時にnullへ揃えるよう拡張した。title等必須値は補完しない。
 - 全nullable省略fixtureでe905642のtrim例外を再現し、修正版で日付あり/null/全省略の3件表示、各詳細ページ往復、console error/warnなしを確認。一時サーバー停止済み。
 - 追加修正のmake check PASS(bun1110 + worker42)。この追加修正を同じ承認範囲で反映し、ChatGPT受け入れを継続する。
+
+- 追加修正6394a1bをmainへpush。Workers Builds 0c4808da-61a7-4384-9d4b-29d2c20be07dとGitHub CI成功。version 74fa327a-9e4b-4126-95c2-109a23e06954が100%。health200、無認証MCP401、OAuth経由list-todos/list-events-expanded成功、未適用migrationなし。
+- ChatGPTでcaldav接続を再更新し、todos.00024e38.htmlとCSP取得を確認。新しくlist-todosを実行したカードで一覧表示をスクリーンショットとDOMで確認。inline表示5行と「他5件の未完了」、リスト選択メニュー開閉・「すべて」への切替も成功。実ユーザーのタスクは変更していない。
+- 最新カードではslice/trim例外の新規発生なし。consoleに残る旧カードのtrim例外とChatGPT本体の翻訳警告は区別した。CSP未設定警告は解消済みだが、開発者設定の「CSPオフ」バッジと公開申請用widget domain警告は残る。本番相当のCSP強制モードを有効にした受け入れは未実施。
+
+## 2026-09-06 出力スキーマ・app-only互換性
+
+- ユーザー指摘の「出力スキーマ推奨」を調査し、structuredContentを返す25ツールのoutputSchema未定義を確認。Luna maxで実装に着手。
+- 非表示3ツールはvisibility:[app]の意図的設定。ChatGPT実画面の通常操作とWorkers tailを突き合わせ、refresh-todos(65ms)、refresh-events(64ms)、report-card-telemetry(0ms)のok:trueを確認。最後はAgenda初期表示のsafe-area計測であり、Todos URIに紐づくツールをAgendaから呼べた。
+- UIのリスト切替はローカル絞り込みなので単独ではserver callの証拠にしない。今回はfocus復帰の再取得とサーバー受信ログで確認した。詳細はdocs/mcp-compatibility-2026-09-05.md。
+- output-schemas.tsで共通の出力契約を定義し、全25ツールへoutputSchemaを接続。nullable、横断calendarId:null、差分snapshot、legacy event aliasを含む現行wire shapeを宣言。追加フィールドを許容する方針は維持し、SDKの成功応答検証を有効化する。
+- 全25ツールのスキーマ公開契約をテストで固定。Luna max実装・rootレビュー後make check PASS(bun1111 + worker42)。本番の読み取り5種(list-todos/get-current-time/list-calendars/get-freebusy/list-events-expanded)を新スキーマへ照合して全成功。これから本番反映とChatGPTの設定更新を行う。

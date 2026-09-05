@@ -61,6 +61,8 @@ Inspector 受け入れ PASS 済み。焦点は「機能を足す」から**プ�
 > **2026-09-06 更新:** 通知・外部接続はhubで別スライスとして計画。[hub実装計画](../../hub/docs/implementation-plan-2026-09-06.md)のH0(BarkバックエンドのWorkers互換性検証)から着手する案。タスク/予定は共通UCを正とし、CalDAVは任意の同期口、個人データはprivate。ChatGPTだけ一覧未表示の件はCSP明示による比較を候補に継続調査(原因未確定)。
 > **2026-09-06 更新:** ChatGPT実画面でdue欠落→slice例外→一覧描画中断を観測し、ローカルfixtureでも再現。受信時のdue正規化と全UI resource経路のCSP明示を実装。修正後fixture3件の描画/メニュー操作PASS。本番反映とChatGPT修正版の受け入れは未実施。製品は専用Swiftアプリを中心とし、[全体要件](../../hub/docs/requirements-review-2026-09-06.md)にApp Clip/Live Activities/開放性を反映。
 > **2026-09-06 更新:** 上記修正のmake check PASS(bun 1109 + worker 42)。未コミット・未デプロイ。
+> **2026-09-06 更新:** 上記の未反映状態は解消 ✅ e905642/6394a1bを本番反映済み。配色・devループ・CSP明示とnullable10項目の正規化を含む。make check PASS(bun1110 + worker42)、CI/Workers Builds成功。ChatGPTコネクタ更新後、最新カードの一覧表示・リスト切替を実画面で確認。CSP未設定警告も解消。「CSPオフ」はChatGPT開発者設定の表示で、その設定は変更していない。詳細はdocs/log.md。
+> **2026-09-06 更新:** ChatGPTの非表示3ツール(refresh-todos/refresh-events/report-card-telemetry)はカードからの呼び出しを本番ログで全件成功確認 ✅。visibility:[app]を維持する。出力スキーマ推奨は25ツールのoutputSchema未定義によるもので、宣言追加に着手。
 
 <!-- session-head-end: ここまでが SessionStart フックで自動注入される「頭」(現在地・着手順)。
      以降は方向性カタログ — 着手する節だけをそのとき読む。棚卸し時はここより上を最新に保つこと。 -->

@@ -65,3 +65,11 @@ Swift SDK と MCP Apps の依存条件から、一括更新だけで移行完了
 - 開発用接続はChatGPTのDeveloper modeが必要(アカウント/ワークスペースの方針に依存)。接続作成後に新しい会話でMCPを選択。メタデータ変更後はChatGPT側の更新も確認する。
 - 以前の失敗段階(接続/OAuth、カード描画、カード内操作)は未特定。Inspector PASSだけではChatGPT固有の互換性を証明しない。
 - [公式接続手順](https://developers.openai.com/plugins/deploy/connect-chatgpt) / [公式UI仕様](https://developers.openai.com/plugins/build/chatgpt-ui) / [ユーザー指定ヘルプ](https://help.openai.com/en/articles/11487775-apps-in-chatgpt)。Apps SDKの旧URLは確認時にplugins配下へ転送された。
+
+## ChatGPTのapp-onlyツール受け入れ(2026-09-06)
+
+- 本番6394a1bのTodos/Agendaを、ログイン済みChatGPT内蔵ブラウザで表示して確認。
+- カードへのフォーカス復帰でrefresh-todos、refresh-eventsを発火させ、Workers tailのmcpToolログでそれぞれok:trueを確認(65ms/64ms)。
+- Agenda初期表示のsafe-area計測がreport-card-telemetryへ届き、cardType:agenda、uiHash:5bccd5a3とok:trueを確認。Todosに紐づくresourceUriでもAgendaから呼べることを実測した。
+- ChatGPT設定の「非表示ツールに関連付けられたテンプレートは使用できません」という警告は残るが、公開ツール経由のカード表示と上記app-only呼び出しは成功。警告抑止のためにvisibilityをmodelへ広げる必要はない。
+- 既存予定・タスクの作成、編集、完了、削除は実施していない。CSP強制設定は変更していない。
