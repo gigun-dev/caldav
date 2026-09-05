@@ -1,5 +1,17 @@
 # MCP Apps カードの配色・CSS 変数監査(2026-08-02)
 
+> **2026-09-06 更新:** A-1〜A-3/B-1〜B-3の実装を是正(未コミット・未デプロイ)。
+> A-4の未使用トークンは設計意図の確認が必要なため保留。以下の監査原文は変更前の記録として残す。
+> 初期/更新ホストテーマを公式helperで反映、data-themeとOS fallbackを接続。border-primary/ring-primary/
+> border-hair/radiusを正規化し、補助文字と白文字用塗り色を調整した。
+> 内蔵ブラウザのローカルhost harnessが実際のHTML/entry bundleを読み込み、両カードの
+> light→dark、部分variables、空variables、theme/styles省略による維持、初期themeなしを確認。
+> タイトル/塗りボタン比: todos light=17.27/6.29、dark=16.25/5.24、
+> agenda light=17.27/6.73、dark=16.25/6.39。測定した補助日付/時刻・更新時刻・meta/dueも4.5以上。
+> OSはlight。OS dark環境とWKWebView/Claude固有の全画面不具合は未検証。
+> make checkはbun 1105/worker 42・型3レーン・層境界がPASS。
+
+
 **すべて採点者(main セッション)が独立に再検証した実測値。** 出所は `ios-simulator` スキルの
 eval(`plugins/ios-skills/skills/ios-simulator/evals/`)で、手引きの有無を変えた3本の run が
 それぞれ見つけたものを突き合わせ、最後に全件を機械的に数え直した。

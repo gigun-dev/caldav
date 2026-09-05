@@ -36,7 +36,7 @@
 //   整形・プリセット写像)は ui/format.ts・ui/recurrence.ts へ抽出済みで両 entry が import する。
 // =============================================================================
 
-import { App } from "@modelcontextprotocol/ext-apps";
+import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 // E-3 S2: システム起因(外部)変化のクライアント差分の純関数コア(todos-diff-client の event 版)。
 import { computeSyncDiff, type SyncDiff } from "./events-diff-client";
 // 絵文字/文字グリフを lucide のインライン SVG へ統一する(icons.ts 冒頭コメント参照)。
@@ -151,6 +151,12 @@ let hostDisplayMode: string | null = null;
 // (canRequestFullscreen)の入力になる。未受信は null(=受動表示のまま・不活性が既定)。
 let hostAvailableDisplayModes: readonly string[] | null = null;
 
+// hostContext.styles.variables は CSS へ自動反映されないため、カード側で明示的に適用する。
+// ext-apps の公式ヘルパは受信したキーを setProperty するだけで、次の通知で消えたキーを
+// removeProperty しない。そのままだと外観変更後も古い色が inline style に残るので、直前に
+// 適用したキーだけを記録し、次回同期の先頭でいったん除去してから現行値を入れ直す。
+let appliedHostStyleKeys = new Set<string>();
+
 /** C1 本体: getHostContext() を読み hostMaxHeightPx / hostDisplayMode / hostAvailableDisplayModes を
  *  更新する。todos-entry.ts:265 の applyHostContext を agenda へそのまま移植(挙動を揃える)。
  *  【出典/方針】apps.mdx:687-711(View 初期化時に containerDimensions を確認)。maxHeight は CSS の
@@ -192,6 +198,27 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
+	const rootStyle = document.documentElement;
+	// 初回接続後と hostcontextchanged の両方から同じ同期を通す。theme は data-theme/color-scheme
+	// へ反映し、styles.variables は CSS カスタムプロパティへ反映する。styles が空/未提供に戻った
+	// 場合は前回のキーを削除して、各 var(...) のカード内フォールバックへ戻す。
+	for (const key of appliedHostStyleKeys) rootStyle.style.removeProperty(key);
+	appliedHostStyleKeys = new Set<string>();
+	if (ctx?.theme !== undefined) {
+		applyDocumentTheme(ctx.theme);
+	} else {
+		// テーマを提供しないホストへ戻ったとき、前回の JS 注入だけを外し、CSS の
+		// color-scheme: light dark と prefers-color-scheme に判断を戻す。
+		rootStyle.removeAttribute("data-theme");
+		rootStyle.style.removeProperty("color-scheme");
+	}
+	const hostVariables = ctx?.styles?.variables;
+	if (hostVariables !== undefined) {
+		applyHostStyleVariables(hostVariables, rootStyle);
+		for (const [key, value] of Object.entries(hostVariables)) {
+			if (value !== undefined) appliedHostStyleKeys.add(key);
+		}
+	}
 	hostDisplayMode = ctx?.displayMode ?? null;
 	hostAvailableDisplayModes = ctx?.availableDisplayModes ?? null;
 	const dims = ctx?.containerDimensions;

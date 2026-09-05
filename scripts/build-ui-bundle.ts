@@ -26,7 +26,7 @@
 //   握りつぶさず(ブラウザ非互換の依存が紛れ込んだ兆候なので)エラーで停止する。
 // =============================================================================
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** バンドル対象の一覧。エントリ追加時はここに1行足すだけでよい
@@ -128,6 +128,18 @@ export async function generateBundleFileContent(target: (typeof TARGETS)[number]
 async function main() {
 	for (const target of TARGETS) {
 		const content = await generateBundleFileContent(target);
+		// Wrangler の custom build は src 配下の生成物も監視する。内容が同じでも毎回
+		// writeFile すると自分の出力で次の build が始まり、起動が無限ループする。
+		// 監視対象を entry だけに絞ると共有 UI モジュールの変更を取りこぼすため、
+		// 毎回生成して鮮度は検証しつつ、バイト列が変わった場合だけ書き戻す。
+		const previous = await readFile(target.out, "utf-8").catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined;
+			throw error;
+		});
+		if (previous === content) {
+			console.log(`✓ ${target.out} は最新です`);
+			continue;
+		}
 		await mkdir(dirname(target.out), { recursive: true });
 		await writeFile(target.out, content, "utf-8");
 		console.log(`✓ ${target.out} を生成しました(${content.length} bytes)`);

@@ -1827,12 +1827,34 @@ function buildMcpServer(
 			}
 		})) as typeof server.registerTool;
 
+	// MCP Apps の CSP はリソース単位で宣言する。OpenAI Developers の現行ガイドは
+	// `resources/list` の listing-level `_meta.ui` と `resources/read` の content item
+	// `_meta.ui` の両方を示しており、後者が前者を上書きする。todos/agenda は HTML・CSS・JS
+	// をすべてインライン化し、fetch や外部アセットも使わない自己完結 UI なので、許可リストは
+	// 空のままにする。空配列を明示するのは「未指定」をホストの既定値に委ねず、両方の resource
+	// 経路でネットワーク接続と外部リソースを要求していないことを同じ契約として伝えるため。
+	// 呼び出しごとに新しいオブジェクトを返し、listing と content の metadata が共有参照に
+	// ならないようにする(ホスト側の正規化・シリアライズが元値を変更しても別経路へ波及しない)。
+	function selfContainedResourceMeta(): {
+		ui: {
+			prefersBorder: false;
+			csp: { connectDomains: string[]; resourceDomains: string[] };
+		};
+	} {
+		return {
+			ui: {
+				prefersBorder: false,
+				csp: { connectDomains: [], resourceDomains: [] },
+			},
+		};
+	}
+
 	// --- todos ui:// リソース(E-2 スライス①)------------------------------------
 	// list-todos が _meta.ui.resourceUri で参照する MCP Apps の HTML 本体を登録する。
 	// config._meta.ui はリソース一覧(resources/list)時点でホストが参照する既定値、
 	// read 時の content item._meta.ui はそれを上書きする(ext-apps の仕様どおり後者が優先)。
-	// このスパイクでは特別な CSP/描画設定は不要なので prefersBorder のみ最小指定にする
-	// (自己完結バンドルで外部 import が無いため resourceDomains 等の CSP 許可は要らない)。
+	// 自己完結バンドルで外部 import が無いことを CSP の空 allowlist として明示し、listing/read
+	// の両方で同じ UI metadata を返す(selfContainedResourceMeta の理由は直上を参照)。
 	// resource 登録も buildMcpServer 内で毎回行う(server はリクエストごとに new する既存方針
 	// どおり — クラス冒頭コメント参照。ステートを持たないので毎回登録で問題ない)。
 	registerAppResource(
@@ -1843,11 +1865,7 @@ function buildMcpServer(
 			title: "リマインダー一覧 UI",
 			description: "list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async () => ({
 			contents: [
@@ -1855,11 +1873,7 @@ function buildMcpServer(
 					uri: TODOS_UI_URI,
 					mimeType: RESOURCE_MIME_TYPE,
 					text: TODOS_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),
@@ -1882,11 +1896,7 @@ function buildMcpServer(
 			title: "リマインダー一覧 UI",
 			description: "list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI(旧 URI・後方互換)",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async () => ({
 			contents: [
@@ -1894,11 +1904,7 @@ function buildMcpServer(
 					uri: TODOS_UI_URI_LEGACY,
 					mimeType: RESOURCE_MIME_TYPE,
 					text: TODOS_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),
@@ -1951,11 +1957,7 @@ function buildMcpServer(
 			description:
 				"list-todos の結果をモバイルで崩れないリマインダー一覧として描画するプロトタイプ UI(旧ハッシュ URI・後方互換)",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async (uri) => ({
 			contents: [
@@ -1963,11 +1965,7 @@ function buildMcpServer(
 					uri: uri.toString(),
 					mimeType: RESOURCE_MIME_TYPE,
 					text: TODOS_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),
@@ -1975,7 +1973,8 @@ function buildMcpServer(
 
 	// --- agenda ui:// リソース(E-3 スライス S2)------------------------------------
 	// list-events-expanded / refresh-events が _meta.ui.resourceUri で参照するアジェンダカードの
-	// HTML 本体を登録する(todos の "Todos View" と対称)。自己完結バンドルなので CSP 許可は不要。
+	// HTML 本体を登録する(todos の "Todos View" と対称)。自己完結バンドルなので外部 origin は
+	// 要求しないが、その事実を CSP の空 allowlist として todos と同じく明示する。
 	registerAppResource(
 		server,
 		"Agenda View",
@@ -1984,11 +1983,7 @@ function buildMcpServer(
 			title: "アジェンダ(予定一覧)UI",
 			description: "list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async () => ({
 			contents: [
@@ -1996,11 +1991,7 @@ function buildMcpServer(
 					uri: AGENDA_UI_URI,
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),
@@ -2018,11 +2009,7 @@ function buildMcpServer(
 			title: "アジェンダ(予定一覧)UI",
 			description: "list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI(旧 URI・後方互換)",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async () => ({
 			contents: [
@@ -2030,11 +2017,7 @@ function buildMcpServer(
 					uri: AGENDA_UI_URI_LEGACY,
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),
@@ -2051,11 +2034,7 @@ function buildMcpServer(
 			description:
 				"list-events-expanded の結果をモバイルで崩れないアジェンダ(日付見出し + 時刻列)として描画する UI(旧ハッシュ URI・後方互換)",
 			mimeType: RESOURCE_MIME_TYPE,
-			_meta: {
-				ui: {
-					prefersBorder: false,
-				},
-			},
+			_meta: selfContainedResourceMeta(),
 		},
 		async (uri) => ({
 			contents: [
@@ -2063,11 +2042,7 @@ function buildMcpServer(
 					uri: uri.toString(),
 					mimeType: RESOURCE_MIME_TYPE,
 					text: AGENDA_APP_HTML,
-					_meta: {
-						ui: {
-							prefersBorder: false,
-						},
-					},
+					_meta: selfContainedResourceMeta(),
 				},
 			],
 		}),

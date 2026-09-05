@@ -141,6 +141,19 @@ async function jsonRpcResult(res: Response): Promise<any> {
 	return JSON.parse(payload);
 }
 
+// 自己完結 UI の resource metadata 契約。server.ts は listing-level(resources/list) と
+// content-level(resources/read) の両方へ同じ空 CSP allowlist を載せる。どちらか一方だけを
+// 検証すると、ホストが使う経路の差で CSP が未宣言へ戻る退行を見逃すため、全 resource 経路を
+// 同じテーブルで確認する。
+const SELF_CONTAINED_UI_META = {
+	prefersBorder: false,
+	csp: { connectDomains: [], resourceDomains: [] },
+};
+
+function expectSelfContainedUiMeta(resource: { _meta?: { ui?: unknown } }): void {
+	expect(resource._meta?.ui).toEqual(SELF_CONTAINED_UI_META);
+}
+
 async function seedEvent(uid: string, summary: string): Promise<void> {
 	repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
 	const resource = await CalendarObjectResource.fromIcs(resourceUri(`${uid}.ics`), vevent(uid, summary));
@@ -322,6 +335,33 @@ describe("/mcp", () => {
 	// 返す、(2) 現行ハッシュ・legacy 静的 URI も従来どおり読める(テンプレート追加で壊れていない)、
 	// (3) resources/list の内容が変わらない(テンプレートは MAY omit で列挙されない)、の3点。
 	describe("ui:// 旧ハッシュ URI への後方互換フォールバック(2026-07-23)", () => {
+		it("resources/list と resources/read の全 UI resource 経路が空 CSP を明示する", async () => {
+			const listRes = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "resources/list", params: {} });
+			expect(listRes.status).toBe(200);
+			const listRpc = await jsonRpcResult(listRes);
+			const listedResources = listRpc.result.resources as Array<{
+				uri: string;
+				_meta?: { ui?: unknown };
+			}>;
+			// 現行ハッシュ + legacy 静的 URI の listing metadata を検証する。旧ハッシュ fallback
+			// は list に列挙しない契約なので、下で resources/read を直接叩いて検証する。
+			for (const resource of listedResources) expectSelfContainedUiMeta(resource);
+
+			const readUris = [
+				...listedResources.map((resource) => resource.uri),
+				"ui://caldav/todos.deadbeef.html",
+				"ui://caldav/agenda.cafebabe.html",
+			];
+			for (const uri of readUris) {
+				const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "resources/read", params: { uri } });
+				expect(res.status).toBe(200);
+				const rpc = await jsonRpcResult(res);
+				const content = rpc.result.contents[0] as { uri: string; _meta?: { ui?: unknown } };
+				expect(content.uri).toBe(uri);
+				expectSelfContainedUiMeta(content);
+			}
+		});
+
 		it("todos: 存在しない旧ハッシュ風 URI への resources/read が最新 HTML を返す", async () => {
 			const res = await fetchMcp({
 				jsonrpc: "2.0",

@@ -1422,3 +1422,51 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 本エントリの時点で **`src/`・`test/`・`docs/modeling/05`・`docs/modeling/06`・`docs/rfc/` には
   他エージェントによる未コミットの変更が残っている**。このドキュメント更新作業(次セッション
   引き継ぎドキュメントの更新)ではそれらのファイルには一切手を触れていない。
+
+
+## 2026-09-05 MCP互換性とInspector更新の確認
+
+- npm registryと公式Swift release/sourceを照合。Inspector 2.5.0、TS server/hono 2.0.0、ext-apps 1.7.5、Swift SDK 0.12.1。詳細は `docs/mcp-compatibility-2026-09-05.md`。
+- Swiftは2025-11-25まで、ext-appsはsdk v1をpeer指定。新旧両対応での移行検証が必要。
+- Node 24.19.0でInspector 2.5.0 CLI起動確認。本番への保存済み認証限定・読み取り接続はauth_required(exit 3)で停止。Apps実描画は未検証。依存更新・deployなし。
+
+- 同日続行: ユーザー提供の認証情報でOAuth完了。Inspector 2.5.0 Web/CLIで本番接続PASS(2025-11-25)。25ツール/UI付き18ツール、todos描画とカード内refresh-todos(1159ms OK)、全画面→通常表示を確認。タスクの変更なし。初回auth_requiredは解消。
+
+
+## 2026-09-06 開発サーバー起動ループの修正
+
+- `make dev`でUI生成物の再書き込み→watch再発火→custom build再実行を再現。
+- `scripts/build-ui-bundle.ts`で生成結果と既存内容を比較し、同一ならwriteFileを省略。ENOENTだけ未生成として扱い、他の読取失敗は隠さない。
+- 修正後の起動とhealth 200、build:ui再実行で生成物のmtime維持、src/index.tsのtouchに対するreload収束を確認。
+- make check PASS: 層境界・3レーンの型検査・bun 1105件・worker 42件。commit/push/deployなし。
+- 引き継ぎの未コミット記載を93af616の実在に基づき訂正。本番well-knownの301 + no-cacheを読み取りで確認(残り4件の本番挙動は未検証)。
+
+## 2026-09-06 カードテーマ・配色修正
+
+- Luna/maxで実装、親でレビュー。agenda/todosのentryで公式applyDocumentTheme/applyHostStyleVariablesを接続。再同期時は自分が適用したinline keyだけ除去して現行値を適用。
+- ホストthemeがOS外観と異なるケース用にdata-themeをCSSへ接続。border-primary、ring-primary、border-hair、radiusを正規化。
+- 補助文字/優先度/変更差分の色を調整。白文字面はaccent-fill/danger-fillを分離。ring色をaccent自体へ転用せず、固定の塗り色で白文字との比を確保。
+- 未使用accent-soft/dv-hourは意図判断が要るため保留。既知のClaude iOS全画面バグ2件は対象外。
+- make check PASS: bun 1105/worker 42、型3レーン・層境界。ブラウザ検証は別Luna/max担当で進行中。commit/push/deployなし。
+
+- ブラウザ検証完了: /tmp/caldav-card-color-harness.tsが実HTML/bundleをimportし、In-app Browserで初期light・host dark・空/部分variables・省略通知・OS fallbackを確認。タイトル/塗り面はtodos light 17.27/6.29・dark 16.25/5.24、agenda light 17.27/6.73・dark 16.25/6.39。主要補助文字も4.5以上。OS dark/WKWebViewは未検証。ハーネス停止済み。
+- 検証環境のiframe再生成時にMutationObserver警告あり。実アプリソースに同API利用はなく、描画・テーマ同期の検証は成功。アプリ不具合との因果は未確認。
+
+## 2026-09-06 hub・タスク連携の計画
+
+- ユーザーとの議論をhub/docs/implementation-plan-2026-09-06.mdに整理。Barkクライアントを保ち、Workers互換バックエンドの成立性検証を先行。その後に共通受付/履歴/再試行、既存通知の移行、Slack通常/リッチ配信、タスク連携、Web/MCP/Cloudflare OS接続を分けた。
+- 個人のタスク/予定はprivate、CalDAVは任意の同期口。プロジェクト共有、Slack受信操作、独自Swift、MCP Tasksは後続候補。既存のcaldav修正は別変更単位で保持。
+- Luna maxが既存hub計画との相違を読み取り調査。計画文書のみ編集し、実装・通知送信・本番切り替えは未実施。
+- 追加のIaC要望を受け、hub計画R0にrepo/state/デプロイの責任分担を追記。Bark backendはhub、タスク/予定はcaldav、個人環境はdotfilesとする案。Tofu最大活用を前提に、旧Worker除外裁定を再評価する。dotfilesの既存Tofu構成はLuna maxが3ファイルに絞って確認。
+- 続行: scheduling-protocolをLuna maxで確認。複数人の日程調整仕様のみで定期実行機能はない。hub計画H4bにMCPから登録するmonitor、実行時データとIaCの分離、固定通知からagent調査へ進める段階を追加した。Cloudflare OS/OpenClawの外部起動APIは未確認。
+- 全体要件をhub/docs/requirements-review-2026-09-06.mdへ仮置き。ユーザーから対象は日程調整だけでなく独自calendar SaaS全体で、日程調整から継続利用につなげたいと明確化された。個人基盤の技術MVPと製品MVPを分け、最小共有と利用者分離は製品側の初期要件に含める提案へ補正。競合機能の比較は未調査。
+
+## 2026-09-06 ChatGPTカード描画不全の再現と修正
+
+- Luna maxが実ChatGPT会話をChromeで観測。CSPオフ、ヘッダのみ。公開consoleでundefined.sliceのTypeError、iframe高さ28px、root子0。期限dueを参照する経路で中断する証拠を得た。rootからはユーザーがログイン済みのIn-app Browserも開けた。
+- /tmp/caldav-card-due-undefined-harness.tsは実HTML/bundleをimportし、dueキー省略fixtureで同じ例外と空rootを再現。実ユーザーのタスク本文をfixtureへ複製していない。dueが欠落した経緯は未確定。
+- CSPは現行/legacy/旧ハッシュfallbackのtodos/agenda全経路のlisting/readで空connectDomains/resourceDomainsを明示。resource契約テスト113件とtypecheck成功。
+- todosの受信境界でdue省略をnullへ正規化。修正後fixture(省略/日付/null)はli3件、公開console error/warnなし、メニュー開閉後も保持。ChatGPT本番の修正版受け入れとは区別する。
+- 全体make checkの初回は追加testのweak generic型エラーを検出。修正して再実行する。commit/push/deployは未実施。
+- 製品要件には専用Swiftアプリとswift-mcp-appの独立、App Clip入力、Live Activities、公開API/標準export/互換server接続を反映。Apple公式でApp ClipのEventKit/PhotoKit制約とActivityKit pushの仕組みを確認した。
+- 最終検証: 入力型にtask共通idを含めて型エラーを解消。make check PASS(層境界、型検査、bun 1109件・worker 42件、計1151件)。一時ハーネス9193停止済み。実ChatGPTでの修正版受け入れは本番未反映のため未実施。

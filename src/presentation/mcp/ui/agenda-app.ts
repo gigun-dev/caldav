@@ -38,35 +38,49 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     --bg: var(--color-background-primary, #ffffff);
     --bg-subtle: var(--color-background-secondary, #f7f7f8);
     --fg: var(--color-text-primary, #1c1c1e);
-    --muted: var(--color-text-secondary, #8a8a8e);
-    --text-3: #b4b4b8;
-    --border: var(--color-border-secondary, #e4e4e7);
-    --border-hair: var(--color-border-secondary, #eeeef0);
+    /* muted は 12px 前後の補助情報にも使うため、白地で AA を満たす既定値にする。
+     * ホストが secondaryLabel を提供した場合はその意味色を優先する。 */
+    --muted: var(--color-text-secondary, #767676);
+    /* 第3テキストは小さい補助文字にも使うため、白地で AA を満たす値にする。 */
+    --text-3: #5c5c62;
+    --border: var(--color-border-primary, #e4e4e7);
+    --border-hair: var(--color-border-primary, #eeeef0);
     --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    /* accent はカード内の iOS 語彙を維持し、ホストの tintColor は focus ring へ接続する。 */
     --accent: #2f6fed;
+    --ring: var(--color-ring-primary, var(--accent));
+    /* 白文字を載せる面は、既知の fallback パレットで AA を満たす固定色に分ける。 */
+    --accent-fill: #2457b7;
     --accent-soft: rgba(47, 111, 237, 0.14);
-    --danger: #d64545;
+    --danger: #c23d3d;
+    --danger-fill: #b42318;
     --now: #d64545;
     /* becoming 補助トーン(モック agenda-v1 の theme-light 実測値)。 */
-    --add: #2f9e63;
+    --add: #217a4b;
     --add-wake: rgba(47, 158, 99, 0.07);
-    --edit: #b07300;
+    --edit: #8a5200;
     --del-border: #c9c9ce;
+    /* HostThemeBuilder の v1 最小セットには radius が含まれないため、カード自身の既定値を
+     * 名前付きトークンとして定義して var(--border-radius-md) の未定義フォールバックを解消する。 */
+    --border-radius-md: 8px;
     --radius: var(--border-radius-md, 8px);
     --row-min-h: 44px;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: var(--color-background-primary, #1e1e20);
       --bg-subtle: var(--color-background-secondary, #27272a);
       --fg: var(--color-text-primary, #f2f2f4);
       --muted: var(--color-text-secondary, #98989e);
-      --text-3: #5c5c62;
-      --border: var(--color-border-secondary, #3a3a3e);
-      --border-hair: var(--color-border-secondary, #2e2e32);
+      --text-3: #b4b4b8;
+      --border: var(--color-border-primary, #3a3a3e);
+      --border-hair: var(--color-border-primary, #2e2e32);
       --accent: #6f9cf5;
+      --ring: var(--color-ring-primary, var(--accent));
+      --accent-fill: #2f5ea8;
       --accent-soft: rgba(111, 156, 245, 0.2);
       --danger: #e57373;
+      --danger-fill: #c23d3d;
       --now: #e57373;
       --add: #55b884;
       --add-wake: rgba(85, 184, 132, 0.1);
@@ -74,7 +88,32 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
       --del-border: #55555a;
     }
   }
+  /* applyDocumentTheme は data-theme を設定するため、OS の prefers-color-scheme と異なる
+   * ホストテーマも同じ fallback 配色へ切り替える。未指定時は上の media query に任せる。 */
+  :root[data-theme="dark"] {
+    --bg: var(--color-background-primary, #1e1e20);
+    --bg-subtle: var(--color-background-secondary, #27272a);
+    --fg: var(--color-text-primary, #f2f2f4);
+    --muted: var(--color-text-secondary, #98989e);
+    --text-3: #b4b4b8;
+    --border: var(--color-border-primary, #3a3a3e);
+    --border-hair: var(--color-border-primary, #2e2e32);
+    --accent: #6f9cf5;
+    --ring: var(--color-ring-primary, var(--accent));
+    --accent-fill: #2f5ea8;
+    --accent-soft: rgba(111, 156, 245, 0.2);
+    --danger: #e57373;
+    --danger-fill: #c23d3d;
+    --now: #e57373;
+    --add: #55b884;
+    --add-wake: rgba(85, 184, 132, 0.1);
+    --edit: #d9a441;
+    --del-border: #55555a;
+  }
   * { box-sizing: border-box; margin: 0; }
+  /* ホストの tintColor をブラウザ既定のキーボードフォーカス表示へ渡す。outline 自体は
+   * 残すため、マウス/タッチ操作の見た目と既存のアクセシビリティ方針は変えない。 */
+  :focus-visible { outline-color: var(--ring); }
   /* 【2026-07-17 実機FB: checkbox/行タップ時にグレー矩形が一瞬出る(todos-app.ts と同じ WebKit
    * 既定 tap-highlight)】このカードも押下反応(now バー・becoming の一過性アニメ等)を自前で持つ
    * UI アプリであり、iOS ネイティブのカレンダー/リマインダーにこの灰色矩形は無いため無効化する
@@ -176,7 +215,7 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   }
   .cal-new-row input { flex: 1; min-width: 0; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
   .cal-new-confirm {
-    flex: none; border: none; background: var(--accent); color: #fff; font: inherit;
+    flex: none; border: none; background: var(--accent-fill); color: #fff; font: inherit;
     font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer;
   }
   .cal-new-confirm:disabled { opacity: 0.5; cursor: default; }
@@ -344,13 +383,13 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   }
   button.confirm {
     flex: none; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-    padding: 0; font-size: 14px; color: #fff; background: var(--accent); border: none; border-radius: 50%; cursor: pointer;
+    padding: 0; font-size: 14px; color: #fff; background: var(--accent-fill); border: none; border-radius: 50%; cursor: pointer;
   }
 
   /* --- スワイプ削除(iOS 準拠)--- */
   li.swiping { position: relative; overflow: hidden; }
   li.swiping .row-main { transform: translateX(-76px); position: relative; z-index: 1; background: var(--bg); }
-  .swipe-del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: none; background: var(--danger); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .swipe-del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: none; background: var(--danger-fill); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 
   /* --- inline 畳み(P4-DM C2/C3。todos-app.ts の同名クラスを移植・語彙も同一)---
    * 【なぜ agenda にも要るか】agenda は occurrence 行が日付をまたいで増えるため、inline maxHeight
@@ -457,7 +496,7 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     color: var(--muted);
     font-size: 12px;
     padding: 6px 0;
-    border-bottom: 1px solid var(--hairline, rgba(0,0,0,0.08));
+    border-bottom: 1px solid var(--border-hair);
   }
   .skel { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
   .skel-circle { width: 22px; height: 22px; border-radius: 50%; background: var(--surface); margin: 0 11px; }
@@ -497,7 +536,7 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   .fab {
     width: 40px; height: 40px;
     display: flex; align-items: center; justify-content: center; padding: 0;
-    font-family: inherit; font-size: 18px; line-height: 1; color: #fff; background: var(--accent);
+    font-family: inherit; font-size: 18px; line-height: 1; color: #fff; background: var(--accent-fill);
     border: none; border-radius: 50%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28); cursor: pointer;
   }
   /* 【2026-07-17 追更新: fullscreen だけ FAB を画面右下に固定(todos-app.ts の同修正を移植)】
@@ -587,7 +626,7 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   .mv-cell.sun.out { color: var(--danger); }
   .mv-num { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
   .mv-cell.today .mv-num { border: 1.5px solid var(--accent); font-weight: 700; color: var(--accent); }
-  .mv-cell.selected .mv-num { background: var(--accent); color: #fff; font-weight: 700; }
+  .mv-cell.selected .mv-num { background: var(--accent-fill); color: #fff; font-weight: 700; }
   /* 予定ドット(コレクション色)。最大3個(それ以上はノイズ・モックと同じ)。高さ 4px 固定で
    * ドットの有無で数字行がずれないようにする。 */
   .mv-evdots { display: flex; gap: 2px; height: 4px; }
@@ -674,7 +713,7 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
   .f-expand { padding: 2px 0 12px 0; margin-left: calc(5em + 10px); }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chips button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
-  .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chips button[aria-pressed="true"] { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
   .chips button:disabled { color: var(--text-3); border-style: dashed; cursor: default; }
   .chips + .chips { margin-top: 8px; }
   .chips .chips-label { font-size: 11px; color: var(--text-3); align-self: center; padding-right: 2px; }
@@ -751,10 +790,10 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     border: 1px solid var(--border); background: var(--surface); color: var(--fg);
     font: inherit; font-size: 14px; padding: 7px 14px; border-radius: 999px; cursor: pointer;
   }
-  .loc-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .loc-chip[aria-pressed="true"] { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
   .loc-chip-url-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; background: var(--surface); border-radius: var(--radius); padding: 9px 12px; }
   .loc-chip-url-row input { flex: 1; border: none; background: none; color: var(--fg); font: inherit; font-size: 14px; outline: none; }
-  .loc-chip-url-confirm { flex: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .loc-chip-url-confirm { flex: none; border: none; background: var(--accent-fill); color: #fff; font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
   .loc-place-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
   .loc-place-item {
     display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; width: 100%;

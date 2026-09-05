@@ -118,7 +118,7 @@
 //   トグル(pendingIds)は差分計算から除外する(システム起因の誤検出を防ぐ)。
 // =============================================================================
 
-import { App } from "@modelcontextprotocol/ext-apps";
+import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 // E-2 スライス④: システム起因(外部)変化のクライアント差分の純関数コア。ui/ 内どうしの
 // import は 'mcp-ui-is-terminal' の除外対象(ui/→ui/ は許可)。bun build がバンドル時に
 // inline するので生成物 todos-bundle.ts は1ファイルのまま。
@@ -173,6 +173,8 @@ import {
 	groupTasksByCalendar,
 	ALL_CALENDARS_ID,
 } from "./todos-calendar-filter";
+// 受信 JSON で省略される nullable due を、描画前に TodoItem 契約(null)へ揃える。
+import { normalizeTodoDue } from "./todos-input";
 // 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。freshness.ts 冒頭コメント参照。
 import { shouldRevalidateOnPush } from "./freshness";
 // 2026-07-23 K2-UI①②: カレンダー色の合成規則(実色優先・無ければハッシュパレット)とパレット定数。
@@ -317,6 +319,12 @@ let hostDisplayMode: string | null = null;
 // 出してよいか(canRequestFullscreen)の入力になる。未受信は null(=受動表示のまま・不活性が既定)。
 let hostAvailableDisplayModes: readonly string[] | null = null;
 
+// hostContext.styles.variables は CSS へ自動反映されないため、カード側で明示的に適用する。
+// ext-apps の公式ヘルパは受信したキーを setProperty するだけで、次の通知で消えたキーを
+// removeProperty しない。そのままだと外観変更後も古い色が inline style に残るので、直前に
+// 適用したキーだけを記録し、次回同期の先頭でいったん除去してから現行値を入れ直す。
+let appliedHostStyleKeys = new Set<string>();
+
 /** C1 本体: getHostContext() を読み、hostMaxHeightPx / hostDisplayMode / hostAvailableDisplayModes を
  *  更新する。
  *  【出典】apps.mdx:687-711(View は containerDimensions を確認して CSS を当てるべき、という
@@ -367,6 +375,27 @@ function applySafeAreaVars(insets: SafeAreaInsets | undefined): void {
 
 function applyHostContext(): void {
 	const ctx = app.getHostContext();
+	const rootStyle = document.documentElement;
+	// 初回接続後と hostcontextchanged の両方から同じ同期を通す。theme は data-theme/color-scheme
+	// へ反映し、styles.variables は CSS カスタムプロパティへ反映する。styles が空/未提供に戻った
+	// 場合は前回のキーを削除して、各 var(...) のカード内フォールバックへ戻す。
+	for (const key of appliedHostStyleKeys) rootStyle.style.removeProperty(key);
+	appliedHostStyleKeys = new Set<string>();
+	if (ctx?.theme !== undefined) {
+		applyDocumentTheme(ctx.theme);
+	} else {
+		// テーマを提供しないホストへ戻ったとき、前回の JS 注入だけを外し、CSS の
+		// color-scheme: light dark と prefers-color-scheme に判断を戻す。
+		rootStyle.removeAttribute("data-theme");
+		rootStyle.style.removeProperty("color-scheme");
+	}
+	const hostVariables = ctx?.styles?.variables;
+	if (hostVariables !== undefined) {
+		applyHostStyleVariables(hostVariables, rootStyle);
+		for (const [key, value] of Object.entries(hostVariables)) {
+			if (value !== undefined) appliedHostStyleKeys.add(key);
+		}
+	}
 	hostDisplayMode = ctx?.displayMode ?? null;
 	hostAvailableDisplayModes = ctx?.availableDisplayModes ?? null;
 	const dims = ctx?.containerDimensions;
@@ -4266,7 +4295,10 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
  */
 function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean {
 	const structuredContent = sc as TodosStructuredContent | undefined;
-	const nextTasks = structuredContent?.tasks ?? [];
+	// ホストから受信したデータで nullable な due のキー自体が省略されても受けられる。ここで null へ
+	// 揃えることで、以下の merge・差分・セクション・行描画と詳細フォームが同じ TodoItem 契約を
+	// 共有する。formatter 側で都度 undefined を防御すると入口ごとの漏れが残るため、受信時に1回だけ行う。
+	const nextTasks = (structuredContent?.tasks ?? []).map(normalizeTodoDue);
 	const serverAffected = structuredContent?.affected ?? [];
 	const serverRemoved = structuredContent?.removed ?? [];
 

@@ -104,11 +104,20 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     --bg: var(--color-background-primary, #ffffff);
     --fg: var(--color-text-primary, #1a1a1a);
     --muted: var(--color-text-secondary, #767676);
-    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --border: var(--color-border-primary, rgba(128, 128, 128, 0.25));
     --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    /* accent はカード内の iOS 語彙を維持し、ホストの tintColor は focus ring へ接続する。 */
     --accent: #007aff;
-    --danger: #ff3b30;
-    --pri: #ff9500;
+    --ring: var(--color-ring-primary, var(--accent));
+    /* 白文字を載せる面は、既知の fallback パレットで AA を満たす固定色に分ける。 */
+    --accent-fill: #005cc5;
+    --danger: #d92d20;
+    --danger-fill: #b42318;
+    /* 優先度記号は小さい文字でも読めるよう、白地で AA を満たす濃いオレンジにする。 */
+    --pri: #b45309;
+    /* HostThemeBuilder の v1 最小セットには radius が含まれないため、カード自身の既定値を
+     * 名前付きトークンとして定義して var(--border-radius-md) の未定義フォールバックを解消する。 */
+    --border-radius-md: 8px;
     --radius: var(--border-radius-md, 8px);
     /* --- becoming(変化の中間状態)用の補助トーン(E-2 スライス② 差分表現)-----------
      * 差分は form(輪郭・線・構造)を主役にし、色は補助に留める方針(モック
@@ -126,20 +135,23 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
      * pulse だけ濃い値(35%)を別変数で持ち、満了後に収束する静的リング(accent-soft)は
      * 従来の 14% のまま変えない(=「凍結後は控えめ」という元の意図はそのまま残す)。 */
     --accent-pulse: rgba(0, 122, 255, 0.35);
-    --add: #2f9e63;
+    --add: #217a4b;
     --add-wake: rgba(47, 158, 99, 0.07);
-    --edit: #b07300;
+    --edit: #8a5200;
     --del-border: #c9c9ce;
   }
   /* ダークはフォールバック値だけ差し替える(ホスト変数が来ていればそちらが勝つ構造は同じ)。
    * systemRed/Blue/Orange はダークで僅かに明度が上がる iOS 定義に合わせる。 */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: var(--color-background-primary, #1c1c1e);
       --fg: var(--color-text-primary, #f2f2f2);
       --muted: var(--color-text-secondary, #98989e);
       --accent: #0a84ff;
+      --ring: var(--color-ring-primary, var(--accent));
+      --accent-fill: #006bcf;
       --danger: #ff453a;
+      --danger-fill: #c23d3d;
       --pri: #ff9f0a;
       /* becoming 補助トーンのダーク版。リング/wake は暗地で沈むため不透明度を上げ、
        * edit の琥珀は明度を上げる(モックの theme-dark 実測値)。 */
@@ -151,7 +163,29 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
       --del-border: #55555a;
     }
   }
+  /* applyDocumentTheme は data-theme を設定するため、OS の prefers-color-scheme と異なる
+   * ホストテーマも同じ fallback 配色へ切り替える。未指定時は上の media query に任せる。 */
+  :root[data-theme="dark"] {
+    --bg: var(--color-background-primary, #1c1c1e);
+    --fg: var(--color-text-primary, #f2f2f2);
+    --muted: var(--color-text-secondary, #98989e);
+    --accent: #0a84ff;
+    --ring: var(--color-ring-primary, var(--accent));
+    --accent-fill: #006bcf;
+    --danger: #ff453a;
+    --danger-fill: #c23d3d;
+    --pri: #ff9f0a;
+    --accent-soft: rgba(10, 132, 255, 0.2);
+    --accent-pulse: rgba(10, 132, 255, 0.4);
+    --add: #55b884;
+    --add-wake: rgba(85, 184, 132, 0.1);
+    --edit: #d9a441;
+    --del-border: #55555a;
+  }
   * { box-sizing: border-box; }
+  /* ホストの tintColor をブラウザ既定のキーボードフォーカス表示へ渡す。outline 自体は
+   * 残すため、マウス/タッチ操作の見た目と既存のアクセシビリティ方針は変えない。 */
+  :focus-visible { outline-color: var(--ring); }
   /* 【2026-07-17 実機FB: checkbox タップ時にグレー矩形が一瞬出る】WebKit の既定 tap-highlight
    * (タップされた要素のヒット矩形へ被せる半透明グレー)。円が青く塗られる自前の押下フィードバック
    * (li.becoming-done の ring-pulse/circle-pop アニメ等)と二重になり、しかも矩形は円の外接四角
@@ -537,8 +571,8 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
   }
   /* 完了状態: accent 塗り + 白チェック(iOS の完了円と同じ)。 */
   li.done .circle {
-    border-color: var(--accent);
-    background: var(--accent);
+    border-color: var(--accent-fill);
+    background: var(--accent-fill);
     color: #fff;
   }
   /* 【2026-07-14 ドクトリン改訂: pending スピナーを廃止】
@@ -763,7 +797,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
    * して done の実線塗り円を再現し、終端 dashed で becoming-undone .circle の破線静的形に一致させる
    * (補間されず 35% の瞬間に破線へ切り替わるのは意図どおり — 塗りが抜けるのと同じタイミング)。 */
   @keyframes circle-drain {
-    0% { background: var(--accent); border-color: var(--accent); border-style: solid; color: #fff; }
+    0% { background: var(--accent-fill); border-color: var(--accent-fill); border-style: solid; color: #fff; }
     35%, 100% { background: transparent; color: transparent; }
   }
   /* 【2026-07-16 v2.2 item2】reduced-motion: committing アニメ無し = 最初から最終形。
@@ -896,7 +930,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     color: var(--muted);
     font-size: 12px;
     padding: 6px 0;
-    border-bottom: 1px solid var(--hairline, rgba(0,0,0,0.08));
+    border-bottom: 1px solid var(--border-hair);
   }
   /* C2(設計04 §5): inline maxHeight を超えたときの「残り n 件」受動表示。ボタンではない
    * (タップ不可・cursor は既定のまま) — 昇格(すべて表示→requestDisplayMode)は C3 で
@@ -1115,7 +1149,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     font-size: 18px;
     line-height: 1;
     color: #fff;
-    background: var(--accent);
+    background: var(--accent-fill);
     border: none;
     border-radius: 50%;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
@@ -1297,15 +1331,20 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
      * (v3 はカード内ページ遷移で scrim もシート面も不要、トグルは accent の button.sw に統一。
      * 廃止理由の詳細は下の v3 詳細ページ CSS のヘッダコメント参照)。 */
     --bg-subtle: var(--color-background-secondary, #f7f7f8);
-    --border-hair: var(--color-border-secondary, #eeeef0);
-    --text-3: #b4b4b8;
+    --border-hair: var(--color-border-primary, #eeeef0);
+    --text-3: #5c5c62;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg-subtle: var(--color-background-secondary, #27272a);
-      --border-hair: var(--color-border-secondary, #2e2e32);
-      --text-3: #5c5c62;
+      --border-hair: var(--color-border-primary, #2e2e32);
+      --text-3: #b4b4b8;
     }
+  }
+  :root[data-theme="dark"] {
+    --bg-subtle: var(--color-background-secondary, #27272a);
+    --border-hair: var(--color-border-primary, #2e2e32);
+    --text-3: #b4b4b8;
   }
 
   /* --- 行 head(タイトル2行の縦積み領域)。row-head は ghost 行が使うので温存し、新設 .head を足す。
@@ -1425,7 +1464,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     padding: 0;
     font-size: 14px;
     color: #fff;
-    background: var(--accent);
+    background: var(--accent-fill);
     border: none;
     border-radius: 50%;
     cursor: pointer;
@@ -1446,7 +1485,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     bottom: 0;
     width: 76px;
     border: none;
-    background: var(--danger);
+    background: var(--danger-fill);
     color: #fff;
     font-size: 13px;
     font-weight: 600;
@@ -1645,7 +1684,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     color: var(--muted);
     cursor: pointer;
   }
-  .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chips button[aria-pressed="true"] { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
   /* カスタム(語彙外)や既存 count は disabled 破線チップ(選択状態表示だけで送信はしない第3状態)。 */
   .chips button:disabled { color: var(--text-3); border-style: dashed; cursor: default; }
   .chips + .chips { margin-top: 8px; }
