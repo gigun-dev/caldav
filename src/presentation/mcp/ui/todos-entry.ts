@@ -173,8 +173,8 @@ import {
 	groupTasksByCalendar,
 	ALL_CALENDARS_ID,
 } from "./todos-calendar-filter";
-// 受信 JSON で省略される nullable due を、描画前に TodoItem 契約(null)へ揃える。
-import { normalizeTodoDue } from "./todos-input";
+// 受信 JSON で省略される nullable task fields を、描画前に TodoItem 契約(null)へ揃える。
+import { normalizeTodoTask } from "./todos-input";
 // 2026-07-23 SWR 完全形: push(ontoolresult)経路の鮮度判定(純関数コア)。freshness.ts 冒頭コメント参照。
 import { shouldRevalidateOnPush } from "./freshness";
 // 2026-07-23 K2-UI①②: カレンダー色の合成規則(実色優先・無ければハッシュパレット)とパレット定数。
@@ -4295,10 +4295,11 @@ function syncDiffToAffected(diff: SyncDiff): AffectedEntry[] {
  */
 function applyStructuredContent(sc: unknown, opts?: { push?: boolean }): boolean {
 	const structuredContent = sc as TodosStructuredContent | undefined;
-	// ホストから受信したデータで nullable な due のキー自体が省略されても受けられる。ここで null へ
-	// 揃えることで、以下の merge・差分・セクション・行描画と詳細フォームが同じ TodoItem 契約を
-	// 共有する。formatter 側で都度 undefined を防御すると入口ごとの漏れが残るため、受信時に1回だけ行う。
-	const nextTasks = (structuredContent?.tasks ?? []).map(normalizeTodoDue);
+	// ホストから受信したデータで nullable な task field のキー自体が省略されても受けられる。
+	// ここで null へ揃えることで、以下の merge・差分・セクション・行描画と詳細フォームが同じ
+	// TodoItem 契約を共有する。必須の id/title 等は補完せず、formatter 側で都度 undefined を
+	// 防御するのでもなく、受信時に nullable field だけを1回正規化する。
+	const nextTasks = (structuredContent?.tasks ?? []).map(normalizeTodoTask);
 	const serverAffected = structuredContent?.affected ?? [];
 	const serverRemoved = structuredContent?.removed ?? [];
 

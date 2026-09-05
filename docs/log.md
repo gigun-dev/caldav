@@ -1470,3 +1470,12 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - 全体make checkの初回は追加testのweak generic型エラーを検出。修正して再実行する。commit/push/deployは未実施。
 - 製品要件には専用Swiftアプリとswift-mcp-appの独立、App Clip入力、Live Activities、公開API/標準export/互換server接続を反映。Apple公式でApp ClipのEventKit/PhotoKit制約とActivityKit pushの仕組みを確認した。
 - 最終検証: 入力型にtask共通idを含めて型エラーを解消。make check PASS(層境界、型検査、bun 1109件・worker 42件、計1151件)。一時ハーネス9193停止済み。実ChatGPTでの修正版受け入れは本番未反映のため未実施。
+
+## 2026-09-06 本番反映とChatGPT受け入れの追加修正
+
+- ユーザー承認でe905642をmainへpush。Workers Builds 33d40ee6-97f0-42c0-9b72-fe3aabfee650成功、version a84e99b0-0478-4a05-812e-7cedd1755b9aが100%。GitHub CI成功。
+- Cloud Run/Workersのhealth 200、DAV OPTIONS 204、well-known 301+no-cache、OAuth discovery 200、MCP未認証401を確認。保存済みOAuthでInspectorのtools25/resources4、get-current-time・list-events-expandedが成功。D1未適用migrationなし。
+- ChatGPT設定のcaldavを『更新する』で最新resource/CSP取得を確認。CSP未設定警告は解消(公開申請用widget domain警告は別)。CSPオフのバッジは開発者モード側の適用設定で、グローバル設定は変更していない。
+- 新カードでdueのslice例外が消えた後、notes未指定によるtrim例外を観測。nullable10項目を受信時にnullへ揃えるよう拡張した。title等必須値は補完しない。
+- 全nullable省略fixtureでe905642のtrim例外を再現し、修正版で日付あり/null/全省略の3件表示、各詳細ページ往復、console error/warnなしを確認。一時サーバー停止済み。
+- 追加修正のmake check PASS(bun1110 + worker42)。この追加修正を同じ承認範囲で反映し、ChatGPT受け入れを継続する。
