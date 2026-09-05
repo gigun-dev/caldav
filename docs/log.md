@@ -1491,3 +1491,12 @@ Fable 設計 → subagent 実装 → main レビュー→ make check → コミ�
 - UIのリスト切替はローカル絞り込みなので単独ではserver callの証拠にしない。今回はfocus復帰の再取得とサーバー受信ログで確認した。詳細はdocs/mcp-compatibility-2026-09-05.md。
 - output-schemas.tsで共通の出力契約を定義し、全25ツールへoutputSchemaを接続。nullable、横断calendarId:null、差分snapshot、legacy event aliasを含む現行wire shapeを宣言。追加フィールドを許容する方針は維持し、SDKの成功応答検証を有効化する。
 - 全25ツールのスキーマ公開契約をテストで固定。Luna max実装・rootレビュー後make check PASS(bun1111 + worker42)。本番の読み取り5種(list-todos/get-current-time/list-calendars/get-freebusy/list-events-expanded)を新スキーマへ照合して全成功。これから本番反映とChatGPTの設定更新を行う。
+- 0440b7bをmainへpush。Workers Builds 176791b2-6e32-4def-87f1-55d5f0fcd840/CI成功、version c0f7c29b-4837-4c6b-9bfb-98b68e086a9aが100%。本番tools/listで25/25がoutputSchemaを公開。
+- ChatGPTの接続設定を更新し、「出力スキーマ推奨」が消えたことをDOMで確認。非表示3ツールの警告は残るが公開範囲を広げない。新しくlist-todosを実行したカードで表示継続をスクリーンショット確認。既存データ変更なし。
+- 反映後health200、無認証MCP401、Cloud Run DAV OPTIONS204/well-known301、保存OAuth経由get-current-time/list-events-expanded成功。スキーマによる成功応答拒否なし。追加migrationなし。
+- 完了報告後のEventsViewModel型整理は今回の動作修正に不要なため本番変更に含めず、/tmp/caldav-wire-event-type-followup.patchへ退避した。
+
+## 2026-09-06 hub H0/R0へ続行
+
+- ユーザー続行指示によりBark互換backend成立性とIaC所有境界をhub側で調査。hub/docs/bark-feasibility-2026-09-06.md、infra-ownership-2026-09-06.mdに記録。
+- hub/experiments/bark-compatにモックAPNsのローカル互換PoCを追加。12テスト・strict型検査PASS。実APNs・実機・デプロイは未実施。caldav本体や既存通知経路は変更していない。

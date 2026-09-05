@@ -63,6 +63,8 @@ Inspector 受け入れ PASS 済み。焦点は「機能を足す」から**プ�
 > **2026-09-06 更新:** 上記修正のmake check PASS(bun 1109 + worker 42)。未コミット・未デプロイ。
 > **2026-09-06 更新:** 上記の未反映状態は解消 ✅ e905642/6394a1bを本番反映済み。配色・devループ・CSP明示とnullable10項目の正規化を含む。make check PASS(bun1110 + worker42)、CI/Workers Builds成功。ChatGPTコネクタ更新後、最新カードの一覧表示・リスト切替を実画面で確認。CSP未設定警告も解消。「CSPオフ」はChatGPT開発者設定の表示で、その設定は変更していない。詳細はdocs/log.md。
 > **2026-09-06 更新:** ChatGPTの非表示3ツール(refresh-todos/refresh-events/report-card-telemetry)はカードからの呼び出しを本番ログで全件成功確認 ✅。visibility:[app]を維持する。出力スキーマ推奨は25ツールのoutputSchema未定義によるもので、宣言追加に着手。
+> **2026-09-06 更新:** 出力スキーマ追加も完了 ✅ 0440b7bを本番反映。25/25ツールで公開、ChatGPT接続更新後「出力スキーマ推奨」消失と一覧の再描画を確認。全1111+42テスト・CI・Workers Builds成功。非表示警告は残るが3ツールの呼び出し成功を記録済み。
+> **2026-09-06 更新:** 続行指示でhubのH0/R0へ着手。[Bark成立性](../../hub/docs/bark-feasibility-2026-09-06.md)・[IaC所有境界](../../hub/docs/infra-ownership-2026-09-06.md)とモックAPNsの互換PoCを追加(12テスト・strict型検査PASS)。実機・APNs送信・検証環境は未着手、caldav本体の追加変更なし。
 
 <!-- session-head-end: ここまでが SessionStart フックで自動注入される「頭」(現在地・着手順)。
      以降は方向性カタログ — 着手する節だけをそのとき読む。棚卸し時はここより上を最新に保つこと。 -->
