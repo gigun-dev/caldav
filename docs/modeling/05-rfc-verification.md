@@ -679,3 +679,23 @@ URLによるscheme/host/既定port正規化と、unreservedのpercent復号を�
 - 本番非破壊では正規/別URI/別caseを同時に送りpropstatを照合する。D1 migrationは不要。
 
 これは変更範囲の確定で、200照合の修正・XMLパーサ選定・実端末検証は未実施。
+
+### object宛multigetの本番受け入れ
+
+実装`a01b2ec`と範囲記録`55fd1c1`をmainへpush。Build
+`09f2c16b-def0-4c86-bb52-3c11ea772032`成功、D1は`No migrations to apply!`。
+version `b99627b2-8dd9-4dfd-9d78-554f2cc5ad32`が100%。
+`make check`/pre-pushはBun1165、workerd42、層境界・3型レーン成功。
+
+正式proxyで既存objectのHEAD ETagと次の応答をメモリ内で比較した。
+- 絶対path/公開proxy絶対URI/unreserved percent表記の3種はDepth infinityでも207、ETag一致。
+  getetagのみの要求ではcalendar-dataを返さない。
+- calendar-data明示要求では207、VCALENDAR本文とETag一致。実ICS本文/UID/ETag/URIは保存していない。
+- hrefなし/複数/別path/別host/fragmentは400。
+- 存在しないobjectは207内404。objectの広告はcalendar-multigetのみ。
+- 未対応object REPORTは403 DAV:supported-report、collection multigetは207・ETag一致。
+- OPTIONS204、MCPのDB依存読み取り200/isErrorなし。
+
+[応答記録](../verification/2026-10-03-production-object-multiget.json)。
+本番PUT/DELETE/PROPPATCHや実端末UI操作は行っていない。0012のサーバー是正/本番確認は完了。
+0013は範囲確定として完了し、実際のQName照合変更は0057に残す。
