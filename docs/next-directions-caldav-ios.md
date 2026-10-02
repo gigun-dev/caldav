@@ -1,3 +1,6 @@
+> **2026-10-02 廃止・凍結:** 移行前の参照記録。以下の更新指示・着手順は現行運用に適用しない。
+> 現行タスクは `todo.txt`、設計判断は `docs/adr/`。対応表は [harness-migration.md](harness-migration.md)。本文は保存し、更新しない。
+
 # 次セッション詳細カタログ: CalDAV / iOS
 
 > `docs/next-directions.md` の頭から分離した詳細カタログ。RFC適合とAppleクライアント検証の

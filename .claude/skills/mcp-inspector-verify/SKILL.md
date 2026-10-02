@@ -68,5 +68,5 @@ bunx wrangler d1 execute DB --remote --command "SELECT uri, ics FROM calendar_ob
 
 - 事実を `tool response / App UI / callServerTool / D1 raw ICS` の層ごとに分ける。
 - 実施できなかった層は未検証と明記する。
-- 作業の区切りで `docs/next-directions.md` の最新状態を更新し、時系列詳細を`docs/log.md`へ追記する。
+- 検証結果は該当する検証 docs に残し、検証済みのタスクを todo で完了にする。未検証の残項目は todo に残す。
 - deployを伴う場合は、続けて`deploy-verify` skillを使う。

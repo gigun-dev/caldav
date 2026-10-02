@@ -71,10 +71,14 @@ RFC の実装順: 5545(iCalendar)→ 4918(WebDAV)→ 4791(CalDAV)→ 6578(sync)�
 `.claude/rules/comments.md`(コード編集時に自動ロードされるパススコープ付きルール)を参照。
 要旨: 意図と経緯を残す・ボツ案は財産・コメント:コード ≒ 半々・消すのは「事実として誤り」のときだけ。
 
-## 現在地・次の作業(セッション引き継ぎ)
+## タスクと設計判断
 
-- 正典は **`docs/next-directions.md`** — SessionStart フック(`.claude/settings.json`)が
-  セッション開始時に「頭」(現在地・着手順、`session-head-end` マーカーまで)だけを自動注入する。
-  方向性 G〜K の詳細カタログは着手する節をそのとき読む(毎セッションのコストを頭の分で一定に保つ)。
-  作業の区切りごとに必ず更新する(完了は打ち消し線+✅、変化は `> 日付 更新:` を積層。計画は消さない)。
-- 時系列の生記録は **`docs/log.md`** に追記(追記専用アーカイブ)。
+Tasks live in todo.txt; use the todo skills.
+Decisions live in docs/adr/; use the adr skill.
+
+- 現行タスクの正典は `todo.txt`、完了記録は `done.txt`。
+  開始時に `todo ready` を読む。
+- 設計判断は `docs/adr/`。該当 ADR と modeling・RFC 原文を読んでから変更する。
+- `docs/next-directions*.md` と `docs/log.md` は移行前の参照記録として凍結済み。
+  本文に残る旧更新指示は適用しない。対応表は `docs/harness-migration.md`。
+- 検証結果・知識は該当する専門 docs、変更の経緯はコミットメッセージへ残す。

@@ -1,31 +1,14 @@
-# Claude Code / Codex 共有ハーネス
+# Claude Code / Codex の共有設定
 
-Claude Code 側を正典にし、同じ内容を表現できる Codex surface は symlink で共有する。
+`AGENTS.md` は `CLAUDE.md`、`.agents/skills/*` は `.claude/skills/*`、パス別 `AGENTS.md` は
+`.claude/rules/*.md` への symlink で共有する。共有元だけを編集する。
 
-| Codex | 正典 | 方式 |
-| --- | --- | --- |
-| `AGENTS.md` | `CLAUDE.md` | symlink |
-| `.agents/skills/*` | `.claude/skills/*` | symlink |
-| path別 `AGENTS.md` | `.claude/rules/*.md` | symlink |
-| `.codex/hooks/session-start.sh` | `.claude/hooks/session-start.sh` | symlink |
+作業開始時は todo スキルで `todo ready` を読み、該当 ADR・modeling・RFC 原文・project skill を確認する。
+タスクは `todo.txt` / `done.txt`、設計判断は `docs/adr/`、知識・検証結果は専門 docs に置く。
+`docs/next-directions*.md` と `docs/log.md` は凍結した参照記録であり、自動注入・更新しない。
 
-`.codex/hooks.json` と `.codex/config.toml` は設定形式が異なるため、薄いCodex専用adapterとして
-管理する。MCPはprojectの `.mcp.json` / Claude pluginと同じ意図で Proxyman と Xcodeを登録する。
+SessionStart の設定とスクリプトは撤去済み。`.codex/config.toml` の Proxyman / Xcode MCP 設定は維持する。
+`.githooks/pre-push` は main push 前の `make check` のために維持する。
 
-## コンテキストの正典
-
-1. `AGENTS.md` / `CLAUDE.md`: 常時必要な不変条件。
-2. `docs/next-directions.md`: 最新の現在地と次の作業。最初の `session-head-end` までだけをhook注入。
-3. `docs/modeling/`, `docs/rfc/`, `docs/specs/`: 設計と一次資料。該当範囲だけ読む。
-4. project skills: deploy、device、MCP検証などトリガー時だけ必要な長い手順。
-5. `docs/log.md`: 時系列アーカイブ。通常は全文ロードしない。
-
-Claude project memoryやsession JSONL/tool resultsは機械依存・一時的で秘密を含み得るためsymlinkしない。
-恒久化すべき知識だけを上記のinstructions/docs/skillsへ昇格する。
-
-## 保守
-
-- 共通instruction、skill、rules、hook scriptはClaude側の正典だけを編集する。
-- Claude settings/plugin/MCPを変えた場合、Codex adapterにも同じ意図を反映する。
-- `.claude/settings.local.json` のpermission allowlistと`codex@openai-codex`はCodexへ移植しない。
-- repo-local hookはCodexで初回trust確認が入ることがある。新規taskまたは`/hooks`で実発火を確認する。
+Claude の個人権限設定・memory・session JSONL は共有しない。
+移行対応は [harness-migration.md](../docs/harness-migration.md) を参照する。

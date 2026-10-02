@@ -1,3 +1,5 @@
+2026-10-02: Historical report only. SessionStart was retired; see docs/harness-migration.md.
+
 Codex harness migration (manual, symlink-first)
 
 - AGENTS.md already links to CLAUDE.md.

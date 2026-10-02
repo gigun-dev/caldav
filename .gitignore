@@ -41,7 +41,7 @@ cloudflared/*.json
 .claude/settings.local.json
 
 # plan mode の plan ファイル(global settings の plansDirectory でここに寄せている)。
-# 追跡しないのは、恒久ドキュメントの正典が docs/(modeling・next-directions・log)だから。
+# 追跡しないのは、タスクは todo.txt、設計判断・知識は docs/(adr・modeling) に置くため。
 # plan はその時点の作業計画=中間生成物で、docs に混ぜると正典が薄まる。
 .claude/plans/
 
