@@ -335,6 +335,9 @@ export function objectProps(resource: CalendarObjectResource, includeData: boole
 		getetag: `<d:getetag>${escapeXml(resource.etag.toHeader())}</d:getetag>`,
 		getcontenttype: `<d:getcontenttype>text/calendar; charset=utf-8; component=${resource.componentKind}</d:getcontenttype>`,
 		getcontentlength: `<d:getcontentlength>${new TextEncoder().encode(resource.rawIcs).byteLength}</d:getcontentlength>`,
+		// objectでも§7.9のmultigetを実装したので、3253 §3.1.5の資源別capabilityを
+		// ここに広告する。collection専用のfree-busy/sync/queryは載せない。
+		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report></d:supported-report-set>",
 	};
 	if (includeData) props["calendar-data"] = `<c:calendar-data>${escapeXml(resource.rawIcs)}</c:calendar-data>`;
 	return props;

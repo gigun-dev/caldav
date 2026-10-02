@@ -624,3 +624,25 @@ OPTIONS204、well-known301+no-cache、MCP get-current-timeとDB依存list-events
 
 次のコア修正はobject宛calendar-multiget。200側名前空間照合を続く優先Aとし、
 PROPPATCH・principal REPORT・host依存token・well-known別名・home syncは上の境界に沿って残す。
+
+## 2026-10-03 object宛calendar-multigetの是正
+
+4791原文 §7.9を再読。REPORTはcollectionだけでなくobjectにも必須。object宛ではhref1個・
+Request-URIと等価がMUST、Depthは無視、成功は207 multistatus、未存在hrefはresponse内404。
+既存本番405の証拠はeight-gap-probesに保持している。3253 §3.1.5はsupported-report-setが
+資源ごとの対応REPORTを示すことを定めるため、objectにもmultigetだけを広告する。
+
+collection/objectのmultiget取得・個別404・要求prop・calendar-dataを同じ既存MultigetObjectsへ
+通す。object宛のhref個数/等価性の不備は400。free-busy-queryのobject宛403は維持し、その他
+未対応REPORTを403 DAV:supported-reportへ直す。bodyはREPORT分岐で一度だけ読む。
+02の一括取得ユースケース、03のcollection内URIを持つobjectモデルに変更なし。
+
+URI比較に必要な3986全文をRFC Editorから取得してdocs/rfcへ追加し、§2.3/6.2.2/6.2.3を読んだ。
+URLによるscheme/host/既定port正規化と、unreservedのpercent復号を使い、予約文字は復号しない。
+公開originは既存externalOrigin(正式proxy)を使う。別ホスト/別path/別query/fragment/短い相対名は
+等価扱いしない。不正URLは400にする。collection側の既存href境界判定はこの変更で拡張しない。
+
+回帰の対象は、絶対path・絶対URI・unreserved表記差・proxy origin・Depth無視、ETag/ICS選択、
+0/複数/非等価href、外国host/予約slash/不正URL、未存在207内404、未対応403、資源別広告。
+本番は既存objectの読み取りのみで確認し、受け取ったICS本文・URL/UID/ETagを公開資料へ保存しない。
+

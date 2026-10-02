@@ -161,6 +161,54 @@ describe("Worker app", () => {
 		});
 	});
 
+	// objectとcollectionが同じ取得契約を返すこと、object宛では別hrefを読まないこと。
+	// 本番の既存object宛405を再現した経路を固定する。
+	describe("object宛 calendar-multiget", () => {
+		const path = `/dav/calendars/${USERNAME}/calendar/a.ics`;
+		const body = (hrefs: string[], props = "<d:getetag/><c:calendar-data/>") => `<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop>${props}</d:prop>${hrefs.map(href => `<d:href>${href}</d:href>`).join("")}</c:calendar-multiget>`;
+		beforeEach(async () => {
+			harness.repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+			await fetchApp(path, { method: "PUT", headers: { authorization: authHeader() }, body: makeVEventIcs("object-multiget") });
+		});
+		for (const href of [path, `HTTPS://EXAMPLE.COM:443${path}`, path.replace("calendar/a", "%63alendar/%61")]) {
+			it(`等価href ${href} はDepth infinityを無視してETag/ICSを返す`, async () => {
+				const res = await fetchApp(path, { method: "REPORT", headers: { authorization: authHeader(), depth: "infinity" }, body: body([href]) });
+				expect(res.status).toBe(207);
+				const xml = await res.text();
+				expect(xml).toContain("HTTP/1.1 200 OK");
+				expect(xml).toContain("<d:getetag>");
+				expect(xml).toContain("UID:object-multiget");
+			});
+		}
+		it("proxyの公開originで絶対hrefを照合し、getetagだけの要求にはICSを返さない", async () => {
+			const res = await fetchApp(path, { method: "REPORT", headers: { authorization: authHeader(), "x-forwarded-host": "proxy.example", "x-forwarded-proto": "https" }, body: body([`https://proxy.example${path}`], "<d:getetag/>") });
+			expect(res.status).toBe(207);
+			const xml = await res.text();expect(xml).toContain("<d:getetag>");expect(xml).not.toContain("calendar-data");
+		});
+		for (const hrefs of [[], [path, path], [path.replace("a.ics", "other.ics")], [path.replace("calendar/", "other/")], [`https://foreign.example${path}`], ["a.ics"], [`${path}#fragment`], [`${path}?query=changed`], ["https://[broken"], [path.replace("calendar/", "calendar%2F")], [`https://user@example.com${path}`]]) {
+			it(`非等価または複数href ${JSON.stringify(hrefs)} は400で別objectを読まない`, async () => {
+				const res = await fetchApp(path, { method: "REPORT", headers: { authorization: authHeader() }, body: body(hrefs) });
+				expect(res.status).toBe(400);expect(await res.text()).not.toContain("UID:object-multiget");
+			});
+		}
+		it("objectのsupported-report-setは実装したmultigetだけを広告する", async () => {
+			const res = await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" }, body: '<d:propfind xmlns:d="DAV:"><d:prop><d:supported-report-set/></d:prop></d:propfind>' });
+			expect(res.status).toBe(207);
+			const xml = await res.text();expect(xml).toContain("<c:calendar-multiget/>");expect(xml).not.toContain("free-busy-query");expect(xml).not.toContain("calendar-query");
+		});
+		it("存在しないobjectは207内の個別404で返す", async () => {
+			const missing = path.replace("a.ics", "missing.ics");
+			const res = await fetchApp(missing, { method: "REPORT", headers: { authorization: authHeader() }, body: body([missing]) });
+			expect(res.status).toBe(207);expect(await res.text()).toContain("HTTP/1.1 404 Not Found");
+		});
+		it("未対応object REPORTは403 DAV:supported-report、collection multigetもDepthを無視する", async () => {
+			const unsupported = await fetchApp(path, { method: "REPORT", headers: { authorization: authHeader() }, body: '<d:unknown xmlns:d="DAV:"/>' });
+			expect(unsupported.status).toBe(403);expect(await unsupported.text()).toContain("<d:supported-report/>");
+			const collection = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, { method: "REPORT", headers: { authorization: authHeader(), depth: "infinity" }, body: body([path]) });
+			expect(collection.status).toBe(207);expect(await collection.text()).toContain("UID:object-multiget");
+		});
+	});
+
 	// -------------------------------------------------------------------------
 	// P1-3: multiget のコレクション外 href は 404 <response> にする。
 	// -------------------------------------------------------------------------

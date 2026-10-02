@@ -81,6 +81,7 @@ import {
 import { QuotaLimitedGeocoding } from "./application";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
+import { equivalentObjectHref } from "./presentation/dav/href";
 import { createMcpApp } from "./presentation/mcp/server";
 // R-6: OAuth scope 分離(read/write)。同意画面の既定 scope・表示文言、静的 Bearer の full access
 // props に使う。語彙は presentation/mcp/scopes.ts に一元化(index.ts の scopesSupported と同じ定義)。
@@ -806,25 +807,17 @@ app.all("*", async (c) => {
 			return new Response(null, { status: 204, headers: DAV_HEADERS });
 		}
 
-		if (method === "REPORT" && !resourceName) {
+		if (method === "REPORT") {
+			// bodyは一度だけ読む。object/collectionとも同じmultiget usecaseとcodecを
+			// 通し、要求propの選択・calendar-data・個別404が別実装でずれるのを防ぐ。
 			const body = await readBody(request);
-			if (/<(?:[^:>]+:)?sync-collection\b/i.test(body)) {
-				const result = await new SyncCollection(repos.collections, repos.resources).execute({
-					owner: principalPathValue, collectionId: id, syncToken: parseSyncToken(body),
-					syncTokenBase: new URL(collectionHref, publicOrigin).href,
-				});
-				// 2026-07-10 レビュー P1-2: 以前は changed 応答を "allprop" 固定にしていたが、
-				// これはクライアントの <prop> 要求を無視していた。multiget と同様に parsePropFilter で
-				// 要求プロパティを厳密に照合する(iOS は sync-collection では getetag のみ要求する —
-				// docs/modeling/06 教訓「要求プロパティの厳密照合」)。includeData=false なので
-				// calendar-data は返さず、要求されても objectProps に無ければ 404 propstat になる。
-				const filter = parsePropFilter(body);
-				const responses = result.diffs.map((diff) => diff.kind === "changed"
-					? responseXml(`${collectionHref}${encodeURIComponent(diff.resource.uri)}`, objectProps(diff.resource, false), filter)
-					: statusResponseXml(`${collectionHref}${encodeURIComponent(diff.uri)}`, "404 Not Found")).join("");
-				return xml(multistatus(responses, result.newSyncToken.toUri(new URL(collectionHref, publicOrigin).href)));
-			}
 			if (/<(?:[^:>]+:)?calendar-multiget\b/i.test(body)) {
+				const hrefs = parseHrefs(body);
+				// RFC 4791 §7.9: object宛はhrefがちょうど1個、Request-URIと等価MUST。
+				// リクエスト全体の不備は400。正当なhrefの未存在は下の207内404にする。
+				if (resourceName && (hrefs.length !== 1 || !equivalentObjectHref(hrefs[0], url, publicOrigin))) {
+					return new Response("Bad Request: object calendar-multiget requires one href equivalent to the request URI", { status: 400, headers: DAV_HEADERS });
+				}
 				// 2026-07-10 レビュー P1-3: 以前は全 href について「最後のパスセグメント」だけを拾って
 				// resourceUri にしていた。これだと (a) コレクション自身の href(末尾 / なので空文字 URI)や
 				// (b) 別コレクション配下の href まで「当コレクション内」として問い合わせてしまう。
@@ -833,7 +826,10 @@ app.all("*", async (c) => {
 				// 外れる href は問い合わせに回さず直接 404 応答にする。
 				const uris: string[] = [];
 				const outOfScopeHrefs: string[] = [];
-				for (const href of parseHrefs(body)) {
+				for (const href of hrefs) {
+					// objectのhrefは等価性検証済み。正規化前の文字列でcollection prefixを
+					// 再照合すると、%63alendar等の正当な表記差を404にしてしまう。
+					if (resourceName) { uris.push(resourceName); continue; }
 					const hrefPath = new URL(href, url.origin).pathname;
 					// collectionHref 配下かどうか。collectionHref は末尾 / 付き。
 					if (!hrefPath.startsWith(collectionHref)) {
@@ -857,9 +853,35 @@ app.all("*", async (c) => {
 					+ outOfScopeHrefs.map((hrefPath) => statusResponseXml(hrefPath, "404 Not Found")).join("");
 				return xml(multistatus(responses));
 			}
+
+			if (resourceName) {
+				// RFC 4791 §7.10: object宛free-busy-queryだけは専用の403を維持する。
+				// それ以外の未対応REPORTは、method全体の405ではなく3253 §3.6の
+				// supported-reportを返す。multigetをここで「未対応」と宣言しない。
+				if (/<(?:[^:>]+:)?free-busy-query\b/i.test(body)) {
+					return new Response("Forbidden: free-busy-query REPORT can only be run against a collection", { status: 403, headers: DAV_HEADERS });
+				}
+				return xml(davError("supported-report", { namespace: "dav" }), 403);
+			}
+			if (/<(?:[^:>]+:)?sync-collection\b/i.test(body)) {
+				const result = await new SyncCollection(repos.collections, repos.resources).execute({
+					owner: principalPathValue, collectionId: id, syncToken: parseSyncToken(body),
+					syncTokenBase: new URL(collectionHref, publicOrigin).href,
+				});
+				// 2026-07-10 レビュー P1-2: 以前は changed 応答を "allprop" 固定にしていたが、
+				// これはクライアントの <prop> 要求を無視していた。multiget と同様に parsePropFilter で
+				// 要求プロパティを厳密に照合する(iOS は sync-collection では getetag のみ要求する —
+				// docs/modeling/06 教訓「要求プロパティの厳密照合」)。includeData=false なので
+				// calendar-data は返さず、要求されても objectProps に無ければ 404 propstat になる。
+				const filter = parsePropFilter(body);
+				const responses = result.diffs.map((diff) => diff.kind === "changed"
+					? responseXml(`${collectionHref}${encodeURIComponent(diff.resource.uri)}`, objectProps(diff.resource, false), filter)
+					: statusResponseXml(`${collectionHref}${encodeURIComponent(diff.uri)}`, "404 Not Found")).join("");
+				return xml(multistatus(responses, result.newSyncToken.toUri(new URL(collectionHref, publicOrigin).href)));
+			}
 			if (/<(?:[^:>]+:)?free-busy-query\b/i.test(body)) {
 				// free-busy-query REPORT(RFC 4791 §7.10。G-4)。collection に対してのみ実行可
-				// (object に対する 403 は resourceName ありのブランチ側で先に弾く。下記参照)。
+				// (object に対する 403 は上の resourceName 分岐で先に弾く)。
 				// §9.11: free-busy-query は time-range をちょうど1個含む MUST。壊れている/
 				// 無い場合は「解析失敗」として扱う。§7.10 自体には free-busy-query 用の
 				// precondition 名が定義されていないため、calendar-query の
@@ -917,31 +939,9 @@ app.all("*", async (c) => {
 
 		if (!resourceName) return new Response("Method Not Allowed", { status: 405, headers: DAV_HEADERS });
 
-		if (method === "REPORT" && /<(?:[^:>]+:)?free-busy-query\b/i.test(await readBody(request))) {
-			// RFC 4791 §7.10 Marshalling: "The CALDAV:free-busy-query REPORT request can only
-			// be run against a collection ... An attempt to run the report on a calendar object
-			// resource MUST fail and return a 403 (Forbidden) status value." resourceName が
-			// あるここは「オブジェクトリソースに対する REPORT」なので、free-busy-query だけを
-			// 明示的に 403 で弾く(他の REPORT 種別を object に対して送ってきた場合は、
-			// この分岐を素通りして下の最終 405 フォールバックに落ちる — その扱いは元々の
-			// 挙動を変えない、今回のスコープ外の話)。
-			return new Response("Forbidden: free-busy-query REPORT can only be run against a collection", { status: 403, headers: DAV_HEADERS });
-		}
-
-		// 【既知の gap(2026-08-01。今回は意図的に直していない)】
-		// オブジェクトリソースに対する free-busy-query 以外の REPORT は、下の最終フォールバックで
-		// 405 Method Not Allowed になる。Allow で REPORT を広告している以上ここも不整合だが、
-		// principal URL の 404(上で修正)とは事情が違って **403 DAV:supported-report で塗るのは誤り**:
-		// RFC 4791 §7.9 原文 "The CALDAV:calendar-multiget REPORT is used to retrieve specific
-		// calendar object resources from within a collection, if the Request-URI is a collection,
-		// or to retrieve a specific calendar object resource, if the Request-URI is a calendar
-		// object resource" — つまり calendar-multiget は **オブジェクトに対しても対応が必須**で、
-		// 「非対応」と宣言するのは嘘になる。正しい直し方は「object 宛の calendar-multiget
-		// (§7.9: href はちょうど1個で Request-URI と等価 MUST)を実装し、それ以外を
-		// 403 DAV:supported-report にする」の2段構え。実装コスト自体は小さいが、今回の依頼
-		// (principal URL の 404 と .well-known の Cache-Control)からは外れるので手を付けない。
-
-
+		// 2026-10-03: object multigetの405 gapは上の共通REPORT経路で解消した。
+		// 403 supported-reportだけを足す案は、§7.9で必須のmultigetを未対応と
+		// 偽って広告するため採らなかった。collectionの取得/個別404を再利用する。
 
 		if (method === "GET" || method === "HEAD") {
 			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });

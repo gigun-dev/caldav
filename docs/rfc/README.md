@@ -13,6 +13,7 @@
 |---------|---------|--------------------------|
 | rfc5545.txt | iCalendar | ドメイン層の本体(実装済み: 構造層・値型・意味論レンズ) |
 | rfc7986.txt | iCalendar Property Extensions | NAME/COLOR/IMAGE/CONFERENCE 等。生値保持で往復済み、アクセサは必要時に追加 |
+| rfc3986.txt | URI Generic Syntax | object宛multigetのRequest-URI等価比較(2026-10-03取得) |
 | rfc4918.txt | WebDAV | PROPFIND / PROPPATCH / MKCOL / 207 Multi-Status(実装フェーズ2) |
 | rfc4791.txt | CalDAV | MKCALENDAR / REPORT / PUT preconditions(実装フェーズ3) |
 | rfc6578.txt | Collection Synchronization | sync-collection REPORT / sync-token(実装フェーズ4) |
@@ -34,7 +35,7 @@
      さらに将来の追加候補として RFC 6047(iMIP — メール輸送までやるとき)/
      RFC 7529(RSCALE 非グレゴリオ暦 RRULE — 現行パーサーは未知 rule-part として拒否する。
      iOS が旧暦繰り返しで RSCALE を送るかは docs/modeling/06 A8 で検証)/
-     RFC 7809(Time Zones by Reference)/ RFC 3986(URI)を認識している。
+     RFC 7809(Time Zones by Reference)を認識している。RFC 3986は2026-10-03に取得済み。
      必要になったフェーズで取得する。 -->
 
 > **RFC 6868 の注意(2026-07-09)**: serializer.ts は「DQUOTE を含むパラメータ値は RFC 5545 の
