@@ -546,3 +546,23 @@ RFC 3253 §1.6 の記法どおり precondition 名の `DAV:` は名前空間を�
 iOS は現状 status 403 だけで回復しているように見え(壊れている証拠は無い)、
 これも「仕様違反 + 潜在リスク」の側。回復経路(403 → token 無しで再送 → full sync)は
 `test/presentation/app.test.ts` の「無効 sync-token」で固定した。
+
+## 2026-10-03 本番応答の再照合と404要求名の衝突
+
+正式Cloud Run入口経由、本番version `612f2dd7-9f81-403c-96a6-3670c2f5e471`。
+[応答の記録](../verification/2026-10-03-production-readonly.json)は予定本文・認証値を含めない。
+RFC原文を再読した範囲は3253 §1.6/3.6、3744 §9.5、4918 §9.1/14.22/17、6578 §3.2。
+
+- 未対応REPORT: principal/collectionとも403、`{DAV:}error`の子に`{DAV:}supported-report`。
+- principal-search-property-set: Depth 0/省略は200 + DAV要素・空集合、Depth 1は400。
+  principalのsupported-report-setは207の200 propstatに実装済み1種を広告。
+- 無効sync token: 403 + `{DAV:}valid-sync-token`。
+- 未知名`UnknownCase`をDAV/CalDAV/Apple/CalendarServer/独自URIで同時要求すると、
+  principal/home/collectionすべてで先頭のDAV要素1個だけが404に残った。これは成功扱いにしない。
+
+4918原文 §17は名前を「namespace nameとlocal nameの対」と定義し、§9.1は未知プロパティの
+404結果を要求する。`parsePropFilter`が小文字local名をMapキーとして先勝ちにしていたため、
+別名前空間だけでなくcase違いも欠落する。保持用Mapキーをnamespace URIと原表記local名の
+JSON tupleへ分離する。200側の既存local名照合は値のkeyを使い、別タスクの厳密化を残す。
+モデルの値/ユースケースの意味を変更しないpresentation codecの是正で、01〜04の図との乖離なし。
+同名・別case・別prefix同一名の重複排除と200応答維持を回帰で検証する。

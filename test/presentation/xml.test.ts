@@ -21,6 +21,19 @@ describe("DAV XML", () => {
 		expect(xml).toContain("HTTP/1.1 404 Not Found");
 	});
 
+	// 同じローカル名でも名前空間や大文字小文字が違えば別プロパティ。
+	// この検証を消すと、404応答で要求が黙って欠落する本番不具合を見逃す。
+	it("404 は同名の別名前空間・別大文字小文字をすべて保持し、prefix違いだけ重複排除する", () => {
+		const filter = parsePropFilter('<d:propfind xmlns:d="DAV:" xmlns:a="urn:a" xmlns:b="urn:b" xmlns:c="urn:a"><d:prop><a:UnknownCase/><b:UnknownCase/><a:unknowncase/><c:UnknownCase/><d:displayname/></d:prop></d:propfind>');
+		const xml = responseXml("/dav/", { displayname: "<d:displayname>Calendar</d:displayname>" }, filter);
+		expect(xml).toContain("<d:displayname>Calendar</d:displayname>");
+		expect(xml.match(/:UnknownCase /g)).toHaveLength(2);
+		expect(xml).toMatch(/:UnknownCase xmlns:\w+="urn:a"/);
+		expect(xml).toMatch(/:UnknownCase xmlns:\w+="urn:b"/);
+		expect(xml).toMatch(/:unknowncase xmlns:\w+="urn:a"/);
+		expect(xml).toContain("HTTP/1.1 404 Not Found");
+	});
+
 	// =========================================================================
 	// 404 propstat のプロパティ名は「要求された名前」でなければならない(2026-08-01 修正)
 	// =========================================================================

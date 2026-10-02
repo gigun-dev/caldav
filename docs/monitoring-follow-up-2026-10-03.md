@@ -190,3 +190,30 @@ groupingメッセージへ混ざることを避けた。実際のgroupingはClou
 更新したlog実装でdeploy dry-run成功、`git diff --check` と `todo check` 成功。
 stage/commit/pushなし。本線HEADは `016d23e`、変更はレビュー可能な未コミット差分として残している。
 0054は承認後の反映/検出/通知到達、0055はSwift側non-strict明示と反映後のホスト/実端末確認へ残作業を絞った。
+
+## 2026-10-03 main pushと本番受け入れ
+
+`c642bd7`(Wrangler/Issues) + `3b2216b`(MCP契約説明/errorログ/調査)をmainへpush。
+pre-pushを含め`make check`成功(Bun1140、workerd42)。Workers Build
+`4056ed78-bcdc-40bf-b28d-2ee8fa17ea55`成功、deploy commandは既存の`bun run deploy`。
+D1ログは`No migrations to apply!`、本番version
+`612f2dd7-9f81-403c-96a6-3670c2f5e471`が100%。settings APIでissues.enabled=true。
+
+正式proxy OPTIONS204、well-known301 + no-cache、MCP未認証401 + Bearer challenge、
+OAuth discovery200、initialize/tools-list/get-current-time/DB依存list-events-expanded成功。
+25ツールのうち範囲を共有する3スキーマで省略説明の反映を確認。
+[非破壊応答記録](verification/2026-10-03-production-readonly.json)。
+Python標準UAはCloudflare1010で拒否されたが、検証名をUAへ明示すると正常応答。
+最初の403はDAVハンドラの結果と混同しない。
+
+空の絶対範囲とrangeを併記する合成要求2件はHTTP200/isError=true、両キー削除案内あり。
+Observabilityのdry queryでerrorログ2件とreal-time-issuesイベント2件を実測。
+両イベントはhandled=true/mechanism=error-log、同一fingerprint
+`bc007abd44d9bc1b1fb9e9e878d0e8a8`、signature中のrequestIdは`<string>`へ正規化された。
+追加errorログのsourceはlevel/message/requestIdのみで引数・予定本文なし。
+Issues一覧への集約には待ち時間があり、イベント検出と一覧反映は区別する。
+例外/5xxの障害注入・通知policy/automation作成・外部通知送信は未実施。
+
+続く一覧APIでもIssue `aa455cad-445e-47cf-a519-c651f7910a73`、service=caldav、
+status=active、count=2、上記fingerprintの1グループを確認した。処理済みMCPエラーの
+本番検出と同種2回のgroupingは実証済み。通知到達/例外/5xxは未検証なので0054は閉じない。

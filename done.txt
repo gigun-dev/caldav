@@ -1,0 +1,3 @@
+x 2026-10-03 2026-10-02 未対応 REPORT の本番応答を確認して結果を記録する +caldav @user see:docs/next-directions-caldav-ios.md id:0001
+x 2026-10-03 2026-10-02 principal-search-property-set と supported-report-set の本番応答を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0002
+x 2026-10-03 2026-10-02 無効 sync token の本番エラー名前空間を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0004

@@ -1,7 +1,4 @@
-(A) 2026-10-02 未対応 REPORT の本番応答を確認して結果を記録する +caldav @user see:docs/next-directions-caldav-ios.md id:0001
-(A) 2026-10-02 principal-search-property-set と supported-report-set の本番応答を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0002
-(A) 2026-10-02 未知プロパティの 404 propstat が名前空間と大文字小文字を保持することを本番確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0003
-(A) 2026-10-02 無効 sync token の本番エラー名前空間を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0004
+(A) 2026-10-02 未知プロパティの 404 propstat が名前空間と大文字小文字を保持することを本番確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0003 @wip
 (A) 2026-10-02 RFC 原文と現行コードを照合し未着手8件の優先順位・実装範囲を決める +caldav @unattended see:docs/next-directions-caldav-ios.md dep:0001,0002,0003,0004 id:0005
 (B) 2026-10-02 principal 宛 REPORT 3種の対応方針と完了条件を決める +caldav @unattended see:docs/next-directions-caldav-ios.md dep:0005 id:0006
 (B) 2026-10-02 PROPPATCH の未対応プロパティ応答を是正して検証する +caldav @unattended see:docs/next-directions-caldav-ios.md dep:0005 id:0007

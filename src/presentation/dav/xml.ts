@@ -76,9 +76,9 @@ export interface RequestedPropName {
 /**
  * PROPFIND/REPORT の `<prop>` 要求。"allprop" か、要求プロパティの Map。
  *
- * 【なぜ Set<string> ではなく Map<key, RequestedPropName> か】
- * 呼び出し側(responseXml)は `filter.has(name)` と `filter === "allprop"` しか使っておらず、
- * Map は Set と同じ `has()` を持つので **既存コードの形をほぼ変えずに** 情報量だけ増やせる。
+ * 【なぜ Set<string> ではなく Map<名前の対, RequestedPropName> か】
+ * namespace と原表記 localName の対で重複を除き、別名前空間・別の大文字小文字を落とさない。
+ * 200 側の既存照合キーは値の key に残す(厳密化は別タスク)。
  * 【採らなかった案】`{ kind: "names"; props: RequestedPropName[] }` の判別共用体。
  * 表現としては素直だが `filter === "allprop"` の比較が全部 `filter.kind === ...` に変わり、
  * このバグ修正と無関係な差分が増える(レビューで本質が埋もれる)。
@@ -136,18 +136,20 @@ export function parsePropFilter(body: string): PropFilter {
 	for (const match of block.matchAll(/<(?!\/)(?:([^:>\s/]+):)?([\w-]+)\b/g)) {
 		const localName = match[2];
 		const key = localName.toLowerCase();
-		// 同じローカル名が別名前空間で2回来た場合は先勝ち。200 側の照合がローカル名でしか
-		// 行われない以上どちらか一方しか表現できず、「先に書かれた方」が最も素直な選択。
-		// (実クライアントで衝突は観測されていない。踏んだら名前空間つき照合への移行を検討する。)
-		if (result.has(key)) continue;
-		result.set(key, {
+		// 2026-10-03 本番確認: 同名を5名前空間で要求すると4個が黙って落ちた。
+		// 保持用キーと既存200照合用キーを分離する。JSON tuple は名前空間URIに
+		// 区切り文字が含まれても曖昧にならず、同じ名前のprefix違いだけを重複排除する。
+		const namespace = declarations.get(match[1] ?? "") ?? "";
+		const identity = JSON.stringify([namespace, localName]);
+		if (result.has(identity)) continue;
+		result.set(identity, {
 			key,
 			localName,
 			// 宣言の無い prefix は「名前空間なし」に倒す。壊れた要求(prefix を宣言し忘れ)なので
 			// どう返しても正解は無いが、勝手に DAV: を割り当てる(= 旧実装の挙動)よりは
 			// 「知らない名前空間を捏造しない」方が誠実。宣言していない prefix をそのまま応答に
 			// 書き戻すのは名前空間的に非整形式な XML になるので論外。
-			namespace: declarations.get(match[1] ?? "") ?? "",
+			namespace,
 		});
 	}
 	return result.size === 0 ? "allprop" : result;
@@ -175,7 +177,7 @@ export function propFilterFromKeys(keys: readonly string[]): PropFilter {
 }
 
 function requested(filter: PropFilter, name: string): boolean {
-	return filter === "allprop" || filter.has(name);
+	return filter === "allprop" || [...filter.values()].some((prop) => prop.key === name);
 }
 
 function propstat(props: string, status = "200 OK"): string {
