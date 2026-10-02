@@ -82,6 +82,9 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
+    // Issues は deploy 設定の一部。dashboard だけで ON にすると次の Workers Builds で
+    // 消えるため、所有を Wrangler に保つ(4.134.0 以降)。通知先は別途承認後に設定する。
+    "issues": { "enabled": true },
     // 2026-07-23 #49 OTel Phase 1: Cloudflare ネイティブ自動トレーシング(open beta)。
     // アプリコード変更ゼロで HTTP 境界のトレース+ログ相関が得られる。個人利用のトラフィックは
     // 月 10M イベントの込み枠に遠く及ばないため sampling は 1.0(全量)。persist:true で
