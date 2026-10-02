@@ -3,8 +3,7 @@
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
-(A) 2026-10-02 object 宛 calendar-multiget を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0012
-(A) 2026-10-02 200 propstat の名前空間照合を厳密化する変更範囲を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0013
+(A) 2026-10-02 object 宛 calendar-multiget を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0012 @wip
 (B) 2026-10-02 fullscreen FAB と composer の重なりを実機再現し safeAreaInsets を記録する +cards @device see:docs/next-directions-agentic-ui.md id:0014
 (B) 2026-10-02 追加から fullscreen へ遷移したときのキーボード閉鎖を実機再現し原因を切り分ける +cards @device see:docs/next-directions-agentic-ui.md id:0015
 (B) 2026-10-02 カードの選択・編集・詳細・コピー・chips・ドラフト・リスト選択を実機確認する +ios @device see:docs/next-directions-caldav-ios.md id:0016
@@ -48,3 +47,4 @@
 (B) 2026-10-03 承認後に既存Workers Builds経路でWorkers Issuesを反映し例外・5xx・処理済みMCPエラーの検出とgrouping・通知到達を検証する +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0054
 (B) 2026-10-03 Swift Chat経路のnon-strict明示を担当sessionで検証し反映後schemaでChatGPT・実端末を再試験する +mcp @user see:docs/monitoring-follow-up-2026-10-03.md id:0055
 (B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056
+(A) 2026-10-03 確定範囲に沿ってDAV読み取りのPropertySetとscope-aware QName解析を導入し200/404照合を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0013 id:0057

@@ -646,3 +646,36 @@ URLによるscheme/host/既定port正規化と、unreservedのpercent復号を�
 0/複数/非等価href、外国host/予約slash/不正URL、未存在207内404、未対応403、資源別広告。
 本番は既存objectの読み取りのみで確認し、受け取ったICS本文・URL/UID/ETagを公開資料へ保存しない。
 
+## 2026-10-03 200 propstat名前空間照合の変更範囲確定
+
+4918原文 §4.4/9.1/14.22/17を再照合。別namespaceの同名は別プロパティであり、既存本番probeの
+`{urn:verification}calendar-home-set`に`{caldav}calendar-home-set`を200で返す応答は是正対象。
+404保持の先行修正を尊重し、次の実装は読み取りcodecへ閉じて独立タスクに分ける。
+
+**実装範囲**:
+- presentation内にnamespace URI + caseを保持したlocal名の対で識別するPropertySetを置く。
+  選択した形式は`ReadonlyMap<qualifiedPropKey, { namespace, localName, xml }>`、キーは現在の
+  保持用Mapと同じJSON tuple。XML本文から名前を逆算せず、定義時に明示する。
+- `entryProps/principalProps/homeProps/collectionProps/objectProps`の5 factoryすべてを移行。
+  DAV(例 principal-URL)/CalDAV(例 calendar-home-set/calendar-data)/CalendarServer(getctag)/
+  Apple(calendar-color/calendar-order)を正確に定義。domain/application/DB/MCPの契約には波及させない。
+- `responseXml`の200選択と404列挙を同一qualified keyで照合。別URI・local case違いは404。
+  `allprop`の既存集合とsync-token除外は維持。現在の`requested()`小文字照合は廃止する。
+- `parsePropFilter`の名前空間解決をscope-awareにする。既定xmlns・子要素のxmlns・prefix再束縛を
+  正しく扱うXML解析が前提。全体regexによる宣言収集は厳密照合には使わない。Workers互換の
+  XMLパーサを選び、DTD/外部entityを許さず、malformed XMLを400とする。選定と性能は実装時に検証。
+- PROPPATCH内部応答の`applied`/`propFilterFromKeys`も定義済みの名前の対から構築する。
+  入力set/remove解析とatomicityの是正は既存0007に残し、読み取り照合変更へ混ぜない。
+
+**検証・互換性**:
+- codec:正規prefix/別prefix同一URI/既定xmlns/再束縛/別URI/別case/同名衝突/unknown保持/allpropを確認。
+- app:entry/principal/home/calendar/tasks/objectのPROPFIND、calendar-query/multiget/syncの要求prop選択。
+  getetagのみのREPORTでICSを返さないこと、正規namespaceのknown200とwrong-namespace404を確認。
+- `test/presentation/xml.test.ts`のprops文字列アクセス、`app.test.ts`の既知名ケースを新型へ移す。
+  明示的に旧local名照合を期待するテストは要件変更として書き換え、正規名の陽性ケースを残す。
+- modeling/06の実測要求14/38プロパティ(§B探索ログ)をキャプチャ原本からfixture化してローカル非回帰。
+  iOSはURIとcaseを含む名前に依存するので、誤ったnamespaceを送る未知clientだけを互換例外として
+  黙って通さない。実端末の初回探索/同期を確認するまではiOS受け入れ完了と主張しない。
+- 本番非破壊では正規/別URI/別caseを同時に送りpropstatを照合する。D1 migrationは不要。
+
+これは変更範囲の確定で、200照合の修正・XMLパーサ選定・実端末検証は未実施。
