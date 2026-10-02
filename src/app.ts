@@ -633,6 +633,15 @@ app.all("*", async (c) => {
 		]);
 		const homeNoSlash = home.slice(0, -1);
 
+		// RFC 4918 §9.1/9.1.1: 無限深度は負荷理由で無効にできるが、Depth 0へ
+		// 黙って縮めるとクライアントは完全な一覧を受け取ったと誤認する。
+		// discoveryの拒否をprovisionより前に置く。objectは子を持たず、下の
+		// object PROPFINDをそのまま通す(403を許す仕様はcollection宛の話)。
+		const infinitePropfind = method === "PROPFIND" && request.headers.get("depth") === "infinity";
+		if (infinitePropfind && (entryPaths.has(path) || principalPathsSet.has(path) || path === home || path === homeNoSlash)) {
+			return xml(davError("propfind-finite-depth", { namespace: "dav" }), 403);
+		}
+
 		// 2026-07-10 レビュー P1-1: 以前は認証済み全リクエストで principals.save + Provision を
 		// 実行しており、GET/PUT/REPORT のホットパスに D1 往復 3〜5 回が毎回乗っていた。
 		// これらの冪等プロビジョニングが本当に必要なのは iOS の「探索フェーズ」— entry / principal /
@@ -759,6 +768,9 @@ app.all("*", async (c) => {
 		const collectionHref = normalizeCollectionHref(c.env.CALDAV_USERNAME, collectionName);
 
 		if (method === "PROPFIND" && !resourceName) {
+			// collectionの存在を確認してから拒否し、未知パスの404と区別する。
+			// Depth 0/1の既存経路・オブジェクト自身のPROPFINDには触れない。
+			if (infinitePropfind) return xml(davError("propfind-finite-depth", { namespace: "dav" }), 403);
 			const body = await readBody(request);
 			const filter = parsePropFilter(body);
 			let responses = responseXml(requestHref(url), collectionProps(collection, collection.syncToken.toUri(new URL(collectionHref, publicOrigin).href)), filter);

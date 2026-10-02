@@ -88,6 +88,34 @@ describe("Worker app", () => {
 		);
 	}
 
+	// infinityをDepth 0に縮めると、同期クライアントが欠落した子一覧を完全と誤認する。
+	// 認証、未存在、有限深度、子を持たないobjectとの区別をここで固定する。
+	describe("PROPFIND の無限深度を collection で拒否する", () => {
+		for (const path of ["/dav/", `/dav/principals/${USERNAME}/`, `/dav/calendars/${USERNAME}/`, `/dav/calendars/${USERNAME}/calendar/`]) {
+			it(`${path} は403 + DAV:propfind-finite-depthを返す`, async () => {
+				harness.repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+				const res = await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth: "infinity" } });
+				expect(res.status).toBe(403);
+				expect(await res.text()).toContain('<d:propfind-finite-depth/>');
+				expect(harness.getCollectionSaveCount()).toBe(0);
+			});
+		}
+		it("Depth 0/1は有限の範囲を返し、objectはinfinityでも自身を返す", async () => {
+			harness.repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+			const object = `/dav/calendars/${USERNAME}/calendar/finite.ics`;
+			await fetchApp(object, { method: "PUT", headers: { authorization: authHeader() }, body: makeVEventIcs("finite") });
+			for (const [path, depth, count] of [[`/dav/calendars/${USERNAME}/calendar/`, "0", 1], [`/dav/calendars/${USERNAME}/calendar/`, "1", 2], [object, "infinity", 1]] as const) {
+				const res = await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth } });
+				expect(res.status).toBe(207);
+				expect((await res.text()).match(/<d:response>/g)).toHaveLength(count);
+			}
+		});
+		it("未認証は401、未存在collectionは404を維持する", async () => {
+			expect((await fetchApp("/dav/", { method: "PROPFIND", headers: { depth: "infinity" } })).status).toBe(401);
+			expect((await fetchApp(`/dav/calendars/${USERNAME}/missing/`, { method: "PROPFIND", headers: { authorization: authHeader(), depth: "infinity" } })).status).toBe(404);
+		});
+	});
+
 	// -------------------------------------------------------------------------
 	// P1-1: provision は探索フェーズの PROPFIND だけ。ホットパスでは呼ばれない。
 	// -------------------------------------------------------------------------

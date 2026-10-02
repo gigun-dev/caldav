@@ -1,0 +1,209 @@
+{
+  "timestamp": "2026-10-02T16:48:51.704840+00:00",
+  "proxy": "https://caldav-proxy-351824999564.asia-northeast1.run.app",
+  "worker": "https://caldav.gigun-dev.workers.dev",
+  "results": [
+    {
+      "label": "options",
+      "status": 204,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "well-known",
+      "status": 401,
+      "WWW-Authenticate": "Basic realm=\"CalDAV\", charset=\"UTF-8\""
+    },
+    {
+      "label": "well-known-redirect",
+      "status": 301,
+      "Location": "/dav/",
+      "Cache-Control": "no-cache"
+    },
+    {
+      "label": "unsupported-report principal",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "root": "{DAV:}error",
+      "preconditions": [
+        "{DAV:}supported-report",
+        "{DAV:}responsedescription"
+      ]
+    },
+    {
+      "label": "unsupported-report collection",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "root": "{DAV:}error",
+      "preconditions": [
+        "{DAV:}supported-report",
+        "{DAV:}responsedescription"
+      ]
+    },
+    {
+      "label": "principal-search depth 0",
+      "status": 200,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "root": "{DAV:}principal-search-property-set",
+      "searchableProperties": 0
+    },
+    {
+      "label": "principal-search depth None",
+      "status": 200,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "root": "{DAV:}principal-search-property-set",
+      "searchableProperties": 0
+    },
+    {
+      "label": "principal-search depth 1",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "supported-report-set",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "reports": [
+        "{DAV:}principal-search-property-set"
+      ],
+      "propstat": [
+        "HTTP/1.1 200 OK"
+      ]
+    },
+    {
+      "label": "unknown-properties principal",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "propstats": [
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}UnknownCase",
+            "{urn:ietf:params:xml:ns:caldav}UnknownCase",
+            "{http://apple.com/ns/ical/}UnknownCase",
+            "{http://calendarserver.org/ns/}UnknownCase",
+            "{urn:verification}UnknownCase"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "unknown-properties home",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "propstats": [
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}UnknownCase",
+            "{urn:ietf:params:xml:ns:caldav}UnknownCase",
+            "{http://apple.com/ns/ical/}UnknownCase",
+            "{http://calendarserver.org/ns/}UnknownCase",
+            "{urn:verification}UnknownCase"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "unknown-properties collection",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "propstats": [
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}UnknownCase",
+            "{urn:ietf:params:xml:ns:caldav}UnknownCase",
+            "{http://apple.com/ns/ical/}UnknownCase",
+            "{http://calendarserver.org/ns/}UnknownCase",
+            "{urn:verification}UnknownCase"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "invalid-sync-token",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "root": "{DAV:}error",
+      "preconditions": [
+        "{DAV:}valid-sync-token"
+      ]
+    },
+    {
+      "label": "mcp-unauth",
+      "status": 401,
+      "Cache-Control": "no-store",
+      "WWW-Authenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://caldav.gigun-dev.workers.dev/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\""
+    },
+    {
+      "label": "mcp-initialize",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "mcp-tools-list",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false,
+      "toolCount": 25,
+      "rangeOmissionDescriptions": true
+    },
+    {
+      "label": "mcp-time",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "mcp-db-range",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "/.well-known/oauth-authorization-server",
+      "status": 200,
+      "metadataKeys": [
+        "authorization_endpoint",
+        "client_id_metadata_document_supported",
+        "code_challenge_methods_supported",
+        "grant_types_supported",
+        "issuer",
+        "registration_endpoint",
+        "response_modes_supported",
+        "response_types_supported",
+        "revocation_endpoint",
+        "scopes_supported",
+        "token_endpoint",
+        "token_endpoint_auth_methods_supported"
+      ]
+    },
+    {
+      "label": "/.well-known/oauth-protected-resource",
+      "status": 200,
+      "metadataKeys": [
+        "authorization_servers",
+        "bearer_methods_supported",
+        "resource",
+        "scopes_supported"
+      ]
+    }
+  ],
+  "version": "a43ef5a9-92dc-4266-a5ca-a5f8bbcb688c"
+}

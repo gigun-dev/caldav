@@ -1,0 +1,109 @@
+{
+  "timestamp": "2026-10-02T16:49:06.599743+00:00",
+  "version": "a43ef5a9-92dc-4266-a5ca-a5f8bbcb688c",
+  "results": [
+    {
+      "label": "expand-property",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "preconditions": [
+        "{DAV:}supported-report",
+        "{DAV:}responsedescription"
+      ]
+    },
+    {
+      "label": "principal-property-search",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "preconditions": [
+        "{DAV:}supported-report",
+        "{DAV:}responsedescription"
+      ]
+    },
+    {
+      "label": "calendarserver-principal-search",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "preconditions": [
+        "{DAV:}supported-report",
+        "{DAV:}responsedescription"
+      ]
+    },
+    {
+      "label": "depth-infinity principal",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1
+    },
+    {
+      "label": "depth-infinity home",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1
+    },
+    {
+      "label": "depth-infinity collection",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1
+    },
+    {
+      "label": "home-sync",
+      "status": 404
+    },
+    {
+      "label": "wrong-namespace-known-property",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{urn:ietf:params:xml:ns:caldav}calendar-home-set"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "discover-object-metadata",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "objectCount": 17
+    },
+    {
+      "label": "object-calendar-multiget",
+      "status": 405,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "proxy-sync-token",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "containsProxyHost": true
+    },
+    {
+      "label": "proxy-token-at-worker-entry",
+      "status": 403,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "preconditions": [
+        "{DAV:}valid-sync-token"
+      ]
+    },
+    {
+      "label": "well-known-trailing-slash",
+      "status": 404
+    }
+  ],
+  "proppatch": "source inspection only; no production writes"
+}

@@ -566,3 +566,46 @@ RFC原文を再読した範囲は3253 §1.6/3.6、3744 §9.5、4918 §9.1/14.22/
 JSON tupleへ分離する。200側の既存local名照合は値のkeyを使い、別タスクの厳密化を残す。
 モデルの値/ユースケースの意味を変更しないpresentation codecの是正で、01〜04の図との乖離なし。
 同名・別case・別prefix同一名の重複排除と200応答維持を回帰で検証する。
+
+## 2026-10-03 Depth infinityの是正範囲
+
+4918原文 §9.1はDepth 0/1をMUST、infinityをSHOULDとし、負荷・セキュリティ理由で
+無限深度を無効化してよい。§9.1.1はcollection宛の拒否を403 + DAV:propfind-finite-depthとする
+SHOULDを示す。現在home/collectionは文字列1以外を0に寄せ、principalも深度を見ず207を返す。
+本番probeでも3種類すべてresponse1件のみとなり、infinityを完了したように見せている。
+
+既存の有限深度実装を維持し、明示Depth infinityのcollection要求を403 DAV:errorで拒否する。
+対象はentry/principal/home/calendar/tasks等のcollection。objectは子を持たないため従来どおり。
+discoveryのprovision前に拒否して、失敗する探索要求でD1を更新しない。
+02のユースケース図はDepth 1でカレンダー一覧取得と定義済みで、意味の追加・変更なし。
+ヘッダ省略をinfinityと扱う§9.1のSHOULDは今回未是正。既存の省略要求を使う探索経路の
+互換性を確認してから別途扱う。明示Infinityはヘッダ値の正規表記infinityのみを対象とする。
+
+### 修正後の本番確認
+
+`3364123`のBuild `883f1600-3aa7-4436-8173-11423996ffd4`成功、D1適用待ちなし。
+本番version `a43ef5a9-92dc-4266-a5ca-a5f8bbcb688c`で、principal/home/collectionすべて
+5名前空間の`UnknownCase`を207の404 propstatへ欠落なく返した。
+[修正後応答](../verification/2026-10-03-production-after-404-fix.json)。
+元の失敗応答は削除せず保持する。MCP/DAVスモークも再度成功。実端末/iOS UIの検証ではない。
+
+## 2026-10-03 残る8件の優先順位・実装境界
+
+[本番読み取りprobe](../verification/2026-10-03-eight-gap-probes.json)は上記versionで実施。
+PROPPATCHのみ本番変更を避けてコード照合。RFCの根拠は原文4918 §9.1/9.2/14.24/17、
+4791 §7.1/7.9、3253 §3.8、3744 §9.4、6578 §3.2/4、6764 §5を再読した。
+以下の順位は要件の強さだけでなく、小さく独立に検証できる順も考慮した実装順。
+
+|順|課題|現行実測・照合|実装範囲・完了条件|
+|---|---|---|---|
+|1|明示Depth infinity|principal/home/collectionで207・response1個|collectionのみ403 DAV:propfind-finite-depth。0/1・object・認証/404・provision非実行を回帰、本番再確認。今回の次スライス|
+|2|object宛calendar-multiget|既存object宛405。4791 §7.9はobjectも対象|collectionの既存分岐を共通化し、object宛はhref1個・Request-URIと等価を検証。getetag/calendar-data・未知href・Depth無視を回帰。既存データの読み取りで本番検証|
+|3|200 propstatの名前空間照合|独自URIのcalendar-home-setがCalDAV名で200になる|propsの定義名をnamespace+localの対へ変更、filter/全定義/PROPPATCH内部filterも統一。正規名前空間を200、別URI/case違いを404、allprop/REPORT非回帰。XML再束縛はパーサの別境界として明示|
+|4|PROPPATCH未対応名|src/app.tsはappliedが空でも空responseを207で返す。4918 §14.24 DTD不適合|set/removeの要求名・順序を解析し、非対応403、同時要求の他変更424・書込なしを保証。成功変更は各propstat200。任意dead property保存や部分成功を加えず、atomicityと無変更の回帰を必須にする|
+|5|principal宛REPORT3種|3種とも403 supported-report。過去の404は現状の正ではない|4791 §7.1がMUSTとするexpand-propertyをまず実装。3253 §3.8の入れ子href展開/未知名/上限・広告整合。principal-property-searchは3744 §9.4のACL標準、単一principalのdisplayname検索・0/1件・広告を別スライス。calendarserver拡張はRFC必須と扱わず、Apple要求原文と実需を確認して別判断|
+|6|sync tokenホスト依存|proxy発行tokenをworker入口へ返すと403 valid-sync-token|6578はopaque URI、ホスト埋込を要求しない。owner/collectionに束縛した安定URIへ変える方針。既発行2入口のtokenとIfヘッダを前方互換で受理する移行を設計してから実装。collection混同/future token/削除・再作成は拒否、入口変更で無変更diffを検証|
+|7|末尾slash付きwell-known|認証ありでも404|6764 §5が登録するURIはslashなし。slashありはApple互換の別名として同じ301+no-cacheへ寄せる。匿名/認証/redirect/Location非回帰。RFCのslashありMUSTとは主張しない|
+|8|home宛sync-collection|404、homeのsupported-report-setに広告なし|6578 §3.2は実装したcollectionで広告する要件で、すべてのcollectionへの強制ではない。対応を加えるならcollection追加/削除/メタデータ変更のhome変更履歴が必要。既存objectログの転用で嘘の同期を返さず、実クライアント需要の確認後に別ユースケース/永続化の範囲を確定|
+
+全8件の実装完了を意味しない。depthの省略要求をinfinity扱いするSHOULDへの対応は、
+明示infinity修正と区別して探索クライアントの互換性検証を残す。認証方式の製品判断や通知設定は対象外。
