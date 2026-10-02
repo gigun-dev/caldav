@@ -1,0 +1,286 @@
+{
+  "local": [
+    {
+      "name": "list-events-expanded",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "展開範囲の終了(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax をキーごと省略する(空文字・null も送らない)。timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して列挙する。",
+            "type": "string"
+          },
+          "calendarIds": {
+            "description": "対象コレクション ID の集合。指定したコレクションだけを横断して列挙・合成する(開始時刻順)。単数 calendarId と両方指定された場合は calendarIds を優先する。省略時は calendarId の挙動に従う。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxEvents": {
+            "description": "返す occurrence の上限。既定 250。",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
+    {
+      "name": "refresh-events",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "展開範囲の終了(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax をキーごと省略する(空文字・null も送らない)。timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して列挙する。",
+            "type": "string"
+          },
+          "calendarIds": {
+            "description": "対象コレクション ID の集合。指定したコレクションだけを横断して列挙・合成する(開始時刻順)。単数 calendarId と両方指定された場合は calendarIds を優先する。省略時は calendarId の挙動に従う。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxEvents": {
+            "description": "返す occurrence の上限。既定 250。",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
+    {
+      "name": "get-freebusy",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "free/busy 集計範囲の開始(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "free/busy 集計範囲の終了(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax をキーごと省略する(空文字・null も送らない)。timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して集計する。",
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "production": [
+    {
+      "name": "list-events-expanded",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時は不要。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "展開範囲の終了(offset 付き ISO8601)。range 指定時は不要。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して列挙する。",
+            "type": "string"
+          },
+          "calendarIds": {
+            "description": "対象コレクション ID の集合。指定したコレクションだけを横断して列挙・合成する(開始時刻順)。単数 calendarId と両方指定された場合は calendarIds を優先する。省略時は calendarId の挙動に従う。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxEvents": {
+            "description": "返す occurrence の上限。既定 250。",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
+    {
+      "name": "refresh-events",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時は不要。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "展開範囲の終了(offset 付き ISO8601)。range 指定時は不要。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して列挙する。",
+            "type": "string"
+          },
+          "calendarIds": {
+            "description": "対象コレクション ID の集合。指定したコレクションだけを横断して列挙・合成する(開始時刻順)。単数 calendarId と両方指定された場合は calendarIds を優先する。省略時は calendarId の挙動に従う。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxEvents": {
+            "description": "返す occurrence の上限。既定 250。",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
+    {
+      "name": "get-freebusy",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "description": "free/busy 集計範囲の開始(offset 付き ISO8601)。range 指定時は不要。",
+            "type": "string"
+          },
+          "timeMax": {
+            "description": "free/busy 集計範囲の終了(offset 付き ISO8601)。range 指定時は不要。",
+            "type": "string"
+          },
+          "range": {
+            "description": "相対レンジ。\"today\"/\"tomorrow\"/\"next-7-days\"/\"next-30-days\"/\"this-week\"/\"next-week\"/\"this-month\" のいずれか。指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。get-current-time の事前呼び出しは不要。",
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "next-7-days",
+              "next-30-days",
+              "this-week",
+              "next-week",
+              "this-month"
+            ]
+          },
+          "timeZone": {
+            "description": "応答時刻の表示に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。",
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "対象コレクション ID。省略時は全コレクションを横断して集計する。",
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

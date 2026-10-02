@@ -231,7 +231,7 @@ const getCurrentTimeInputShape = {
 // — 単一ユーザーの iOS カレンダー設定に合わせた)。
 const RANGE_DESCRIPTION =
 	'相対レンジ。"today"/"tomorrow"/"next-7-days"/"next-30-days"/"this-week"/"next-week"/"this-month" のいずれか。' +
-	"指定時は timeMin/timeMax 不要・timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。" +
+	"指定時は timeMin/timeMax をキーごと省略する(空文字・null も送らない)。timeZone 必須(当該 TZ のローカル午前0時起点・終端排他で境界を計算する。" +
 	"this-week/next-week は日曜始まり)。「今週」「来週」「今月」などの相対表現も range で1発で引ける。" +
 	"get-current-time の事前呼び出しは不要。";
 const rangeEnumField = z
@@ -245,8 +245,8 @@ const listEventsExpandedInputShape = {
 	// timeMin/timeMax を optional 化した(range 指定時は不要)。range との XOR は runListEvents で実行時検証する
 	// (zod の superRefine ではなくハンドラ側で検証するのは、range 解決に必要な now/timeZone がハンドラ文脈に
 	// あるため。エラーは toolError で明示メッセージを返す)。
-	timeMin: z.string().optional().describe("展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時は不要。"),
-	timeMax: z.string().optional().describe("展開範囲の終了(offset 付き ISO8601)。range 指定時は不要。"),
+	timeMin: z.string().optional().describe("展開範囲の開始(offset 付き ISO8601。例 2026-07-11T00:00:00+09:00 または ...Z)。range 指定時はキーごと省略(空文字・null は不可)。"),
+	timeMax: z.string().optional().describe("展開範囲の終了(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。"),
 	range: rangeEnumField,
 	timeZone: z.string().optional().describe("応答時刻の表示 + floating 値の解釈に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して列挙する。"),
@@ -298,8 +298,8 @@ function formatDeletedAgoForContent(deletedAtMillis: number, nowMillis: number):
 // --- get-freebusy -------------------------------------------------------------
 
 const getFreeBusyInputShape = {
-	timeMin: z.string().optional().describe("free/busy 集計範囲の開始(offset 付き ISO8601)。range 指定時は不要。"),
-	timeMax: z.string().optional().describe("free/busy 集計範囲の終了(offset 付き ISO8601)。range 指定時は不要。"),
+	timeMin: z.string().optional().describe("free/busy 集計範囲の開始(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。"),
+	timeMax: z.string().optional().describe("free/busy 集計範囲の終了(offset 付き ISO8601)。range 指定時はキーごと省略(空文字・null は不可)。"),
 	range: rangeEnumField,
 	timeZone: z.string().optional().describe("応答時刻の表示に使う IANA タイムゾーン。省略時は UTC(ただし range 指定時は必須)。"),
 	calendarId: z.string().optional().describe("対象コレクション ID。省略時は全コレクションを横断して集計する。"),
@@ -337,7 +337,8 @@ function resolveRequestRange(input: {
 		// range 指定: 絶対範囲との併記は排他違反(黙って一方を無視せずエラーで気づかせる)。
 		if (hasAbsolute) {
 			throw new RangeError(
-				"range(相対レンジ)と timeMin/timeMax(絶対範囲)は同時に指定できません。どちらか一方だけを指定してください。",
+				"range(相対レンジ)と timeMin/timeMax(絶対範囲)は同時に指定できません。" +
+					'timeMin/timeMax は空文字でも指定扱いです。range を使う場合は両キーを削除してください。例 {"range":"today","timeZone":"Asia/Tokyo"}。',
 			);
 		}
 		// range 指定時は timeZone 必須(上記「range 時 TZ 必須」コメント参照。暗黙 UTC 禁止)。
@@ -1788,6 +1789,14 @@ function buildMcpServer(
 				throw error;
 			} finally {
 				const ms = Date.now() - startedAtMs;
+				// HTTP 200 の isError は invocation 成功として扱われ得る。Issues の検出対象である
+				// error レベルへ明示するが、例外本文や引数を渡すと予定・住所等が流出し得るため
+				// 固定マーカーと既存の種別/照合 ID のみ。既存 AE/レイテンシログは別用途で維持する。
+				if (!ok) {
+					// 照合 ID を先頭メッセージへ埋めると、毎回違う文字列で Issues の grouping を
+					// 妨げ得る。ツール/種別の固定メッセージと、照合用の追加属性に分ける。
+					console.error(`mcp_tool_error ${name} ${errKind}`, { requestId });
+				}
 				// #locationAutoResolve(要件5): 引数由来の argsDigest(summarizeArgsDigest)へ
 				// locationAutoResolveDigest を additive にマージする(新しい mcpTool 名を増やさず
 				// create-event/create-events/update-event の既存イベントの属性として表現する)。

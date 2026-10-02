@@ -51,3 +51,5 @@
 (D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/next-directions-agentic-ui.md dep:0034 id:0051
 (D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/next-directions-agentic-ui.md id:0052
 (C) 2026-10-02 承認された A-1 範囲のスキーマ・principal 複数化・IdentityPort を実装して検証する +multiuser @user see:docs/next-directions-roadmap.md dep:0027 id:0053
+(B) 2026-10-03 承認後に既存Workers Builds経路でWorkers Issuesを反映し例外・5xx・処理済みMCPエラーの検出とgrouping・通知到達を検証する +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0054
+(B) 2026-10-03 Swift Chat経路のnon-strict明示を担当sessionで検証し反映後schemaでChatGPT・実端末を再試験する +mcp @user see:docs/monitoring-follow-up-2026-10-03.md id:0055

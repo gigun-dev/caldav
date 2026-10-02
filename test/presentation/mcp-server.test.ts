@@ -22,7 +22,7 @@
 // という SSE 1行として返る(実測)。テストでは `data: ` 行を抜き出して JSON.parse する。
 // =============================================================================
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Hono } from "hono";
 import { createMcpApp } from "../../src/presentation/mcp/server";
 // S1(docs/modeling/14): delete-* はトークン必須化されたので、既存の delete 挙動テストは免除トークン
@@ -673,6 +673,71 @@ describe("/mcp", () => {
 	// 壁時計パターン)(b) serverNow が範囲内にあること (c) XOR/TZ 必須の検証エラー を確認する。
 	// now を固定した境界の厳密検証は test/application/relative-range.test.ts(純関数側)が担う。
 	describe("相対レンジ(range)+ resolvedRange エコー", () => {
+		// 実端末 trace の引数を wire のまま再現する。空文字を省略に補正するとモデルの
+		// 契約違反を隠し、refresh/freebusy と意味がずれるため、共有する3入口で拒否を保証する。
+		for (const name of ["list-events-expanded", "refresh-events", "get-freebusy"]) {
+			for (const args of [{ range: "today", timeZone: "Asia/Tokyo" },
+				{ timeMin: "2026-07-01T00:00:00Z", timeMax: "2026-08-01T00:00:00Z" }]) {
+				it(`${name}: 省略した相対範囲と既存の絶対範囲は成功する ${JSON.stringify(args)}`, async () => {
+					const rpc = await jsonRpcResult(await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call",
+						params: { name, arguments: args } }));
+					expect(rpc.result.isError).toBeFalsy();
+					expect(rpc.result.structuredContent.resolvedRange.timeMin).toBeString();
+				});
+			}
+			for (const absolute of [{ timeMin: "", timeMax: "" }, { timeMin: "" }, { timeMax: "" }]) {
+				it(`${name}: range と空の絶対範囲 ${JSON.stringify(absolute)} は拒否し両キー削除を案内する`, async () => {
+					const res = await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call",
+						params: { name, arguments: { range: "today", timeZone: "Asia/Tokyo", ...absolute } } });
+					expect(res.status).toBe(200);
+					const rpc = await jsonRpcResult(res);
+					expect(rpc.result.isError).toBe(true);
+					expect(rpc.result.content[0].text).toContain("両キーを削除");
+				});
+			}
+			for (const args of [{ timeMin: "", timeMax: "" }, { timeMin: "2026-07-01T00:00:00Z" },
+				{ range: "today", timeMin: null, timeMax: null, timeZone: "Asia/Tokyo" },
+				{ range: "today", timeMin: " ", timeMax: " ", timeZone: "Asia/Tokyo" }]) {
+				it(`${name}: 空・片側欠落・null・空白を有効な範囲に補正しない ${JSON.stringify(args)}`, async () => {
+					const rpc = await jsonRpcResult(await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call",
+						params: { name, arguments: args } }));
+					expect(rpc.result.isError).toBe(true);
+				});
+			}
+		}
+
+		it("tools/list は絶対範囲を optional string とし range ではキー省略を案内する", async () => {
+			const rpc = await jsonRpcResult(await fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }));
+			for (const name of ["list-events-expanded", "refresh-events", "get-freebusy"]) {
+				const schema = rpc.result.tools.find((tool: { name: string }) => tool.name === name).inputSchema;
+				expect(schema.properties.timeMin.type).toBe("string");
+				expect(schema.properties.timeMax.type).toBe("string");
+				expect(schema.required ?? []).not.toContain("timeMin");
+				expect(schema.required ?? []).not.toContain("timeMax");
+				expect(schema.properties.range.description).toContain("キーごと省略");
+			}
+		});
+
+		it("HTTP 200 の処理済みエラーを引数・本文なしで error ログへ出し、成功は出さない", async () => {
+			const errorLog = spyOn(console, "error").mockImplementation(() => {});
+			try {
+				const call = (args: Record<string, unknown>) => fetchMcp({ jsonrpc: "2.0", id: 1, method: "tools/call",
+					params: { name: "list-events-expanded", arguments: args } });
+				const failed = await call({ timeMin: "PRIVATE_INVALID_DATE", timeMax: "2026-08-01T00:00:00Z" });
+				expect(failed.status).toBe(200);
+				expect((await jsonRpcResult(failed)).result.isError).toBe(true);
+				expect(errorLog).toHaveBeenCalledTimes(1);
+				expect(errorLog.mock.calls[0]![0]).toBe("mcp_tool_error list-events-expanded ToolError");
+				expect(errorLog.mock.calls[0]![1]).toEqual({ requestId: expect.any(String) });
+				expect(JSON.stringify(errorLog.mock.calls[0])).not.toContain("PRIVATE_INVALID_DATE");
+				const success = await call({ range: "today", timeZone: "Asia/Tokyo" });
+				expect((await jsonRpcResult(success)).result.isError).toBeFalsy();
+				expect(errorLog).toHaveBeenCalledTimes(1);
+			} finally {
+				errorLog.mockRestore();
+			}
+		});
+
 		it("range:today(timeZone 指定)で範囲を導出し resolvedRange を返す(境界は現地0時・serverNow は範囲内)", async () => {
 			const res = await fetchMcp({
 				jsonrpc: "2.0",
