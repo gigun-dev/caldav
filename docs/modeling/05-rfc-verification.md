@@ -609,3 +609,18 @@ PROPPATCHのみ本番変更を避けてコード照合。RFCの根拠は原文49
 
 全8件の実装完了を意味しない。depthの省略要求をinfinity扱いするSHOULDへの対応は、
 明示infinity修正と区別して探索クライアントの互換性検証を残す。認証方式の製品判断や通知設定は対象外。
+
+### Depth是正の本番受け入れ
+
+`2aa1171`、Build `950da153-2b25-4e6e-a979-916193476274`成功、D1適用待ちなし。
+version `e423b4b7-a215-4b40-a454-137d3645a7cb`が100%。
+正式proxyでentry/principal/home/calendar/tasksの明示Depth infinityはすべて403、
+`{DAV:}error`の子に`{DAV:}propfind-finite-depth`。collectionの0/1は207、
+既存objectのinfinityも207・response1個、未存在collectionは404。
+OPTIONS204、well-known301+no-cache、MCP get-current-timeとDB依存list-events-expandedも成功。
+[受け入れ応答](../verification/2026-10-03-production-depth.json)。
+`make check`はBun1147/workerd42成功、層境界・3型レーン成功、pre-pushも通過。
+本番データのPUT/DELETE/PROPPATCH、実端末UI検証は行っていない。
+
+次のコア修正はobject宛calendar-multiget。200側名前空間照合を続く優先Aとし、
+PROPPATCH・principal REPORT・host依存token・well-known別名・home syncは上の境界に沿って残す。

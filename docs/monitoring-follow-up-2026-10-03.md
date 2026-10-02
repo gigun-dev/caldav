@@ -217,3 +217,9 @@ Issues一覧への集約には待ち時間があり、イベント検出と一�
 続く一覧APIでもIssue `aa455cad-445e-47cf-a519-c651f7910a73`、service=caldav、
 status=active、count=2、上記fingerprintの1グループを確認した。処理済みMCPエラーの
 本番検出と同種2回のgroupingは実証済み。通知到達/例外/5xxは未検証なので0054は閉じない。
+
+本番RFC確認の追加是正として`3364123`(404要求名保持)と`2aa1171`(明示Depth infinity拒否)を
+mainへpushし、各Build成功・D1適用待ちなし・正式proxy受け入れ成功。
+結果と残8件の優先順位/境界は[modeling/05](modeling/05-rfc-verification.md)に記録。
+新しい本番版でもMCP get-current-time/DB読み取り成功。0001〜0005と0008は検証済みで完了。
+0054(通知・例外/5xx残)、0055(ChatGPT/Swift実端末)、0056(Depth省略互換性)は未完。
