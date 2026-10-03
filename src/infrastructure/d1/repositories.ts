@@ -166,7 +166,7 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 	// これで soft-delete 済み URI は GET/PROPFIND から 404・listing/REPORT から不可視になり
 	// (RFC 4918 §9.6 の「URI→リソースのマッピング除去」= データ破棄ではない、を満たす)、
 	// findUriByUid が生存行のみを見るので「同 UID の再作成」「restore の UID 衝突判定」が
-	// 正しく tombstone を無視する(docs/next-directions.md「R2 RFC 検証完了」・ports コメント)。
+	// 正しく tombstone を無視する(docs/modeling/15 §A-3 R2・ports コメント)。
 	async findAllInCollection(owner: PrincipalRef, id: CollectionId): Promise<CalendarObjectResource[]> {
 		const rows = await this.db.prepare(
 			"SELECT uri, ics FROM calendar_objects WHERE owner = ? AND collection_id = ? AND deleted_at IS NULL ORDER BY uri",
@@ -382,9 +382,8 @@ export class D1CalendarObjectResourceRepository implements CalendarObjectResourc
 	 * 見た状態は soft-delete 時点から一切変わらない。よって新たな変更ログは不要(むしろ書くと
 	 * 「既に消えたものをもう一度消した」という無意味な token 消費になる)。
 	 *
-	 * 【呼び出しの配線は別スライス(コメントで明示)】本命は Workers の cron trigger だが、
-	 * wrangler.jsonc の cron 配線はこのタスクのスコープ外。このメソッドとテストまでを用意し、
-	 * 実際の定期実行の配線は R2 の後続スライスで行う(docs/next-directions.md 参照)。
+	 * 【定期実行】src/index.ts の scheduled ハンドラから呼び出す。
+	 * cron 時刻は wrangler.jsonc、30日保持の cutoff は呼び出し側が所有する。
 	 *
 	 * @param cutoffMillis これより前(<)に削除された行を消す。呼び出し側が now - 30日 を渡す想定。
 	 * @returns 物理削除した行数。
@@ -621,7 +620,7 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 		// R2(仕様 #3): 物理 DELETE を soft-delete(deleted_at = now)へ置き換える。
 		// sync_changes の 'deleted' 記録(bumpAndLogStatements)は現行どおり不変なので、iOS から
 		// 見た挙動は完全同一(RFC 4918 §9.6 の DELETE 義務 = URI→リソースのマッピング除去 は
-		// deleted_at フィルタ済みの読み取り経路が満たす。docs/next-directions.md「R2 RFC 検証完了」)。
+		// deleted_at フィルタ済みの読み取り経路が満たす。docs/modeling/15 §A-3 R2)。
 		// `AND deleted_at IS NULL` を付けて、既に消えている行を二重に上書きしない(現実には UC が
 		// findByUri で 404 を先に返すので到達しないが、tombstone を resurrection させない belt)。
 		const deletedAt = Date.now();
@@ -646,7 +645,7 @@ export class D1CollectionUnitOfWork implements CollectionUnitOfWork {
 	/**
 	 * R2 restore: soft-delete 済み行を復元する(deleted_at を NULL に戻す)+ sync_changes に
 	 * 'created' を記録する(RFC 6578 §3.5.1: 再マップは changed として報告・removed と報告しては
-	 * ならない。既存 changesSince の後勝ち fold と噛み合い自動で準拠する — docs/next-directions.md)。
+	 * ならない。既存 changesSince の後勝ち fold と噛み合い自動で準拠する — docs/modeling/15-hitl-and-card-ui-principles.md)。
 	 *
 	 * @param currentUri 復元対象のゴーストが現在保持している uri(list-deleted が返した uri)。
 	 * @param newUri 復元後に生存行として使う uri。元 uri が空いていれば currentUri と同じ、

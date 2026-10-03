@@ -26,4 +26,4 @@ E-2(agentic 入口 = MCP Apps の generative UI)の設計変遷スナップシ�
 - `todos-refined.html` — todo card(final refined)。v1 系の到達点。
 - `todos-refined-v2.html` — **UI v2 の設計モック(canonical)**。iOS リマインダー準拠に
   再設計(一覧=走査面 / 行タップ=選択インライン編集 / ⓘ=編集ありきセミモーダル /
-  左スワイプ削除)。実装は 67d4893 + c4c2e04、本番検証 PASS(next-directions.md 参照)。
+  左スワイプ削除)。実装は 67d4893 + c4c2e04、本番検証 PASS（当時の経緯は Git 履歴）。

@@ -280,7 +280,7 @@ export interface CalendarObjectResourceRepository {
 	): Promise<OwnerTimeRangeMatch[]>;
 
 	// ---------------------------------------------------------------------------
-	// R2: ソフトデリート(deleted_at)— docs/modeling/15 §A-3 R2 / docs/next-directions.md
+	// R2: ソフトデリート(deleted_at)— docs/modeling/15 §A-3 R2
 	// ---------------------------------------------------------------------------
 	//
 	// 【可観測挙動の契約(RFC 検証済み)】上の読み取りメソッド(findAllInCollection / findByUri /
@@ -517,7 +517,7 @@ export interface CollectionUnitOfWork {
 	 * 【可観測挙動の契約】deleteResource は物理削除ではなく deleted_at を立てる(tombstone 化)。
 	 * restoreResource はその tombstone を外して生存行に戻し、sync_changes に 'created' を積む
 	 * (RFC 6578 §3.5.1: 再マップは changed として報告・removed と報告してはならない。既存
-	 * changesSince の後勝ち fold が自動でこれを満たす — docs/next-directions.md「R2 RFC 検証完了」)。
+	 * changesSince の後勝ち fold が自動でこれを満たす — docs/modeling/15 §A-3 R2)。
 	 *
 	 * @param currentUri 復元対象ゴーストが現在保持している uri(list-deleted が返した uri。
 	 *   再利用時にゴースト rename された退避 uri かもしれない)。

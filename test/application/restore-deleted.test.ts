@@ -1,7 +1,7 @@
 // =============================================================================
 // R2 ソフトデリート: ListDeleted / RestoreDeleted + soft-delete の可観測挙動
 // =============================================================================
-// docs/modeling/15 §A-3 R2 / docs/next-directions.md「R2 RFC 検証完了」の要件を
+// docs/modeling/15 §A-3 R2 / docs/modeling/15 §A-3 R2の要件を
 // application 層(フェイクリポジトリ)で固定する:
 //   - soft-delete 後の不可視化(findByUri が null・一覧から消える)
 //   - If-None-Match:*(must-not-exist)PUT が unmapped として成功する

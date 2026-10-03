@@ -5,7 +5,7 @@
 
 作業開始時は todo スキルで `todo ready` を読み、該当 ADR・modeling・RFC 原文・project skill を確認する。
 タスクは `todo.txt` / `done.txt`、設計判断は `docs/adr/`、知識・検証結果は専門 docs に置く。
-`docs/next-directions*.md` と `docs/log.md` は凍結した参照記録であり、自動注入・更新しない。
+過去の作業経緯は Git 履歴を参照する。
 
 SessionStart の設定とスクリプトは撤去済み。`.codex/config.toml` の Proxyman / Xcode MCP 設定は維持する。
 `.githooks/pre-push` は main push 前の `make check` のために維持する。

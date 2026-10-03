@@ -79,6 +79,5 @@ Decisions live in docs/adr/; use the adr skill.
 - 現行タスクの正典は `todo.txt`、完了記録は `done.txt`。
   開始時に `todo ready` を読む。
 - 設計判断は `docs/adr/`。該当 ADR と modeling・RFC 原文を読んでから変更する。
-- `docs/next-directions*.md` と `docs/log.md` は移行前の参照記録として凍結済み。
-  本文に残る旧更新指示は適用しない。対応表は `docs/harness-migration.md`。
+- 過去の作業経緯は Git 履歴を参照する。移行対応表は `docs/harness-migration.md`。
 - 検証結果・知識は該当する専門 docs、変更の経緯はコミットメッセージへ残す。

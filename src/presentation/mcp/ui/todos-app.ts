@@ -54,7 +54,7 @@
 // 【検証方法(重要な制約)】
 //   Claude Code(CLI)では ui:// の描画確認ができない。claude.ai(Web版)/iOS に
 //   Connector として本サーバーを再接続し、list-todos を呼び出して実機確認する
-//   (接続文字列・手順は親への報告 / docs/next-directions.md 参照)。
+//   (試用手順は docs/task-card-mobile-ux-review-2026-10-03.md 参照)。
 // =============================================================================
 
 import { TODOS_BUNDLE_JS } from "./todos-bundle";
@@ -1499,7 +1499,7 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
    * ボトムシート(.scrim / .sheet / .grabber / .sheet-body 内部スクロール)+ 浮遊ポップオーバー
    * (.menu-pop を fixed 座標で配置)+ iOS 設定画面パスティーシュ(.group 白箱 / 緑 .toggle /
    * 絵文字 .g-icon / .value-input)で作っていた。これらは本番 claude.ai の実機で次の実害を出したため
-   * 全廃した(docs/log.md の実機検証):
+   * 全廃した(Git 履歴の実機検証):
    *   ① MCP Apps の iframe はホストがコンテンツ高さに自動リサイズするため vh が信用できず、
    *      max-height:88vh のシート本文が内部スクロールできない/下部の行(優先順位・場所)が見切れる。
    *   ② menu-pop(fixed 座標のポップオーバー)が出ない/画面外に描かれる。

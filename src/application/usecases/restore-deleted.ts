@@ -5,7 +5,7 @@
 // soft-delete 済みリソース(tombstone)を生存行へ戻す。可逆性の提供(§A-2)がサーバー責務で
 // あり、これがその実装。sync_changes には 'created' を記録する(RFC 6578 §3.5.1: 再マップは
 // changed として報告・removed と報告してはならない。既存 changesSince の後勝ち fold が自動で
-// 準拠 — docs/next-directions.md「R2 RFC 検証完了」)。
+// 準拠 — docs/modeling/15 §A-3 R2)。
 //
 // 【前提条件: URI 空き かつ UID 空き(RFC 検証報告の修正必須1点)】
 //   - UID 空き: soft-delete 後の同 UID 再作成は合法(partial unique index)なので、ゴミ箱の

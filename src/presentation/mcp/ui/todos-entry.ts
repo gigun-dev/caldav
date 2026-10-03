@@ -604,7 +604,7 @@ let swipeId: string | null = null;
 //   ボトムシート(scrim + grabber)として重ねていた。しかし MCP Apps の iframe はホストがコンテンツ
 //   高さに自動リサイズするため vh が信用できず、本番 claude.ai の実機でシート本文が内部スクロール
 //   できない/下部の行が見切れる/浮遊ポップオーバー(menu-pop)が画面外に出る、の3バグが出た
-//   (docs/log.md の実機検証)。v3 は sheetState を「カードの表示ページ」に転用し、renderAll が
+//   (Git 履歴の実機検証)。v3 は sheetState を「カードの表示ページ」に転用し、renderAll が
 //   一覧 / 詳細 / リスト選択のどれかを #root(通常フロー)に描く。通常フローなので高さ=コンテンツで
 //   iframe 自動リサイズと常に整合し、浮遊レイヤーもゼロになる。#sheet-root は廃止した。
 //   create: true = 新規作成モード(一覧のドラフト行の ⓘ から開く。id は draft の id)。この場合

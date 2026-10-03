@@ -7,7 +7,7 @@
 --      NULL = 生きている行、非 NULL = ソフトデリート済み(= restore 可能な「ゴミ箱」)。
 --   2. UID 一意性を **partial unique index(WHERE deleted_at IS NULL)** に張り替える。
 --      これにより「ソフトデリート後に同じ UID を再作成する」ことが合法になる
---      (docs/next-directions.md「2026-07-23 R2 RFC 検証完了」: RFC 4791 の UID 一意性は
+--      (docs/modeling/15 §A-3 R2: RFC 4791 の UID 一意性は
 --       "stored / in use" 空間の話であり、tombstone 済みの行は in use ではない。partial
 --       unique index 案は適合、と原文照合で裏取り済み)。
 --

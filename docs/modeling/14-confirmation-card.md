@@ -21,7 +21,7 @@ E-3 でイベント/todo の書き込みツールが出揃い、LLM 経由での
 delete 系は取り消しできない操作であり、agentic 基盤(CLAUDE.md 長期ビジョン1)を前提にする
 以上、モデルの誤爆・早合点で即実行されてしまう経路を塞ぐ必要が出た。一方で「確認」を
 どこに置くかは selection space が広い(MCP elicitation・ホスト側実装・サーバー側 pending
-レコード・propose ツール)。次直下の優先順位(docs/next-directions.md 2026-07-22 更新)で
+レコード・propose ツール)。当時の優先順位（2026-07-22、Git 履歴）で
 起票し、本ドキュメントで確定する。
 
 ## §2 採用方式: propose-* + `_meta` 限定の確認トークン + カード内 callServerTool 実行

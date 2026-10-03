@@ -4266,7 +4266,7 @@ export function createMcpApp(depsFactory: (env: CloudflareBindings, ctx?: Execut
 	// (ツール定義そのもの・入出力スキーマの変更等)は URI を変えても TTL の間は古いまま
 	// キャッシュされうる。claude-ai-mcp#137 では「再接続」だけでは直らない報告もあり、
 	// 確実な脱出口として「接続先 URL 自体を変える」= コネクタの URL を書き換えて OAuth 再同意
-	// させる、という運用ハンドルを用意しておく(docs/next-directions.md 運用フロー参照)。
+	// させる、という運用ハンドルを用意しておく(docs/modeling/12 §7.6 運用フロー参照)。
 	// 【なぜ版セグメントに意味を持たせない(allowlist しない)か】
 	// `/mcp/v2` を特別扱いして分岐する設計にすると、「新しい版番号を使う」ためにサーバー側の
 	// allowlist 更新 → デプロイが先に必要になり、「デプロイを確実に伝播させる」という本来の

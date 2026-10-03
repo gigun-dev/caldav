@@ -71,6 +71,11 @@ Block)を既に持つ。ユーザーが一度「毎回確認」を選んでい�
 | **R3** | `object_versions`(append-only)+ `revert-*` 系ツール。update の取り消しをカバーする。delete 側(R2)より優先度を落とす(§A-4 のボツ案参照)。 |
 | **R4** | swift-mcp-app 側の許可ゲート実装(annotations 駆動の確認 UI)。本リポジトリの外(別リポジトリ)。 |
 
+R2の現行実装は、URIの全一意PKを保ちながら、削除済みUIDをpartial unique indexの対象外とする。
+同一URIへ新規作成する場合は削除済み行を退避URIへrenameし、復元時には元URIとUIDの空きを確認する。
+trashはMCPから扱い、30日経過した削除済み行のpurgeは`src/index.ts`のscheduledから起動する。
+完了スナップショット自体の保持期限とは別の機構（[ADR 0004](../adr/0004-defer-completion-snapshot-expiration.md)）。
+
 ### A-4 ボツ案(Why not)
 
 - **S1(docs/modeling/14 のサーバー側トークン強制)を維持する案**。却下理由: 上記の

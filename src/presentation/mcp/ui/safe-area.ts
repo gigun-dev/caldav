@@ -43,7 +43,7 @@ export const FULLSCREEN_SAFE_TOP_FALLBACK_PX = 56;
  * 【暫定値・実機採寸前】claude.ai iOS の下部 composer クローム(メッセージ入力欄)に削られる分の
  * 暫定フォールバック(px)。top(liquid glass ヘッダ)と同じ思想の bottom 版。
  *
- * 【なぜ bottom にもフォールバックが要るのか(2026-07-23 実機バグ・docs/log.md 該当エントリ)】
+ * 【なぜ bottom にもフォールバックが要るのか(2026-07-23 実機バグ・Git 履歴の該当実機検証)】
  * 当初の resolveSafeBottomPx は「bottom はホームインジケータ程度で top ほど深刻な occlusion を
  * 起こさない」という仮定でフォールバックを持たなかった。だが claude.ai iOS の fullscreen では
  * 画面下部に composer クロームが常駐し、その分を safeAreaInsets.bottom に申告しない実測反証が出た

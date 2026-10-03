@@ -9,7 +9,7 @@
 - スコープ: **自分の予定の CRUD**(create/update/delete/list)+ アジェンダカード。
 - 非スコープ(理由つき):
   - **ATTENDEE/ORGANIZER(招待)** — 方向性 B の管轄。A(マルチユーザー)・K-1(iMIP)の
-    依存を引き込むため混ぜない(next-directions の E-3 起票時に確定済み)。
+    依存を引き込むため混ぜない（E-3起票時に確定済み。経緯はGit履歴）。
   - **occurrence 単位の編集/削除**(この回だけ変更・EXDATE・detached override)— iOS の
     「このイベントのみ/以降すべて」ダイアログ相当。RECURRENCE-ID 書き込み経路が必要で
     複雑度が一段上がる。MVP は**マスター(系列)単位の CRUD のみ**とし、UI は反復
@@ -223,7 +223,7 @@ added/removed がノイズの洪水になる。系列単位の方がシグナル
   > は hash 化 URI で自動伝播する)。即時反映が要る/破壊的変更/TTL バグで1時間超 stale が
   > 続く場合のみ、コネクタの接続 URL を `/mcp/vN` → `/mcp/v<N+1>` に差し替えて OAuth 再同意する
   > (「再接続」だけでは直らない報告が claude-ai-mcp#137 にあるため、URL 変更を確実な脱出口とする)。
-  > 詳細運用は docs/next-directions.md 参照。
+  > 再接続だけでキャッシュを消せるとは限らない。URL変更は即時反映が必要な場合の運用手段。
 
 ### §7.7 UI/UX 修正(todos/agenda に CSS/DOM 完全重複・共有化は今回見送り)
 
@@ -428,7 +428,7 @@ export const isCommitting = (now: number, startedAt: number): boolean =>
   reduced-motion 分岐 / todos-app.ts:374 に v2 コメント追記。**S-E(Done右上/title垂直)と統合**。
 - **F-3(agenda)**: 同型移植。悲観パス(反復の日時/recurrence)が「保存中…」で待つこと、系列共通
   フィールドが楽観で1周収束することを確認。
-- **F-4(docs)**: 本節配置(済)+ docs/log.md 経緯 + next-directions 更新。
+- **F-4(docs)**: 本節配置済み。実装の経緯は Git 履歴に残す。
 
 順序 F-1 → F-2 → F-3 → F-4。F-2/F-3 は implementer 分離可。
 
@@ -518,3 +518,11 @@ export const isCommitting = (now: number, startedAt: number): boolean =>
 sort_mode カラム + CalendarCollection 属性 + PROPFIND/PROPPATCH)→ G-3(MCP 露出 + DTO の created 追加)→
 G-4(カード設定パネル + モード別クライアントソート)→ G-5(ドラッグ並べ替え・G-1 観測待ち)。
 namespace `{https://gigun.dev/ns/caldav}` はキット公開 API になるので切り出し時に再確認。
+
+## 未確定のカード機能境界
+
+list-todosのdue指定にeventsと同じ相対日付語彙を導入する範囲は未決。
+メモplaceholder「メモを追加」と同値の実データの区別は、再現と実害を確認して文言変更の要否を決める。
+occurrence単位編集、VALARM付き作成、get-event詳細カード、move-event、URL/CONFERENCEの次スライスも
+選択・分解前であり、一括実装を決定したものではない。本人による入力体験の評価は
+[モバイル操作監査](../task-card-mobile-ux-review-2026-10-03.md)のデータと手順を使う。

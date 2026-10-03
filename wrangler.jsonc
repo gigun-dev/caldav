@@ -93,7 +93,7 @@
     // (存在しない destination 名を参照すると deploy が壊れるため config 先行はしない)。
     // otel-cf-workers(コミュニティ SDK)を初手にしなかった理由: pre-1.0(rc.52)+
     // nodejs_compat 必須 + vitest-pool-workers との相性問題があり、D1/外部 fetch の細粒度 span が
-    // 実際に必要になった時点で Phase 2 として再評価(docs/log.md 2026-07-23 続き12)。
+    // 実際に必要になった時点で Phase 2 として再評価(Git 履歴の 2026-07-23 続き12)。
     "traces": {
       "enabled": true,
       "head_sampling_rate": 1,

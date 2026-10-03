@@ -4,7 +4,7 @@
 //
 // owner 配下の soft-delete 済みリソース(tombstone)を列挙する。DAV には露出せず MCP-only
 // (list-deleted ツール)で使う「ゴミ箱ビュー」。プロトコル純度的にはこれが正攻法
-// (docs/next-directions.md「R2 RFC 検証完了」: trash を DAV に出さず MCP-only にするのは
+// (docs/modeling/15 §A-3 R2: trash を DAV に出さず MCP-only にするのは
 //  Nextcloud の独自 DAV 拡張と比べても正攻法)。
 //
 // 【なぜ薄い UC か】ポート(resourceRepo.listDeleted)が既に「削除済み行 + collectionId +

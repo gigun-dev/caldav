@@ -4,6 +4,6 @@ Date: 2026-10-02
 
 2026-07-23 の利用者裁定を移送する。ホストの per-tool 確認とサーバーの確認カードを重ねると二重確認になり、将来ホストへ独自 propose プロトコルを要求するため、サーバーは annotations と可逆性を提供する方針に切り替えた。確認カード S2/S3 は中止し、旧設計は却下理由として保存する。
 
-根拠: [HITL §A](../modeling/15-hitl-and-card-ui-principles.md)、[旧 R1〜R4 計画](../next-directions-agentic-ui.md)。
+根拠: [HITL §A](../modeling/15-hitl-and-card-ui-principles.md)。旧 R1〜R4 計画の経緯は Git 履歴を参照する。
 
 Rejected: サーバー独自の確認トークン強制と propose ツールを恒久維持する。

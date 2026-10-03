@@ -128,7 +128,7 @@ export class CardTelemetry {
 	 *   - error は record 時点で即 flush するので pagehide に頼らずサーバーへ届く。
 	 *   - safe-area / focus-probe は 5 秒デバウンスで通常経路でも吐かれる。pagehide 発火時の最終 flush は
 	 *     「取りこぼしを減らす best-effort」であって、発火しなくても致命的な欠落は起きない。
-	 *   実発火の有無は統合検証(本番 iframe + observability)で確認する(docs/log.md へ記録予定)。
+	 *   実発火の有無は統合検証(本番 iframe + observability)で確認する(docs/monitoring-follow-up-2026-10-03.md へ記録)。
 	 */
 	install(): void {
 		if (typeof window === "undefined") return; // 非 DOM 環境(テスト等)では何もしない

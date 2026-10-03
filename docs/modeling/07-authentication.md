@@ -158,3 +158,10 @@ Nextcloud は OAuth 対応済み製品なのに CalDAV では App Password に�
    プログラマブル API は トークン)。
    CalDAV 向け OAuth スコープの IETF draft(draft-ietf-mailmaint-oauth-public)は
    進行中だが実装は希少 — M6 時点で再調査。
+
+## MCP OAuth の残る確認境界
+
+accessTokenTTLは既定3600秒を維持し、ホストのrefresh不具合をTTL延長で隠さない方針。
+claude.ai iOSカード描画パスの失効問題は2026-07の診断時点の観測であり、現在の再現性は別途確認する。
+refresh token失効時の`invalid_grant`と、未認証401のBearer resource_metadata challengeを分けて確認する。
+2026-10-03の読み取り検証では後者は確認済み。refresh失効の端末経路は未検証。

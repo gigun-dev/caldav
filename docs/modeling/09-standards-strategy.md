@@ -67,7 +67,7 @@ CalDAV の expand / free-busy-query REPORT は使われていないが、**同�
   CardDAV(contacts.icloud.com)も同様。
 - Google CalDAV v2 は現役だが OAuth 必須 + 機能制限(VTODO 非対応等)。実用は REST 推奨。
 - **含意**: web/PWA/MCP から「ユーザーの現実のカレンダー全体」に届く汎用経路は
-  **サーバーサイドのプロトコル/API アクセスだけ**。next-directions 方向性 H の
+  **サーバーサイドのプロトコル/API アクセスだけ**。方向性 H（購読・集約）の
   (c)「agent 側横断」は iCloud に対して今すぐ実現可能 — 本作の戦略の強い裏付け。
 
 出典: TN3153(EventKit iOS 17)、CNAuthorizationStatus.limited(WWDC24)、

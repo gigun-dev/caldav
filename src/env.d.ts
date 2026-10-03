@@ -39,7 +39,7 @@ declare global {
 		// OAuthProvider(@cloudflare/workers-oauth-provider)が defaultHandler / apiHandler を
 		// 呼び出す直前に env へ差し込むヘルパー(wrangler.jsonc の binding ではなくライブラリが
 		// 実行時に注入するので、KV/D1 と違い wrangler types では生成されない → ここに手書き)。
-		// 2026-07-12 OAuth-for-MCP 第1スライス: 型だけ先行追加。next-directions M2 の authorize UI で
+		// 2026-07-12 OAuth-for-MCP 第1スライス: 型だけ先行追加。docs/modeling/13 の M2 の authorize UI で
 		// c.env.OAUTH_PROVIDER として使う予定(このスライスではまだ OAuthProvider を new していない)。
 		OAUTH_PROVIDER: OAuthHelpers;
 	}

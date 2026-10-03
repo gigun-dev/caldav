@@ -738,3 +738,11 @@ V5 の確定を受け、時刻付き due(DATE-TIME;TZID)を独立 alarm フィ�
   (geocoding は presentation の責務 — application はポートを増やさない)。update は null で除去。
 - presentation: `server.ts` の create-todo/update-todo に `locationReminder` 入力を追加。
   structuredLocation 明示 or `autoResolveLocation` で座標解決 → 解決不能はツールエラー。
+
+## 残る受け入れ境界
+
+現行のカード試用は[モバイル操作監査](../task-card-mobile-ux-review-2026-10-03.md)へ集約する。
+agendaの月日ビューのセル比率・月送り、geo無しLOCATIONの`title\naddress`表示、場所検索から予定作成、
+移動時間・通知の表示、calendar/tasks非回帰とallprop sync-token除外は端末確認が残る。
+復元については同一URIのchanged再取得、同一ETagでのキャッシュ判定、復元後の再スキャンを分けて観測する。
+サーバーの自動回帰が通ったことだけで、これらの端末受け入れ済みとはしない。
