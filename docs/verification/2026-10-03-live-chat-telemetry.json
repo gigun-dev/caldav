@@ -1,17 +1,42 @@
 {
-  "checkedAt": "2026-10-03T07:50:42Z",
-  "scope": "Read-only Langfuse telemetry review for the user's latest successful today-calendar/todo device interaction",
+  "checkedAt": "2026-10-03T09:04:52Z",
+  "scope": "Langfuse exact-version recovery plus stored telemetry review and one controlled intake probe",
   "userReportedDeviceResult": "good",
-  "status": "blocked_api_unavailable",
+  "status": "restored_intake_and_reads_verified_latest_user_interaction_unidentified",
+  "recoveryInvestigation": {
+    "document": "../../../dotfiles/docs/langfuse-recovery-investigation-2026-10-03.md",
+    "dotfilesCommit": "e106aed",
+    "cause": "Current 4.38.0 Web image contains ClickHouse migrations only through 49, while persistent ClickHouse schema is at version 50 dirty=0, matching retained 4.46.0 source and scores index.",
+    "recoveryProposal": "Before any apply, cold-backup all five named volumes and align Web/Worker to the retained exact 4.46.0 image pair. Prevent DB-migration-blind OS rollback from restoring 4.38.0.",
+    "applied": true,
+    "resultDocument": "../../../dotfiles/docs/langfuse-recovery-result-2026-10-03.json",
+    "guardSourceCommit": "56ee8d0"
+  },
   "query": {
     "client": "langfuse-cli",
     "resource": "observations list",
     "api": "/api/public/v2/observations",
     "fromStartTime": "2026-10-02T14:00:00Z",
     "limit": 1000,
-    "result": "fetch failed; no observations retrieved"
+    "result": "success; 20 stored observations / 3 existing traces; no more pages in the query window"
   },
-  "accessEvidence": {
+  "latestInteraction": {
+    "traceId": null,
+    "timestamp": null,
+    "telemetryReceived": "unverified",
+    "toolArguments": "unverified",
+    "iterations": null,
+    "turnDurationSeconds": null,
+    "llmErrors": "unverified",
+    "toolErrors": "unverified",
+    "finalAnswerPresent": "unverified",
+    "actualCalendarTodoCount": "unidentified"
+  },
+  "validationBoundary": "Public OTLP intake, storage and CLI reading verified using one controlled probe. Existing real today-calendar traces are readable. The latest user-reported successful today/todo operation, its actual item count, and the post-recovery Swift device export path remain unidentified/unverified.",
+  "privacy": "No calendar/todo contents or credential values retained. API keys were used only in VM process memory.",
+  "mutations": "Within approved recovery scope: update timers and stack stopped; five volumes cold-backed up and verified by isolated extraction; exact 4.46.0 service pair restored through a dedicated persistent override; one tagged 890-byte operational OTLP probe sent. No device/authentication changes, volume deletion, schema-version edit or instrumentation expansion.",
+  "initialCheckedAt": "2026-10-03T07:50:42Z",
+  "initialAccessEvidence": {
     "path": "ssh mini -> limactl shell mini-vm",
     "apiHost": "http://localhost:3000",
     "healthProbe127001": "ECONNREFUSED",
@@ -30,19 +55,61 @@
       "langfuse-clickhouse-1": "running"
     }
   },
-  "latestInteraction": {
-    "traceId": null,
-    "timestamp": null,
-    "telemetryReceived": "unverified",
-    "toolArguments": "unverified",
-    "iterations": null,
-    "turnDurationSeconds": null,
-    "llmErrors": "unverified",
-    "toolErrors": "unverified",
-    "finalAnswerPresent": "unverified",
-    "actualCalendarTodoCount": "unidentified"
+  "restoredService": {
+    "version": "4.46.0",
+    "localHealthStatus": 200,
+    "localReadyStatus": 200,
+    "publicReadyStatus": 200,
+    "webRestartCount": 0,
+    "workerRestartCount": 0,
+    "clickhouseSchemaVersion": 50,
+    "clickhouseSchemaDirty": false,
+    "postgresMigrationCount": 442,
+    "postgresUnfinishedMigrations": 0,
+    "fiveNamedVolumesRetained": true,
+    "backupSha256": "f933749cb6f2ba79608b8dc5df9f6060e4880f04609f6d51b9f8d45b05a0d80f",
+    "isolatedExtractionByteAndMetadataComparisonPassed": true,
+    "persistentRecoveryDropIn": "/etc/systemd/system.control/langfuse.service.d/90-codex-recovery.conf",
+    "updateTimers": "remain stopped",
+    "nativeGuardDeployment": "pending"
   },
-  "validationBoundary": "The user's device report is recorded as user-reported evidence. API unavailability prevents independent telemetry confirmation. No missing telemetry or successful trace is inferred.",
-  "privacy": "No calendar/todo contents or credential values retained. API keys were used only in VM process memory.",
-  "mutations": "No service, device, authentication, container, or data changes made. Only this sanitized verification record was added."
+  "controlledIntakeProbe": {
+    "traceId": "851c4a727cbd3eb9daaafd8c096f676b",
+    "spanId": "de9fa0fb4fdd0831",
+    "sentAt": "2026-10-03T09:03:28.614Z",
+    "retrievedAt": "2026-10-03T09:03:32.209Z",
+    "httpStatus": 200,
+    "rejectedSpans": 0,
+    "payloadBytes": 890,
+    "tags": [
+      "recovery-probe",
+      "2026-10-03"
+    ],
+    "sameTraceAndSpanRetrievedViaCli": true,
+    "userContentIncluded": false,
+    "swiftDeviceConversation": false
+  },
+  "latestStoredTodayTrace": {
+    "traceId": "a215cf4f72a46864f08d7dc2b07a6915",
+    "startTime": "2026-10-02T16:39:11.379Z",
+    "endTime": "2026-10-02T16:39:17.335Z",
+    "questionCategory": "today calendar",
+    "iterations": 1,
+    "generationCount": 1,
+    "toolCount": 0,
+    "generationErrors": 0,
+    "toolErrors": 0,
+    "turnDurationSeconds": 5.956,
+    "finalAnswerAttributePresent": true,
+    "actualCalendarTodoCount": "unidentified",
+    "latestUserReportedSuccessfulInteractionMatch": "unidentified"
+  },
+  "existingNaturalCronEvidence": {
+    "source": "Parent agent current read of existing hub KV uptime:langfuse",
+    "status": "up",
+    "consecutiveFailures": 0,
+    "checkedAt": "2026-10-03T09:05:08.545Z",
+    "changedAt": "2026-10-03T09:00:08.551Z",
+    "notificationReceiptAndDeviceDisplay": "unverified"
+  }
 }

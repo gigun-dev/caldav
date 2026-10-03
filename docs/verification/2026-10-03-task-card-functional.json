@@ -1,0 +1,89 @@
+{
+  "timestamp": "2026-10-03T08:29:18.252466+00:00",
+  "scope": "production MCP functional API; no browser/device UX acceptance",
+  "calendars": [
+    {
+      "id": "ux0058-20261003",
+      "displayName": "[UX0058] 操作検証"
+    },
+    {
+      "id": "ux0058-20261003-empty",
+      "displayName": "[UX0058] 空リスト"
+    },
+    {
+      "id": "ux0058-20261003-move",
+      "displayName": "[UX0058] 移動先"
+    }
+  ],
+  "retainedTaskCount": 24,
+  "checks": [
+    {
+      "label": "dedicated-calendar ux0058-20261003",
+      "pass": true
+    },
+    {
+      "label": "dedicated-calendar ux0058-20261003-empty",
+      "pass": true
+    },
+    {
+      "label": "dedicated-calendar ux0058-20261003-move",
+      "pass": true
+    },
+    {
+      "label": "primary-24-items",
+      "pass": true
+    },
+    {
+      "label": "all-synthetic-titles-roundtrip",
+      "pass": true
+    },
+    {
+      "label": "1000-character-title-roundtrip",
+      "pass": true
+    },
+    {
+      "label": "1000-character-notes-roundtrip",
+      "pass": true
+    },
+    {
+      "label": "multiline-notes-roundtrip",
+      "pass": true
+    },
+    {
+      "label": "completed-two",
+      "pass": true
+    },
+    {
+      "label": "empty-list-zero",
+      "pass": true
+    },
+    {
+      "label": "move-target-zero",
+      "pass": true
+    },
+    {
+      "label": "update-title-and-clear-notes",
+      "pass": true
+    },
+    {
+      "label": "complete-persisted",
+      "pass": true
+    },
+    {
+      "label": "reopen-persisted",
+      "pass": true
+    },
+    {
+      "label": "move-source-absent",
+      "pass": true
+    },
+    {
+      "label": "move-destination-present",
+      "pass": true
+    },
+    {
+      "label": "temporary-task-cleaned",
+      "pass": true
+    }
+  ]
+}
