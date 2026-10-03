@@ -3693,6 +3693,8 @@ connected = true;
 // 購読が拾う。renderAll はここでは呼ばない — この直後に ontoolresult 由来の初回描画が来る
 // (まだ events が無いので skeleton のまま畳み判定しても意味が無い。todos-entry.ts:3035 と同じ)。
 applyHostContext();
+// tool-result が connect 解決より先に届いた場合も一覧取得を落とさない。
+if (gotResult) void ensureCalendars();
 
 /** refresh-events / list-events-expanded を呼ぶときの arguments。currentRange(期間)+ calendarId を載せる。
  *  currentRange 未受領(初回応答前)のときは range を省いて server 既定に委ねる。 */
@@ -3822,6 +3824,9 @@ async function ensureCalendars(): Promise<void> {
 		// calendarsCache は null のまま。フラグを立てて renderCalMenu を再試行行へ分岐させる(是正②)。
 		calendarsFetchFailed = true;
 		showBanner(`カレンダーの取得に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+	} finally {
+		// 凡例だけ更新して、入力中の一覧DOMやフォーカスには触れない。
+		renderCalDots();
 	}
 }
 
@@ -3876,7 +3881,8 @@ function renderCalDots(): void {
 	} else if (on.length === 0) {
 		// 全 OFF(または表示できるカレンダーが1件も無い)。「0」を出して「今は何も表示していない」を明示。
 		const zero = el("span", "d-more");
-		zero.textContent = "0";
+		// 未取得を全 OFF と同じ「0」で表示しない。空の予定でもカレンダーは存在しうる。
+		zero.textContent = calendarsCache === null && visibleCalendarIds === null ? "…" : "0";
 		calDotsEl.appendChild(zero);
 	}
 }
