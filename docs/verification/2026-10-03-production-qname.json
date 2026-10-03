@@ -1,0 +1,1247 @@
+{
+  "timestamp": "2026-10-03T07:53:19.239427+00:00",
+  "commit": "5af2484dcf3a6af25e5b83a1ad9fc5a87536523e",
+  "build": "0bbca18f-0be6-4d31-a93d-899d4ef171ef",
+  "buildOutcome": "success",
+  "d1MigrationStatus": "No migrations to apply!",
+  "version": "812e6736-1ba1-4a2b-b6c9-2d328ef315f3",
+  "deploymentPercentage": 100,
+  "results": [
+    {
+      "label": "qname-entry",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}principal-URL"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}principal-URL",
+            "{DAV:}Principal-URL"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-principal",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{urn:ietf:params:xml:ns:caldav}calendar-home-set"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}calendar-home-set",
+            "{urn:ietf:params:xml:ns:caldav}Calendar-home-set"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-home",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}displayname",
+            "{DAV:}Displayname"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-calendar",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{http://calendarserver.org/ns/}getctag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getctag",
+            "{http://calendarserver.org/ns/}Getctag"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-tasks",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}resourcetype"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}resourcetype",
+            "{DAV:}Resourcetype"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-object",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}Getetag"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "ios14-principal",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{urn:ietf:params:xml:ns:caldav}calendar-home-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-user-address-set",
+            "{DAV:}current-user-principal",
+            "{DAV:}principal-URL",
+            "{DAV:}supported-report-set"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{http://calendarserver.org/ns/}dropbox-home-URL",
+            "{http://calendarserver.org/ns/}email-address-set",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{http://calendarserver.org/ns/}notification-URL",
+            "{DAV:}principal-collection-set",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-inbox-URL",
+            "{urn:ietf:params:xml:ns:caldav}schedule-outbox-URL"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "ios38-home",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 5,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{DAV:}current-user-privilege-set"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{http://apple.com/ns/ical/}calendar-order",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://calendarserver.org/ns/}getctag",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets",
+            "{DAV:}supported-report-set",
+            "{DAV:}sync-token"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "ios38-calendar",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "ios38-tasks",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}displayname",
+            "{DAV:}resourcetype",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set",
+            "{DAV:}supported-report-set",
+            "{DAV:}current-user-privilege-set",
+            "{http://calendarserver.org/ns/}getctag",
+            "{DAV:}sync-token",
+            "{http://apple.com/ns/ical/}calendar-color",
+            "{http://apple.com/ns/ical/}calendar-order"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{DAV:}add-member",
+            "{http://calendarserver.org/ns/}allowed-sharing-modes",
+            "{http://apple.com/ns/ical/}autoprovisioned",
+            "{http://me.com/_namespace/}bulk-requests",
+            "{urn:ietf:params:xml:ns:caldav}calendar-alarm",
+            "{urn:ietf:params:xml:ns:caldav}calendar-description",
+            "{urn:ietf:params:xml:ns:caldav}calendar-free-busy-set",
+            "{urn:ietf:params:xml:ns:caldav}calendar-timezone",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-date",
+            "{urn:ietf:params:xml:ns:caldav}default-alarm-vevent-datetime",
+            "{http://apple.com/ns/ical/}language-code",
+            "{http://apple.com/ns/ical/}location-code",
+            "{urn:ietf:params:xml:ns:caldav}max-attendees-per-instance",
+            "{DAV:}owner",
+            "{http://calendarserver.org/ns/}pre-publish-url",
+            "{http://calendarserver.org/ns/}publish-url",
+            "{http://calendarserver.org/ns/}push-transports",
+            "{http://calendarserver.org/ns/}pushkey",
+            "{DAV:}quota-available-bytes",
+            "{DAV:}quota-used-bytes",
+            "{http://apple.com/ns/ical/}refreshrate",
+            "{DAV:}resource-id",
+            "{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp",
+            "{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL",
+            "{http://calendarserver.org/ns/}source",
+            "{http://calendarserver.org/ns/}subscribed-strip-alarms",
+            "{http://calendarserver.org/ns/}subscribed-strip-attachments",
+            "{http://calendarserver.org/ns/}subscribed-strip-todos",
+            "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-sets"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-report-calendar-query",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 17,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-report-collection-multiget",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-report-object-multiget",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "qname-report-sync-collection",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 17,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}GetETag",
+            "{urn:verification}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "normal-multiget-data",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag",
+            "{urn:ietf:params:xml:ns:caldav}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": true
+    },
+    {
+      "label": "allprop-calendar",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "syncTokenPresent": false
+    },
+    {
+      "label": "invalid-xml-unclosed-PROPFIND",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-unclosed-REPORT",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-unbound-prefix-PROPFIND",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-unbound-prefix-REPORT",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-DTD-PROPFIND",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-DTD-REPORT",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-extra-root-PROPFIND",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "invalid-xml-extra-root-REPORT",
+      "status": 400,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "options",
+      "status": 204,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL"
+    },
+    {
+      "label": "well-known",
+      "status": 301,
+      "cacheControl": "no-cache",
+      "locationPresent": true
+    },
+    {
+      "label": "mcp-unauth",
+      "status": 401,
+      "Cache-Control": "no-store",
+      "WWW-Authenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://caldav.gigun-dev.workers.dev/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\""
+    },
+    {
+      "label": "mcp-initialize",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "mcp-tools-list",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "mcp-time",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "mcp-db",
+      "status": 200,
+      "Cache-Control": "no-cache",
+      "isError": false,
+      "rpcError": false
+    },
+    {
+      "label": "qname-report-scoped-default-rebinding",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 1,
+      "propstats": [
+        {
+          "status": "HTTP/1.1 200 OK",
+          "properties": [
+            "{DAV:}getetag"
+          ]
+        },
+        {
+          "status": "HTTP/1.1 404 Not Found",
+          "properties": [
+            "{urn:verification}getetag",
+            "{DAV:}Getetag",
+            "{urn:verification}calendar-data"
+          ]
+        }
+      ],
+      "icsBodyPresent": false
+    },
+    {
+      "label": "incremental-sync-unchanged",
+      "status": 207,
+      "DAV": "1, 3, calendar-access, sync-collection, extended-mkcol",
+      "Allow": "OPTIONS, PROPFIND, REPORT, GET, HEAD, PUT, DELETE, PROPPATCH, MKCOL",
+      "responseCount": 0,
+      "syncTokenPresent": true
+    }
+  ],
+  "dataPolicy": "Only status, QName, counts and boolean evidence; real object URI, UID, ETag, ICS, credentials and response values are not persisted.",
+  "passed": true,
+  "requestUserAgent": "caldav-production-verification/1.0",
+  "timestampCompleted": "2026-10-03T07:55:34.925464+00:00"
+}

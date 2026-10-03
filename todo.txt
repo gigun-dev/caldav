@@ -46,4 +46,4 @@
 (B) 2026-10-03 承認後に既存Workers Builds経路でWorkers Issuesを反映し例外・5xx・処理済みMCPエラーの検出とgrouping・通知到達を検証する +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0054
 (B) 2026-10-03 Swift Chat経路のnon-strict明示を担当sessionで検証し反映後schemaでChatGPT・実端末を再試験する +mcp @user see:docs/monitoring-follow-up-2026-10-03.md id:0055
 (B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056
-(A) 2026-10-03 確定範囲に沿ってDAV読み取りのPropertySetとscope-aware QName解析を導入し200/404照合を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0013 id:0057
+(B) 2026-10-03 スマホのタスクカード入力・確定・長文・完了表示・同期競合を現行実装と照合し改善スライスと実機受け入れ手順を決める +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058

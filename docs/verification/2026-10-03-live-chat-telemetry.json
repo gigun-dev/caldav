@@ -1,0 +1,48 @@
+{
+  "checkedAt": "2026-10-03T07:50:42Z",
+  "scope": "Read-only Langfuse telemetry review for the user's latest successful today-calendar/todo device interaction",
+  "userReportedDeviceResult": "good",
+  "status": "blocked_api_unavailable",
+  "query": {
+    "client": "langfuse-cli",
+    "resource": "observations list",
+    "api": "/api/public/v2/observations",
+    "fromStartTime": "2026-10-02T14:00:00Z",
+    "limit": 1000,
+    "result": "fetch failed; no observations retrieved"
+  },
+  "accessEvidence": {
+    "path": "ssh mini -> limactl shell mini-vm",
+    "apiHost": "http://localhost:3000",
+    "healthProbe127001": "ECONNREFUSED",
+    "webContainer": {
+      "name": "langfuse-langfuse-web-1",
+      "status": "restarting",
+      "exitCode": 1,
+      "restartCount": 220,
+      "finishedAt": "2026-10-03T07:49:32.319638802Z",
+      "publishedPorts": {},
+      "logError": "no migration found for version 50: read down for version 50: file does not exist"
+    },
+    "otherContainers": {
+      "langfuse-langfuse-worker-1": "running",
+      "langfuse-postgres-1": "running",
+      "langfuse-clickhouse-1": "running"
+    }
+  },
+  "latestInteraction": {
+    "traceId": null,
+    "timestamp": null,
+    "telemetryReceived": "unverified",
+    "toolArguments": "unverified",
+    "iterations": null,
+    "turnDurationSeconds": null,
+    "llmErrors": "unverified",
+    "toolErrors": "unverified",
+    "finalAnswerPresent": "unverified",
+    "actualCalendarTodoCount": "unidentified"
+  },
+  "validationBoundary": "The user's device report is recorded as user-reported evidence. API unavailability prevents independent telemetry confirmation. No missing telemetry or successful trace is inferred.",
+  "privacy": "No calendar/todo contents or credential values retained. API keys were used only in VM process memory.",
+  "mutations": "No service, device, authentication, container, or data changes made. Only this sanitized verification record was added."
+}

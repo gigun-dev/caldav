@@ -6,3 +6,4 @@ x 2026-10-03 2026-10-02 RFC 原文と現行コードを照合し未着手8件の
 x 2026-10-03 2026-10-02 Depth infinity の PROPFIND 応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0008
 x 2026-10-03 2026-10-02 200 propstat の名前空間照合を厳密化する変更範囲を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0013
 x 2026-10-03 2026-10-02 object 宛 calendar-multiget を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0012
+x 2026-10-03 2026-10-03 確定範囲に沿ってDAV読み取りのPropertySetとscope-aware QName解析を導入し200/404照合を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0013 id:0057

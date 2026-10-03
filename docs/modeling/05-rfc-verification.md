@@ -749,3 +749,29 @@ principalの6既知/8未知、homeの3/35、VEVENT/VTODO collectionの9/29をす
 欠落なく分割する4回帰が成功。対象3ファイル全124件とtscも成功。
 これにより原本fixtureによるローカル非回帰は確認済み。現在の実装を接続した実端末探索・同期と
 本番probeはこの追記の担当範囲には含めず、実施済みとは主張しない。
+
+### QName是正の本番受け入れ
+
+実装・実機要求fixtureを含む`5af2484`が遠隔mainに一致。
+Workers Build `0bbca18f-0be6-4d31-a93d-899d4ef171ef`はsuccess、deployログはD1
+`No migrations to apply!`。deployment `22fa46a8-96ee-4d95-ba62-d56f9a8f0bcf`の
+version `812e6736-1ba1-4a2b-b6c9-2d328ef315f3`が100%で稼働することをAPIで確認した。
+
+正式proxyを通した非破壊受け入れ33項目が成功。
+entry/principal/home/calendar/tasks/objectで正規QNameを200、別URIとcase違いを404に分ける。
+既定xmlns・要素自身の宣言・prefix再束縛を含む要求、および実機原本14/38プロパティfixtureを
+送り、各responseで要求名の全件保持を照合した。query/collectionとobjectのmultiget/syncは
+getetagのみ200、wrong-namespace calendar-dataは404、ICS本文を混入しない。
+REPORT自身の既定xmlns/再束縛も確認。calendar-data明示multigetはVCALENDARを返す。
+allpropのsync-token除外と、同じtokenによる無変更incremental sync(変更response 0件)も維持。
+
+PROPFIND/collection REPORTの未閉鎖XML・未宣言prefix・DTD・複数rootは400。
+OPTIONS204、well-known301+no-cache、MCPの匿名401・initialize・tools/list・get-current-time・
+DB依存list-events-expandedは正常。well-knownは既存検証と同じUser-Agentで301を確認した。
+途中のPython既定User-Agentでの要求は403で、User-Agent変更後は301。この応答差の原因までは
+本受け入れで切り分けていない。
+
+[状態/QName/件数の記録](../verification/2026-10-03-production-qname.json)。
+実object URI/UID/ETag/ICS本文はメモリ内で扱い、証拠へ保存していない。
+本番PUT/DELETE/PROPPATCHと現在の実端末初回探索・同期UI操作は実施していない。
+サーバー実装・原本fixtureローカル非回帰・本番読み取り受け入れは完了。
