@@ -699,3 +699,53 @@ version `b99627b2-8dd9-4dfd-9d78-554f2cc5ad32`が100%。
 [応答記録](../verification/2026-10-03-production-object-multiget.json)。
 本番PUT/DELETE/PROPPATCHや実端末UI操作は行っていない。0012のサーバー是正/本番確認は完了。
 0013は範囲確定として完了し、実際のQName照合変更は0057に残す。
+
+## 2026-10-03 DAV読み取りのQName照合実装・ローカル検証
+
+4918原文 §4.4/8.2/9.1/14.22/17を再読。property名はnamespace URIとlocal名の対、
+非整形式XMLは要求全体を400で拒否する契約に沿い、5 factoryを`PropertySet`へ移行した。
+200選択と404判定は同じJSON tupleキーを使用する。正規の`principal-URL`は200、
+`principal-url`や同名の別URIは404で原表記を保持する。allpropの既存集合とDAV:sync-token除外は維持。
+PROPPATCH内部の成功応答も定義済みQNameから作る。入力set/removeとatomicityは0007に残す。
+
+XMLパーサには`saxes 6.0.0`を固定導入。namespaceモードで既定xmlns・要素自身のxmlns・
+prefix再束縛・兄弟へのscope復帰を解決する。root直下のDAV:propの直接の子だけを要求名とし、
+プロパティ値内の子や未知拡張内のDAV:propを要求として誤収集しない。DTDはdoctypeイベントで拒否し、
+外部entityを取得せず未定義entityも400にする。PROPFINDはprovision前に1回だけ検証し、
+collection/objectのREPORTも取得・分岐に先立って検証する。
+
+[選定元の公式説明](https://github.com/lddubeau/saxes)はXML/namespace整形式検証を提供し、
+DOCTYPEのentityを自動展開・取得しないことを示している。repoは2025-12-31にarchive済み。
+既存transitive依存`sax`はstrictでも非整形式を受理するため採らず、DOMParserが無いWorkersで
+動く小さなparserを固定し、本番runtimeと同じworkerdで受け入れを検証する判断とした。
+Bunのbrowser targetでparser単体をminifyすると依存xmlchars込み27,865 bytes。
+Bun1.4.2上の合成38プロパティ(695 bytes)をwarmup 1,000回後10,000回解析した時間は107.2ms
+(1要求平均約0.011ms)。これはローカル参考値で、iOSキャプチャや本番Workers CPUの測定ではない。
+
+`make check`成功: 層境界・3型レーン、Bun1186件、workerd44件。
+回帰は全5factoryのPROPFIND、object、query/multiget/syncで正規200・別URI/case404・
+getetagのみの要求でICS非出力、既定/子宣言/再束縛/Unicode名、壊れたXML/未宣言prefix/DTD400、
+PROPPATCH成功QNameを含む。workerdは実fetch経路で同じscopeと400を確認した。
+
+modeling/06の実測14/38プロパティのキャプチャ原本fixture、および実端末の初回探索/同期と
+本番非破壊probeはこの記録時点では未実施。ローカル回帰成功をiOS実端末受け入れ完了とは扱わない。
+D1 migrationは不要、domain/application/DB/MCPの契約変更なし。
+
+### 実機探索要求14/38の原本fixture追加
+
+既存保存済みの`[DUMP][req]`ツール出力から、iOS/26.5 (23F77) dataaccessd/1.0の
+principal Depth 0(14プロパティ)・home Depth 1(38プロパティ)要求bodyを復元した。
+保存元はClaudeローカルproject `69499463-0864-4e96-acd6-3d8e8c128748`の
+`tool-results/bqh5xp0dw.txt`(mtime 2026-07-13)。同projectの`b6taf7q5f.txt`
+(mtime 07-12)にもreminddの同じ要求が残る。正確な要求日時は出力内に無いので、
+mtimeを実機操作日時とは扱わない。06が記す07-10 `[CAP]` 原本そのものは見つからず、
+後日の本作の実測要求を採用した。詳しい復元元・SHA-256は
+[test fixture README](../../test/presentation/fixtures/real-ios/README.md)に記録した。
+
+ヘッダ・要求pathを含めず、bodyだけを採用。bodyはプロパティ名だけで個人情報を持たず、
+namespace宣言・prefix・case・空白を変えていない。独立に展開した全QNameのgoldenも固定し、
+parserの誤った要求集合から期待404を作って成功させない。
+principalの6既知/8未知、homeの3/35、VEVENT/VTODO collectionの9/29をすべて200/404へ
+欠落なく分割する4回帰が成功。対象3ファイル全124件とtscも成功。
+これにより原本fixtureによるローカル非回帰は確認済み。現在の実装を接続した実端末探索・同期と
+本番probeはこの追記の担当範囲には含めず、実施済みとは主張しない。

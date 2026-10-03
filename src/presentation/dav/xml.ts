@@ -1,3 +1,4 @@
+import { SaxesParser } from "saxes";
 // =============================================================================
 // WebDAV / CalDAV XML codec
 // =============================================================================
@@ -57,36 +58,34 @@ const NS_APPLE = "http://apple.com/ns/ical/";
 // よってこれは「証明された iOS 破壊」ではなく **仕様違反 + 潜在リスク**(名前空間で判定する
 // 他クライアント・将来の iOS で壊れうる)として直す。
 //
-// 【設計の要点: 「マッチング用の正規化」と「応答に書き戻す表現」を分ける】
-// 200 側の照合は今までどおり小文字ローカル名(props Record のキー)で行い、404 側に書き戻す
-// ときだけ元の名前空間 URI と原表記のローカル名を使う。両者を1つの文字列で兼ねようとしたのが
-// そもそもの敗因なので、型で分離する。
-
-/** 要求された1つのプロパティ名。マッチング用の key と、応答へ書き戻す原表現を両方持つ。 */
+// 2026-10-03: 200 側にも同じ QName を使う。小文字 local 名だけの近似は
+// 別 URI の既知名を 200 に混入させるため廃止した。prefix は識別には含めない。
 export interface RequestedPropName {
-	/** マッチング用の正規化キー = ローカル名の小文字化。props Record のキーと突き合わせる。 */
-	readonly key: string;
-	/** 応答へ書き戻すローカル名。**要求されたままの大文字小文字**(schedule-default-calendar-URL 等)。 */
 	readonly localName: string;
-	/** 名前空間 URI。prefix ではなく URI で持つ(prefix は §4.3 のとおり非保存でよい)。
-	 *  宣言が見つからなければ ""(= 名前空間なし)。 */
 	readonly namespace: string;
 }
 
-/**
- * PROPFIND/REPORT の `<prop>` 要求。"allprop" か、要求プロパティの Map。
- *
- * 【なぜ Set<string> ではなく Map<名前の対, RequestedPropName> か】
- * namespace と原表記 localName の対で重複を除き、別名前空間・別の大文字小文字を落とさない。
- * 200 側の既存照合キーは値の key に残す(厳密化は別タスク)。
- * 【採らなかった案】`{ kind: "names"; props: RequestedPropName[] }` の判別共用体。
- * 表現としては素直だが `filter === "allprop"` の比較が全部 `filter.kind === ...` に変わり、
- * このバグ修正と無関係な差分が増える(レビューで本質が埋もれる)。
- * 【採らなかった案2】Set<string> のまま「ns URI と原表記を1つの文字列に埋め込む」
- * (例 `"{DAV:}displayname"` の Clark 記法)。props Record 側のキーも全部書き換えが必要になり、
- * 200 側の照合規則(小文字ローカル名のみ)まで巻き込む大改修になるので見送った。
- */
+export interface DefinedProp extends RequestedPropName {
+	readonly xml: string;
+}
+
+export type PropertySet = ReadonlyMap<string, DefinedProp>;
 export type PropFilter = ReadonlyMap<string, RequestedPropName> | "allprop";
+
+// URI 内の区切り文字と local 名の case を曖昧にしない JSON tuple を両側で共有する。
+export function qualifiedPropKey(namespace: string, localName: string): string {
+	return JSON.stringify([namespace, localName]);
+}
+
+/** XML 本文から名前を逆算せず、factory が明示した QName を登録する。 */
+export function propertySet(entries: readonly (readonly [string, string, string])[]): PropertySet {
+	return new Map(entries.map(([namespace, localName, xml]) => [
+		qualifiedPropKey(namespace, localName), { namespace, localName, xml },
+	]));
+}
+
+// parser 由来の例外を DB 等の障害と混同して 500 にしないための境界エラー。
+export class InvalidDavXmlError extends Error {}
 
 export function escapeXml(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -99,85 +98,42 @@ export function unescapeXml(value: string): string {
 }
 
 /**
- * ドキュメント全体の xmlns 宣言を prefix → 名前空間 URI に集める。
- *
- * 【なぜ「ドキュメント全体を舐める」という雑な方法でよいか】
- * 本来 XML の名前空間宣言は要素のスコープを持ち、内側で同じ prefix を別 URI に再束縛できる。
- * ここはそこまで見ない = **最初に現れた宣言が勝つ**近似。理由は3つ:
- *   1. このファイルはそもそも正規表現ベースの codec で、DOM を持たない(Workers に DOMParser が
- *      無く、XML パーサを1つ足すのはこのバグ修正には過剰。既存の parseHrefs 等も同じ流儀)。
- *   2. 実クライアント(iOS / macOS / tsdav / Thunderbird)は全宣言を root 要素に置く。
- *      prefix の再束縛を使う CalDAV クライアントは観測されていない。
- *   3. 外した場合の被害は「404 propstat の名前空間が要求と違う」= **修正前と同じ状態**に戻るだけで、
- *      新たな退行にはならない(200 側の照合はローカル名だけなので影響を受けない)。
- * もし将来 prefix 再束縛を踏んだら、そのときこそ本物の XML パーサを入れる判断をする。
+ * DOMParser が無い Workers でも動く saxes の namespace モードを使う。
+ * 要素イベントの uri/local はその要素自身の xmlns 宣言・既定・再束縛を解決済み。
+ * document 全体の宣言を regex で集めると兄弟のスコープが漏れるため採らない。
+ * 値内の子要素は要求名ではない。root 直下の DAV:prop の直接の子だけ収集する。
  */
-function parseNamespaceDeclarations(body: string): Map<string, string> {
-	const declarations = new Map<string, string>();
-	// `xmlns:B="..."` と既定名前空間 `xmlns="..."` の両方。既定は prefix "" として持つ。
-	for (const match of body.matchAll(/\bxmlns(?::([^=\s>/]+))?\s*=\s*["']([^"']*)["']/g)) {
-		const prefix = match[1] ?? "";
-		// 最初の宣言が勝つ(上のコメントの「近似」の実体)。root 要素の宣言が document 順で先頭に来る。
-		if (!declarations.has(prefix)) declarations.set(prefix, unescapeXml(match[2]));
-	}
-	return declarations;
-}
-
 export function parsePropFilter(body: string): PropFilter {
-	if (!body.trim() || /<(?:[^:>]+:)?allprop\b/i.test(body)) return "allprop";
-	const block = body.match(/<(?:[^:>]+:)?prop\b[^>]*>([\s\S]*?)<\/(?:[^:>]+:)?prop>/i)?.[1];
-	if (!block) return "allprop";
-	const declarations = parseNamespaceDeclarations(body);
-	// Map は挿入順を保つので、404 propstat には**クライアントが要求した順**でプロパティが並ぶ。
-	// RFC 上の要求ではないが、リクエストと応答を目視で突き合わせるデバッグが格段に楽になる。
+	if (!body.trim()) return "allprop";
+	const parser = new SaxesParser({ xmlns: true });
 	const result = new Map<string, RequestedPropName>();
-	// group1 = prefix(無ければ undefined)/ group2 = ローカル名。`(?!\/)` で閉じタグを除外。
-	// prefix から `/` を除いているのは `<foo/>` の自己終端スラッシュを prefix と誤読しないため。
-	for (const match of block.matchAll(/<(?!\/)(?:([^:>\s/]+):)?([\w-]+)\b/g)) {
-		const localName = match[2];
-		const key = localName.toLowerCase();
-		// 2026-10-03 本番確認: 同名を5名前空間で要求すると4個が黙って落ちた。
-		// 保持用キーと既存200照合用キーを分離する。JSON tuple は名前空間URIに
-		// 区切り文字が含まれても曖昧にならず、同じ名前のprefix違いだけを重複排除する。
-		const namespace = declarations.get(match[1] ?? "") ?? "";
-		const identity = JSON.stringify([namespace, localName]);
-		if (result.has(identity)) continue;
-		result.set(identity, {
-			key,
-			localName,
-			// 宣言の無い prefix は「名前空間なし」に倒す。壊れた要求(prefix を宣言し忘れ)なので
-			// どう返しても正解は無いが、勝手に DAV: を割り当てる(= 旧実装の挙動)よりは
-			// 「知らない名前空間を捏造しない」方が誠実。宣言していない prefix をそのまま応答に
-			// 書き戻すのは名前空間的に非整形式な XML になるので論外。
-			namespace,
-		});
-	}
-	return result.size === 0 ? "allprop" : result;
+	let depth = 0;
+	let propDepth: number | undefined;
+	let allprop = false;
+	// DTD は entity 定義も外部参照も一切使わない。全文は必ず最後まで検証し、
+	// allprop が先にあっても後続の malformed XML を黙って受理しない。
+	parser.on("doctype", () => { throw new InvalidDavXmlError("DTD is not allowed"); });
+	parser.on("error", () => { throw new InvalidDavXmlError("Malformed DAV XML"); });
+	parser.on("opentag", (tag) => {
+		depth++;
+		if (depth === 2 && tag.uri === "DAV:" && tag.local === "allprop") allprop = true;
+		if (depth === 2 && tag.uri === "DAV:" && tag.local === "prop") propDepth = depth;
+		else if (propDepth !== undefined && depth === propDepth + 1) {
+			const prop = { namespace: tag.uri, localName: tag.local };
+			result.set(qualifiedPropKey(prop.namespace, prop.localName), prop);
+		}
+	});
+	parser.on("closetag", () => {
+		if (depth === propDepth) propDepth = undefined;
+		depth--;
+	});
+	parser.write(body).close();
+	return allprop || result.size === 0 ? "allprop" : result;
 }
 
-/**
- * 「この名前の集合が要求された」とみなす PropFilter を組み立てる(PROPPATCH 応答用)。
- *
- * PROPPATCH は「受理したプロパティ」をそのまま props Record と filter の両方に渡すため
- * 404 側には決して回らない(known ⊇ filter)。よって namespace / localName は使われないが、
- * PropFilter 型を1本に保つためにダミーを埋める。
- * 【なぜ PropFilter を `Set<string> も可` の共用体にしなかったか】responseXml が
- * 「Set なら名前空間不明」の分岐を持つことになり、404 の書き戻し経路が再び2本になる。
- * 今回のバグの原因がまさに「404 側だけ別経路で名前を組み立てていた」ことなので、
- * 経路は1本に保つ。
- */
-export function propFilterFromKeys(keys: readonly string[]): PropFilter {
-	return new Map(keys.map((key) => [key, {
-		key,
-		localName: key,
-		// 名前空間不明を "" で表す。仮に将来この filter が 404 経路に回っても、
-		// 実在しない名前空間を捏造せず「名前空間なし」として出るだけで済む。
-		namespace: "",
-	}]));
-}
-
-function requested(filter: PropFilter, name: string): boolean {
-	return filter === "allprop" || [...filter.values()].some((prop) => prop.key === name);
+/** PROPPATCH の応答でも定義済み QName を使い、ダミーの namespace を作らない。 */
+export function propFilterFromKeys(props: PropertySet): PropFilter {
+	return new Map([...props].map(([key, { namespace, localName }]) => [key, { namespace, localName }]));
 }
 
 function propstat(props: string, status = "200 OK"): string {
@@ -188,7 +144,7 @@ function propstat(props: string, status = "200 OK"): string {
  * multistatus() が `<d:multistatus>` 要素で宣言済みの名前空間 URI → prefix。
  *
  * 404 propstat に書き戻す要素は、ここに載っている名前空間なら**宣言済み prefix を再利用**する。
- * 要素ごとに xmlns を撒かずに済み、200 側(props Record が手書きで `<c:...>` 等を使っている)と
+ * 要素ごとに xmlns を撒かずに済み、200 側(PropertySet が手書きで `<c:...>` 等を使っている)と
  * 見た目も揃う。multistatus() のテンプレートと二重管理になるが、テンプレートは1行の文字列
  * リテラルなので機械的に導出するより「並べて読める」方が事故が少ないと判断した
  * (どちらかを増やしたらもう一方も、というのは下のテストで固定してある)。
@@ -215,11 +171,11 @@ const DECLARED_NS_PREFIXES: ReadonlyMap<string, string> = new Map([
  *      クライアント実装(DAV の世界には実在する)がさらに混乱しやすい。全要素 prefix 付きで揃える。
  *      なお ad-hoc prefix は要素ごとに宣言を**毎回**付ける — 宣言のスコープは要素なので、
  *      同じ URI の2個目に宣言を省くと非整形式になる(ここは踏みやすい罠)。
- *   3. 名前空間なし(要求側が prefix も既定 xmlns も持たなかった/prefix 未宣言)→ prefix 無しで
+ *   3. 名前空間なし(要求側が prefix も既定 xmlns も持たなかった)→ prefix 無しで
  *      そのまま書く。multistatus は既定名前空間を宣言していないので、prefix 無し = 名前空間なしが
  *      正しく表現できる。
  *
- * localName は parsePropFilter の `[\w-]+` 由来なので XML メタ文字を含まず、エスケープ不要。
+ * localName は XML パーサの検証済み要素名由来なので XML メタ文字を含まず、エスケープ不要。
  * 名前空間 URI はクライアント由来の任意文字列なので属性値としてエスケープする。
  */
 function missingPropNameXml(missing: readonly RequestedPropName[]): string {
@@ -239,20 +195,13 @@ function missingPropNameXml(missing: readonly RequestedPropName[]): string {
 	}).join("");
 }
 
-export function responseXml(href: string, props: Record<string, string>, filter: PropFilter): string {
-	const known = Object.keys(props);
-	// R-5b: DAV:sync-token は RFC 6578 §4 で「PROPFIND allprop で SHOULD NOT 返す」と明記されている
-	// (sync-collection REPORT と同じ値を返す「同期用」プロパティであり、allprop の一般列挙に
-	// 紛れ込ませる想定ではない、という位置づけ)。collectionProps() は明示要求時に返せるよう
-	// 常に "sync-token" キーを props に含めているので、ここ(allprop 展開の唯一の集約点)で
-	// 名指しに除外する。iOS 実機は sync-collection REPORT 経由でしか sync-token を見ておらず
-	// allprop 応答中の sync-token には依存していない(既存の sync 系テストを参照して確認済み)。
-	const ok = known.filter((name) => requested(filter, name) && !(filter === "allprop" && name === "sync-token"))
-		.map((name) => props[name]).join("");
-	// 404 側: 要求されたが props に無いもの。照合は key(小文字ローカル名)で行い、書き戻しは
-	// RequestedPropName が保持している原表記 + 名前空間で行う(旧実装はここで `<d:${name}/>` と
-	// 決め打ちしていたのが本バグの正体。冒頭の RequestedPropName のコメント参照)。
-	const missing = filter === "allprop" ? [] : [...filter.values()].filter((prop) => !known.includes(prop.key));
+export function responseXml(href: string, props: PropertySet, filter: PropFilter): string {
+	// 200/404 は同じ qualified key で分割する。別 URI・case 違いは既知名で代用しない。
+	// RFC 6578 §4 の allprop sync-token 除外は DAV: の正確な名前にだけ適用する。
+	const ok = [...props].filter(([key]) => filter === "allprop"
+		? key !== qualifiedPropKey("DAV:", "sync-token")
+		: filter.has(key)).map(([, prop]) => prop.xml).join("");
+	const missing = filter === "allprop" ? [] : [...filter].filter(([key]) => !props.has(key)).map(([, prop]) => prop);
 	return `<d:response><d:href>${escapeXml(href)}</d:href>${ok ? propstat(ok) : ""}${
 		missing.length ? propstat(missingPropNameXml(missing), "404 Not Found") : ""
 	}</d:response>`;
@@ -266,42 +215,42 @@ export function multistatus(responses: string, syncToken?: string): string {
 	return `<?xml version="1.0" encoding="UTF-8"?><d:multistatus xmlns:d="DAV:" xmlns:c="${NS_CALDAV}" xmlns:cs="${NS_CS}" xmlns:ical="${NS_APPLE}">${responses}${syncToken ? `<d:sync-token>${escapeXml(syncToken)}</d:sync-token>` : ""}</d:multistatus>`;
 }
 
-export function entryProps(principalHref: string): Record<string, string> {
-	return {
-		displayname: "<d:displayname>CalDAV</d:displayname>",
-		resourcetype: "<d:resourcetype><d:collection/></d:resourcetype>",
-		"current-user-principal": `<d:current-user-principal><d:href>${escapeXml(principalHref)}</d:href></d:current-user-principal>`,
-		"principal-url": `<d:principal-URL><d:href>${escapeXml(principalHref)}</d:href></d:principal-URL>`,
-	};
+export function entryProps(principalHref: string): PropertySet {
+	return propertySet([
+		["DAV:", "displayname", "<d:displayname>CalDAV</d:displayname>"],
+		["DAV:", "resourcetype", "<d:resourcetype><d:collection/></d:resourcetype>"],
+		["DAV:", "current-user-principal", `<d:current-user-principal><d:href>${escapeXml(principalHref)}</d:href></d:current-user-principal>`],
+		["DAV:", "principal-URL", `<d:principal-URL><d:href>${escapeXml(principalHref)}</d:href></d:principal-URL>`],
+	]);
 }
 
-export function principalProps(displayName: string, principalHref: string, homeHref: string): Record<string, string> {
-	return {
-		displayname: `<d:displayname>${escapeXml(displayName)}</d:displayname>`,
-		resourcetype: "<d:resourcetype><d:collection/><d:principal/></d:resourcetype>",
-		"calendar-home-set": `<c:calendar-home-set><d:href>${escapeXml(homeHref)}</d:href></c:calendar-home-set>`,
-		"calendar-user-address-set": `<c:calendar-user-address-set><d:href>mailto:${escapeXml(displayName)}</d:href></c:calendar-user-address-set>`,
-		"current-user-principal": `<d:current-user-principal><d:href>${escapeXml(principalHref)}</d:href></d:current-user-principal>`,
-		"principal-url": `<d:principal-URL><d:href>${escapeXml(principalHref)}</d:href></d:principal-URL>`,
+export function principalProps(displayName: string, principalHref: string, homeHref: string): PropertySet {
+	return propertySet([
+		["DAV:", "displayname", `<d:displayname>${escapeXml(displayName)}</d:displayname>`],
+		["DAV:", "resourcetype", "<d:resourcetype><d:collection/><d:principal/></d:resourcetype>"],
+		[NS_CALDAV, "calendar-home-set", `<c:calendar-home-set><d:href>${escapeXml(homeHref)}</d:href></c:calendar-home-set>`],
+		[NS_CALDAV, "calendar-user-address-set", `<c:calendar-user-address-set><d:href>mailto:${escapeXml(displayName)}</d:href></c:calendar-user-address-set>`],
+		["DAV:", "current-user-principal", `<d:current-user-principal><d:href>${escapeXml(principalHref)}</d:href></d:current-user-principal>`],
+		["DAV:", "principal-URL", `<d:principal-URL><d:href>${escapeXml(principalHref)}</d:href></d:principal-URL>`],
 		// 2026-08-01: principal URL で実際に応答できる REPORT を広告する(RFC 3253 §3.1.5
 		// DAV:supported-report-set)。collectionProps の R-5a 是正と同じ「実装しているものは
 		// 広告する / 広告したものは実装する」規律。ここに載せるのは principal-search-property-set
 		// だけ — DAV:principal-property-search(RFC 3744 §9.4。原文は "Support ... is REQUIRED")は
 		// 未実装なので**あえて広告しない**。広告して 403 を返すより、広告せず「無い」と言う方が
 		// クライアントの分岐が素直になる(未実装であること自体は docs/modeling/05 に gap として記録)。
-		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><d:principal-search-property-set/></d:report></d:supported-report></d:supported-report-set>",
-	};
+		["DAV:", "supported-report-set", "<d:supported-report-set><d:supported-report><d:report><d:principal-search-property-set/></d:report></d:supported-report></d:supported-report-set>"],
+	]);
 }
 
-export function homeProps(displayName: string): Record<string, string> {
-	return {
-		displayname: `<d:displayname>${escapeXml(displayName)} Calendars</d:displayname>`,
-		resourcetype: "<d:resourcetype><d:collection/></d:resourcetype>",
-		"current-user-privilege-set": "<d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege></d:current-user-privilege-set>",
-	};
+export function homeProps(displayName: string): PropertySet {
+	return propertySet([
+		["DAV:", "displayname", `<d:displayname>${escapeXml(displayName)} Calendars</d:displayname>`],
+		["DAV:", "resourcetype", "<d:resourcetype><d:collection/></d:resourcetype>"],
+		["DAV:", "current-user-privilege-set", "<d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege></d:current-user-privilege-set>"],
+	]);
 }
 
-export function collectionProps(collection: CalendarCollection, syncTokenUri: string): Record<string, string> {
+export function collectionProps(collection: CalendarCollection, syncTokenUri: string): PropertySet {
 	// J-2: supportedComponents が undefined のコレクションは RFC 4791 §5.2.3 により
 	// 「supported-calendar-component-set プロパティ不在 = 全コンポーネント accept」MUST であり、
 	// put-preconditions.ts の checkSupportedComponent も実際に undefined を「全受理」として扱っている。
@@ -312,35 +261,35 @@ export function collectionProps(collection: CalendarCollection, syncTokenUri: st
 	// 増えたときに宣言側の追従漏れを構造的に防ぐため。
 	const components = (collection.supportedComponents ?? COMPONENT_KINDS)
 		.map((name) => `<c:comp name="${name}"/>`).join("");
-	const props: Record<string, string> = {
-		displayname: `<d:displayname>${escapeXml(collection.displayName)}</d:displayname>`,
-		resourcetype: "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>",
-		"supported-calendar-component-set": `<c:supported-calendar-component-set>${components}</c:supported-calendar-component-set>`,
+	const entries: [string, string, string][] = [
+		["DAV:", "displayname", `<d:displayname>${escapeXml(collection.displayName)}</d:displayname>`],
+		["DAV:", "resourcetype", "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>"],
+		[NS_CALDAV, "supported-calendar-component-set", `<c:supported-calendar-component-set>${components}</c:supported-calendar-component-set>`],
 		// R-5a: free-busy-query REPORT(G-4 で実装済み・§7.10.2)を supported-report-set の広告に
 		// 追加していなかった漏れ。実装はあるのに広告に無いと、広告ベースで対応 REPORT を判定する
 		// クライアント/ツールから「未対応」に見えてしまう(実装と宣言の不一致は他の J-2 是正
 		// (collectionProps 冒頭コメント参照)と同種の反省)。
-		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report><d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report><d:supported-report><d:report><c:free-busy-query/></d:report></d:supported-report></d:supported-report-set>",
-		"current-user-privilege-set": "<d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:write-content/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege></d:current-user-privilege-set>",
-		getctag: `<cs:getctag>${escapeXml(collection.ctag.toString())}</cs:getctag>`,
-		"sync-token": `<d:sync-token>${escapeXml(syncTokenUri)}</d:sync-token>`,
-	};
-	if (collection.color) props["calendar-color"] = `<ical:calendar-color>${collection.color}</ical:calendar-color>`;
-	if (collection.order !== undefined) props["calendar-order"] = `<ical:calendar-order>${collection.order}</ical:calendar-order>`;
-	return props;
+		["DAV:", "supported-report-set", "<d:supported-report-set><d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report><d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report><d:supported-report><d:report><c:free-busy-query/></d:report></d:supported-report></d:supported-report-set>"],
+		["DAV:", "current-user-privilege-set", "<d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:write-content/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege></d:current-user-privilege-set>"],
+		[NS_CS, "getctag", `<cs:getctag>${escapeXml(collection.ctag.toString())}</cs:getctag>`],
+		["DAV:", "sync-token", `<d:sync-token>${escapeXml(syncTokenUri)}</d:sync-token>`],
+	];
+	if (collection.color) entries.push([NS_APPLE, "calendar-color", `<ical:calendar-color>${collection.color}</ical:calendar-color>`]);
+	if (collection.order !== undefined) entries.push([NS_APPLE, "calendar-order", `<ical:calendar-order>${collection.order}</ical:calendar-order>`]);
+	return propertySet(entries);
 }
 
-export function objectProps(resource: CalendarObjectResource, includeData: boolean): Record<string, string> {
-	const props: Record<string, string> = {
-		getetag: `<d:getetag>${escapeXml(resource.etag.toHeader())}</d:getetag>`,
-		getcontenttype: `<d:getcontenttype>text/calendar; charset=utf-8; component=${resource.componentKind}</d:getcontenttype>`,
-		getcontentlength: `<d:getcontentlength>${new TextEncoder().encode(resource.rawIcs).byteLength}</d:getcontentlength>`,
+export function objectProps(resource: CalendarObjectResource, includeData: boolean): PropertySet {
+	const entries: [string, string, string][] = [
+		["DAV:", "getetag", `<d:getetag>${escapeXml(resource.etag.toHeader())}</d:getetag>`],
+		["DAV:", "getcontenttype", `<d:getcontenttype>text/calendar; charset=utf-8; component=${resource.componentKind}</d:getcontenttype>`],
+		["DAV:", "getcontentlength", `<d:getcontentlength>${new TextEncoder().encode(resource.rawIcs).byteLength}</d:getcontentlength>`],
 		// objectでも§7.9のmultigetを実装したので、3253 §3.1.5の資源別capabilityを
 		// ここに広告する。collection専用のfree-busy/sync/queryは載せない。
-		"supported-report-set": "<d:supported-report-set><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report></d:supported-report-set>",
-	};
-	if (includeData) props["calendar-data"] = `<c:calendar-data>${escapeXml(resource.rawIcs)}</c:calendar-data>`;
-	return props;
+		["DAV:", "supported-report-set", "<d:supported-report-set><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report></d:supported-report-set>"],
+	];
+	if (includeData) entries.push([NS_CALDAV, "calendar-data", `<c:calendar-data>${escapeXml(resource.rawIcs)}</c:calendar-data>`]);
+	return propertySet(entries);
 }
 
 export function parseHrefs(body: string): string[] {

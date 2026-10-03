@@ -116,6 +116,63 @@ describe("Worker app", () => {
 		});
 	});
 
+	// QName を誤ると別namespaceの既知名が200に紛れる。全資源と3 REPORTを通して
+	// 同じserializer契約を固定し、getetag要求からICSが漏れないことも確認する。
+	describe("DAV読み取りのQName契約", () => {
+		const mixed = '<d:displayname/><w:displayname/><d:DisplayName/><d:principal-URL/><d:principal-url/>';
+		for (const path of ["/dav/", `/dav/principals/${USERNAME}/`, `/dav/calendars/${USERNAME}/`, `/dav/calendars/${USERNAME}/calendar/`, `/dav/calendars/${USERNAME}/tasks/`]) {
+			it(`${path} は正規名のみ200、別URI/caseは404`, async () => {
+				await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader() } });
+				const res = await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" }, body: `<d:propfind xmlns:d="DAV:" xmlns:w="urn:wrong"><d:prop>${mixed}</d:prop></d:propfind>` });
+				expect(res.status).toBe(207);
+				const xml = await res.text();
+				expect(xml.split("</d:propstat>")[0]).toContain("<d:displayname>");
+				expect(xml).toContain('<x1:displayname xmlns:x1="urn:wrong"/>');
+				expect(xml).toContain("<d:DisplayName/>");
+				expect(xml).toContain("<d:principal-url/>");
+			});
+		}
+
+		for (const report of ["PROPFIND", "calendar-query", "calendar-multiget", "sync-collection"]) {
+			it(`${report} は正規getetagのみ200にしICSを返さない`, async () => {
+				harness.repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
+				const path = `/dav/calendars/${USERNAME}/calendar/qname.ics`;
+				await fetchApp(path, { method: "PUT", headers: { authorization: authHeader() }, body: makeVEventIcs("qname") });
+				const prop = '<d:prop><d:getetag/><w:getetag/><d:GetETag/><w:calendar-data/></d:prop>';
+				const root = report === "PROPFIND" ? "d:propfind" : report === "sync-collection" ? "d:sync-collection" : `c:${report}`;
+				const extra = report === "calendar-query" ? '<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter>' : report === "calendar-multiget" ? `<d:href>${path}</d:href>` : report === "sync-collection" ? '<d:sync-token/><d:sync-level>1</d:sync-level>' : '';
+				const res = await fetchApp(report === "PROPFIND" ? path : `/dav/calendars/${USERNAME}/calendar/`, { method: report === "PROPFIND" ? "PROPFIND" : "REPORT", headers: { authorization: authHeader(), depth: "0" }, body: `<${root} xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:w="urn:wrong">${prop}${extra}</${root}>` });
+				expect(res.status).toBe(207);
+				const xml = await res.text();
+				expect(xml).toContain("<d:getetag>");
+				expect(xml).toContain('<x1:getetag xmlns:x1="urn:wrong"/>');
+				expect(xml).toContain('<x1:calendar-data xmlns:x1="urn:wrong"/>');
+				expect(xml).toContain("<d:GetETag/>");
+				expect(xml).not.toContain("<c:calendar-data>");
+				expect(xml).not.toContain("BEGIN:VCALENDAR");
+			});
+		}
+
+		it("malformed/未宣言prefix/DTD要求は400で拒否する", async () => {
+			for (const body of ['<d:propfind xmlns:d="DAV:"><d:prop>', '<d:propfind xmlns:d="DAV:"><d:prop><x:displayname/></d:prop></d:propfind>', '<!DOCTYPE p SYSTEM "https://example.com/"><p/>']) {
+				const res = await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" }, body });
+				expect(res.status).toBe(400);
+				expect(harness.getCollectionSaveCount()).toBe(0);
+			}
+		});
+
+		it("PROPPATCH成功応答はDAVとAppleの定義済みQNameを使う", async () => {
+			await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader() } });
+			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, { method: "PROPPATCH", headers: { authorization: authHeader() }, body: '<d:propertyupdate xmlns:d="DAV:" xmlns:i="http://apple.com/ns/ical/"><d:set><d:prop><d:displayname>Changed</d:displayname><i:calendar-color>#112233FF</i:calendar-color><i:calendar-order>3</i:calendar-order></d:prop></d:set></d:propertyupdate>' });
+			expect(res.status).toBe(207);
+			const xml = await res.text();
+			expect(xml).toContain("<d:displayname/>");
+			expect(xml).toContain("<ical:calendar-color/>");
+			expect(xml).toContain("<ical:calendar-order/>");
+			expect(xml).not.toContain("404 Not Found");
+		});
+	});
+
 	// -------------------------------------------------------------------------
 	// P1-1: provision は探索フェーズの PROPFIND だけ。ホットパスでは呼ばれない。
 	// -------------------------------------------------------------------------

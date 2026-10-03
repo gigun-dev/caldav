@@ -102,6 +102,8 @@ import {
 	principalProps,
 	principalSearchPropertySetXml,
 	propFilterFromKeys,
+	propertySet,
+	InvalidDavXmlError,
 	responseXml,
 	serializeFreeBusyResponse,
 	statusResponseXml,
@@ -196,6 +198,7 @@ function xml(body: string, status = 207): Response {
 }
 
 function errorResponse(error: unknown): Response {
+	if (error instanceof InvalidDavXmlError) return new Response(error.message, { status: 400, headers: DAV_HEADERS });
 	if (error instanceof RangeError) return new Response(error.message, { status: 413 });
 	if (error instanceof ResourceNotFoundError || error instanceof DeleteTargetNotFoundError) return new Response("Not Found", { status: 404 });
 	if (error instanceof CollectionNotFoundError) return new Response("Collection not found", { status: 409 });
@@ -649,6 +652,9 @@ app.all("*", async (c) => {
 		// calendar-home-set への PROPFIND — で、初回に Principal と既定コレクションが見えればよい。
 		// なので discovery な PROPFIND に限定してホットパスから除外する。
 		// (WorkersでMKCALENDARを受信できない制約に対する本番の主回避策なので機能自体は残す。)
+		// 不正XMLを400で拒否する前に discovery の自動provisionを書き込まない。
+		// PROPFINDはどの資源でも同じQName filterを1回だけ解析する。
+		const propfindFilter = method === "PROPFIND" ? parsePropFilter(await readBody(request)) : "allprop";
 		const isDiscoveryPropfind =
 			method === "PROPFIND" &&
 			(entryPaths.has(path) ||
@@ -661,13 +667,11 @@ app.all("*", async (c) => {
 		}
 
 		if (method === "PROPFIND" && entryPaths.has(path)) {
-			const body = await readBody(request);
-			return xml(multistatus(responseXml(requestHref(url), entryProps(principalHref(c.env.CALDAV_USERNAME)), parsePropFilter(body))));
+			return xml(multistatus(responseXml(requestHref(url), entryProps(principalHref(c.env.CALDAV_USERNAME)), propfindFilter)));
 		}
 
 		if (method === "PROPFIND" && principalPathsSet.has(path)) {
-			const body = await readBody(request);
-			return xml(multistatus(responseXml(requestHref(url), principalProps(c.env.CALDAV_USERNAME, principalHref(c.env.CALDAV_USERNAME), home), parsePropFilter(body))));
+			return xml(multistatus(responseXml(requestHref(url), principalProps(c.env.CALDAV_USERNAME, principalHref(c.env.CALDAV_USERNAME), home), propfindFilter)));
 		}
 
 		// =====================================================================
@@ -722,8 +726,7 @@ app.all("*", async (c) => {
 		}
 
 		if (method === "PROPFIND" && (path === home || path === homeNoSlash)) {
-			const body = await readBody(request);
-			const filter = parsePropFilter(body);
+			const filter = propfindFilter;
 			const depth = request.headers.get("depth") === "1" ? "1" : "0";
 			const result = await new ListCollections(repos.collections).execute({ owner: principalPathValue });
 			let responses = responseXml(requestHref(url), homeProps(c.env.CALDAV_USERNAME), filter);
@@ -772,8 +775,7 @@ app.all("*", async (c) => {
 			// collectionの存在を確認してから拒否し、未知パスの404と区別する。
 			// Depth 0/1の既存経路・オブジェクト自身のPROPFINDには触れない。
 			if (infinitePropfind) return xml(davError("propfind-finite-depth", { namespace: "dav" }), 403);
-			const body = await readBody(request);
-			const filter = parsePropFilter(body);
+			const filter = propfindFilter;
 			let responses = responseXml(requestHref(url), collectionProps(collection, collection.syncToken.toUri(new URL(collectionHref, publicOrigin).href)), filter);
 			if (request.headers.get("depth") === "1") {
 				const resources = await repos.resources.findAllInCollection(principalPathValue, id);
@@ -790,14 +792,14 @@ app.all("*", async (c) => {
 			});
 			// PROPPATCH は変更対象プロパティごとの成功 propstat を返す。空の response は
 			// iOSが更新失敗と解釈するため、受理した要素を明示する。
-			const applied: Record<string, string> = {};
-			if (props.displayName !== undefined) applied.displayname = `<d:displayname/>`;
-			if (props.color !== undefined) applied["calendar-color"] = `<ical:calendar-color/>`;
-			if (props.order !== undefined) applied["calendar-order"] = `<ical:calendar-order/>`;
-			// 2026-08-01: PropFilter が Set<string> から Map<key, RequestedPropName> になったため
-			// propFilterFromKeys 経由で組み立てる(意味は従来と同じ「applied のキーを全部要求扱い」)。
-			// 404 側には回らない(known ⊇ filter)ので名前空間情報はここでは要らない。
-			return xml(multistatus(responseXml(requestHref(url), applied, propFilterFromKeys(Object.keys(applied)))));
+			const appliedEntries: [string, string, string][] = [];
+			if (props.displayName !== undefined) appliedEntries.push(["DAV:", "displayname", `<d:displayname/>`]);
+			if (props.color !== undefined) appliedEntries.push(["http://apple.com/ns/ical/", "calendar-color", `<ical:calendar-color/>`]);
+			if (props.order !== undefined) appliedEntries.push(["http://apple.com/ns/ical/", "calendar-order", `<ical:calendar-order/>`]);
+			// 2026-10-03: 読み取りと同じQNameを定義し、filterにダミーnamespaceを渡さない。
+			// 入力set/removeとatomicityの是正は別タスク0007に残す。
+			const applied = propertySet(appliedEntries);
+			return xml(multistatus(responseXml(requestHref(url), applied, propFilterFromKeys(applied))));
 		}
 
 		if (method === "DELETE" && !resourceName) {
@@ -811,6 +813,9 @@ app.all("*", async (c) => {
 			// bodyは一度だけ読む。object/collectionとも同じmultiget usecaseとcodecを
 			// 通し、要求propの選択・calendar-data・個別404が別実装でずれるのを防ぐ。
 			const body = await readBody(request);
+			// 読み取りの全分岐に先立ってXMLを検証する。未知REPORTやfilter不対応でも
+			// 非整形式の要求を403と取り違えず400にする。
+			const filter = parsePropFilter(body);
 			if (/<(?:[^:>]+:)?calendar-multiget\b/i.test(body)) {
 				const hrefs = parseHrefs(body);
 				// RFC 4791 §7.9: object宛はhrefがちょうど1個、Request-URIと等価MUST。
@@ -846,7 +851,6 @@ app.all("*", async (c) => {
 					uris.push(decodeURIComponent(rest[0]));
 				}
 				const result = await new MultigetObjects(repos.resources).execute({ owner: principalPathValue, collectionId: id, uris });
-				const filter = parsePropFilter(body);
 				const responses = result.found.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")
 					+ result.notFound.map((uri) => statusResponseXml(`${collectionHref}${encodeURIComponent(uri)}`, "404 Not Found")).join("")
 					// スコープ外 href は、クライアントが送ってきたパスをそのまま 404 で返す(§7.9)。
@@ -873,7 +877,6 @@ app.all("*", async (c) => {
 				// 要求プロパティを厳密に照合する(iOS は sync-collection では getetag のみ要求する —
 				// docs/modeling/06 教訓「要求プロパティの厳密照合」)。includeData=false なので
 				// calendar-data は返さず、要求されても objectProps に無ければ 404 propstat になる。
-				const filter = parsePropFilter(body);
 				const responses = result.diffs.map((diff) => diff.kind === "changed"
 					? responseXml(`${collectionHref}${encodeURIComponent(diff.resource.uri)}`, objectProps(diff.resource, false), filter)
 					: statusResponseXml(`${collectionHref}${encodeURIComponent(diff.uri)}`, "404 Not Found")).join("");
@@ -933,7 +936,6 @@ app.all("*", async (c) => {
 				range: queryFilter.timeRange,
 				floatingTimeZone: queryFilter.floatingTimeZone,
 			});
-			const filter = parsePropFilter(body);
 			return xml(multistatus(queryResult.resources.map((resource) => responseXml(`${collectionHref}${encodeURIComponent(resource.uri)}`, objectProps(resource, true), filter)).join("")));
 		}
 
@@ -954,7 +956,7 @@ app.all("*", async (c) => {
 
 		if (method === "PROPFIND") {
 			const result = await new GetCalendarObject(repos.resources).execute({ owner: principalPathValue, collectionId: id, resourceUri: resourceName });
-			return xml(multistatus(responseXml(requestHref(url), objectProps(result.resource, false), parsePropFilter(await readBody(request)))));
+			return xml(multistatus(responseXml(requestHref(url), objectProps(result.resource, false), propfindFilter)));
 		}
 
 		if (method === "PUT") {

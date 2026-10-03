@@ -2,6 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { CalendarCollection, collectionId, principalPath } from "../../src/domain/caldav";
 import {
 	collectionProps,
+	propertySet,
+	qualifiedPropKey,
+	principalProps,
+	InvalidDavXmlError,
 	multistatus,
 	parseCalendarQueryFilter,
 	parseCollectionProperties,
@@ -13,9 +17,7 @@ import {
 describe("DAV XML", () => {
 	it("要求された未知プロパティを404 propstatへ列挙する", () => {
 		const filter = parsePropFilter(`<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:unknown/></d:prop></d:propfind>`);
-		const xml = multistatus(responseXml("/dav/", {
-			resourcetype: "<d:resourcetype><d:collection/></d:resourcetype>",
-		}, filter));
+		const xml = multistatus(responseXml("/dav/", propertySet([["DAV:", "resourcetype", "<d:resourcetype><d:collection/></d:resourcetype>"]]), filter));
 		expect(xml).toContain("HTTP/1.1 200 OK");
 		expect(xml).toContain("<d:unknown/>");
 		expect(xml).toContain("HTTP/1.1 404 Not Found");
@@ -25,7 +27,7 @@ describe("DAV XML", () => {
 	// この検証を消すと、404応答で要求が黙って欠落する本番不具合を見逃す。
 	it("404 は同名の別名前空間・別大文字小文字をすべて保持し、prefix違いだけ重複排除する", () => {
 		const filter = parsePropFilter('<d:propfind xmlns:d="DAV:" xmlns:a="urn:a" xmlns:b="urn:b" xmlns:c="urn:a"><d:prop><a:UnknownCase/><b:UnknownCase/><a:unknowncase/><c:UnknownCase/><d:displayname/></d:prop></d:propfind>');
-		const xml = responseXml("/dav/", { displayname: "<d:displayname>Calendar</d:displayname>" }, filter);
+		const xml = responseXml("/dav/", propertySet([["DAV:", "displayname", "<d:displayname>Calendar</d:displayname>"]]), filter);
 		expect(xml).toContain("<d:displayname>Calendar</d:displayname>");
 		expect(xml.match(/:UnknownCase /g)).toHaveLength(2);
 		expect(xml).toMatch(/:UnknownCase xmlns:\w+="urn:a"/);
@@ -63,7 +65,7 @@ describe("DAV XML", () => {
 
 		/** props を空にして「全部 404 へ落ちる」状態にした最小の response。 */
 		function missingOnly(body: string): string {
-			return multistatus(responseXml("/dav/principals/admin/", {}, parsePropFilter(body)));
+			return multistatus(responseXml("/dav/principals/admin/", new Map(), parsePropFilter(body)));
 		}
 
 		it("DAV: の要求は d: prefix で返す", () => {
@@ -119,13 +121,12 @@ describe("DAV XML", () => {
 			expect(missingOnly(body)).toContain("<d:nosuchprop/>");
 		});
 
-		it("名前空間が特定できない要求は prefix 無しで返す(DAV: を捏造しない)", () => {
-			// prefix を宣言し忘れた壊れた要求。旧実装は無条件に d: を付けていたが、
-			// 「知らない名前空間を DAV: だと言い張る」より「名前空間なし」の方が誠実。
-			const body = '<propfind><prop><Z:mystery/></prop></propfind>';
-			const xml = missingOnly(body);
-			expect(xml).toContain("<mystery/>");
-			expect(xml).not.toContain("<d:mystery/>");
+		it("未宣言prefixの壊れたXMLは拒否する", () => {
+			expect(() => parsePropFilter('<d:propfind xmlns:d="DAV:"><d:prop><Z:mystery/></d:prop></d:propfind>')).toThrow(InvalidDavXmlError);
+		});
+
+		it("明示的な名前空間なしはDAV:を捏造せず404で返す", () => {
+			expect(missingOnly('<d:propfind xmlns:d="DAV:"><d:prop><mystery/></d:prop></d:propfind>')).toContain("<mystery/>");
 		});
 
 		it("404 の並び順はクライアントが要求した順を保つ", () => {
@@ -135,13 +136,10 @@ describe("DAV XML", () => {
 			expect(xml.indexOf("calendar-color")).toBeLessThan(xml.indexOf("schedule-default-calendar-URL"));
 		});
 
-		it("200 側の照合はローカル名で行うので、名前空間つき要求でも既存プロパティは 200 に載る", () => {
-			// 「マッチングの正規化」と「応答の表現」を分けた設計の裏返し。ここが崩れると
-			// 既存クライアントの 200 応答が丸ごと 404 に落ちるので、明示的に固定しておく。
+		it("正規Apple namespaceのcalendar-colorは200に載る", () => {
+			// URI と local 名の対が一致する陽性ケースを、未知名の404と同時に確認する。
 			const filter = parsePropFilter(MULTI_NS_PROPFIND);
-			const xml = responseXml("/dav/cal/", {
-				"calendar-color": "<ical:calendar-color>#FF0000FF</ical:calendar-color>",
-			}, filter);
+			const xml = responseXml("/dav/cal/", propertySet([["http://apple.com/ns/ical/", "calendar-color", "<ical:calendar-color>#FF0000FF</ical:calendar-color>"]]), filter);
 			expect(xml).toContain("<ical:calendar-color>#FF0000FF</ical:calendar-color>");
 			expect(xml).toContain("HTTP/1.1 200 OK");
 		});
@@ -159,6 +157,52 @@ describe("DAV XML", () => {
 				expect(empty).toContain(`xmlns:${prefix}="${uri}"`);
 			}
 		});
+	});
+
+	describe("scope-aware QName選択", () => {
+		it("既定・子宣言・prefix再束縛・兄弟の復帰を解決し、値内の要素は要求しない", () => {
+			const body = '<propfind xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><prop><displayname/><c:calendar-home-set/><c:calendar-home-set xmlns:c="urn:wrong"/><c:calendar-home-set/><calendar-home-set xmlns="urn:ietf:params:xml:ns:caldav"/><displayname xmlns=""/><displayname xmlns="urn:child"><c:calendar-data/></displayname></prop></propfind>';
+			const filter = parsePropFilter(body);
+			expect(filter).not.toBe("allprop");
+			if (filter === "allprop") throw new Error("explicit prop expected");
+			expect([...filter.values()]).toEqual([
+				{ namespace: "DAV:", localName: "displayname" },
+				{ namespace: "urn:ietf:params:xml:ns:caldav", localName: "calendar-home-set" },
+				{ namespace: "urn:wrong", localName: "calendar-home-set" },
+				{ namespace: "", localName: "displayname" },
+				{ namespace: "urn:child", localName: "displayname" },
+			]);
+		});
+
+		it("同名別URIとcase違いは404、同一URIの別prefixだけ200になる", () => {
+			const body = '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="urn:ietf:params:xml:ns:caldav" xmlns:w="urn:wrong"><d:prop><a:calendar-home-set/><w:calendar-home-set/><c:Calendar-home-set/><d:principal-URL/><d:principal-url/></d:prop></d:propfind>';
+			const xml = responseXml("/p/", principalProps("user", "/p/", "/h/"), parsePropFilter(body));
+			const ok = xml.split("</d:propstat>")[0];
+			expect(ok).toContain("<c:calendar-home-set><d:href>/h/</d:href>");
+			expect(ok).toContain("<d:principal-URL><d:href>/p/</d:href>");
+			expect(ok).not.toContain("Calendar-home-set");
+			expect(xml).toContain('<x1:calendar-home-set xmlns:x1="urn:wrong"/>');
+			expect(xml).toContain("<c:Calendar-home-set/>");
+			expect(xml).toContain("<d:principal-url/>");
+		});
+
+		it("namespace URI entityとUnicode/dotの未知local名を原表記で保持する", () => {
+			const filter = parsePropFilter('<d:propfind xmlns:d="DAV:"><d:prop><x:未知.Name xmlns:x="urn:a&amp;b"/></d:prop></d:propfind>');
+			expect(responseXml("/", new Map(), filter)).toContain('<x1:未知.Name xmlns:x1="urn:a&amp;b"/>');
+		});
+
+		for (const body of [
+			'<d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop>',
+			'<d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind><extra/>',
+			'<d:propfind xmlns:d="DAV:"><d:prop><d:displayname a="1" a="2"/></d:prop></d:propfind>',
+			'<!DOCTYPE d:propfind SYSTEM "https://example.com/external"><d:propfind xmlns:d="DAV:"/>',
+			'<!DOCTYPE d:propfind [<!ENTITY x "value">]><d:propfind xmlns:d="DAV:"/>',
+			'<d:propfind xmlns:d="DAV:"><d:prop><d:unknown>&unknown;</d:unknown></d:prop></d:propfind>',
+		]) {
+			it(`壊れたXML/DTDを拒否する: ${body.slice(0, 55)}`, () => {
+				expect(() => parsePropFilter(body)).toThrow(InvalidDavXmlError);
+			});
+		}
 	});
 
 	it("prefixに依存せずhrefを抽出してXML entityを戻す", () => {
@@ -202,7 +246,7 @@ describe("DAV XML", () => {
 				displayName: "Misc",
 			});
 			const props = collectionProps(col, "https://example.com/sync/1");
-			const decl = props["supported-calendar-component-set"];
+			const decl = props.get(qualifiedPropKey("urn:ietf:params:xml:ns:caldav", "supported-calendar-component-set"))?.xml;
 			expect(decl).toContain('<c:comp name="VEVENT"/>');
 			expect(decl).toContain('<c:comp name="VTODO"/>');
 			expect(decl).toContain('<c:comp name="VJOURNAL"/>');
@@ -216,7 +260,7 @@ describe("DAV XML", () => {
 				supportedComponents: ["VEVENT"],
 			});
 			const props = collectionProps(col, "https://example.com/sync/1");
-			const decl = props["supported-calendar-component-set"];
+			const decl = props.get(qualifiedPropKey("urn:ietf:params:xml:ns:caldav", "supported-calendar-component-set"))?.xml;
 			expect(decl).toBe('<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>');
 		});
 	});
@@ -229,7 +273,7 @@ describe("DAV XML", () => {
 			displayName: "Misc",
 		});
 		const props = collectionProps(col, "https://example.com/sync/1");
-		expect(props["supported-report-set"]).toContain("<c:free-busy-query/>");
+		expect(props.get(qualifiedPropKey("DAV:", "supported-report-set"))?.xml).toContain("<c:free-busy-query/>");
 	});
 
 	// R-5b: RFC 6578 §4 は DAV:sync-token を「PROPFIND allprop では SHOULD NOT 返す」と定める。
