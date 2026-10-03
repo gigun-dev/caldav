@@ -3,46 +3,46 @@
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
-(B) 2026-10-02 fullscreen FAB と composer の重なりを実機再現し safeAreaInsets を記録する +cards @device see:docs/next-directions-agentic-ui.md id:0014
-(B) 2026-10-02 追加から fullscreen へ遷移したときのキーボード閉鎖を実機再現し原因を切り分ける +cards @device see:docs/next-directions-agentic-ui.md id:0015
-(B) 2026-10-02 カードの選択・編集・詳細・コピー・chips・ドラフト・リスト選択を実機確認する +ios @device see:docs/next-directions-caldav-ios.md id:0016
-(B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/next-directions-caldav-ios.md id:0017
-(B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/next-directions-caldav-ios.md id:0018
-(B) 2026-10-02 場所検索から場所付き予定作成までを iOS で確認する +ios @device see:docs/next-directions-caldav-ios.md id:0019
-(B) 2026-10-02 移動時間と通知の iOS 表示を確認する +ios @device see:docs/next-directions-caldav-ios.md id:0020
-(B) 2026-10-02 calendar と tasks の iOS 非回帰および allprop sync-token 除外を確認する +ios @device see:docs/next-directions-caldav-ios.md id:0021
-(B) 2026-10-02 復元時の changed 再取得・同一 ETag キャッシュ・再スキャンを iOS で確認する +ios @device see:docs/next-directions-caldav-ios.md id:0022
-(B) 2026-10-02 カード内 swipe 削除の実機 UI 経路を確認する +ios @device see:docs/next-directions-caldav-ios.md id:0023
-(C) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/next-directions-operations.md id:0024
-(C) 2026-10-02 現行 SDK・ext-apps・Swift の新旧仕様互換性を再調査して移行可否を決める +mcp @unattended see:docs/next-directions-operations.md id:0025
-(C) 2026-10-02 identity・principal・App Password 配布の未確定製品判断を整理する +multiuser @user see:docs/next-directions-roadmap.md id:0026
-(C) 2026-10-02 users・principal・権限表・App Password スキーマと IdentityPort の実装範囲を確定する +multiuser @user see:docs/next-directions-roadmap.md dep:0026 id:0027
+(B) 2026-10-02 fullscreen FAB と composer の重なりを実機再現し safeAreaInsets を記録する +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0014
+(B) 2026-10-02 追加から fullscreen へ遷移したときのキーボード閉鎖を実機再現し原因を切り分ける +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0015
+(B) 2026-10-02 カードの選択・編集・詳細・コピー・chips・ドラフト・リスト選択を実機確認する +ios @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
+(B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0017
+(B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0018
+(B) 2026-10-02 場所検索から場所付き予定作成までを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0019
+(B) 2026-10-02 移動時間と通知の iOS 表示を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0020
+(B) 2026-10-02 calendar と tasks の iOS 非回帰および allprop sync-token 除外を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0021
+(B) 2026-10-02 復元時の changed 再取得・同一 ETag キャッシュ・再スキャンを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0022
+(B) 2026-10-02 カード内 swipe 削除の実機 UI 経路を確認する +ios @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0023
+(C) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024
+(C) 2026-10-02 現行 SDK・ext-apps・Swift の新旧仕様互換性を再調査して移行可否を決める +mcp @unattended see:docs/mcp-compatibility-2026-09-05.md id:0025
+(C) 2026-10-02 identity・principal・App Password 配布の未確定製品判断を整理する +multiuser @user see:docs/modeling/13-multiuser-identity.md id:0026
+(C) 2026-10-02 users・principal・権限表・App Password スキーマと IdentityPort の実装範囲を確定する +multiuser @user see:docs/modeling/13-multiuser-identity.md dep:0026 id:0027
 (C) 2026-10-02 マルチユーザー認証ミドルウェアを実装して検証する +multiuser @unattended see:docs/adr/0002-hash-generated-app-passwords-with-sha256.md dep:0053 id:0028
 (C) 2026-10-02 App Password 発行・失効・配布の経路を実装して検証する +multiuser @unattended see:docs/adr/0002-hash-generated-app-passwords-with-sha256.md dep:0028 id:0029
 (C) 2026-10-02 プロキシ内部認証の HMAC 化について移行手順と完了条件を決める +multiuser @unattended see:docs/modeling/07-authentication.md dep:0027 id:0030
-(B) 2026-10-02 make dev の UI bundle 再生成ループを再現し起動を修正する +dev @unattended see:docs/next-directions-roadmap.md id:0031
-(C) 2026-10-02 list-todos due の相対日付語彙を events と統一する範囲を決める +cards @unattended see:docs/next-directions-agentic-ui.md id:0032
-(C) 2026-10-02 iOS 手動並べ替え・モード変更時の CalDAV 通信を観測する +cards @device see:docs/next-directions-agentic-ui.md id:0033
-(C) 2026-10-02 並べ替え観測を基に保存形式・カード設定・ドラッグの実装タスクを分解する +cards @unattended see:docs/next-directions-agentic-ui.md dep:0033 id:0034
+(B) 2026-10-02 make dev の UI bundle 再生成ループを再現し起動を修正する +dev @unattended see:README.md id:0031
+(C) 2026-10-02 list-todos due の相対日付語彙を events と統一する範囲を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md id:0032
+(C) 2026-10-02 iOS 手動並べ替え・モード変更時の CalDAV 通信を観測する +cards @device see:docs/modeling/12-vevent-agentic.md id:0033
+(C) 2026-10-02 並べ替え観測を基に保存形式・カード設定・ドラッグの実装タスクを分解する +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0033 id:0034
 (C) 2026-10-02 object_versions と revert の実装範囲・完了条件を決める +reversibility @unattended see:docs/adr/0003-delegate-confirmation-to-hosts.md id:0035
 (C) 2026-10-02 配色監査の未使用トークン A-4 を確認し除去の要否を決める +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
-(D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/next-directions-operations.md id:0037
-(D) 2026-10-02 Workers での OTel トレースとログの相関を調査し導入可否を決める +observability @unattended see:docs/next-directions-roadmap.md id:0038
-(C) 2026-10-02 重複テストコレクションと検証由来候補イベントの所有意図をユーザーと確認する +operations @user see:docs/next-directions-roadmap.md id:0039
-(D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:docs/next-directions-roadmap.md id:0040
-(C) 2026-10-02 refresh token 失効時のエラーと未認証401の Bearer challenge を確認する +mcp @user see:docs/next-directions-operations.md id:0041
-(D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/next-directions-roadmap.md id:0042
-(D) 2026-10-02 メール送信ポートとアダプタの契約を設計する +mail @unattended see:docs/next-directions-roadmap.md dep:0042 id:0043
-(D) 2026-10-02 メール受信から ProcessIMipMessage までのユースケースを設計する +mail @unattended see:docs/next-directions-roadmap.md dep:0043 id:0044
-(D) 2026-10-02 メールから予定・タスク提案 inbox への抽出スライスを設計する +mail @unattended see:docs/next-directions-roadmap.md dep:0044 id:0045
-(D) 2026-10-02 招待スケジューリングの実装タスクと受け入れ条件を分解する +scheduling @unattended see:docs/next-directions-roadmap.md dep:0029,0042,0043 id:0046
-(D) 2026-10-02 共有・委任の実装タスクと受け入れ条件を分解する +sharing @unattended see:docs/next-directions-roadmap.md dep:0029 id:0047
-(D) 2026-10-02 購読カレンダー取り込みと agent 側横断集約の必要範囲を決める +subscriptions @user see:docs/next-directions-roadmap.md dep:0029 id:0048
-(D) 2026-10-02 CardDAV に着手する製品上の実需を確認する +contacts @user see:docs/next-directions-roadmap.md id:0049
-(D) 2026-10-02 メモ placeholder と同値の実データの区別を確認し文言変更の要否を決める +cards @unattended see:docs/next-directions-roadmap.md id:0050
-(D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/next-directions-agentic-ui.md dep:0034 id:0051
-(D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/next-directions-agentic-ui.md id:0052
-(C) 2026-10-02 承認された A-1 範囲のスキーマ・principal 複数化・IdentityPort を実装して検証する +multiuser @user see:docs/next-directions-roadmap.md dep:0027 id:0053
+(D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0037
+(D) 2026-10-02 Workers での OTel トレースとログの相関を調査し導入可否を決める +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0038
+(C) 2026-10-02 重複テストコレクションと検証由来候補イベントの所有意図をユーザーと確認する +operations @user see:docs/monitoring-follow-up-2026-10-03.md id:0039
+(D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:README.md id:0040
+(C) 2026-10-02 refresh token 失効時のエラーと未認証401の Bearer challenge を確認する +mcp @user see:docs/modeling/07-authentication.md id:0041
+(D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/modeling/10-email-integration.md id:0042
+(D) 2026-10-02 メール送信ポートとアダプタの契約を設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0042 id:0043
+(D) 2026-10-02 メール受信から ProcessIMipMessage までのユースケースを設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0043 id:0044
+(D) 2026-10-02 メールから予定・タスク提案 inbox への抽出スライスを設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0044 id:0045
+(D) 2026-10-02 招待スケジューリングの実装タスクと受け入れ条件を分解する +scheduling @unattended see:docs/modeling/03-domain-model.md dep:0029,0042,0043 id:0046
+(D) 2026-10-02 共有・委任の実装タスクと受け入れ条件を分解する +sharing @unattended see:docs/modeling/03-domain-model.md dep:0029 id:0047
+(D) 2026-10-02 購読カレンダー取り込みと agent 側横断集約の必要範囲を決める +subscriptions @user see:docs/modeling/11-agentic-surfaces.md dep:0029 id:0048
+(D) 2026-10-02 CardDAV に着手する製品上の実需を確認する +contacts @user see:docs/modeling/11-agentic-surfaces.md id:0049
+(D) 2026-10-02 メモ placeholder と同値の実データの区別を確認し文言変更の要否を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md id:0050
+(D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0034 id:0051
+(D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/modeling/12-vevent-agentic.md id:0052
+(C) 2026-10-02 承認された A-1 範囲のスキーマ・principal 複数化・IdentityPort を実装して検証する +multiuser @user see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
 (B) 2026-10-03 サーバー障害を把握できるよう例外・5xxのIssues検出と通知到達を検証する（MCPエラー検出と集約は本番確認済み） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0054
 (B) 2026-10-03 今日の予定やtodoが反復失敗せず回答されることを反映後のChatGPTと機能OTelで確認する（Swift修正は実機配送済み） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0055
 (B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056

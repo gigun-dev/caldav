@@ -1,8 +1,8 @@
-x 2026-10-03 2026-10-02 未対応 REPORT の本番応答を確認して結果を記録する +caldav @user see:docs/next-directions-caldav-ios.md id:0001
-x 2026-10-03 2026-10-02 principal-search-property-set と supported-report-set の本番応答を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0002
-x 2026-10-03 2026-10-02 無効 sync token の本番エラー名前空間を確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0004
-x 2026-10-03 2026-10-02 未知プロパティの 404 propstat が名前空間と大文字小文字を保持することを本番確認する +caldav @user see:docs/next-directions-caldav-ios.md id:0003
-x 2026-10-03 2026-10-02 RFC 原文と現行コードを照合し未着手8件の優先順位・実装範囲を決める +caldav @unattended see:docs/next-directions-caldav-ios.md dep:0001,0002,0003,0004 id:0005
+x 2026-10-03 2026-10-02 未対応 REPORT の本番応答を確認して結果を記録する +caldav @user see:docs/modeling/05-rfc-verification.md id:0001
+x 2026-10-03 2026-10-02 principal-search-property-set と supported-report-set の本番応答を確認する +caldav @user see:docs/modeling/05-rfc-verification.md id:0002
+x 2026-10-03 2026-10-02 無効 sync token の本番エラー名前空間を確認する +caldav @user see:docs/modeling/05-rfc-verification.md id:0004
+x 2026-10-03 2026-10-02 未知プロパティの 404 propstat が名前空間と大文字小文字を保持することを本番確認する +caldav @user see:docs/modeling/05-rfc-verification.md id:0003
+x 2026-10-03 2026-10-02 RFC 原文と現行コードを照合し未着手8件の優先順位・実装範囲を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0001,0002,0003,0004 id:0005
 x 2026-10-03 2026-10-02 Depth infinity の PROPFIND 応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0008
 x 2026-10-03 2026-10-02 200 propstat の名前空間照合を厳密化する変更範囲を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0013
 x 2026-10-03 2026-10-02 object 宛 calendar-multiget を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0012
