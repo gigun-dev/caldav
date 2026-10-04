@@ -72,12 +72,12 @@ KumaはVM内SQLiteをbind mountし保持180日、Beszelもディスク保存。�
 
 - hub: 外部でのheartbeat/外形観測の受付・判定、永続的な停止/復旧履歴、通知・再通知・監視自体の失敗検知。既存H1/H1bを読んで重複実装を避ける。
 - dotfiles: MacとVMの観測元、boot ID/起動時刻/最終成功の送信、設定と秘密管理。hubのWorker/D1をここに再定義しない。
-- caldav: Workers Issuesの導入準備、MCP toolの引数/エラー契約。calendar/task serverのRFC/同期課題は既存todoとして別管理。
-- swift-mcp-app: UIの論理エラー表示、反復上限span、LLMへ戻す結果と会話ループ。bridge固有の変換はdotfiles側と連携して切り分ける。
+- caldav: Workers Issuesの運用設定・検証、MCP toolの引数/エラー契約。calendar/task serverのRFC/同期課題は既存todoとして別管理。
+- swift-mcp-app: カード発MCP操作とLLM生成の障害観測、UIの論理エラー表示、反復上限span、LLMへ戻す結果と会話ループ。
 
 ## 方針と受け入れ
 
-Mac/VM/公開経路/service health/機能試験の観測を区別。相関できる証拠が不足した原因はunknownとする。構成を増やしすぎず最小実装を先に検証。Mac停止、VMだけ停止、Tunnelだけ障害、serviceだけ障害、health正常だが機能失敗、監視Cron自体の失敗で期待判定と履歴を検証。強制停止はローカルfixtureで先行し、実ホスト停止や本番cutoverは具体的手順を準備してユーザーの承認後。push/main変更はdeployを起動し得るため未承認で行わない。
+Mac/VM/公開経路/service health/機能試験の観測を区別。相関できる証拠が不足した原因はunknownとする。Mac停止、VMだけ停止、Tunnelだけ障害、serviceだけ障害、health正常だが機能失敗、監視Cron自体の失敗で期待判定と履歴を検証。強制停止はローカルfixtureで先行する。
 
 Workers Issues公式 https://developers.cloudflare.com/workers/observability/issues/ 。Worker例外/失敗/5xx/エラーログを集約する。HTTP200のMCP isErrorは自動検知前提にしない。SDK大量追加やprivate tool引数のログ化は避ける。
 

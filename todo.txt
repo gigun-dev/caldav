@@ -36,4 +36,4 @@
 (A) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
 2026-10-05 Cloudflare IssuesのCalDAV再発通知が既存メール宛先に届いたか本人が確認する（Cloudflare自動run成功済み、使いやすさ評価とは別） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0062
 (C) 2026-10-05 前面カードの操作対象を有界スクロールで表示し画面を閉じずに統合テストを一括実行する（単独機能確認は成功、限定再試験は追加・編集・切替までで未成功） +ios +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0064
-(A) 2026-10-05 カード発MCP操作の成功・論理エラー・接続喪失を既存TelemetryPort/OTLPへ記録し、ツール名・操作ID・経過時間・NSError分類の保存を検証する +ios +observability @unattended dep:0065 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0066 @wip
+(A) 2026-10-05 カード操作の観測修正をSwiftのmainへpushし、既存asc-mcpで固定URLの配布ビルドを確認する +ios +distribution @unattended dep:0066 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0067 @wip

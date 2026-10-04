@@ -147,3 +147,13 @@ iPhone 17専用Simulator（402×874pt）を明示し、`build-for-testing`後の
 失敗実recordはAppsServerProxy / AppsBridgePassthroughDispatcherのOSLogにあり、通常カードのproxy tools/callには既存TelemetryPort/spanが渡されていない。LLM generation失敗計測とは別経路で、今回のカード失敗をOTLPで取得した証拠はない。Workerが正常終了しているためWorkers Issuesだけでこの接続断を取得できるとは言えない。raw NSErrorのpeer情報・認証値は記録へ保存していない。
 
 検証終了後、今回の専用リストAをforce削除し、専用Simulator `w-caldav-cards-0064` をshutdown/delete、loopback providerを停止した。最終の試験コードはiOS `build-for-testing` 成功、provider構文確認成功。`make check` はServices 207件・Kernel 136件、lint 0件違反。改修は検証コードのみで製品機能の変更はない。
+
+### カード発MCP操作の観測（0066）
+
+Swiftの既存TelemetryPortを通常カードのAppsBridgeSessionへ渡し、`tools/call`を独立したclient span `card.tool`として記録する。ツール名・操作ID・bridge request ID・単調時計による経過時間・outcome・NSError domain/code/typeを保存する。引数や結果本文は新しいspanへ含めない。成功はOK、MCPの`isError`とtransport失敗はERROR、画面を閉じた際のcancelledはUNSETとする。closeと遅いproxy応答で二重終了せず、閉じた画面へ応答を配送しない。
+
+既存OTLP exporterが生成したgzip/protobufをloopback HTTPで実受信し、4つのoutcomeを検証した。同じ合成payloadを既存Langfuseへ送信してHTTP200を確認し、Observations APIで4件を読み戻した。transportの`NSURLErrorDomain:-1005`、論理エラー、非エラーのキャンセルを区別できた。安全な読取結果は[観測証拠](verification/2026-10-05-card-tool-otel-readback.json)。新しいSDKや送信先は追加していない。[Langfuseの公式OTLP仕様](https://langfuse.com/integrations/native/opentelemetry)に沿い、既存のHTTP protobuf経路を使った。
+
+これは合成失敗を用いた計測・保存経路の検証である。1時16分に発生した自然な接続断を遡ってOTelで取得した結果や、端末からWorkerへのtrace伝播、接続断の根因解消を示すものではない。
+
+Swift実装commitは`e2de882`。最終`make check`はServices 211件・Kernel 136件成功、lint違反0。iOS全体の`make app`も成功した。

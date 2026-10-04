@@ -1,0 +1,73 @@
+{
+  "source": "Synthetic AppsBridge operation through existing Swift OTLP exporter, replayed to existing Langfuse; not a natural device failure",
+  "otlpHttpStatus": 200,
+  "readbackHttpStatus": 200,
+  "records": [
+    {
+      "traceId": "140aa77e05742e471675915355d156d5",
+      "spanId": "0b8745d17db5b2fe",
+      "name": "card.tool",
+      "level": "ERROR",
+      "startTime": "2026-10-04T16:42:20.699Z",
+      "endTime": "2026-10-04T16:42:20.699Z",
+      "attributes": {
+        "duration_ms": 0,
+        "bridge.request_id": 42,
+        "mcp.tool.name": "update-todo",
+        "operation_id": "04040E0C-1D2E-4641-A041-C44FBDF54255",
+        "outcome": "isError"
+      }
+    },
+    {
+      "traceId": "a8601d50d4e3bc6d1b2a8779a101d9bf",
+      "spanId": "300974f32304d50a",
+      "name": "card.tool",
+      "level": "DEFAULT",
+      "startTime": "2026-10-04T16:42:20.699Z",
+      "endTime": "2026-10-04T16:42:20.699Z",
+      "attributes": {
+        "duration_ms": 0,
+        "operation_id": "264BEBA0-4742-446E-80FA-E2D94FA24CA9",
+        "mcp.tool.name": "update-todo",
+        "outcome": "success",
+        "bridge.request_id": 42
+      }
+    },
+    {
+      "traceId": "ddaf9514b83030d36e55a3f17900432a",
+      "spanId": "10fede458d5b8309",
+      "name": "card.tool",
+      "level": "ERROR",
+      "startTime": "2026-10-04T16:42:20.699Z",
+      "endTime": "2026-10-04T16:42:20.699Z",
+      "attributes": {
+        "duration_ms": 0,
+        "bridge.request_id": 42,
+        "error.code": -1005,
+        "mcp.tool.name": "update-todo",
+        "error.type": "NSURLErrorDomain:-1005",
+        "outcome": "transport",
+        "operation_id": "3F580978-483A-48C5-A829-5AB26BB9CA1B",
+        "error.domain": "NSURLErrorDomain"
+      }
+    },
+    {
+      "traceId": "94397d1b8d9e422528ee0cadc3dd295e",
+      "spanId": "00567110714c4ba5",
+      "name": "card.tool",
+      "level": "DEFAULT",
+      "startTime": "2026-10-04T16:42:20.699Z",
+      "endTime": "2026-10-04T16:42:20.699Z",
+      "attributes": {
+        "error.type": "NSURLErrorDomain:-999",
+        "duration_ms": 0,
+        "operation_id": "845996A2-A7FC-404B-9D25-C362AFBC3682",
+        "bridge.request_id": 42,
+        "mcp.tool.name": "update-todo",
+        "outcome": "cancelled",
+        "error.code": -999,
+        "error.domain": "NSURLErrorDomain"
+      }
+    }
+  ]
+}
