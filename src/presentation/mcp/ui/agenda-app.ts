@@ -51,7 +51,6 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     --ring: var(--color-ring-primary, var(--accent));
     /* 白文字を載せる面は、既知の fallback パレットで AA を満たす固定色に分ける。 */
     --accent-fill: #2457b7;
-    --accent-soft: rgba(47, 111, 237, 0.14);
     --danger: #c23d3d;
     --danger-fill: #b42318;
     --now: #d64545;
@@ -78,7 +77,6 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
       --accent: #6f9cf5;
       --ring: var(--color-ring-primary, var(--accent));
       --accent-fill: #2f5ea8;
-      --accent-soft: rgba(111, 156, 245, 0.2);
       --danger: #e57373;
       --danger-fill: #c23d3d;
       --now: #e57373;
@@ -101,7 +99,6 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
     --accent: #6f9cf5;
     --ring: var(--color-ring-primary, var(--accent));
     --accent-fill: #2f5ea8;
-    --accent-soft: rgba(111, 156, 245, 0.2);
     --danger: #e57373;
     --danger-fill: #c23d3d;
     --now: #e57373;
@@ -655,9 +652,8 @@ const AGENDA_APP_HTML_CORE = `<!doctype html>
 
   /* --- 日タイムライン(2026-07-22 ロードマップ③・fullscreen 限定)---
    * モック docs/modeling/ui-mockups/agenda-views-v7.html を移植。接頭辞 dv-(mv- 慣行に倣う・
-   * .segment / .mv- と取り違えない独立クラス系)。--dv-hour は entry の DV_HOUR_PX と同値に保つ
-   * (絶対配置の px は entry が直接持つので二重管理だが、値を変えたら両方揃える)。 */
-  :root { --dv-hour: 48px; --dv-gutter: 44px; }
+   * .segment / .mv- と取り違えない独立クラス系)。時刻軸の高さは entry の DV_HOUR_PX が持つ。 */
+  :root { --dv-gutter: 44px; }
   /* 日ナビ(前日/今日/翌日 + 日見出し)。月ナビ(.mv-nav)と同型。 */
   .dv-nav { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 8px; }
   .dv-nav .dv-dh { font-size: 15px; font-weight: 700; }

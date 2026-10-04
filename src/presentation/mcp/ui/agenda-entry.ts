@@ -1656,8 +1656,8 @@ function buildDayPanel(byDay: Map<string, EventItem[]>): HTMLElement {
 // day-timeline.ts(bun:test 済み)に隔離し、ここは「イベント → 日内分レンジへの写像」+ DOM 組み立て
 // (絶対配置・時刻目盛・赤線)だけを担う(How はここ・What はテスト)。
 
-/** 時刻軸の 1 時間あたりの高さ(px)。分 → px は min/60*HOUR_PX。CSS(--dv-hour)と同値に保つ
- *  (二重管理だが、DOM 側は絶対配置で px を直接使うため定数で持つ。値を変えたら CSS も揃える)。 */
+/** 時刻軸の 1 時間あたりの高さ(px)。分 → px は min/60*HOUR_PX。
+ * DOM の絶対配置と目盛の高さに共通の定数を使う。 */
 const DV_HOUR_PX = 48;
 
 /** "HH:MM" → 日内分(0-1440)。壊れた入力は 0(防御。呼び出し側は wallTimePart 由来で常に整形済み)。 */

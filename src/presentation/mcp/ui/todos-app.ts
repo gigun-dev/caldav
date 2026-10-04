@@ -123,17 +123,15 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
      * 差分は form(輪郭・線・構造)を主役にし、色は補助に留める方針(モック
      * scratchpad/todos-refined.html の設計)。Why not 色ハイライト主体: 色だけの差分は
      * 「何が起きたか」を語らず、ダーク/ライト双方でのコントラスト管理も脆い。
-     *   accent-soft : completed の「凍結した波紋リング」(box-shadow 1枚)
      *   accent-pulse: committing 中だけの ring-pulse(v2.1 修正A-5・下記コメント参照)
      *   add/add-wake: added の左端バーと右へ減衰する wake
      *   edit        : edited の新値強調(琥珀。accent/danger/pri と衝突しない第4色)
      *   del-border  : removed ゴーストの破線(彩度ゼロ = もう意味を持たない行) */
-    --accent-soft: rgba(0, 122, 255, 0.14);
     /* 【2026-07-16 v2.1 修正A-5】旧 ring-pulse は accent-soft(14%)をそのまま使っていたが、
      * done/undo の check 円は塗り潰し済み(完了=accent の塗りボタン)で、14% の淡いリングは
      * その塗りに埋もれてほぼ見えない実機 FB があった。committing 中の「反応した」を示す
-     * pulse だけ濃い値(35%)を別変数で持ち、満了後に収束する静的リング(accent-soft)は
-     * 従来の 14% のまま変えない(=「凍結後は控えめ」という元の意図はそのまま残す)。 */
+     * pulse だけ濃い値(35%)を別変数で持つ。静的リングは v2.2 で撤回したため、
+     * 満了後はリングなしへ戻る(下記 becoming-done のコメント参照)。 */
     --accent-pulse: rgba(0, 122, 255, 0.35);
     --add: #217a4b;
     --add-wake: rgba(47, 158, 99, 0.07);
@@ -155,7 +153,6 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
       --pri: #ff9f0a;
       /* becoming 補助トーンのダーク版。リング/wake は暗地で沈むため不透明度を上げ、
        * edit の琥珀は明度を上げる(モックの theme-dark 実測値)。 */
-      --accent-soft: rgba(10, 132, 255, 0.2);
       --accent-pulse: rgba(10, 132, 255, 0.4);
       --add: #55b884;
       --add-wake: rgba(85, 184, 132, 0.1);
@@ -175,7 +172,6 @@ const TODOS_APP_HTML_CORE = `<!doctype html>
     --danger: #ff453a;
     --danger-fill: #c23d3d;
     --pri: #ff9f0a;
-    --accent-soft: rgba(10, 132, 255, 0.2);
     --accent-pulse: rgba(10, 132, 255, 0.4);
     --add: #55b884;
     --add-wake: rgba(85, 184, 132, 0.1);

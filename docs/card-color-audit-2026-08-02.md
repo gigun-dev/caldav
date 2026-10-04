@@ -1,15 +1,10 @@
 # MCP Apps カードの配色・CSS 変数監査(2026-08-02)
 
-> **2026-09-06 更新:** A-1〜A-3/B-1〜B-3の実装を是正(未コミット・未デプロイ)。
-> A-4の未使用トークンは設計意図の確認が必要なため保留。以下の監査原文は変更前の記録として残す。
-> 初期/更新ホストテーマを公式helperで反映、data-themeとOS fallbackを接続。border-primary/ring-primary/
-> border-hair/radiusを正規化し、補助文字と白文字用塗り色を調整した。
-> 内蔵ブラウザのローカルhost harnessが実際のHTML/entry bundleを読み込み、両カードの
-> light→dark、部分variables、空variables、theme/styles省略による維持、初期themeなしを確認。
-> タイトル/塗りボタン比: todos light=17.27/6.29、dark=16.25/5.24、
-> agenda light=17.27/6.73、dark=16.25/6.39。測定した補助日付/時刻・更新時刻・meta/dueも4.5以上。
-> OSはlight。OS dark環境とWKWebView/Claude固有の全画面不具合は未検証。
-> make checkはbun 1105/worker 42・型3レーン・層境界がPASS。
+現行実装では A-1〜A-3/B-1〜B-3 の是正が main に反映済み。
+2026-10-05 に A-4 の定義・参照を再確認し、未使用の `--accent-soft` と `--dv-hour` を除去した。
+完了時の静的リングは v2.2 ですでに撤回されており、使用中の `--accent-pulse` は維持する。
+日タイムラインの高さは `DV_HOUR_PX` が担当し、CSS の未参照定義を揃える必要はない。
+以下の測定値は変更前の監査記録であり、現在の不具合一覧ではない。
 
 
 **すべて採点者(main セッション)が独立に再検証した実測値。** 出所は `ios-simulator` スキルの

@@ -20,7 +20,6 @@
 (C) 2026-10-02 iOS 手動並べ替え・モード変更時の CalDAV 通信を観測する +cards @device see:docs/modeling/12-vevent-agentic.md id:0033
 (C) 2026-10-02 並べ替え観測を基に保存形式・カード設定・ドラッグの実装タスクを分解する +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0033 id:0034
 (C) 2026-10-02 object_versions と revert の実装範囲・完了条件を決める +reversibility @unattended see:docs/adr/0003-delegate-confirmation-to-hosts.md id:0035
-(C) 2026-10-02 配色監査の未使用トークン A-4 を確認し除去の要否を決める +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
 (D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0037
 (D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:README.md id:0040
 (D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/modeling/10-email-integration.md id:0042
