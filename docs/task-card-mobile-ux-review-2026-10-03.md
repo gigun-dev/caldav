@@ -140,13 +140,19 @@ xcrun simctl launch --terminate-running-process "$SIMULATOR_UDID" dev.gigun.mcph
 iPhone 17専用Simulator（402×874pt）を明示し、`build-for-testing`後の `.xctestrun` の `MCPHostUITests.EnvironmentVariables.MCPHOST_CALDAV_FUNCTIONAL_E2E` に `1` を設定して `test-without-building -only-testing:MCPHostUITests/CardFunctionalVerificationTests` を実行する。試験は画面内・画面幅・hittableに合うfullscreen WebViewを選び、専用リスト選択と初期3行を変更前に照合する。固定座標はこのviewport専用である。WKWebView AXは非表示行を残すので、リスト切替／削除の画面消失はhittableで判定し、保存・削除は別MCP readで照合する。clipboard内容は `simctl pbpaste` による別検証（test内assertではない）。認証値や署名鍵を記録へ保存しない。
 
 
-統合試験0064は一括成功していない。再起動後の限定1回では追加・編集・コピー操作・リスト切替まで進んだが、試験helperの下swipeがnative fullscreen sheetを閉じ、swipe削除対象をhittableにできず終了した。実スクリーンショット `/Users/gigun/tmp-sim/caldav-0016/final-state.png` は通常chatへ戻った状態である。helperは行の実frameによる方向選択へ修正したが、修正後はcompile確認のみで、一括の再実行は行っていない。ログは `/tmp/swift-delete-verification/reconnected-full.log`。終了後の別MCP readでAdded/Editedの保存とSwipeの残存を確認した。最後の `simctl pbpaste` は空だったため、この一括でclipboard内容一致を確認したとは扱わない。表のコピー・swipe削除成功は以前の段階検証であり、一括結果と区別する。
+統合試験0064は2026-10-05 02:02:51開始の一括XCUITestで成功した（80.731秒、0 failures）。追加→既存編集→コピー→Tasks切替→専用リスト復帰→swipe削除→下部行入力→fullscreen縮小→通常composer復帰まで、通常hostと実MCPを通した。同試験中のsoftware keyboardは全入力phaseで(0,583,402,233)、下部行は(60,797,176,21)、開いた詳細titleは(12,270.2,379,35)で遮蔽なし。終了後の別MCP readでAdded/Edited保存・Swipe削除・下部専用14行保持を確認し、`simctl pbpaste` も `0016 Copy fixture` と一致した。
+
+試験コードはsticky headerの実AX labelをtypeに依存せず照合し、行の可視topをheader.maxY+8で取る。戻すdragはcard content中央内に限定する。専用リスト初期3行・画面内fullscreen WebView・402×874ptの事前条件を守って実行する。製品UIの変更はない。
+
+成功ログは `/tmp/swift-delete-verification/r2-last-full-functional.log`、xcresultは `/Users/gigun/Library/Developer/Xcode/DerivedData/MCPHost-axzytqizkcazmxazuxjstzuhsmyw/Logs/Test/Test-MCPHost-2026.10.05_02-02-51-+0900.xcresult`。新規・詳細・下部行keyboardのスクリーンショットを添付として保存した。clipboard内容は統合test内のassertではなく終了後の別readである。使いやすさの本人評価0058とは別の、機能経路の確認である。
 
 01:16の別の一括試験では、カード発 `update-todo` の実通信失敗を観測した。2026-10-05 01:16:06.509 JSTに開始し、01:16:12.828に `NSURLErrorDomain -1005` / `CFNetwork -1005`（stream code -4）で失敗した。公開endpointは `https://caldav.gigun-dev.workers.dev/mcp`、URLSession taskは `6D1F7645-733B-4ABF-8050-ADF3348B4318` の87。カードには「変更を保存できませんでした」が出た一方、別MCP readではEditedの保存を確認した。Worker側は01:16:06.565〜01:16:07.088、HTTP200 / ok=true / 523msで正常終了し、server traceは `218802cca679ff753151565b211366b4`。client側のrequest/trace IDはログにないため、これは時刻と操作の相関である。
 
-失敗実recordはAppsServerProxy / AppsBridgePassthroughDispatcherのOSLogにあり、通常カードのproxy tools/callには既存TelemetryPort/spanが渡されていない。LLM generation失敗計測とは別経路で、今回のカード失敗をOTLPで取得した証拠はない。Workerが正常終了しているためWorkers Issuesだけでこの接続断を取得できるとは言えない。raw NSErrorのpeer情報・認証値は記録へ保存していない。
+失敗実recordはAppsServerProxy / AppsBridgePassthroughDispatcherのOSLogにあり、01:16の実行版では通常カードのproxy tools/callに既存TelemetryPort/spanが渡されていなかった。LLM generation失敗計測とは別経路で、今回のカード失敗をOTLPで取得した証拠はない。Workerが正常終了しているためWorkers Issuesだけでこの接続断を取得できるとは言えない。raw NSErrorのpeer情報・認証値は記録へ保存していない。
 
-検証終了後、今回の専用リストAをforce削除し、専用Simulator `w-caldav-cards-0064` をshutdown/delete、loopback providerを停止した。最終の試験コードはiOS `build-for-testing` 成功、provider構文確認成功。`make check` はServices 207件・Kernel 136件、lint 0件違反。改修は検証コードのみで製品機能の変更はない。
+実hostのOSLogでも新しい `card.tool.finished` が出た。02:03:17.651のcreate-todoは528ms / operationID=`DC2F00B8-B715-46BC-9A91-595D092A2BF0`、02:03:36.975のupdate-todoは630ms / operationID=`C406CE5C-472E-40D9-ACBB-3C75E79CA9F0`、02:04:02.858のdelete-todoは647ms / operationID=`30263126-AA5E-47DB-B845-6ED8847ED6D4`で、全てsuccessだった。通常Featuresからbridgeへの注入が動く証拠であり、実hostからremote OTLP保存までの検証ではない。実hostのremote保存は未確認のままで、設定の準備だけを保存成功に数えない。
+
+検証終了後、専用リストAをforce削除した。専用Simulator `w-caldav-cards-0064-r2` をshutdown/deleteし、検証provider/receiverのlistener停止も確認した。製品変更はなく、既存`make check`はServices 211件・Kernel 136件成功、lint違反0。一括後のhelperに対するlint違反0・iOS `build-for-testing` 成功も確認した。
 
 ### カード発MCP操作の観測（0066）
 
@@ -157,3 +163,9 @@ Swiftの既存TelemetryPortを通常カードのAppsBridgeSessionへ渡し、`to
 これは合成失敗を用いた計測・保存経路の検証である。1時16分に発生した自然な接続断を遡ってOTelで取得した結果や、端末からWorkerへのtrace伝播、接続断の根因解消を示すものではない。
 
 Swift実装commitは`e2de882`。最終`make check`はServices 211件・Kernel 136件成功、lint違反0。iOS全体の`make app`も成功した。
+
+### 配布の残件（0067）
+
+`e2de882`をmainへpushし、pre-pushの`make verify`を通過した。既存asc-mcpのjob `d5e642e4-39c2-4f18-934e-8cab40bc7ebb`（[GitHub run](https://github.com/gigun-dev/asc-mcp-control/actions/runs/37218040705)）はMac miniでDevelopment署名のarchiveまで成功したが、Ad Hocの`release-testing` exportで失敗した。Xcodeはキーチェーンのaccount credentialsに`missing Xcode-Username`、続いて`No signing certificate "iOS Distribution" found`を記録した。
+
+前回run `37151857106`は同じ方式でexport・署名検証・公開まで成功している。今回の失敗は配布方式変更で隠さず、Mac miniのXcode認証情報／Distribution署名へのアクセスを復旧してから再検証する。証明書の新規作成・失効やApple開発者ダッシュボードの操作は行っていない。Macの起動は10月3日0時14分のままで、再起動も行っていない。今回jobは公開工程へ到達せず、固定URLの既存配布物は更新されていない。新しい観測コードの端末適用は未完である。
