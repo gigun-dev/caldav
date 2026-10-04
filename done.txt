@@ -16,3 +16,4 @@ x 2026-10-04 2026-10-04 完了記録・現行コードと残件を照合し重�
 x 2026-10-04 2026-10-02 カレンダー設定の一括変更が一部だけ保存されない修正はPR3でmain統合・Workers Builds成功済み、本番で未対応項目を含む要求の全体拒否と非更新を検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0007
 x 2026-10-04 2026-10-02 make dev の UI bundle 再生成ループを再現し起動を修正する +dev @unattended see:README.md id:0031
 x 2026-10-04 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056
+x 2026-10-04 2026-10-04 CalDAVの直近の体験・同期・障害観測と将来構想を優先度で整理し関連repoの今週末の進捗を照合する +governance @unattended id:0061
