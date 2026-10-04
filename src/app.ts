@@ -386,10 +386,14 @@ app.get("/health", (c) => c.json({ ok: true, service: "caldav" }));
 // 【なぜ private を付けないか】現状この応答は全ユーザーで同一(共有キャッシュに載っても
 // 情報漏洩にならない)。no-cache により毎回検証されるので、private を足しても実効差が無い。
 // ユーザーごとに宛先が変わる設計に移行したら private を足すこと。
-app.all("/.well-known/caldav", (c) => {
-	c.header("Cache-Control", "no-cache");
-	return c.redirect("/dav/", 301);
-});
+// 末尾スラッシュは RFC の登録URIではなく接続設定時の互換別名。
+// app 全体の strict routing を緩めず、この探索入口だけを同じ宛先へ揃える。
+for (const path of ["/.well-known/caldav", "/.well-known/caldav/"]) {
+	app.all(path, (c) => {
+		c.header("Cache-Control", "no-cache");
+		return c.redirect("/dav/", 301);
+	});
+}
 
 // =============================================================================
 // OAuth-for-MCP 第3スライス: GET/POST /authorize(同意 UI)

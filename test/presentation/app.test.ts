@@ -1112,6 +1112,19 @@ describe("Worker app", () => {
 	// .well-known/caldav の Cache-Control(RFC 6764 §5)
 	// -------------------------------------------------------------------------
 	describe(".well-known/caldav リダイレクト", () => {
+		for (const path of ["/.well-known/caldav", "/.well-known/caldav/"]) {
+			for (const method of ["GET", "PROPFIND"]) {
+				for (const [label, authorization] of [["匿名", undefined], ["Basic", authHeader()], ["無効Basic", "Basic invalid"]] as const) {
+					it(`${path} ${method} ${label} は同じ公開入口へリダイレクトする`, async () => {
+						const res = await fetchApp(path, { method, headers: authorization ? { authorization } : undefined });
+						expect(res.status).toBe(301);
+						expect(res.headers.get("location")).toBe("/dav/");
+						expect(res.headers.get("cache-control")).toBe("no-cache");
+					});
+				}
+			}
+		}
+
 		it("301 で /dav/ を指し、Cache-Control: no-cache を付ける", async () => {
 			const res = await fetchApp("/.well-known/caldav", { method: "GET" });
 			expect(res.status).toBe(301);

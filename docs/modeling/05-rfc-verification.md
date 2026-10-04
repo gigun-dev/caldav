@@ -848,3 +848,12 @@ RFC 4918原文§9.1の省略時infinity推奨と、§9.1.1の有限深度拒否�
 正式Cloud Run DAV入口のentry/principal/home/calendarで省略403・finite-depthを確認。
 entry/principalの明示0とhomeの明示1は207を確認し、0056を閉じた。
 実機の新しい初回ログイン操作は今回の検証に含めない。
+
+
+## 末尾スラッシュ付きwell-knownの互換別名（2026-10-05、0011）
+
+RFC 6764 §5 の原文は `/.well-known/caldav` を登録し、HTTPリダイレクトを要求する。
+末尾スラッシュ付きURIを要求してはいない。接続設定時に付いた末尾スラッシュで探索が404になるため、
+`/.well-known/caldav/` を互換別名として同じ301・`Location: /dav/`・`Cache-Control: no-cache`へ寄せる。
+宛先は従来と同じ公開されたサービス入口で、認証の追加やDAV本体のパス正規化は行わない。
+匿名・正しいBasic・無効なBasicのGET/PROPFINDで同一応答を確認する。
