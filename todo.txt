@@ -2,7 +2,7 @@
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
-(A) 2026-10-02 入力・削除が止まらず保存できるようfullscreenのFAB/composer重なり・追加時のkeyboard・選択/編集/コピー/リスト切替/swipe削除の機能経路を実機またはSimulatorで検証し再現した不具合を修正する +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
+(A) 2026-10-02 入力・削除が止まらず保存できるようfullscreenのFAB/composer重なり・追加時のkeyboard・選択/編集/コピー/リスト切替/swipe削除の機能経路を実機またはSimulatorで検証し再現した不具合を修正する +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016 @wip
 (B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0017
 (B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0018
 (B) 2026-10-02 場所検索から場所付き予定作成までを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0019
@@ -22,7 +22,6 @@
 (C) 2026-10-02 object_versions と revert の実装範囲・完了条件を決める +reversibility @unattended see:docs/adr/0003-delegate-confirmation-to-hosts.md id:0035
 (C) 2026-10-02 配色監査の未使用トークン A-4 を確認し除去の要否を決める +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
 (D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0037
-(B) 2026-10-02 Workers での OTel トレースとログの相関を調査し導入可否を決める +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0038
 (D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:README.md id:0040
 (B) 2026-10-02 再ログイン要求を切り分けるためrefresh token失効と未認証401のBearer challengeを検証する +mcp @unattended see:docs/modeling/07-authentication.md id:0041
 (D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/modeling/10-email-integration.md id:0042

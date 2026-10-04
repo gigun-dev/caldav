@@ -1,0 +1,85 @@
+{
+  "scope": "Controlled production MCP requests; Worker boundary only",
+  "timeframe": {
+    "from": 1791125885000,
+    "to": 1791125900000
+  },
+  "success": true,
+  "events": [
+    {
+      "dataset": "cloudflare-workers",
+      "type": "cf-worker-event",
+      "traceId": "6459dc2546e9ef3870dd7a0a863ee713",
+      "invocationId": "202fa19795b9d021e2c18a74e364e60e",
+      "rayId": "a4550afa0c19eacd",
+      "level": "info"
+    },
+    {
+      "dataset": "cloudflare-workers",
+      "type": "cf-worker",
+      "traceId": "6459dc2546e9ef3870dd7a0a863ee713",
+      "spanId": "de732535f13a0a11",
+      "invocationId": "202fa19795b9d021e2c18a74e364e60e",
+      "rayId": "a4550afa0c19eacd",
+      "tool": "get-current-time",
+      "applicationRequestId": "e319484e-be86-408f-b136-998d84389156",
+      "ok": true
+    },
+    {
+      "dataset": "otel",
+      "type": "span",
+      "traceId": "6459dc2546e9ef3870dd7a0a863ee713",
+      "spanId": "de732535f13a0a11",
+      "invocationId": "202fa19795b9d021e2c18a74e364e60e",
+      "rayId": "a4550afa0c19eacd",
+      "durationMs": 203
+    },
+    {
+      "dataset": "cloudflare-workers",
+      "type": "cf-worker-event",
+      "traceId": "174a308ceb43540c61c77cb2bf707545",
+      "invocationId": "1de0eb766a632bedf1386950b19a007d",
+      "rayId": "a4550af64ea4966a",
+      "level": "info"
+    },
+    {
+      "dataset": "cloudflare-workers",
+      "type": "cf-worker",
+      "traceId": "174a308ceb43540c61c77cb2bf707545",
+      "spanId": "61e1ba54592ce07b",
+      "invocationId": "1de0eb766a632bedf1386950b19a007d",
+      "rayId": "a4550af64ea4966a",
+      "tool": "list-events-expanded",
+      "applicationRequestId": "8544db8a-5dde-4573-acaf-3d7757fe3908",
+      "ok": false
+    },
+    {
+      "dataset": "cloudflare-workers",
+      "type": "cf-worker",
+      "traceId": "174a308ceb43540c61c77cb2bf707545",
+      "spanId": "61e1ba54592ce07b",
+      "invocationId": "1de0eb766a632bedf1386950b19a007d",
+      "rayId": "a4550af64ea4966a",
+      "applicationRequestId": "8544db8a-5dde-4573-acaf-3d7757fe3908",
+      "level": "error"
+    },
+    {
+      "dataset": "real-time-issues",
+      "type": "log",
+      "traceId": "174a308ceb43540c61c77cb2bf707545",
+      "spanId": "61e1ba54592ce07b",
+      "invocationId": "1de0eb766a632bedf1386950b19a007d",
+      "rayId": "a4550af64ea4966a",
+      "errorMechanism": "error-log"
+    },
+    {
+      "dataset": "otel",
+      "type": "span",
+      "traceId": "174a308ceb43540c61c77cb2bf707545",
+      "spanId": "61e1ba54592ce07b",
+      "invocationId": "1de0eb766a632bedf1386950b19a007d",
+      "rayId": "a4550af64ea4966a",
+      "durationMs": 220
+    }
+  ]
+}

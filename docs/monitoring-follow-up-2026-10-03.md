@@ -37,6 +37,20 @@ fixtureを本番CalDAVのconfigからdeployしない。
 Workers IssuesはWorker内の例外・5xx・errorログを扱う。Mac/VM/Tunnel停止はdots側の
 外形監視、iPhoneのURLSession切断はSwift側のトレースで観測する。
 
+### WorkerログとOTelの相関（2026-10-05）
+
+標準のObservability APIで、上記2要求の同じ時間帯をdry queryした。
+正常get-current-timeはHTTP境界span・ツールログのtraceId/spanId/invocationIdが一致。
+不正list-events-expandedはさらにerrorログ・real-time-issuesにも同じIDが付いていた。
+アプリ独自requestIdはツールログとerrorログで一致し、CloudflareのinvocationIdとは別物。
+公開証拠は[相関結果](verification/2026-10-05-worker-log-trace-correlation.json)。
+HTTPヘッダー・送信元IP・本文・認証値は証拠へ含めない。
+
+既存のWrangler traces設定とCloudflare標準計測でWorker境界の相関は実現済み。
+追加SDK・新たな送信先は不要。個別ツールやD1操作の独自span、Swift/Langfuseからの
+親trace伝播、ChatGPT内部モデルspanまでの相関を保証した結果ではない。
+ChatGPT受け入れの0055は、当該ホストの実行記録との照合を別途残す。
+
 ## 確認済みの障害
 
 日本時間9/28 22:05の外形監視ではCodex/Langfuseとも200、22:10にともに530、22:15に2回連続失敗としてBarkへPOSTし200で受理。実端末での表示は未確認。Macは10/3 00:14:04起動、VM/Kumaは00:15頃再開。外形監視はCodex00:20、Langfuse00:25にupへ遷移。Macの正確な停止原因は未確定。
