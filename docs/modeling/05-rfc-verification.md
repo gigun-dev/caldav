@@ -777,7 +777,7 @@ DB依存list-events-expandedは正常。well-knownは既存検証と同じUser-A
 サーバー実装・原本fixtureローカル非回帰・本番読み取り受け入れは完了。
 
 
-## 2026-10-04 PROPPATCHの部分保存是正（0007、完了）
+## 2026-10-04 PROPPATCHの部分保存是正（0007、修正・配信照合済み、本番書込み受け入れは残件）
 
 RFC 4918の保存済み原文§9.2/9.2.1/14.23/14.24/14.26を照合した。
 指示は文書順、成功は全件または無変更、個別結果はpropstatで返す。
@@ -811,7 +811,7 @@ Wranglerの既存Issues設定・ダミー秘密値・SDK sourcemapの警告は�
 [Codex独立レビュー](https://github.com/gigun-dev/caldav/pull/3#issuecomment-5978026070)も
 2026-10-04 08:16 UTCに完了し、重大な問題の指摘なし。
 
-本人承認後、PR #3を通常squash mergeし、mainは
+本人承認後、PR #3を通常squash mergeし、その時点のmainは
 `6e296180d5e5351dfc12b98c46f5b50b6cf5505b`に一致。
 [main CI](https://github.com/gigun-dev/caldav/actions/runs/37188642663)と
 [main Workers Build](https://github.com/gigun-dev/caldav/runs/111395987540)が成功した。
@@ -828,6 +828,8 @@ Build IDは`c90d716d-8430-49d4-af05-89fc2ad9921a`、報告されたversionは
 Location `/dav/`・no-cache、未認証MCP401・Bearer challenge、OAuth discovery200。
 認証情報・予定本文の取得や実カレンダーへの書込みは行っていない。
 
-0007は実装・全ローカル検証・独立レビュー・承認済みmerge・本番100%配信照合をもって完了。
-原子性の機能証明はHono/実workerd・ローカルD1であり、本番PROPPATCHや実機での
-設定変更試験を実施済みとは扱わない。追加DB migrationや運用設定の変更もない。
+コード修正・全ローカル検証・独立レビュー・承認済みmerge・本番100%配信の読み取り照合は完了。
+原子性の機能証明はHono/実workerd・ローカルD1であり、本番PROPPATCHの書込みを伴う
+受け入れ確認は別途残る。未対応項目を含む要求の全体拒否と非更新の本番検証を
+実施済みとは扱わず、0007は最新todo.txtの条件のまま未完了として維持する。
+追加DB migrationや運用設定の変更もない。

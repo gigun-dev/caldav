@@ -8,4 +8,8 @@ x 2026-10-03 2026-10-02 200 propstat の名前空間照合を厳密化する変�
 x 2026-10-03 2026-10-02 object 宛 calendar-multiget を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0012
 x 2026-10-03 2026-10-03 確定範囲に沿ってDAV読み取りのPropertySetとscope-aware QName解析を導入し200/404照合を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0013 id:0057
 x 2026-10-03 2026-10-03 予定がない日にカレンダー選択が未取得の0表示からタップするまで更新されない問題を修正し背景取得後の表示反映を検証する +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0059
-x 2026-10-04 2026-10-02 カレンダー設定の一括変更で一部だけ保存されないよう未対応項目を含む要求を全体として拒否し結果を返す（PR3のCodexレビューと本番100%配信照合済み。実データへの書込み試験は未実施） +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0007
+x 2026-10-04 2026-10-02 fullscreen FAB と composer の重なりを実機再現し safeAreaInsets を記録する +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0014 @dropped 機能検証は0016へ統合、使い心地の本人評価は0058へ集約
+x 2026-10-04 2026-10-02 追加から fullscreen へ遷移したときのキーボード閉鎖を実機再現し原因を切り分ける +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0015 @dropped 機能検証は0016へ統合、使い心地の本人評価は0058へ集約
+x 2026-10-04 2026-10-02 カード内 swipe 削除の実機 UI 経路を確認する +ios @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0023 @dropped swipe削除の機能検証は0016へ統合
+x 2026-10-04 2026-10-02 本人が全カレンダー・todoを検証用と明示し検証データの作成・変更を許可したことを確認する +operations see:docs/monitoring-follow-up-2026-10-03.md id:0039
+x 2026-10-04 2026-10-04 完了記録・現行コードと残件を照合し重複と古い前提を除き検証担当を整理する +governance @unattended id:0060

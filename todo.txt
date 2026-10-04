@@ -1,17 +1,15 @@
 (C) 2026-10-02 principal 宛 REPORT 3種の対応方針と完了条件を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0006
+(B) 2026-10-02 カレンダー設定の一括変更が一部だけ保存されない修正はPR3でmain統合・Workers Builds成功済み、本番で未対応項目を含む要求の全体拒否と非更新を検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0007
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
-(B) 2026-10-02 fullscreen FAB と composer の重なりを実機再現し safeAreaInsets を記録する +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0014
-(B) 2026-10-02 追加から fullscreen へ遷移したときのキーボード閉鎖を実機再現し原因を切り分ける +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0015
-(B) 2026-10-02 カードの選択・編集・詳細・コピー・chips・ドラフト・リスト選択を実機確認する +ios @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
+(B) 2026-10-02 入力・削除が止まらず保存できるようfullscreenのFAB/composer重なり・追加時のkeyboard・選択/編集/コピー/リスト切替/swipe削除の機能経路を実機またはSimulatorで検証し再現した不具合を修正する +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
 (B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0017
 (B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0018
 (B) 2026-10-02 場所検索から場所付き予定作成までを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0019
 (B) 2026-10-02 移動時間と通知の iOS 表示を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0020
 (B) 2026-10-02 calendar と tasks の iOS 非回帰および allprop sync-token 除外を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0021
 (B) 2026-10-02 復元時の changed 再取得・同一 ETag キャッシュ・再スキャンを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0022
-(B) 2026-10-02 カード内 swipe 削除の実機 UI 経路を確認する +ios @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0023
 (C) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024
 (C) 2026-10-02 現行 SDK・ext-apps・Swift の新旧仕様互換性を再調査して移行可否を決める +mcp @unattended see:docs/mcp-compatibility-2026-09-05.md id:0025
 (C) 2026-10-02 identity・principal・App Password 配布の未確定製品判断を整理する +multiuser @user see:docs/modeling/13-multiuser-identity.md id:0026
@@ -27,9 +25,8 @@
 (C) 2026-10-02 配色監査の未使用トークン A-4 を確認し除去の要否を決める +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
 (D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0037
 (D) 2026-10-02 Workers での OTel トレースとログの相関を調査し導入可否を決める +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0038
-(C) 2026-10-02 重複テストコレクションと検証由来候補イベントの所有意図をユーザーと確認する +operations @user see:docs/monitoring-follow-up-2026-10-03.md id:0039
 (D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:README.md id:0040
-(C) 2026-10-02 refresh token 失効時のエラーと未認証401の Bearer challenge を確認する +mcp @user see:docs/modeling/07-authentication.md id:0041
+(C) 2026-10-02 再ログイン要求を切り分けるためrefresh token失効と未認証401のBearer challengeを検証する +mcp @unattended see:docs/modeling/07-authentication.md id:0041
 (D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/modeling/10-email-integration.md id:0042
 (D) 2026-10-02 メール送信ポートとアダプタの契約を設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0042 id:0043
 (D) 2026-10-02 メール受信から ProcessIMipMessage までのユースケースを設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0043 id:0044
@@ -41,8 +38,8 @@
 (D) 2026-10-02 メモ placeholder と同値の実データの区別を確認し文言変更の要否を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md id:0050
 (D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0034 id:0051
 (D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/modeling/12-vevent-agentic.md id:0052
-(C) 2026-10-02 承認された A-1 範囲のスキーマ・principal 複数化・IdentityPort を実装して検証する +multiuser @user see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
-(B) 2026-10-03 サーバー障害を把握できるよう例外・5xxのIssues検出と通知到達を検証する（MCPエラー検出と集約は本番確認済み） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0054
-(B) 2026-10-03 今日の予定やtodoが反復失敗せず回答されることを反映後のChatGPTと機能OTelで確認する（Swift修正は実機配送済み） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0055
+(C) 2026-10-02 合意済みのスキーマ・principal複数化・IdentityPortを実装して検証する +multiuser @unattended see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
+(B) 2026-10-03 サーバー障害を把握できるよう隔離した例外・5xxでIssues検出と通知受付を検証する（MCPエラー集約は本番確認済み、端末表示のみ本人確認） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0054
+(B) 2026-10-03 ChatGPTで予定・todoの回答までの機能経路を検証し反復失敗とツール結果の受渡しをOTelで照合する（Swift固有の遅延・接続断はSwift台帳） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0055
 (B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056
 (B) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
