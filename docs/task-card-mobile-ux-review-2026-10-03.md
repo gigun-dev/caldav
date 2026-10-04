@@ -112,7 +112,7 @@ python3 scripts/verification/task-card-ux.py cleanup
 
 ## 2026-10-05 Swift実ホストでの機能確認（0016）
 
-iPhone 17 / iOS 27.0 の専用Simulator（402×874pt）で、署名済みSwift MCPHostから本番CalDAVのMCP Appsカードを操作した。合成専用リスト A（id=`functional-verification-0016`、displayName=`Functional verification 0016`）と B（id=`functional-verification-0016-b`、displayName=`Functional verification 0016 B`）を作成し、0058の本人評価用データは変更していない。通常会話で `Use list-todos with calendarId functional-verification-0016. Show the task card.` と入力してカードを発火した。
+iPhone 17 / iOS 27.0 の専用Simulator（402×874pt）で、署名済みSwift MCPHostから本番CalDAVのMCP Appsカードを操作した。今回の合成専用リストは A（id=`functional-verification-0016`、displayName=`Functional verification 0016`）で、初期3行と下部スクロール用14行を準備した。0058の本人評価用データは変更していない。
 
 | 操作 | 実経路の結果 |
 |---|---|
@@ -123,10 +123,27 @@ iPhone 17 / iOS 27.0 の専用Simulator（402×874pt）で、署名済みSwift M
 | リスト切替 | `Tasks` 選択で専用行が消え、専用リスト選択で復帰。切替先の既存タスクは変更していない |
 | swipe削除 | 専用行の左swipeで削除ボタンを露出し、タップ後に行が消失。別MCP readでも削除済み |
 
-画面操作はXCUITestを用いた。Xcode 27では旧idb入力がSimulatorKitの移動により失敗するため使用せず、スクリーンショットとAXを併用した。キーボードを閉じた直後にWebViewのAX要素が消える場面では、402×874pt専用の画面上の「完了」を座標でタップした。各操作の段階テストは成功した。段階操作を統合したテストはコンパイル確認までで、一括実行の成功は未確認（再試行でモデルが前回の回答を再利用しtools/callを出さなかった）。LLMの自由なツール選択を回帰の条件にしないため、再実行入口は新規会話で専用カードを開いた状態を事前条件とする。再実行入口はSwift repoの `UITests/CardFunctionalVerificationTests.swift`（通常はskipするopt-in）であり、後述の事前準備が必要。
+画面操作はXCUITestを用いた。通常ChatHomeViewで検証用loopback Chat Completions応答を使い、`list-todos`の選択だけを固定した。MCPのOAuth・本番tool call・HTML resource・bridge・保存は実経路である。検証用providerはSwift repoの `scripts/verification/caldav-card-provider.py`、試験入口は `UITests/CardFunctionalVerificationTests.swift`（opt-in）。製品ルートの追加やツール機能の縮小は行っていない。
 
-**機能検証の残り:** ソフトキーボードのAX frameが `(0,891,402,233)` と画面外にあり、実表示は入力アクセサリのみだった。入力focus成立をキーボード遮蔽解消の証明として扱わない。ソフトキーボードを表示できるSimulatorまたは実機で、下部行・新規入力の可視性を別途確認する。使いやすさ・操作の流れの良し悪しは0058で本人が判断する。
+専用SimulatorをDevice Hubで選択した状態ではソフトキーボードの実表示を取得できた。新規入力はtitle=(60,268,283,22)、詳細入力はtitle=(12,270.2,379,35)、keyboard=(0,583,402,233)で、入力欄の下端がkeyboard上端より上にあることをassertし、スクリーンショットをxcresultへ保存した。下部行 `ZZ 0016 scroll fixture 13` はframe=(60,797,176,21)までスクロールした後に詳細を開き、title=(12,270.2,379,35)へフォーカスした。keyboard=(0,583,402,233)より入力欄が上にあることを単独XCUITestで確認した（8.5秒、成功）。証拠は `/tmp/swift-delete-verification/lower-single.log` と Swift repoの `.build/xcode/Logs/Test/Test-MCPHost-2026.10.05_01-11-24-+0900.xcresult` の `lower-row-input` 添付である。使いやすさ・操作の流れの良し悪しは0058で本人が判断する。
 
-再実行には専用リストAをdisplayName=`Functional verification 0016`（VTODO）で作り、未完了の `0016 Edit fixture` / `0016 Copy fixture` / `0016 Swipe fixture` を1件ずつseedする。通常接続のOAuthを完了し、LLM設定済みのSwiftアプリを通常会話画面で起動する。新規会話で上記プロンプトを送り、3件の初期fixtureが表示された専用カードを開いておく（tools/callが実行されない応答は準備未完）。iPhone 17専用Simulatorを明示し、`build-for-testing`後の `.xctestrun` の `MCPHostUITests.EnvironmentVariables.MCPHOST_CALDAV_FUNCTIONAL_E2E` に `1` を設定して `test-without-building -only-testing:MCPHostUITests/CardFunctionalVerificationTests` を実行する。固定座標はこのviewport専用であり、他端末へ流用しない。実行後は別MCP readで保存・削除を照合し、専用リストだけをcleanupする。認証値や署名鍵はテスト／記録へ保存しない。
+再実行には専用リストAをdisplayName=`Functional verification 0016`（VTODO）で作り、未完了の `0016 Edit fixture` / `0016 Copy fixture` / `0016 Swipe fixture` を1件ずつseedする。下部行用に `ZZ 0016 scroll fixture 00`〜`13` を追加する。Bは不要。OAuth済みの通常hostを次の検証用設定で起動し、任意の発話を1回送って専用カードを準備する。キーは実credentialではなくfixture文字列である。
 
-合成専用2リストは検証後に削除した。本人用0058データは保持した。
+```sh
+python3 scripts/verification/caldav-card-provider.py
+SIMCTL_CHILD_MCPHOST_LLM_KEY=fixture \
+SIMCTL_CHILD_MCPHOST_LLM_BASEURL=http://127.0.0.1:18464/v1 \
+SIMCTL_CHILD_MCPHOST_LLM_MODEL=verification \
+xcrun simctl launch --terminate-running-process "$SIMULATOR_UDID" dev.gigun.mcphost
+```
+
+iPhone 17専用Simulator（402×874pt）を明示し、`build-for-testing`後の `.xctestrun` の `MCPHostUITests.EnvironmentVariables.MCPHOST_CALDAV_FUNCTIONAL_E2E` に `1` を設定して `test-without-building -only-testing:MCPHostUITests/CardFunctionalVerificationTests` を実行する。試験は画面内・画面幅・hittableに合うfullscreen WebViewを選び、専用リスト選択と初期3行を変更前に照合する。固定座標はこのviewport専用である。WKWebView AXは非表示行を残すので、リスト切替／削除の画面消失はhittableで判定し、保存・削除は別MCP readで照合する。clipboard内容は `simctl pbpaste` による別検証（test内assertではない）。認証値や署名鍵を記録へ保存しない。
+
+
+統合試験0064は一括成功していない。再起動後の限定1回では追加・編集・コピー操作・リスト切替まで進んだが、試験helperの下swipeがnative fullscreen sheetを閉じ、swipe削除対象をhittableにできず終了した。実スクリーンショット `/Users/gigun/tmp-sim/caldav-0016/final-state.png` は通常chatへ戻った状態である。helperは行の実frameによる方向選択へ修正したが、修正後はcompile確認のみで、一括の再実行は行っていない。ログは `/tmp/swift-delete-verification/reconnected-full.log`。終了後の別MCP readでAdded/Editedの保存とSwipeの残存を確認した。最後の `simctl pbpaste` は空だったため、この一括でclipboard内容一致を確認したとは扱わない。表のコピー・swipe削除成功は以前の段階検証であり、一括結果と区別する。
+
+01:16の別の一括試験では、カード発 `update-todo` の実通信失敗を観測した。2026-10-05 01:16:06.509 JSTに開始し、01:16:12.828に `NSURLErrorDomain -1005` / `CFNetwork -1005`（stream code -4）で失敗した。公開endpointは `https://caldav.gigun-dev.workers.dev/mcp`、URLSession taskは `6D1F7645-733B-4ABF-8050-ADF3348B4318` の87。カードには「変更を保存できませんでした」が出た一方、別MCP readではEditedの保存を確認した。Worker側は01:16:06.565〜01:16:07.088、HTTP200 / ok=true / 523msで正常終了し、server traceは `218802cca679ff753151565b211366b4`。client側のrequest/trace IDはログにないため、これは時刻と操作の相関である。
+
+失敗実recordはAppsServerProxy / AppsBridgePassthroughDispatcherのOSLogにあり、通常カードのproxy tools/callには既存TelemetryPort/spanが渡されていない。LLM generation失敗計測とは別経路で、今回のカード失敗をOTLPで取得した証拠はない。Workerが正常終了しているためWorkers Issuesだけでこの接続断を取得できるとは言えない。raw NSErrorのpeer情報・認証値は記録へ保存していない。
+
+検証終了後、今回の専用リストAをforce削除し、専用Simulator `w-caldav-cards-0064` をshutdown/delete、loopback providerを停止した。最終の試験コードはiOS `build-for-testing` 成功、provider構文確認成功。`make check` はServices 207件・Kernel 136件、lint 0件違反。改修は検証コードのみで製品機能の変更はない。

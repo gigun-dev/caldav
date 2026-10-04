@@ -1,0 +1,109 @@
+{
+  "scope": "Time correlation with Swift card update failure at 01:16 JST; no verified client-server propagated trace ID",
+  "success": true,
+  "rows": [
+    {
+      "timestamp": 1791130567088,
+      "type": "cf-worker-event",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "invocationId": "3780a8ba9785a0eb95925767a08a9b05",
+      "rayId": "a4557d38ee2111f6",
+      "outcome": "ok"
+    },
+    {
+      "timestamp": 1791130567088,
+      "type": "cf-worker",
+      "mcpTool": "update-todo",
+      "ok": true,
+      "ms": 520,
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "049895d92a88f023",
+      "invocationId": "3780a8ba9785a0eb95925767a08a9b05",
+      "applicationRequestId": "6d9271e8-7ffe-460b-bf90-34865af81005",
+      "rayId": "a4557d38ee2111f6"
+    },
+    {
+      "timestamp": 1791130567021,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "56e023c5febfb08c",
+      "spanName": "d1_all",
+      "durationMS": 67
+    },
+    {
+      "timestamp": 1791130566924,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "9024f505f31b58d6",
+      "spanName": "d1_batch",
+      "durationMS": 97
+    },
+    {
+      "timestamp": 1791130566866,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "3d344a9e0e297d3f",
+      "spanName": "d1_first",
+      "durationMS": 58
+    },
+    {
+      "timestamp": 1791130566804,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "5335e22ee6185c45",
+      "spanName": "d1_first",
+      "durationMS": 62
+    },
+    {
+      "timestamp": 1791130566746,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "0b9cb52a85c29793",
+      "spanName": "d1_all",
+      "durationMS": 58
+    },
+    {
+      "timestamp": 1791130566690,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "efdf69c006834450",
+      "spanName": "d1_first",
+      "durationMS": 56
+    },
+    {
+      "timestamp": 1791130566632,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "a7c54abbdc6c1428",
+      "spanName": "d1_first",
+      "durationMS": 58
+    },
+    {
+      "timestamp": 1791130566568,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "d0fe4439dee5e5e8",
+      "spanName": "d1_first",
+      "durationMS": 64
+    },
+    {
+      "timestamp": 1791130566565,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "b5413df0d8db74c1",
+      "spanName": "kv_get",
+      "durationMS": 2
+    },
+    {
+      "timestamp": 1791130566565,
+      "type": "span",
+      "traceId": "218802cca679ff753151565b211366b4",
+      "spanId": "049895d92a88f023",
+      "invocationId": "3780a8ba9785a0eb95925767a08a9b05",
+      "rayId": "a4557d38ee2111f6",
+      "spanName": "POST",
+      "durationMS": 523,
+      "httpStatus": 200
+    }
+  ]
+}

@@ -23,3 +23,5 @@ x 2026-10-05 2026-10-02 再ログイン要求を切り分けるためrefresh tok
 x 2026-10-05 2026-10-02 配色監査A-4の未参照CSS定義を除去し、撤回済み静的リングと時刻軸の誤った二重管理コメントを是正した（機能変更なし、make check通過） +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
 x 2026-10-05 2026-10-05 Swift実ホストのfullscreen FAB・入力focus・追加/編集保存・コピー・リスト切替・swipe削除・composer復帰を専用データで検証しサーバー照合とcleanupを完了した +ios +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0063
 x 2026-10-05 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
+x 2026-10-05 2026-10-02 実キーボード表示中の新規・詳細・下部行入力が画面内に見えることと通常composer復帰をSwift実ホストで確認した（14行スクロール後の下部行から入力、製品修正不要） +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
+x 2026-10-05 2026-10-05 MCPカード更新の応答喪失を既存OTelで追跡する最小実装範囲を決める（1時16分の接続喪失、同時刻のWorkerは更新成功、現行カード経路はOSLogのみ） +ios +observability @unattended see:docs/verification/2026-10-05-mcp-update-disconnect-worker.json id:0065
