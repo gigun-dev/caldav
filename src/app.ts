@@ -82,6 +82,7 @@ import { QuotaLimitedGeocoding } from "./application";
 import { authenticateBasic, secureStringEqual, UNAUTHORIZED_HEADERS } from "./presentation/auth/basic-auth";
 import { parseIfHeader, syncTokenListsFor } from "./presentation/dav/if-header";
 import { equivalentObjectHref } from "./presentation/dav/href";
+import { planPropertyUpdate, propertyUpdateResponse } from "./presentation/dav/proppatch";
 import { createMcpApp } from "./presentation/mcp/server";
 // R-6: OAuth scope 分離(read/write)。同意画面の既定 scope・表示文言、静的 Bearer の full access
 // props に使う。語彙は presentation/mcp/scopes.ts に一元化(index.ts の scopesSupported と同じ定義)。
@@ -101,8 +102,6 @@ import {
 	parseSyncToken,
 	principalProps,
 	principalSearchPropertySetXml,
-	propFilterFromKeys,
-	propertySet,
 	InvalidDavXmlError,
 	responseXml,
 	serializeFreeBusyResponse,
@@ -785,21 +784,17 @@ app.all("*", async (c) => {
 		}
 
 		if (method === "PROPPATCH" && !resourceName) {
-			const props = parseCollectionProperties(await readBody(request));
-			await new UpdateCollectionProperties(repos.collections).execute({
-				owner: principalPathValue, collectionId: id,
-				displayName: props.displayName, color: props.color, order: props.order,
-			});
-			// PROPPATCH は変更対象プロパティごとの成功 propstat を返す。空の response は
-			// iOSが更新失敗と解釈するため、受理した要素を明示する。
-			const appliedEntries: [string, string, string][] = [];
-			if (props.displayName !== undefined) appliedEntries.push(["DAV:", "displayname", `<d:displayname/>`]);
-			if (props.color !== undefined) appliedEntries.push(["http://apple.com/ns/ical/", "calendar-color", `<ical:calendar-color/>`]);
-			if (props.order !== undefined) appliedEntries.push(["http://apple.com/ns/ical/", "calendar-order", `<ical:calendar-order/>`]);
-			// 2026-10-03: 読み取りと同じQNameを定義し、filterにダミーnamespaceを渡さない。
-			// 入力set/removeとatomicityの是正は別タスク0007に残す。
-			const applied = propertySet(appliedEntries);
-			return xml(multistatus(responseXml(requestHref(url), applied, propFilterFromKeys(applied))));
+			// Validate the whole ordered request before the shared UC can save.
+			// A rejected member leaves every calendar setting unchanged (0007).
+			const plan = planPropertyUpdate(await readBody(request));
+			if (plan.metadata) {
+				await new UpdateCollectionProperties(repos.collections).execute({
+					owner: principalPathValue, collectionId: id, ...plan.metadata,
+				});
+			}
+			// Return each requested QName, including rejected members; an empty
+			// response is invalid and iOS interprets it as an update failure.
+			return xml(propertyUpdateResponse(requestHref(url), plan));
 		}
 
 		if (method === "DELETE" && !resourceName) {
