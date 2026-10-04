@@ -9,7 +9,7 @@
 (B) 2026-10-02 移動時間と通知の iOS 表示を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0020
 (A) 2026-10-02 calendar と tasks の iOS 非回帰および allprop sync-token 除外を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0021
 (A) 2026-10-02 復元時の changed 再取得・同一 ETag キャッシュ・再スキャンを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0022
-(B) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024
+(B) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024 @wip
 (C) 2026-10-02 現行 SDK・ext-apps・Swift の新旧仕様互換性を再調査して移行可否を決める +mcp @unattended see:docs/mcp-compatibility-2026-09-05.md id:0025
 (D) 2026-10-02 identity・principal・App Password 配布の未確定製品判断を整理する +multiuser @user see:docs/modeling/13-multiuser-identity.md id:0026
 (D) 2026-10-02 users・principal・権限表・App Password スキーマと IdentityPort の実装範囲を確定する +multiuser @user see:docs/modeling/13-multiuser-identity.md dep:0026 id:0027
@@ -23,7 +23,6 @@
 (C) 2026-10-02 配色監査の未使用トークン A-4 を確認し除去の要否を決める +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
 (D) 2026-10-02 sync-collection hydrate の往復を計測し N+1 是正の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0037
 (D) 2026-10-02 D1 座標を含むブラウザ検証手順の公開範囲を決める +docs @user see:README.md id:0040
-(B) 2026-10-02 再ログイン要求を切り分けるためrefresh token失効と未認証401のBearer challengeを検証する +mcp @unattended see:docs/modeling/07-authentication.md id:0041
 (D) 2026-10-02 RFC 6047 の原文スナップショットを追加しメール統合の要件を照合する +mail @unattended see:docs/modeling/10-email-integration.md id:0042
 (D) 2026-10-02 メール送信ポートとアダプタの契約を設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0042 id:0043
 (D) 2026-10-02 メール受信から ProcessIMipMessage までのユースケースを設計する +mail @unattended see:docs/modeling/10-email-integration.md dep:0043 id:0044

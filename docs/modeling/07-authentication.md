@@ -163,5 +163,10 @@ Nextcloud は OAuth 対応済み製品なのに CalDAV では App Password に�
 
 accessTokenTTLは既定3600秒を維持し、ホストのrefresh不具合をTTL延長で隠さない方針。
 claude.ai iOSカード描画パスの失効問題は2026-07の診断時点の観測であり、現在の再現性は別途確認する。
-refresh token失効時の`invalid_grant`と、未認証401のBearer resource_metadata challengeを分けて確認する。
-2026-10-03の読み取り検証では後者は確認済み。refresh失効の端末経路は未検証。
+2026-10-05、実workerdのOAuth認可コードフローでaccess tokenが3600秒、refresh grantが
+発行から30日であることを検証した。refreshは新トークンを発行するがgrantの期限は延長しない。
+更新後のaccess tokenでMCP読取り成功、隔離KVのgrantを失効させると400/invalid_grantを確認。
+本番の既存grant・tokenは変更していない。回帰は `test/worker/oauth-e2e.test.ts`。
+端末の認証保持や自然な30日経過を検証した結果ではない。
+未認証と無効Bearerの本番要求は、ともに401とBearer resource_metadata challengeを返した。
+短期間の再ログイン要求はこの期限だけで説明せず、ホストのKeychain・client ID・refresh処理と分けて調べる。

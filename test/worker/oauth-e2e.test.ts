@@ -99,6 +99,7 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 	let authorizationCode: string;
 	let returnedState: string;
 	let accessToken: string;
+	let refreshToken: string;
 
 	const sentState = "test-state-value-12345";
 
@@ -200,9 +201,12 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 			}),
 		);
 		expect(response.status).toBe(200);
-		const body = (await response.json()) as { access_token?: string; token_type?: string };
+		const body = (await response.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; token_type?: string };
 		expect(typeof body.access_token).toBe("string");
+		expect(typeof body.refresh_token).toBe("string");
+		expect(body.expires_in).toBe(3600);
 		accessToken = body.access_token as string;
+		refreshToken = body.refresh_token as string;
 	});
 
 	it("(d) /mcp: OAuth access_token で tools/list を呼ぶと5ツールが見える(E-1 create-todo/list-todos 追加)", async () => {
@@ -451,5 +455,37 @@ describe("OAuth-for-MCP E2E(スライス2)", () => {
 		const wwwAuthenticate = response.headers.get("www-authenticate");
 		expect(wwwAuthenticate).toBeTruthy();
 		expect(wwwAuthenticate).toContain('realm="OAuth"');
+	});
+
+	it("refreshはトークンを更新するが30日の認可期限を延長せず、失効後はinvalid_grantになる", async () => {
+		const [userId, grantId] = refreshToken.split(":");
+		const grantKey = `grant:${userId}:${grantId}`;
+		const before = await env.OAUTH_KV.get<{ expiresAt: number }>(grantKey, "json");
+		expect(before).not.toBeNull();
+		expect(before!.expiresAt - Math.floor(Date.now() / 1000)).toBeGreaterThan(29 * 86400);
+		expect(before!.expiresAt - Math.floor(Date.now() / 1000)).toBeLessThanOrEqual(30 * 86400);
+		const refresh = (token: string) => callWorker(new Request("https://example.com/oauth/token", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: token }).toString(),
+		}));
+		const response = await refresh(refreshToken);
+		expect(response.status).toBe(200);
+		const rotated = await response.json() as { access_token: string; refresh_token: string; expires_in: number };
+		expect(rotated.refresh_token).not.toBe(refreshToken);
+		expect(rotated.expires_in).toBe(3600);
+		const api = await callWorker(new Request("https://example.com/mcp", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${rotated.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "tools/list", params: {} }),
+		}));
+		expect(api.status).toBe(200);
+		const after = await env.OAUTH_KV.get<Record<string, unknown>>(grantKey, "json");
+		expect(after!.expiresAt).toBe(before!.expiresAt);
+		// 30日待つ代わりに、このworkerdテストだけのgrantを失効させる。本番KVには触れない。
+		await env.OAUTH_KV.put(grantKey, JSON.stringify({ ...after, expiresAt: Math.floor(Date.now() / 1000) - 1 }));
+		const expired = await refresh(rotated.refresh_token);
+		expect(expired.status).toBe(400);
+		expect(await expired.json()).toMatchObject({ error: "invalid_grant", error_description: "Refresh token has expired" });
 	});
 });

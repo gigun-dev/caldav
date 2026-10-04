@@ -19,3 +19,4 @@ x 2026-10-04 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする
 x 2026-10-04 2026-10-04 CalDAVの直近の体験・同期・障害観測と将来構想を優先度で整理し関連repoの今週末の進捗を照合する +governance @unattended id:0061
 x 2026-10-05 2026-10-03 Workerの例外・5xx・HTTP200のMCPエラーをIssuesで検知しCalDAV限定の通知受付を確認する（隔離fixtureと本番再発の自動通知成功、メール端末到達は本人確認へ分離） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0054
 x 2026-10-05 2026-10-02 Worker境界のOTelとツールログ・Issuesの相関を本番で検証し追加SDKの要否を決める（既存標準計測で正常/失敗のID一致、ホストからの親trace伝播は未検証） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0038
+x 2026-10-05 2026-10-02 再ログイン要求を切り分けるためrefresh token失効と未認証401のBearer challengeを検証する +mcp @unattended see:docs/modeling/07-authentication.md id:0041
