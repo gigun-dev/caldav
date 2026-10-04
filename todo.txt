@@ -28,11 +28,10 @@
 (D) 2026-10-02 共有・委任の実装タスクと受け入れ条件を分解する +sharing @unattended see:docs/modeling/03-domain-model.md dep:0029 id:0047
 (D) 2026-10-02 購読カレンダー取り込みと agent 側横断集約の必要範囲を決める +subscriptions @user see:docs/modeling/11-agentic-surfaces.md dep:0029 id:0048
 (D) 2026-10-02 CardDAV に着手する製品上の実需を確認する +contacts @user see:docs/modeling/11-agentic-surfaces.md id:0049
-(D) 2026-10-02 メモ placeholder と同値の実データの区別を確認し文言変更の要否を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md id:0050
 (D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0034 id:0051
 (D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/modeling/12-vevent-agentic.md id:0052
 (D) 2026-10-02 合意済みのスキーマ・principal複数化・IdentityPortを実装して検証する +multiuser @unattended see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
 (B) 2026-10-03 ChatGPTの予定0件・未完了todo32件の回答と両カード表示はMCP直接読取と一致済み、Workersのツール実行記録との相関を確認する（Langfuse検索は0件、モデル内部spanは取得経路なし） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md dep:0038 id:0055
 (A) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
 2026-10-05 Cloudflare IssuesのCalDAV再発通知が既存メール宛先に届いたか本人が確認する（Cloudflare自動run成功済み、使いやすさ評価とは別） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0062
-(A) 2026-10-05 公開済みMCPHost build 9を端末へ適用後、カード発MCP操作の実端末spanを既存OTLPから読み戻し成功と接続失敗を観察できることを確認する +ios +observability @device @user dep:0067 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0068
+(A) 2026-10-05 公開済みMCPHost build 9の端末適用・カード操作後に実端末spanを既存OTLPから読み戻す（公開後の照会0件、合成4件の読取経路は一致確認済み） +ios +observability @device @user dep:0067 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0068

@@ -28,3 +28,4 @@ x 2026-10-05 2026-10-05 MCPカード更新の応答喪失を既存OTelで追跡�
 x 2026-10-05 2026-10-05 カード発MCP操作を既存TelemetryPort/OTLPへ計測し、成功・論理エラー・接続喪失・キャンセルの実protobufと既存Langfuse読取を検証した（引数本文は新spanに含めず、SwiftのcheckとiOS build成功） +ios +observability @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md dep:0065 id:0066
 x 2026-10-05 2026-10-05 通常Swiftホストで追加・編集・コピー・リスト切替・swipe削除・下部行keyboard・composer復帰の一括試験が成功、別MCPの保存削除とclipboardを照合した（80秒、製品変更不要） +ios +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0064
 x 2026-10-05 2026-10-05 Xcode再ログイン後にMac miniで新版d59c883のAd Hoc署名・検証・固定URL公開が成功し配布停止を解消した +ios +distribution @unattended dep:0066 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0067
+x 2026-10-05 2026-10-02 メモ placeholder と同値の実データの区別を確認し文言変更の要否を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md id:0050

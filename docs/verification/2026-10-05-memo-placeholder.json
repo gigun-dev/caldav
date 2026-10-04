@@ -1,0 +1,21 @@
+{
+  "environment": "In-app browser; current bundled todos card; loopback synthetic MCP host; no production mutation",
+  "uiHash": "748931ca",
+  "checks": {
+    "same_text_is_input_value": true,
+    "same_text_is_not_placeholder": true,
+    "unchanged_save_sends_no_update": true,
+    "empty_value_shows_placeholder": true,
+    "explicit_clear_sends_empty_notes": true
+  },
+  "clearCall": {
+    "name": "update-todo",
+    "arguments": {
+      "id": "memo50",
+      "calendarId": "fixture",
+      "timeZone": "Asia/Tokyo",
+      "notes": ""
+    }
+  },
+  "boundary": "Functional value/placeholder distinction only; human usability evaluation remains task 0058"
+}

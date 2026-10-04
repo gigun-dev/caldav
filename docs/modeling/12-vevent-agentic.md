@@ -522,7 +522,7 @@ namespace `{https://gigun.dev/ns/caldav}` はキット公開 API になるので
 ## 未確定のカード機能境界
 
 list-todosのdue指定にeventsと同じ相対日付語彙を導入する範囲は未決。
-メモplaceholder「メモを追加」と同値の実データの区別は、再現と実害を確認して文言変更の要否を決める。
+メモplaceholder「メモを追加」と同値の実データは、現行カードのブラウザ試験で入力値として保持され、`:placeholder-shown` は false。未編集の保存では update-todo を送らず、明示的に空にした場合のみ notes="" を送る。データ消失・誤更新は再現せず、この課題による文言変更は不要。機能検証は[証拠](../verification/2026-10-05-memo-placeholder.json)、見分けやすさの本人評価は0058に残す。
 occurrence単位編集、VALARM付き作成、get-event詳細カード、move-event、URL/CONFERENCEの次スライスも
 選択・分解前であり、一括実装を決定したものではない。本人による入力体験の評価は
 [モバイル操作監査](../task-card-mobile-ux-review-2026-10-03.md)のデータと手順を使う。
