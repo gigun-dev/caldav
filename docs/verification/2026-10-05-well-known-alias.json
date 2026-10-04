@@ -1,0 +1,221 @@
+{
+  "version": "c1c83d6e-bdd5-4b69-aa1f-fe398f3d156c",
+  "checks": [
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "worker",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "GET",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav",
+      "method": "PROPFIND",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "GET",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "anonymous",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    },
+    {
+      "host": "ios-proxy",
+      "path": "/.well-known/caldav/",
+      "method": "PROPFIND",
+      "authentication": "invalid-basic",
+      "status": 301,
+      "location": "/dav/",
+      "cacheControl": "no-cache"
+    }
+  ]
+}

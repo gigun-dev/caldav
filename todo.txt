@@ -1,7 +1,6 @@
 (C) 2026-10-02 principal 宛 REPORT 3種の対応方針と完了条件を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0006
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
-(C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011 @wip
 (A) 2026-10-02 ソフトキーボードを実表示できるiOS環境で下部行・新規入力の可視性と遮蔽を確認する（追加・編集保存・コピー・リスト切替・swipe削除は実ホストで検証済み、現在のSimulatorはkeyboard frameが画面外） +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016 @wip
 (B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0017
 (B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0018

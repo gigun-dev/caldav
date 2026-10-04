@@ -856,4 +856,8 @@ RFC 6764 §5 の原文は `/.well-known/caldav` を登録し、HTTPリダイレ�
 末尾スラッシュ付きURIを要求してはいない。接続設定時に付いた末尾スラッシュで探索が404になるため、
 `/.well-known/caldav/` を互換別名として同じ301・`Location: /dav/`・`Cache-Control: no-cache`へ寄せる。
 宛先は従来と同じ公開されたサービス入口で、認証の追加やDAV本体のパス正規化は行わない。
-匿名・正しいBasic・無効なBasicのGET/PROPFINDで同一応答を確認する。
+匿名・正しいBasic・無効なBasicのGET/PROPFINDで同一応答を確認した。
+`make check`成功（Bun1152 tests・workerd46 tests）。main push後の本番version
+`c1c83d6e-bdd5-4b69-aa1f-fe398f3d156c`でWorker直通・正式Cloud Runプロキシの
+両URI・2メソッド・3認証条件の24件が301／同一Location／no-cacheを返した。
+証拠: [本番応答](../verification/2026-10-05-well-known-alias.json)。
