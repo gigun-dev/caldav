@@ -109,3 +109,24 @@ python3 scripts/verification/task-card-ux.py cleanup
 予定なしの初期画面で右上が0、タップ後に2色へ変わる原因は、背景のlist-calendars取得完了時に凡例を更新していなかったこと。取得完了後に凡例だけを更新し、未取得・全選択の間は「…」で表示する。connect解決より先にtool-resultが届いた場合も背景取得を開始する。入力欄や一覧DOMの再描画は増やさない。
 
 実際のagenda HTMLとext-apps SDKをChromiumのiframeに読み込み、予定0件・カレンダー2件の応答を700ms遅延させたホストで検証した。クリック0回で「…」から色ドット2件へ更新。Swift実機での本人の使いやすさ判断とは分ける。
+
+## 2026-10-05 Swift実ホストでの機能確認（0016）
+
+iPhone 17 / iOS 27.0 の専用Simulator（402×874pt）で、署名済みSwift MCPHostから本番CalDAVのMCP Appsカードを操作した。合成専用リスト A（id=`functional-verification-0016`、displayName=`Functional verification 0016`）と B（id=`functional-verification-0016-b`、displayName=`Functional verification 0016 B`）を作成し、0058の本人評価用データは変更していない。通常会話で `Use list-todos with calendarId functional-verification-0016. Show the task card.` と入力してカードを発火した。
+
+| 操作 | 実経路の結果 |
+|---|---|
+| fullscreen / FAB | 最大化後の追加ボタンが画面内でhittable。通常composerと重ならず、縮小後のcomposerもhittable |
+| 追加 / フォーカス / 確定 | タイトル入力へフォーカスし、Doneで追加表示。本番MCPを別接続で読み、`0016 Added fixture` の保存を確認 |
+| 既存編集 / 保存 | 詳細ページのtitleを全選択で変更し、ページの「完了」で一覧へ復帰。別MCP readで `0016 Edited fixture` の保存を確認 |
+| コピー | 詳細のtitleを全選択→iOS編集メニューCopy。Simulator内clipboardを `simctl pbpaste` で別readし `0016 Copy fixture` と一致（統合XCUITest内にはclipboard内容assertを含めていない） |
+| リスト切替 | `Tasks` 選択で専用行が消え、専用リスト選択で復帰。切替先の既存タスクは変更していない |
+| swipe削除 | 専用行の左swipeで削除ボタンを露出し、タップ後に行が消失。別MCP readでも削除済み |
+
+画面操作はXCUITestを用いた。Xcode 27では旧idb入力がSimulatorKitの移動により失敗するため使用せず、スクリーンショットとAXを併用した。キーボードを閉じた直後にWebViewのAX要素が消える場面では、402×874pt専用の画面上の「完了」を座標でタップした。各操作の段階テストは成功した。段階操作を統合したテストはコンパイル確認までで、一括実行の成功は未確認（再試行でモデルが前回の回答を再利用しtools/callを出さなかった）。LLMの自由なツール選択を回帰の条件にしないため、再実行入口は新規会話で専用カードを開いた状態を事前条件とする。再実行入口はSwift repoの `UITests/CardFunctionalVerificationTests.swift`（通常はskipするopt-in）であり、後述の事前準備が必要。
+
+**機能検証の残り:** ソフトキーボードのAX frameが `(0,891,402,233)` と画面外にあり、実表示は入力アクセサリのみだった。入力focus成立をキーボード遮蔽解消の証明として扱わない。ソフトキーボードを表示できるSimulatorまたは実機で、下部行・新規入力の可視性を別途確認する。使いやすさ・操作の流れの良し悪しは0058で本人が判断する。
+
+再実行には専用リストAをdisplayName=`Functional verification 0016`（VTODO）で作り、未完了の `0016 Edit fixture` / `0016 Copy fixture` / `0016 Swipe fixture` を1件ずつseedする。通常接続のOAuthを完了し、LLM設定済みのSwiftアプリを通常会話画面で起動する。新規会話で上記プロンプトを送り、3件の初期fixtureが表示された専用カードを開いておく（tools/callが実行されない応答は準備未完）。iPhone 17専用Simulatorを明示し、`build-for-testing`後の `.xctestrun` の `MCPHostUITests.EnvironmentVariables.MCPHOST_CALDAV_FUNCTIONAL_E2E` に `1` を設定して `test-without-building -only-testing:MCPHostUITests/CardFunctionalVerificationTests` を実行する。固定座標はこのviewport専用であり、他端末へ流用しない。実行後は別MCP readで保存・削除を照合し、専用リストだけをcleanupする。認証値や署名鍵はテスト／記録へ保存しない。
+
+合成専用2リストは検証後に削除した。本人用0058データは保持した。
