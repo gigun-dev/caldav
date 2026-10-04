@@ -1,0 +1,70 @@
+{
+  "timeframe": {
+    "from": 1791040243621,
+    "to": 1791126643621
+  },
+  "scope": "Successful MCP tool elapsed ms; excludes client network and model time",
+  "groups": [
+    {
+      "group": "list-todos ⬤ KIX",
+      "calls": 1,
+      "medianMs": 94,
+      "p95Ms": 94
+    },
+    {
+      "group": "list-todos ⬤ NRT",
+      "calls": 15,
+      "medianMs": 73,
+      "p95Ms": 139
+    },
+    {
+      "group": "list-events-expanded ⬤ NRT",
+      "calls": 1,
+      "medianMs": 59,
+      "p95Ms": 59
+    },
+    {
+      "group": "refresh-events ⬤ KIX",
+      "calls": 1,
+      "medianMs": 127,
+      "p95Ms": 127
+    },
+    {
+      "group": "report-card-telemetry ⬤ KIX",
+      "calls": 3,
+      "medianMs": 0,
+      "p95Ms": 0
+    },
+    {
+      "group": "create-calendar ⬤ KIX",
+      "calls": 1,
+      "medianMs": 324,
+      "p95Ms": 324
+    },
+    {
+      "group": "create-todos ⬤ KIX",
+      "calls": 1,
+      "medianMs": 1250,
+      "p95Ms": 1250
+    },
+    {
+      "group": "list-events-expanded ⬤ KIX",
+      "calls": 1,
+      "medianMs": 122,
+      "p95Ms": 122
+    },
+    {
+      "group": "list-calendars ⬤ KIX",
+      "calls": 3,
+      "medianMs": 228,
+      "p95Ms": 239
+    },
+    {
+      "group": "get-current-time ⬤ NRT",
+      "calls": 1,
+      "medianMs": 0,
+      "p95Ms": 0
+    }
+  ],
+  "iadSamples": 0
+}

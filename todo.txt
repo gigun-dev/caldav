@@ -9,7 +9,7 @@
 (B) 2026-10-02 移動時間と通知の iOS 表示を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0020
 (A) 2026-10-02 calendar と tasks の iOS 非回帰および allprop sync-token 除外を確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0021
 (A) 2026-10-02 復元時の changed 再取得・同一 ETag キャッシュ・再スキャンを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0022
-(B) 2026-10-02 colo タグ付きレイテンシを再計測し IAD の追加最適化の要否を判定する +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024 @wip
+(B) 2026-10-02 IADのツール実行記録を取得し追加最適化の要否を比較する（直近24hはIAD標本0、NRT list-todos15件の中央値73ms/p95 139msまで計測済み） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0024
 (C) 2026-10-02 現行 SDK・ext-apps・Swift の新旧仕様互換性を再調査して移行可否を決める +mcp @unattended see:docs/mcp-compatibility-2026-09-05.md id:0025
 (D) 2026-10-02 identity・principal・App Password 配布の未確定製品判断を整理する +multiuser @user see:docs/modeling/13-multiuser-identity.md id:0026
 (D) 2026-10-02 users・principal・権限表・App Password スキーマと IdentityPort の実装範囲を確定する +multiuser @user see:docs/modeling/13-multiuser-identity.md dep:0026 id:0027
