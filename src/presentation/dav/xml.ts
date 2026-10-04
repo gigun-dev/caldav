@@ -178,7 +178,7 @@ const DECLARED_NS_PREFIXES: ReadonlyMap<string, string> = new Map([
  * localName は XML パーサの検証済み要素名由来なので XML メタ文字を含まず、エスケープ不要。
  * 名前空間 URI はクライアント由来の任意文字列なので属性値としてエスケープする。
  */
-function missingPropNameXml(missing: readonly RequestedPropName[]): string {
+export function missingPropNameXml(missing: readonly RequestedPropName[]): string {
 	// 同じ未宣言名前空間には同じ ad-hoc prefix を割り当てる(応答の読みやすさのため。
 	// 別 prefix でも XML 的には正しいが、目 grep で「同じ名前空間だ」と分かる方がよい)。
 	const adhocPrefixes = new Map<string, string>();

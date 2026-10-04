@@ -775,3 +775,35 @@ DB依存list-events-expandedは正常。well-knownは既存検証と同じUser-A
 実object URI/UID/ETag/ICS本文はメモリ内で扱い、証拠へ保存していない。
 本番PUT/DELETE/PROPPATCHと現在の実端末初回探索・同期UI操作は実施していない。
 サーバー実装・原本fixtureローカル非回帰・本番読み取り受け入れは完了。
+
+
+## 2026-10-04 PROPPATCHの部分保存是正（0007、レビュー前）
+
+RFC 4918の保存済み原文§9.2/9.2.1/14.23/14.24/14.26を照合した。
+指示は文書順、成功は全件または無変更、個別結果はpropstatで返す。
+main `a46f0c3200d10770818c4fa8bc6bf414f4dacbf8` の隔離再現では、
+表示名setと未知プロパティsetを混在させると保存が1回発生し、表示名だけ変更された。
+未知プロパティだけでもsaveを呼び、propstatのない207を返していた。
+
+DAV専用の`presentation/dav/proppatch.ts`で全set/removeをQName・文書順付きで解析し、
+書込み前に全件の対応可否と値を検証する。失敗項目は403（未対応）または409（不正値）、
+他項目は424。失敗時は既存UpdateCollectionPropertiesを呼ばない。
+正常時のみ表示名・Apple色・順序の最終値を既存UCで一度保存する。
+XMLの整形式・DTD拒否は既存saxesを使い、壊れた後続XMLも400・書込なしにする。
+応答QNameは既存serializerを再利用し、DAV/Appleのprefix互換を維持する。
+
+この変更は任意dead property保存やmetadata removeの追加ではない。
+removeは黙って無視せず403で明示拒否する。RFC §14.23の存在しないプロパティ削除を
+成功扱いする汎用remove対応まで実装したとは主張しない。空値・非数のorderも従来の
+黙った無視/不正値保存ではなく409となる。予定・VTODO、MCP、共通UC/domain、DB schema、
+MKCOL・proxy・認証・通知の変更はない。
+
+ローカル検証: 新規Hono経由25件（230 assertions）成功。
+混在/未知のみ、namespace/case、再束縛、文書順の重複set、remove混在、不正値、
+不正XML/DTDについて応答QNameとstatus、保存回数と保存値を確認した。
+実workerd/ローカルD1でも混在要求後の全collection行不変と正常更新の永続化を確認。
+`make check`は層境界・3レーン型検査・Bun1215件・workerd45件すべて成功。
+Wranglerの既存Issues設定・ダミー秘密値・SDK sourcemapの警告はあるが失敗なし。
+
+これはdotクラウド内のローカル検証であり、本番のPROPPATCH・実機操作は未実施。
+mainへの反映・本番deploy・本番DB migrationは未実施。0007はPRレビューと承認後の本番確認まで開く。
