@@ -35,5 +35,5 @@
 (B) 2026-10-03 ChatGPTの予定0件・未完了todo32件の回答と両カード表示はMCP直接読取と一致済み、Workersのツール実行記録との相関を確認する（Langfuse検索は0件、モデル内部spanは取得経路なし） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md dep:0038 id:0055
 (A) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
 2026-10-05 Cloudflare IssuesのCalDAV再発通知が既存メール宛先に届いたか本人が確認する（Cloudflare自動run成功済み、使いやすさ評価とは別） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0062
-(A) 2026-10-05 新版配布のクラウド署名指定は修正済み、GUI正常の本人確認を前提にMac miniのrunnerでNo Accountsになる実行環境差を解消して署名・公開を検証する +ios +distribution @unattended dep:0066 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0067 @wip
+(A) 2026-10-05 GUI LaunchAgentでもNo Accountsが再現、画面共有操作ができないためXcode再起動後のApple ID一覧を確認してGUIとCLIの差を解消し新版を公開する +ios +distribution @user dep:0066 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0067
 (A) 2026-10-05 新版の端末適用後にカード発MCP操作の実端末spanを既存OTLPから読み戻し、成功と接続失敗の自然発生を観察できることを確認する +ios +observability @device @unattended dep:0067 see:docs/task-card-mobile-ux-review-2026-10-03.md id:0068
