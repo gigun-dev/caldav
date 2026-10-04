@@ -1,5 +1,5 @@
 (C) 2026-10-02 principal 宛 REPORT 3種の対応方針と完了条件を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0006
-(B) 2026-10-02 カレンダー設定の一括変更で一部だけ保存されないよう未対応項目を含む要求を全体として拒否し結果を返す（修正とローカル全検証済み、PRレビュー・本番反映は未実施） +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0007 @wip
+(B) 2026-10-02 カレンダー設定の一括変更が一部だけ保存されない修正はPR3でmain統合・Workers Builds成功済み、本番で未対応項目を含む要求の全体拒否と非更新を検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0007
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
