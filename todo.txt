@@ -39,5 +39,5 @@
 (C) 2026-10-02 合意済みのスキーマ・principal複数化・IdentityPortを実装して検証する +multiuser @unattended see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
 (B) 2026-10-03 サーバー障害を把握できるよう隔離した例外・5xxでIssues検出と通知受付を検証する（MCPエラー集約は本番確認済み、端末表示のみ本人確認） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0054
 (B) 2026-10-03 ChatGPTで予定・todoの回答までの機能経路を検証し反復失敗と結果受渡しをOTelで照合する（送信と再試行がUnknown error、再読込でCloudflare challengeに遷移したためクライアント回復待ち） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0055
-(B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056
+(B) 2026-10-03 PROPFIND の Depth 省略要求を infinity 扱いする場合の探索クライアント互換性を検証し対応を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md id:0056 @wip
 (B) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058

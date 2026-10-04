@@ -100,6 +100,15 @@ describe("Worker app", () => {
 				expect(harness.getCollectionSaveCount()).toBe(0);
 			});
 		}
+		it("Depth省略はcollectionで403、明示Depth 0/1で探索できる", async () => {
+			const absent = await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader() } });
+			expect(absent.status).toBe(403);
+			expect(await absent.text()).toContain('<d:propfind-finite-depth/>');
+			expect(harness.getCollectionSaveCount()).toBe(0);
+			for (const [path, depth] of [["/dav/", "0"], [`/dav/principals/${USERNAME}/`, "0"], [`/dav/calendars/${USERNAME}/`, "1"]]) {
+				expect((await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth } })).status).toBe(207);
+			}
+		});
 		it("Depth 0/1は有限の範囲を返し、objectはinfinityでも自身を返す", async () => {
 			harness.repos.collections.seed(new CalendarCollection({ id: CALENDAR, owner: OWNER, displayName: "Calendar" }));
 			const object = `/dav/calendars/${USERNAME}/calendar/finite.ics`;
@@ -122,7 +131,7 @@ describe("Worker app", () => {
 		const mixed = '<d:displayname/><w:displayname/><d:DisplayName/><d:principal-URL/><d:principal-url/>';
 		for (const path of ["/dav/", `/dav/principals/${USERNAME}/`, `/dav/calendars/${USERNAME}/`, `/dav/calendars/${USERNAME}/calendar/`, `/dav/calendars/${USERNAME}/tasks/`]) {
 			it(`${path} は正規名のみ200、別URI/caseは404`, async () => {
-				await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader() } });
+				await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" } });
 				const res = await fetchApp(path, { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" }, body: `<d:propfind xmlns:d="DAV:" xmlns:w="urn:wrong"><d:prop>${mixed}</d:prop></d:propfind>` });
 				expect(res.status).toBe(207);
 				const xml = await res.text();
@@ -162,7 +171,7 @@ describe("Worker app", () => {
 		});
 
 		it("PROPPATCH成功応答はDAVとAppleの定義済みQNameを使う", async () => {
-			await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader() } });
+			await fetchApp("/dav/", { method: "PROPFIND", headers: { authorization: authHeader(), depth: "0" } });
 			const res = await fetchApp(`/dav/calendars/${USERNAME}/calendar/`, { method: "PROPPATCH", headers: { authorization: authHeader() }, body: '<d:propertyupdate xmlns:d="DAV:" xmlns:i="http://apple.com/ns/ical/"><d:set><d:prop><d:displayname>Changed</d:displayname><i:calendar-color>#112233FF</i:calendar-color><i:calendar-order>3</i:calendar-order></d:prop></d:set></d:propertyupdate>' });
 			expect(res.status).toBe(207);
 			const xml = await res.text();
@@ -180,7 +189,7 @@ describe("Worker app", () => {
 		it("エントリ /dav/ への PROPFIND では既定コレクションを provision する", async () => {
 			const res = await fetchApp("/dav/", {
 				method: "PROPFIND",
-				headers: { authorization: authHeader() },
+				headers: { authorization: authHeader(), depth: "0" },
 			});
 			expect(res.status).toBe(207);
 			// Calendar + Tasks の 2 コレクションが save される。
@@ -870,7 +879,7 @@ describe("Worker app", () => {
 			// principal-search-property-set は載る / 未実装の principal-property-search は載らない。
 			const res = await fetchApp(PRINCIPAL_PATH, {
 				method: "PROPFIND",
-				headers: { authorization: authHeader() },
+				headers: { authorization: authHeader(), depth: "0" },
 				body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:supported-report-set/></d:prop></d:propfind>',
 			});
 			expect(res.status).toBe(207);

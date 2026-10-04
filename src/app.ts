@@ -640,7 +640,8 @@ app.all("*", async (c) => {
 		// 黙って縮めるとクライアントは完全な一覧を受け取ったと誤認する。
 		// discoveryの拒否をprovisionより前に置く。objectは子を持たず、下の
 		// object PROPFINDをそのまま通す(403を許す仕様はcollection宛の話)。
-		const infinitePropfind = method === "PROPFIND" && request.headers.get("depth") === "infinity";
+		// §9.1の省略時既定値もinfinity。有限探索するクライアントは0/1を明示する。
+		const infinitePropfind = method === "PROPFIND" && (request.headers.get("depth") ?? "infinity") === "infinity";
 		if (infinitePropfind && (entryPaths.has(path) || principalPathsSet.has(path) || path === home || path === homeNoSlash)) {
 			return xml(davError("propfind-finite-depth", { namespace: "dav" }), 403);
 		}
