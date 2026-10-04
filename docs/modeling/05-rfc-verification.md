@@ -805,6 +805,29 @@ MKCOL・proxy・認証・通知の変更はない。
 `make check`は層境界・3レーン型検査・Bun1215件・workerd45件すべて成功。
 Wranglerの既存Issues設定・ダミー秘密値・SDK sourcemapの警告はあるが失敗なし。
 
+[PR #3](https://github.com/gigun-dev/caldav/pull/3) のコードhead
+`8e597588fffc28db112c7293197f3f68fc491fd0` は
+[GitHub CI](https://github.com/gigun-dev/caldav/actions/runs/37188049541)成功。
+[Codex独立レビュー](https://github.com/gigun-dev/caldav/pull/3#issuecomment-5978026070)も
+2026-10-04 08:16 UTCに完了し、重大な問題の指摘なし。
+
+本人承認後、PR #3を通常squash mergeし、その時点のmainは
+`6e296180d5e5351dfc12b98c46f5b50b6cf5505b`に一致。
+[main CI](https://github.com/gigun-dev/caldav/actions/runs/37188642663)と
+[main Workers Build](https://github.com/gigun-dev/caldav/runs/111395987540)が成功した。
+Build IDは`c90d716d-8430-49d4-af05-89fc2ad9921a`、報告されたversionは
+`4526de68-2360-457d-8e84-a4d6bd6817f5`。branch preview版とは異なる。
+
+2026-10-04 10:22 UTCのCloudflare読み取りAPIで、最新deployment
+`f9d8dc44-777d-4918-851f-294736b18cf6`（作成08:21:30.314023 UTC）が
+同versionを100%配信していることを確認。version metadataも同ID・number224で、
+作成08:21:29.490478 UTC。GitHubのBuildが示すcommit/versionとの対応が一致し、
+この時点のmainも上記merge commitのままだった。
+
+08:23 UTCの公開read-only確認は、正式proxy OPTIONS204、well-known301・
+Location `/dav/`・no-cache、未認証MCP401・Bearer challenge、OAuth discovery200。
+認証情報・予定本文の取得や実カレンダーへの書込みは行っていない。
+
 PR #3 は main `6e296180d5e5351dfc12b98c46f5b50b6cf5505b` に統合し、Workers Builds成功を確認した。
 2026-10-04、正式Cloud Run DAV入口の専用一時カレンダーで13項目を確認。
 表示名と未対応項目の混在は403/424、不正色との混在は409/424となり、
