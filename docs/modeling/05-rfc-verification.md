@@ -842,5 +842,9 @@ RFC 4918原文§9.1の省略時infinity推奨と、§9.1.1の有限深度拒否�
 探索に失敗した要求で書き込まない。明示Depth 0/1・子を持たないobjectの経路は維持する。
 保存済み実機fixtureはprincipalが0、homeが1。現在のtsdavも探索・一覧取得で0/1を明示し、
 実HTTPハーネスのlogin・一覧・作成・同期が成功した。旧テストの省略した有限探索要求は0を明示した。
-層境界・型検査・Bun1216件・workerd45件は成功。本番反映後の正式入口で省略403と0/1成功を確認するまで開く。
+層境界・型検査・Bun1216件・workerd45件は成功。2026-10-04、commit `4e17275` をpushし、
+本番deployment `7a778fa7-cfae-47d8-8b39-aabe4a3308bc` のversion
+`414084c6-8bdb-4d58-ba74-d2d4564889ba` が100%配信された。
+正式Cloud Run DAV入口のentry/principal/home/calendarで省略403・finite-depthを確認。
+entry/principalの明示0とhomeの明示1は207を確認し、0056を閉じた。
 実機の新しい初回ログイン操作は今回の検証に含めない。
