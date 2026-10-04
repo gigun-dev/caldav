@@ -1,0 +1,32 @@
+[
+  {
+    "path": "health",
+    "status": 200,
+    "timeUnixMs": 1791125824491,
+    "body": "verification fixture"
+  },
+  {
+    "path": "exception",
+    "status": 500,
+    "timeUnixMs": 1791125824679,
+    "body": "error code: 1101\n"
+  },
+  {
+    "path": "exception",
+    "status": 500,
+    "timeUnixMs": 1791125825004,
+    "body": "error code: 1101\n"
+  },
+  {
+    "path": "status-503",
+    "status": 503,
+    "timeUnixMs": 1791125825181,
+    "body": "synthetic unavailable"
+  },
+  {
+    "path": "handled-error",
+    "status": 200,
+    "timeUnixMs": 1791125825431,
+    "body": "synthetic handled error"
+  }
+]

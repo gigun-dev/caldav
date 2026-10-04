@@ -1,5 +1,5 @@
 {
-  "status": "prepared_not_applied",
+  "status": "applied_2026-10-04",
   "recipientSelection": {
     "sourcePolicyId": "a5db8c8f163e4ff7bf3c31a1d2d1ab9f",
     "sourceMechanism": "email",
@@ -9,25 +9,34 @@
     "name": "caldav Issues email",
     "description": "caldav Issues initial occurrence and recurrence after one hour of inactivity",
     "alert_type": "workers_observability_real_time_issue",
-    "enabled": false,
-    "mechanisms": { "email": [{ "id": "<existing-budget-policy-email>" }] }
+    "enabled": true,
+    "mechanisms": {
+      "email": [
+        {
+          "id": "<existing-budget-policy-email>"
+        }
+      ]
+    },
+    "id": "565260d890474148a5ecaf56716d9c3c"
   },
   "automations": [
     {
       "name": "caldav Issues first occurrence",
       "service": "caldav",
-      "policyId": "<created-issues-policy-id>",
+      "policyId": "565260d890474148a5ecaf56716d9c3c",
       "afterOccurrences": 1,
-      "enabled": false
+      "enabled": true,
+      "id": "c112f430-b15c-44f5-941d-43879c23ab6b"
     },
     {
       "name": "caldav Issues recurrence after 1h",
       "service": "caldav",
-      "policyId": "<created-issues-policy-id>",
+      "policyId": "565260d890474148a5ecaf56716d9c3c",
       "afterInactivitySeconds": 3600,
-      "enabled": false
+      "enabled": true,
+      "id": "682fcf0a-68cc-416a-8345-53f873f8adab"
     }
   ],
-  "activation": "Resolve recipient and policy ID only after approval; verify disabled objects, then enable the dedicated policy and both automations.",
+  "activation": "Existing budget policy email recipients were reused in memory; dedicated policy and service-scoped automations were read back and enabled. No recipient address is stored here.",
   "rollback": "Disable the two dedicated automations and the dedicated policy; do not alter the source budget policy or other destinations."
 }

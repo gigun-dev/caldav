@@ -1,5 +1,42 @@
 # 障害監視の改善と所有境界（2026-10-03）
 
+## 現行状態（2026-10-04）
+
+CalDAVのWorkerはIssues有効。専用メール通知policyと、CalDAV限定の初回1件・
+1時間以上の無活動後再発のautomationを有効化した。既存budget通知のメール宛先だけを
+メモリ内で再利用し、budget policyやhub/Barkは変更していない。
+現行設定とIDは[通知設定](verification/2026-10-03-issues-notification-plan.json)に残す。
+設定前の手順・旧版へのrollback案はGit履歴を参照する。
+
+本番と独立した、DB・認証・秘密のbindingを持たない検証Workerで確認した。
+
+| 合成入力 | HTTP | Issuesの実測 |
+|---|---:|---|
+| health | 200 | エラーなし |
+| 未処理例外2回 | 500 / 1101 | exception、handled=false、1グループ・count=2 |
+| 503応答 | 503 | HttpServerError、mechanism=http-status、count=1 |
+| 処理済みerrorログ | 200 | mechanism=error-log、handled=true、count=1 |
+
+HTTP結果は[fixture結果](verification/2026-10-04-issues-fixture-http.json)。
+occurrences APIで例外stack、HTTP503、処理済みerrorの区別も読み戻した。
+fixtureは検証後に削除済み。再実行は、対象accountを明示して
+`bunx wrangler deploy --config scripts/verification/issues-fixture.jsonc`、
+`/health`・`/exception`・`/status-503`・`/handled-error`を呼び出し、Issues APIで照合する。
+終了時は同じaccountで `bunx wrangler delete --config scripts/verification/issues-fixture.jsonc --force`。
+fixtureを本番CalDAVのconfigからdeployしない。
+
+本番は読み取り専用の不正範囲を1回のみ送信し、HTTP200/isError=trueを確認。
+正常get-current-timeはHTTP200/isError=false。既存Issue
+`aa455cad-445e-47cf-a519-c651f7910a73`はcount=2→3へ増えた。
+1時間以上の無活動後再発automationが自動発火し、run
+`d3dfcf5e-2d97-4be1-bd73-d9ee10c478d8`は`initiatedBy=automatic/status=succeeded/lastError=null`。
+これはCloudflare Notificationsの受付成功であり、メール受信箱・端末表示の到達確認ではない。
+初回threshold設定は読み戻し済みだが、新規本番Issueの自然な初回発火は未観測。
+正常要求と不正要求の[HTTP結果](verification/2026-10-04-issues-production-http.json)に本文・認証値は保存しない。
+
+Workers IssuesはWorker内の例外・5xx・errorログを扱う。Mac/VM/Tunnel停止はdots側の
+外形監視、iPhoneのURLSession切断はSwift側のトレースで観測する。
+
 ## 確認済みの障害
 
 日本時間9/28 22:05の外形監視ではCodex/Langfuseとも200、22:10にともに530、22:15に2回連続失敗としてBarkへPOSTし200で受理。実端末での表示は未確認。Macは10/3 00:14:04起動、VM/Kumaは00:15頃再開。外形監視はCodex00:20、Langfuse00:25にupへ遷移。Macの正確な停止原因は未確定。
@@ -38,23 +75,6 @@ Issues の対象は未処理例外・invocation失敗・5xx・errorログ。有�
 追加ログはツール名・種別・requestIdのみで、引数・エラー本文・principal/sessionIdは含めない。
 AE/既存レイテンシログは維持する。SDK がハンドラ前に拒否する schema エラーや、ラッパー前に
 返す scope エラーはこの追加ログの対象外であり、全JSON-RPCエラーの捕捉とは言わない。
-
-通知は設定していない。[公式 automation](https://developers.cloudflare.com/workers/observability/issues/automations/)
-の occurrence threshold は閾値を跨いだとき一度、recurrence は先行occurrenceがあり所定の
-無活動時間後に再発したとき発火する。毎回通知ではない。準備案は threshold=1 と
-recurrence=1時間。モデル誤入力も対象になるため、実際のgrouping/頻度を見てから承認する。
-destinationは既存所有側で管理し、ここからhub/Bark等への直接送信は足さない。
-automation成功はCloudflare Notificationsの受理で、端末到達の証明ではない。
-
-承認後の手順（このsessionでは実行しない）:
-
-1. 既存 main/Workers Builds 経路で変更を反映し、deployログ・Worker版・Issues有効を確認。
-2. 別の非本番 fixture Worker で未処理例外、5xx、処理済みerrorを発生させ、Issues occurrenceを
-   確認する。本番DAVへ障害注入用routeは追加しない。fixtureは既存管理経路に従う。
-3. caldavの読み取り専用 `list-events-expanded` に空文字併記を1回だけ送り、HTTP200/isErrorと
-   errorログ/requestId、Issuesの検出とgroupingを照合。正しい相対範囲ではerrorログが増えないことを確認。
-4. destination/automationを承認後に設定し、閾値超過・反復・1時間後再発のrun履歴と宛先受信を照合。
-   実ログにprivate内容が出ていないかも確認。無効化する場合はWranglerのissues設定を戻し既存deploy経路を使う。
 
 ### 引数契約とホスト比較
 
@@ -145,51 +165,6 @@ CALDAV_SCHEMA_FILE=/tmp/range-schemas.json CALDAV_RANGE_LIVE=1 \
 bun scripts/verify-range-schema.ts /tmp/range-schemas.json --model-results /tmp/range-results.ndjson
 ```
 
-## 追確認: 反映・通知設定・rollbackの具体案
-
-Cloudflare読み取りAPIで当日確認:
-
-- 現行WorkerはIssues設定なし。最新100%版は `387aa32a-7b32-4841-971e-7a4040feefb2`。
-- Workers Buildsのmain trigger `38fb0a97-491e-48f2-9619-7c604b02e59c` は `bun run deploy`。
-  main以外も別triggerが `npx wrangler versions upload` するため、ブランチpushも今回は行わない。
-- Issues automation・webhookは0件。email/webhooksはeligibleかつready、PagerDutyは不可。
-- 既存のbudget email policyはあるが、Issuesには流用しない。宛先だけ同じにする案。
-  live available_alertsで `workers_observability_real_time_issue` を確認した。
-  これはstaticなNotifications OpenAPI enumには未掲載であり、payloadのPOST受理は未検証。
-
-秘密・メールアドレスを含まない
-[設定案](verification/2026-10-03-issues-notification-plan.json)を準備した。
-専用policyをdisabledで作り、budget policyのemail宛先だけを取得して置換する。
-caldav限定のautomationは初回1件と3600秒後再発の2件に分け、同じ専用policyへ向ける。
-最初は全てdisabled、参照とpayloadを読み戻してから有効化する。新webhook・hub/Bark routeは追加しない。
-
-承認後に使うAPIは `POST /accounts/{account_id}/alerting/v3/policies` と
-`POST /accounts/{account_id}/workers/observability/issues/automations`。
-automationは `policyId` 必須、`afterOccurrences:1` または `afterInactivitySeconds:3600`、
-`service:"caldav"`。同名登録をGETで確認してから作成し、作成IDを記録する。
-反映時のbaseline版は再取得する（上の版はこのsessionのsnapshot）。
-
-rollback:
-
-1. 通知ノイズだけなら専用automation 2件をGET→同じfull payloadの `enabled:false` でPUT。
-   専用policyも無効化し、budget policy・他宛先は触らない。通知設定だけのrollbackはWorkerをredeployしない。
-2. Worker不具合ならbaseline版へ `bunx wrangler rollback <baseline-version-id> --name caldav --message 'rollback Issues preparation'`。
-   現時点のbaselineは上記387aa32a…、実行前に再確認する。DB migration差分はないためDBを巻き戻さない。
-3. 次のBuildで再導入されないよう、承認済みの本線で今回のIssues/log変更をrevertして既存Buildへ反映する。
-   dashboard-onlyの変更では完了としない。rollback後も既存DAV/MCP読み取りsmokeを確認する。
-
-差分レビュー: protocol/RFC/domain/application、D1 migrations、Cloud Run proxyは変更なし。
-Wrangler最小対応版・lock・生成runtime型、presentationの説明と失敗ログ、契約回帰、調査用scriptと証拠に限定。
-追加errorログの先頭はツール/種別の固定文字列、requestIdは追加属性に分け、毎回変わるIDが
-groupingメッセージへ混ざることを避けた。実際のgroupingはCloudflare側の反映後確認が必要。
-
-未承認で保留する実行はpush/Builds/本番deploy、通知policy・automation作成/有効化、外部通知試験。
-準備・読み取り・local/実モデル検証は上記のとおり実施済み。
-
-追検証後の最終確認も `make check` 成功（Bun 1140件、workerd 42件、3レーン型検査・層境界）、
-更新したlog実装でdeploy dry-run成功、`git diff --check` と `todo check` 成功。
-stage/commit/pushなし。本線HEADは `016d23e`、変更はレビュー可能な未コミット差分として残している。
-0054は承認後の反映/検出/通知到達、0055はSwift側non-strict明示と反映後のホスト/実端末確認へ残作業を絞った。
 
 ## 2026-10-03 main pushと本番受け入れ
 

@@ -1,0 +1,12 @@
+[
+  {
+    "tool": "list-events-expanded",
+    "httpStatus": 200,
+    "isError": true
+  },
+  {
+    "tool": "get-current-time",
+    "httpStatus": 200,
+    "isError": false
+  }
+]

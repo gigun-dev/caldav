@@ -37,6 +37,6 @@
 (D) 2026-10-02 並べ替え設定 UI のモックと受け入れ条件を決める +cards @unattended see:docs/modeling/12-vevent-agentic.md dep:0034 id:0051
 (D) 2026-10-02 occurrence 編集・VALARM 作成・詳細カード・move-event・URL/CONFERENCE の次スライスを選び分解する +cards @user see:docs/modeling/12-vevent-agentic.md id:0052
 (D) 2026-10-02 合意済みのスキーマ・principal複数化・IdentityPortを実装して検証する +multiuser @unattended see:docs/modeling/13-multiuser-identity.md dep:0027 id:0053
-(A) 2026-10-03 サーバー障害を把握できるよう隔離した例外・5xxでIssues検出と通知受付を検証する（MCPエラー集約は本番確認済み、端末表示のみ本人確認） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0054
 (B) 2026-10-03 ChatGPTの予定0件・未完了todo32件の回答と両カード表示はMCP直接読取と一致済み、Workersのツール実行記録との相関を確認する（Langfuse検索は0件、モデル内部spanは取得経路なし） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md dep:0038 id:0055
 (A) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
+2026-10-05 Cloudflare IssuesのCalDAV再発通知が既存メール宛先に届いたか本人が確認する（Cloudflare自動run成功済み、使いやすさ評価とは別） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0062
