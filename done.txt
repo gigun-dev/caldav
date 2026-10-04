@@ -21,3 +21,4 @@ x 2026-10-05 2026-10-03 Workerの例外・5xx・HTTP200のMCPエラーをIssues�
 x 2026-10-05 2026-10-02 Worker境界のOTelとツールログ・Issuesの相関を本番で検証し追加SDKの要否を決める（既存標準計測で正常/失敗のID一致、ホストからの親trace伝播は未検証） +observability @unattended see:docs/monitoring-follow-up-2026-10-03.md id:0038
 x 2026-10-05 2026-10-02 再ログイン要求を切り分けるためrefresh token失効と未認証401のBearer challengeを検証する +mcp @unattended see:docs/modeling/07-authentication.md id:0041
 x 2026-10-05 2026-10-02 配色監査A-4の未参照CSS定義を除去し、撤回済み静的リングと時刻軸の誤った二重管理コメントを是正した（機能変更なし、make check通過） +cards @unattended see:docs/card-color-audit-2026-08-02.md id:0036
+x 2026-10-05 2026-10-05 Swift実ホストのfullscreen FAB・入力focus・追加/編集保存・コピー・リスト切替・swipe削除・composer復帰を専用データで検証しサーバー照合とcleanupを完了した +ios +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0063

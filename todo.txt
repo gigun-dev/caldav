@@ -2,7 +2,7 @@
 (D) 2026-10-02 calendar-home 宛 sync-collection の対応方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0009
 (C) 2026-10-02 入口ホスト変更時の全同期を再現し sync token のホスト依存を除く方針を決める +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0010
 (C) 2026-10-02 末尾スラッシュ付き well-known caldav の応答を是正して検証する +caldav @unattended see:docs/modeling/05-rfc-verification.md dep:0005 id:0011
-(A) 2026-10-02 入力・削除が止まらず保存できるようfullscreenのFAB/composer重なり・追加時のkeyboard・選択/編集/コピー/リスト切替/swipe削除の機能経路を実機またはSimulatorで検証し再現した不具合を修正する +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016 @wip
+(A) 2026-10-02 ソフトキーボードを実表示できるiOS環境で下部行・新規入力の可視性と遮蔽を確認する（追加・編集保存・コピー・リスト切替・swipe削除は実ホストで検証済み、現在のSimulatorはkeyboard frameが画面外） +ios +cards @device see:docs/task-card-mobile-ux-review-2026-10-03.md id:0016
 (B) 2026-10-02 agenda ラベル・月日ビューのセル比率・月送りを実機確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0017
 (B) 2026-10-02 geo 無しイベントの LOCATION 改行表示を iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0018
 (B) 2026-10-02 場所検索から場所付き予定作成までを iOS で確認する +ios @device see:docs/modeling/06-ios-behavior-verification.md id:0019
@@ -37,3 +37,4 @@
 (B) 2026-10-03 ChatGPTの予定0件・未完了todo32件の回答と両カード表示はMCP直接読取と一致済み、Workersのツール実行記録との相関を確認する（Langfuse検索は0件、モデル内部spanは取得経路なし） +mcp @unattended see:docs/monitoring-follow-up-2026-10-03.md dep:0038 id:0055
 (A) 2026-10-03 準備済みの専用リストと6つの試用シナリオでスマホの入力・確定・長文・完了表示を本人が評価し次の改善範囲を決める +cards @user see:docs/task-card-mobile-ux-review-2026-10-03.md id:0058
 2026-10-05 Cloudflare IssuesのCalDAV再発通知が既存メール宛先に届いたか本人が確認する（Cloudflare自動run成功済み、使いやすさ評価とは別） +observability @user see:docs/monitoring-follow-up-2026-10-03.md id:0062
+(C) 2026-10-05 専用カードを事前表示した条件でSwiftのopt-in統合操作テストを一括実行する（段階検証は成功済み、モデルのカード発火判断は試験対象外） +ios +cards @unattended see:docs/task-card-mobile-ux-review-2026-10-03.md id:0064
