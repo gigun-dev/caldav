@@ -1,7 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "enabledPlugins": {
-    "codex@openai-codex": true,
-    "xcode-mcp@gigun": true
+    "codex@openai-codex": true
   }
 }
